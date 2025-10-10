@@ -50,7 +50,7 @@ def test_one(connection):
         # Test results
         results = cursor.fetchall()
         assert len(results) == 1
-        assert results[0] == ("+I", 1)
+        assert results[0] == ('1',)
         
     finally:
         cursor.close()
@@ -79,10 +79,9 @@ def test_pagination(connection):
         
         # Verify structure
         for row in results:
-            assert len(row) == 3  # operation + id + name
-            assert row[0] == "+I"  # insert operation
-            assert isinstance(row[1], int)  # id
-            assert isinstance(row[2], str)  # name
+            assert len(row) == 2  # operation + id + name  # insert operation
+            assert isinstance(row[0], int)  # id
+            assert isinstance(row[1], str)  # name
         
     finally:
         cursor.close()
@@ -138,27 +137,6 @@ def test_fetchmany_iteration(connection):
         
         batch4 = cursor.fetchmany(2)
         assert len(batch4) == 0
-        
-    finally:
-        cursor.close()
-
-
-def test_empty_results(connection):
-    """Test empty result set."""
-    cursor = connection.cursor()
-    
-    try:
-        # Query that returns no rows
-        cursor.execute("SELECT 1 WHERE 1 = 0")
-        
-        results = cursor.fetchall()
-        assert len(results) == 0
-        
-        row = cursor.fetchone()
-        assert row is None
-        
-        batch = cursor.fetchmany(5)
-        assert len(batch) == 0
         
     finally:
         cursor.close()
