@@ -290,6 +290,32 @@ class Connection:
                 raise
             raise OperationalError(f"Failed to get statement results: {e}")
     
+    def get_statement_results_from_url(self, url: str) -> Dict[str, Any]:
+        """
+        Get results for a statement from a specific URL (for pagination).
+        
+        Args:
+            url: The full URL to fetch results from
+            
+        Returns:
+            Dictionary containing the results
+            
+        Raises:
+            OperationalError: If results retrieval fails
+        """
+        try:
+            response = self._client.get(url)
+            
+            if response.status_code != 200:
+                raise OperationalError(f"Failed to fetch results from URL: HTTP {response.status_code} - {response.text}")
+            
+            return response.json()
+            
+        except Exception as e:
+            if isinstance(e, OperationalError):
+                raise
+            raise OperationalError(f"Failed to get statement results from URL: {e}")
+    
     def delete_statement(self, statement_name: str) -> None:
         """
         Delete a statement.

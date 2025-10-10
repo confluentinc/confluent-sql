@@ -37,14 +37,11 @@ def test_confluent_sql_connection():
         pytest.skip("Missing required environment variables for integration test")
 
     print(f"flink_api_key: {flink_api_key}")
-    print(f"flink_api_secret: {flink_api_secret}")
     print(f"environment: {environment}")
     print(f"organization_id: {organization_id}")
     print(f"compute_pool_id: {compute_pool_id}")
     print(f"cloud_region: {cloud_region}")
     print(f"cloud_provider: {cloud_provider}")
-    print(f"api_key: {api_key}")
-    print(f"api_secret: {api_secret}")
     
     # Create connection
     connection = connect(

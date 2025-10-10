@@ -81,14 +81,12 @@ class Cursor:
             self._submit_statement(operation, parameters, statement_name)
             
             # Step 2: Wait for statement to be ready (not in PENDING status)
+            # in this loop, if FAILED or DEGRADED, raise an error
             self._wait_for_statement_ready(timeout)
             
-            # Step 3: Handle failed statements immediately
-            if self._statement_status in ["FAILED", "DEGRADED"]:
-                self._handle_failed_statement()
-            
-            # Step 4: Set up cursor state for all successful statements
+            # Step 3: Set up cursor state for all successful statements
             # All queries are treated as streaming - database server handles result management
+            # TODO: handle snapshot queries
             self._setup_cursor_state()
                     
         except Exception as e:
@@ -121,14 +119,17 @@ class Cursor:
                 self._check_statement_status()
                 
                 # Statement is ready when it's not in PENDING status
+                # Check for failure states first - exit immediately
+                if self._statement_status in ["FAILED", "DEGRADED"]:
+                    return
+                
                 # For bounded queries, wait for COMPLETED status
-                if self._statement_status not in ["PENDING"]:
-                    # If it's a bounded query, wait for COMPLETED status
-                    if self._result_traits and self._result_traits.get("is_bounded") is True:
-                        if self._statement_status in ["COMPLETED"]:
-                            return
-                    else:
-                        # For unbounded queries, RUNNING is acceptable
+                if self._result_traits and self._result_traits.get("is_bounded") is True:
+                    if self._statement_status in ["COMPLETED"]:
+                        return
+                else:
+                    # For unbounded queries, RUNNING is acceptable
+                    if self._statement_status in ["RUNNING"]:
                         return
                 
                 # Exponential backoff with jitter to prevent thundering herd
@@ -158,6 +159,22 @@ class Cursor:
         if self._result_schema:
             self._description = [(col["name"], col["type"]["type"], None, None, None, None, None) 
                                for col in self._result_schema]
+        
+        # Store additional useful metadata
+        if hasattr(self, '_statement_name'):
+            self._statement_name = getattr(self, '_statement_name', None)
+        
+        # Store execution context for debugging/tracing
+        if hasattr(self, '_spec') and self._spec:
+            self._compute_pool_id = self._spec.get('compute_pool_id')
+            self._principal = self._spec.get('principal')
+        
+        # Store statement characteristics
+        if self._result_traits:
+            self._sql_kind = self._result_traits.get('sql_kind')
+            self._is_bounded = self._result_traits.get('is_bounded')
+            self._is_append_only = self._result_traits.get('is_append_only')
+            self._connection_refs = self._result_traits.get('connection_refs', [])
     
     def _submit_statement(self, operation: str, parameters: Optional[Union[Tuple, List, Dict]] = None, statement_name: Optional[str] = None) -> None:
         """
@@ -319,12 +336,13 @@ class Cursor:
     
     def _parse_results_from_response(self, data: List[Dict]) -> None:
         """
-        Parse results from the API response data.
+        Parse results from the API response data and append to existing results.
         
         Args:
             data: List of result data from the API response
         """
-        self._all_results = []
+        # Don't clear existing results - append to them
+        # self._all_results = []  # REMOVED - this was overwriting previous results
         
         for item in data:
             # Extract operation and row data
@@ -353,31 +371,6 @@ class Cursor:
                     result_row[f"col_{i}"] = value
             
             self._all_results.append(result_row)
-    
-    def _fetch_results_from_api(self, page_token: Optional[str] = None) -> None:
-        """
-        Fetch results using the separate results API endpoint.
-        
-        Args:
-            page_token: Optional page token for pagination
-        """
-        try:
-            # Delegate to connection object for results fetching
-            response = self.connection.get_statement_results(self._statement_id, page_token)
-            
-            # Parse the results
-            if response.get("results") and response["results"].get("data"):
-                self._parse_results_from_response(response["results"]["data"])
-            
-            # Handle pagination if there's a next page
-            if response.get("metadata") and response["metadata"].get("next"):
-                # For now, we'll just fetch the first page
-                # TODO: Implement full pagination support
-                pass
-                
-        except Exception as e:
-            raise OperationalError(f"Failed to fetch results from API: {e}")
-    
     
     def _check_statement_status(self) -> None:
         """
@@ -518,7 +511,7 @@ class Cursor:
 
             # Update result schema and traits if available
             if self._status and self._status.get("traits") and self._status["traits"].get("schema"):
-                self._result_schema = self._status["traits"]["schema"]
+                self._result_schema = self._status["traits"]["schema"]["columns"]
             
             if self._status and self._status.get("traits"):
                 self._result_traits = self._status["traits"]
@@ -610,14 +603,27 @@ class Cursor:
         # If results are already parsed, don't fetch again
         if self._all_results:
             return
-        # Fetch results using the results API endpoint
+        
         try:
-            self._fetch_results_from_api()
+            # Start with the first page
+            response = self.connection.get_statement_results(self._statement_name)
+            self._parse_results_from_response(response.get("results", {}).get("data", []))
+            
+            # Check for pagination and fetch all remaining pages
+            next_url = response.get("metadata", {}).get("next", "")
+            while next_url and len(next_url) > 0:
+                # Fetch the next page using the Connection method
+                next_response = self.connection.get_statement_results_from_url(next_url)
+                self._parse_results_from_response(next_response.get("results", {}).get("data", []))
+                
+                # Get the next URL for the next iteration
+                next_url = next_response.get("metadata", {}).get("next", "")
+                
         except Exception as e:
             print(f"Failed to fetch results from API: {e}")
             # If results API fails, return empty results
             self._all_results = []
-        
+    
     def fetchone(self) -> Optional[Tuple]:
         """
         Fetch the next row from the result set.
@@ -798,3 +804,53 @@ class Cursor:
             value: The new arraysize value
         """
         self._arraysize = value
+    
+    @property
+    def statement_name(self) -> Optional[str]:
+        """
+        Get the name of the current statement.
+        
+        Returns:
+            The statement name, or None if no statement is active
+        """
+        return getattr(self, '_statement_name', None)
+    
+    @property
+    def sql_kind(self) -> Optional[str]:
+        """
+        Get the SQL statement type (SELECT, INSERT, etc.).
+        
+        Returns:
+            The SQL statement type, or None if not available
+        """
+        return getattr(self, '_sql_kind', None)
+    
+    @property
+    def is_bounded(self) -> Optional[bool]:
+        """
+        Get whether the result set is bounded (finite).
+        
+        Returns:
+            True if bounded, False if unbounded, None if not available
+        """
+        return getattr(self, '_is_bounded', None)
+    
+    @property
+    def is_append_only(self) -> Optional[bool]:
+        """
+        Get whether the result set is append-only.
+        
+        Returns:
+            True if append-only, False otherwise, None if not available
+        """
+        return getattr(self, '_is_append_only', None)
+    
+    @property
+    def connection_refs(self) -> List[str]:
+        """
+        Get the external connections used by this statement.
+        
+        Returns:
+            List of connection references, empty list if none
+        """
+        return getattr(self, '_connection_refs', [])
