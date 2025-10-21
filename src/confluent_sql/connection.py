@@ -5,7 +5,6 @@ This module provides the connect function and Connection class for establishing
 connections to Confluent SQL services.
 """
 
-import base64
 import uuid
 from typing import Optional, Dict, Any, Union, Tuple, List, TYPE_CHECKING
 
@@ -28,8 +27,6 @@ def connect(
     cloud_region: str,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
-    host: Optional[str] = None,
-    **kwargs: Any,
 ) -> "Connection":
     """
     Create a connection to a Confluent SQL service.
@@ -44,8 +41,6 @@ def connect(
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
-        host: The base URL for Confluent Cloud API (optional, will be constructed if not provided)
-        **kwargs: Additional connection parameters
 
     Returns:
         A Connection object representing the database connection
@@ -83,8 +78,6 @@ def connect(
         cloud_region,
         api_key=api_key,
         api_secret=api_secret,
-        host=host,
-        **kwargs,
     )
 
 
@@ -107,8 +100,6 @@ class Connection:
         cloud_region: str,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
-        host: Optional[str] = None,
-        **kwargs: Any,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -137,25 +128,19 @@ class Connection:
         self.api_secret = api_secret
         self._closed = False
         self._cursors = []
+        self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
 
-        # Construct the base URL for the Flink SQL API
-        if host:
-            self.host = host
-        else:
-            # Use the correct URL structure that matches the Flink SQL API documentation
-            self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
-
-        # Create Basic auth credentials for Flink API
-        credentials = f"{self.flink_api_key}:{self.flink_api_secret}"
-        self.basic_auth = base64.b64encode(credentials.encode()).decode()
+        base_url = (
+            f"{self.host}/sql/v1/organizations/"
+            f"{self.organization_id}/environments/{self.environment}"
+        )
+        basic_auth = httpx.BasicAuth(username=self.flink_api_key, password=self.flink_api_secret)
 
         # Create httpx client for making API calls
         self._client = httpx.Client(
-            base_url=self.host,
-            headers={
-                "Authorization": f"Basic {self.basic_auth}",
-                "Content-Type": "application/json",
-            },
+            auth=basic_auth,
+            base_url=base_url,
+            headers={"Content-Type": "application/json"},
         )
 
     def close(self) -> None:
@@ -192,6 +177,14 @@ class Connection:
         self._cursors.append(cursor)
         return cursor
 
+    def _request(self, url, method="GET", **kwargs):
+        try:
+            return self._client.request(method, url, **kwargs).raise_for_status().json()
+        except httpx.HTTPStatusError as e:
+            raise OperationalError("Received error response from server") from e
+        except Exception as e:
+            raise OperationalError("Error sending request") from e
+
     def execute_statement(
         self,
         statement: str,
@@ -212,41 +205,27 @@ class Connection:
         Raises:
             OperationalError: If statement execution fails
         """
-        try:
-            # Create the statement payload as per Flink SQL API documentation
-            if statement_name is None:
-                # Generate a DB-API compliant UUID for the statement name
-                statement_name = f"dbapi-{str(uuid.uuid4())}"
+        # Create the statement payload as per Flink SQL API documentation
+        if statement_name is None:
+            # Generate a DB-API compliant UUID for the statement name
+            statement_name = f"dbapi-{str(uuid.uuid4())}"
 
-            # TODO: add properties for snapshot queries
+        # TODO: add properties for snapshot queries
 
-            payload = {
-                "name": statement_name,
-                "organization_id": self.organization_id,
-                "environment_id": self.environment,
-                "spec": {
-                    "statement": statement,
-                    "properties": {},
-                    "compute_pool_id": self.compute_pool_id,
-                    "stopped": False,
-                },
-            }
+        payload = {
+            "name": statement_name,
+            "organization_id": self.organization_id,
+            "environment_id": self.environment,
+            "spec": {
+                "statement": statement,
+                "properties": {},
+                "compute_pool_id": self.compute_pool_id,
+                "stopped": False,
+            },
+        }
 
-            # Submit statement using the API
-            url = f"{self.host}/sql/v1/organizations/{self.organization_id}/environments/{self.environment}/statements"
-            response = self._client.post(url, json=payload)
-
-            if response.status_code not in [200, 201]:
-                raise OperationalError(
-                    f"Failed to create statement: HTTP {response.status_code} - {response.text}"
-                )
-
-            return response.json()
-
-        except Exception as e:
-            if isinstance(e, OperationalError):
-                raise
-            raise OperationalError(f"Failed to execute statement: {e}")
+        # Submit statement using the API
+        return self._request("/statements", method="POST", json=payload)
 
     def get_statement_status(self, statement_name: str) -> Dict[str, Any]:
         """
@@ -261,21 +240,7 @@ class Connection:
         Raises:
             OperationalError: If status check fails
         """
-        try:
-            url = f"{self.host}/sql/v1/organizations/{self.organization_id}/environments/{self.environment}/statements/{statement_name}"
-            response = self._client.get(url)
-
-            if response.status_code != 200:
-                raise OperationalError(
-                    f"Failed to get statement status: HTTP {response.status_code} - {response.text}"
-                )
-
-            return response.json()
-
-        except Exception as e:
-            if isinstance(e, OperationalError):
-                raise
-            raise OperationalError(f"Failed to get statement status: {e}")
+        return self._request(f"/statements/{statement_name}")
 
     def get_statement_results(
         self, statement_name: str, page_token: Optional[str] = None
@@ -293,26 +258,8 @@ class Connection:
         Raises:
             OperationalError: If results retrieval fails
         """
-        try:
-            url = f"{self.host}/sql/v1/organizations/{self.organization_id}/environments/{self.environment}/statements/{statement_name}/results"
-
-            params = {}
-            if page_token:
-                params["page_token"] = page_token
-
-            response = self._client.get(url, params=params)
-
-            if response.status_code != 200:
-                raise OperationalError(
-                    f"Failed to fetch results: HTTP {response.status_code} - {response.text}"
-                )
-
-            return response.json()
-
-        except Exception as e:
-            if isinstance(e, OperationalError):
-                raise
-            raise OperationalError(f"Failed to get statement results: {e}")
+        params = {"page_token": page_token} if page_token else {}
+        return self._request(f"/statements/{statement_name}/results", params=params)
 
     def get_statement_results_from_url(self, url: str) -> Dict[str, Any]:
         """
@@ -327,20 +274,7 @@ class Connection:
         Raises:
             OperationalError: If results retrieval fails
         """
-        try:
-            response = self._client.get(url)
-
-            if response.status_code != 200:
-                raise OperationalError(
-                    f"Failed to fetch results from URL: HTTP {response.status_code} - {response.text}"
-                )
-
-            return response.json()
-
-        except Exception as e:
-            if isinstance(e, OperationalError):
-                raise
-            raise OperationalError(f"Failed to get statement results from URL: {e}")
+        return self._request(url)
 
     def delete_statement(self, statement_name: str) -> None:
         """
@@ -352,16 +286,4 @@ class Connection:
         Raises:
             OperationalError: If statement deletion fails
         """
-        try:
-            url = f"{self.host}/sql/v1/organizations/{self.organization_id}/environments/{self.environment}/statements/{statement_name}"
-            response = self._client.delete(url)
-
-            if response.status_code != 204:
-                raise OperationalError(
-                    f"Failed to delete statement: HTTP {response.status_code} - {response.text}"
-                )
-
-        except Exception as e:
-            if isinstance(e, OperationalError):
-                raise
-            raise OperationalError(f"Failed to delete statement: {e}")
+        self._request(f"/statements/{statement_name}", method="DELETE")
