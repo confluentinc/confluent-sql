@@ -17,10 +17,20 @@ def connection():
     compute_pool_id = os.getenv("COMPUTE_POOL_ID")
     cloud_provider = os.getenv("CLOUD_PROVIDER", "aws")
     cloud_region = os.getenv("CLOUD_REGION", "us-east-2")
-    
-    if not all([flink_api_key, flink_api_secret, environment, organization_id, compute_pool_id, cloud_region, cloud_provider]):
+
+    if not all(
+        [
+            flink_api_key,
+            flink_api_secret,
+            environment,
+            organization_id,
+            compute_pool_id,
+            cloud_region,
+            cloud_provider,
+        ]
+    ):
         pytest.skip("Missing required environment variables for integration test")
-    
+
     return confluent_sql.connect(
         flink_api_key=flink_api_key,
         flink_api_secret=flink_api_secret,
@@ -28,30 +38,30 @@ def connection():
         organization_id=organization_id,
         compute_pool_id=compute_pool_id,
         cloud_region=cloud_region,
-        cloud_provider=cloud_provider
+        cloud_provider=cloud_provider,
     )
 
 
 def test_one(connection):
     """Test connection and fetch."""
     cursor = connection.cursor()
-    
+
     try:
         # Simple query
         cursor.execute("SELECT 1 as test_value")
-        
+
         # Test metadata
         assert cursor.statement_name is not None
         assert cursor.sql_kind == "SELECT"
         assert cursor.is_bounded is True
         assert cursor.description is not None
         assert len(cursor.description) == 1
-        
+
         # Test results
         results = cursor.fetchall()
         assert len(results) == 1
-        assert results[0] == ('1',)
-        
+        assert results[0] == ("1",)
+
     finally:
         cursor.close()
 
@@ -59,7 +69,7 @@ def test_one(connection):
 def test_pagination(connection):
     """Test pagination with multiple rows."""
     cursor = connection.cursor()
-    
+
     try:
         # Multi-row query
         query = """
@@ -70,19 +80,19 @@ def test_pagination(connection):
                 (3, 'Charlie')
         ) AS t(id, name)
         """
-        
+
         cursor.execute(query)
-        
+
         # Test results
         results = cursor.fetchall()
         assert len(results) == 3
-        
+
         # Verify structure
         for row in results:
             assert len(row) == 2  # operation + id + name  # insert operation
             assert isinstance(row[0], int)  # id
             assert isinstance(row[1], str)  # name
-        
+
     finally:
         cursor.close()
 
@@ -90,18 +100,18 @@ def test_pagination(connection):
 def test_fetchone_iteration(connection):
     """Test fetchone iteration."""
     cursor = connection.cursor()
-    
+
     try:
         cursor.execute("SELECT 1 as value")
-        
+
         # Should get one row
         row = cursor.fetchone()
         assert row == ("+I", 1)
-        
+
         # Should get None after that
         row = cursor.fetchone()
         assert row is None
-        
+
     finally:
         cursor.close()
 
@@ -109,7 +119,7 @@ def test_fetchone_iteration(connection):
 def test_fetchmany_iteration(connection):
     """Test fetchmany iteration."""
     cursor = connection.cursor()
-    
+
     try:
         # Create multiple rows
         query = """
@@ -122,22 +132,22 @@ def test_fetchmany_iteration(connection):
                 (5, 'E')
         ) AS t(id, name)
         """
-        
+
         cursor.execute(query)
-        
+
         # Fetch in batches
         batch1 = cursor.fetchmany(2)
         assert len(batch1) == 2
-        
+
         batch2 = cursor.fetchmany(2)
         assert len(batch2) == 2
-        
+
         batch3 = cursor.fetchmany(2)
         assert len(batch3) == 1
-        
+
         batch4 = cursor.fetchmany(2)
         assert len(batch4) == 0
-        
+
     finally:
         cursor.close()
 
@@ -145,21 +155,21 @@ def test_fetchmany_iteration(connection):
 def test_cursor_metadata(connection):
     """Test cursor metadata properties."""
     cursor = connection.cursor()
-    
+
     try:
         cursor.execute("SELECT 42 as answer")
-        
+
         # Test metadata
         assert cursor.statement_name is not None
         assert cursor.sql_kind == "SELECT"
         assert cursor.is_bounded is True
         assert cursor.is_append_only is True
         assert cursor.connection_refs == []
-        
+
         # Test description
         assert cursor.description is not None
         assert len(cursor.description) == 1
         assert cursor.description[0][0] == "answer"
-        
+
     finally:
         cursor.close()

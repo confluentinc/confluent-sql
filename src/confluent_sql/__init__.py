@@ -27,7 +27,7 @@ paramstyle = "qmark"  # Use question mark style parameters
 __all__ = [
     "connect",
     "Warning",
-    "Error", 
+    "Error",
     "InterfaceError",
     "DatabaseError",
     "DataError",
