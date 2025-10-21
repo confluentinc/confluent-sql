@@ -4,8 +4,9 @@ Test streaming query functionality for confluent-sql library.
 """
 
 import os
-import pytest
+
 import confluent_sql
+import pytest
 from confluent_sql.exceptions import InterfaceError
 
 
@@ -149,7 +150,7 @@ def test_cursor_metadata_streaming(connection):
         assert cursor.description is not None
         assert len(cursor.description) > 1  # Should have multiple columns
 
-        print(f"Streaming query metadata:")
+        print("Streaming query metadata:")
         print(f"  Statement: {cursor.statement_name}")
         print(f"  SQL Kind: {cursor.sql_kind}")
         print(f"  Is Bounded: {cursor.is_bounded}")

@@ -3,8 +3,9 @@ Pytest-compatible tests for pagination functionality.
 """
 
 import os
-import pytest
+
 import confluent_sql
+import pytest
 
 
 @pytest.fixture

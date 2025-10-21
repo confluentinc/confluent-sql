@@ -5,13 +5,14 @@ This module provides the connect function and Connection class for establishing
 connections to Confluent SQL services.
 """
 
-import time
 import base64
-import json
 import uuid
 from typing import Optional, Dict, Any, Union, Tuple, List, TYPE_CHECKING
+
 import httpx
+
 from .exceptions import InterfaceError, OperationalError
+
 
 if TYPE_CHECKING:
     from .cursor import Cursor

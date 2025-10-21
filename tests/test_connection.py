@@ -13,14 +13,9 @@ Credentials must be provided via environment variables:
 """
 
 import os
+
 import pytest
-from confluent_sql import (
-    connect,
-    InterfaceError,
-    DatabaseError,
-    ProgrammingError,
-    OperationalError,
-)
+from confluent_sql import connect
 
 
 def test_confluent_sql_connection():

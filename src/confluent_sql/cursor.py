@@ -5,11 +5,10 @@ This module provides the Cursor class for executing SQL statements and
 retrieving results from Confluent SQL services.
 """
 
-import time
-import math
 import random
-import uuid
-from typing import Optional, List, Tuple, Any, Union, Dict
+import time
+from typing import Optional, List, Tuple, Union, Dict
+
 from .connection import Connection
 from .exceptions import (
     InterfaceError,
