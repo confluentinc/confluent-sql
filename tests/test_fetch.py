@@ -2,52 +2,10 @@
 Pytest-compatible tests for pagination functionality.
 """
 
-import os
-
-import confluent_sql
-import pytest
-
-
-@pytest.fixture
-def connection():
-    """Create a connection for testing."""
-    flink_api_key = os.getenv("FLINK_API_KEY")
-    flink_api_secret = os.getenv("FLINK_API_SECRET")
-    environment = os.getenv("ENV_ID")
-    organization_id = os.getenv("ORG_ID")
-    compute_pool_id = os.getenv("COMPUTE_POOL_ID")
-    cloud_provider = os.getenv("CLOUD_PROVIDER", "aws")
-    cloud_region = os.getenv("CLOUD_REGION", "us-east-2")
-
-    if not all(
-        [
-            flink_api_key,
-            flink_api_secret,
-            environment,
-            organization_id,
-            compute_pool_id,
-            cloud_region,
-            cloud_provider,
-        ]
-    ):
-        pytest.skip("Missing required environment variables for integration test")
-
-    return confluent_sql.connect(
-        flink_api_key=flink_api_key,
-        flink_api_secret=flink_api_secret,
-        environment=environment,
-        organization_id=organization_id,
-        compute_pool_id=compute_pool_id,
-        cloud_region=cloud_region,
-        cloud_provider=cloud_provider,
-    )
-
-
-def test_one(connection):
+def test_one(connection_manager):
     """Test connection and fetch."""
-    cursor = connection.cursor()
-
-    try:
+    with connection_manager() as connection:
+        cursor = connection.cursor()
         # Simple query
         cursor.execute("SELECT 1 as test_value")
 
@@ -63,15 +21,11 @@ def test_one(connection):
         assert len(results) == 1
         assert results[0] == ("1",)
 
-    finally:
-        cursor.close()
 
-
-def test_pagination(connection):
+def test_pagination(connection_manager):
     """Test pagination with multiple rows."""
-    cursor = connection.cursor()
-
-    try:
+    with connection_manager() as connection:
+        cursor = connection.cursor()
         # Multi-row query
         query = """
         SELECT * FROM (
@@ -94,15 +48,11 @@ def test_pagination(connection):
             assert isinstance(row[0], int)  # id
             assert isinstance(row[1], str)  # name
 
-    finally:
-        cursor.close()
 
-
-def test_fetchone_iteration(connection):
+def test_fetchone_iteration(connection_manager):
     """Test fetchone iteration."""
-    cursor = connection.cursor()
-
-    try:
+    with connection_manager() as connection:
+        cursor = connection.cursor()
         cursor.execute("SELECT 1 as value")
 
         # Should get one row
@@ -113,15 +63,12 @@ def test_fetchone_iteration(connection):
         row = cursor.fetchone()
         assert row is None
 
-    finally:
-        cursor.close()
 
-
-def test_fetchmany_iteration(connection):
+def test_fetchmany_iteration(connection_manager):
     """Test fetchmany iteration."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Create multiple rows
         query = """
         SELECT * FROM (
@@ -149,15 +96,11 @@ def test_fetchmany_iteration(connection):
         batch4 = cursor.fetchmany(2)
         assert len(batch4) == 0
 
-    finally:
-        cursor.close()
 
-
-def test_cursor_metadata(connection):
+def test_cursor_metadata(connection_manager):
     """Test cursor metadata properties."""
-    cursor = connection.cursor()
-
-    try:
+    with connection_manager() as connection:
+        cursor = connection.cursor()
         cursor.execute("SELECT 42 as answer")
 
         # Test metadata
@@ -171,6 +114,3 @@ def test_cursor_metadata(connection):
         assert cursor.description is not None
         assert len(cursor.description) == 1
         assert cursor.description[0][0] == "answer"
-
-    finally:
-        cursor.close()

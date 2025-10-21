@@ -10,46 +10,11 @@ import pytest
 from confluent_sql.exceptions import InterfaceError
 
 
-@pytest.fixture
-def connection():
-    """Create a connection for testing."""
-    flink_api_key = os.getenv("FLINK_API_KEY")
-    flink_api_secret = os.getenv("FLINK_API_SECRET")
-    environment = os.getenv("ENV_ID")
-    organization_id = os.getenv("ORG_ID")
-    compute_pool_id = os.getenv("COMPUTE_POOL_ID")
-    cloud_provider = os.getenv("CLOUD_PROVIDER", "aws")
-    cloud_region = os.getenv("CLOUD_REGION", "us-east-2")
-
-    if not all(
-        [
-            flink_api_key,
-            flink_api_secret,
-            environment,
-            organization_id,
-            compute_pool_id,
-            cloud_region,
-            cloud_provider,
-        ]
-    ):
-        pytest.skip("Missing required environment variables for integration test")
-
-    return confluent_sql.connect(
-        flink_api_key=flink_api_key,
-        flink_api_secret=flink_api_secret,
-        environment=environment,
-        organization_id=organization_id,
-        compute_pool_id=compute_pool_id,
-        cloud_region=cloud_region,
-        cloud_provider=cloud_provider,
-    )
-
-
-def test_unbounded_query_fetchall_error(connection):
+def test_unbounded_query_fetchall_error(connection_manager):
     """Test that fetchall() raises an error for unbounded queries."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Use real unbounded streaming query from Confluent Cloud examples
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
@@ -62,15 +27,12 @@ def test_unbounded_query_fetchall_error(connection):
         )
         assert "Use fetchone() or fetchmany() in a loop" in str(exc_info.value)
 
-    finally:
-        cursor.close()
 
-
-def test_streaming_query_fetchone(connection):
+def test_streaming_query_fetchone(connection_manager):
     """Test that fetchone() works for streaming queries (yielding iterator)."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Use real unbounded streaming query from Confluent Cloud examples
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
@@ -85,23 +47,18 @@ def test_streaming_query_fetchone(connection):
                 break
 
             rows_received += 1
-            print(f"  Received streaming row {rows_received}: {row}")
 
             # Verify the row structure (raw data without changelog operations)
             assert len(row) > 0  # Should have data columns
             # No changelog operations - just raw data
 
-        print(f"Received {rows_received} streaming rows")
-
-    finally:
-        cursor.close()
 
 
-def test_streaming_query_fetchmany(connection):
+def test_streaming_query_fetchmany(connection_manager):
     """Test that fetchmany() works for streaming queries (yielding iterator)."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Use real unbounded streaming query from Confluent Cloud examples
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
@@ -118,24 +75,18 @@ def test_streaming_query_fetchmany(connection):
 
             batch_count += 1
             total_rows += len(batch)
-            print(f"  Received streaming batch {batch_count}: {len(batch)} rows")
 
             # Verify the batch structure (raw data without changelog operations)
             for row in batch:
                 assert len(row) > 0  # Should have data columns
                 # No changelog operations - just raw data
 
-        print(f"Received {total_rows} streaming rows in {batch_count} batches")
 
-    finally:
-        cursor.close()
-
-
-def test_cursor_metadata_streaming(connection):
+def test_cursor_metadata_streaming(connection_manager):
     """Test cursor metadata for streaming queries."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Use real unbounded streaming query from Confluent Cloud examples
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
@@ -150,23 +101,12 @@ def test_cursor_metadata_streaming(connection):
         assert cursor.description is not None
         assert len(cursor.description) > 1  # Should have multiple columns
 
-        print("Streaming query metadata:")
-        print(f"  Statement: {cursor.statement_name}")
-        print(f"  SQL Kind: {cursor.sql_kind}")
-        print(f"  Is Bounded: {cursor.is_bounded}")
-        print(f"  Is Append Only: {cursor.is_append_only}")
-        print(f"  Connection Refs: {cursor.connection_refs}")
-        print(f"  Columns: {[col[0] for col in cursor.description]}")
 
-    finally:
-        cursor.close()
-
-
-def test_streaming_pattern_example(connection):
+def test_streaming_pattern_example(connection_manager):
     """Test a typical streaming pattern using fetchone() in a loop."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Use real unbounded streaming query from Confluent Cloud examples
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
@@ -184,20 +124,16 @@ def test_streaming_pattern_example(connection):
 
         print(f"Total streaming rows received: {row_count}")
 
-    finally:
-        cursor.close()
 
-
-def test_streaming_batch_pattern_example(connection):
+def test_streaming_batch_pattern_example(connection_manager):
     """Test a typical streaming pattern using fetchmany() in a loop."""
-    cursor = connection.cursor()
+    with connection_manager() as connection:
+        cursor = connection.cursor()
 
-    try:
         # Use real unbounded streaming query from Confluent Cloud examples
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
         # Simulate streaming batch pattern
-        print("Streaming batch pattern example:")
         total_rows = 0
         batch_size = 3
         max_batches = 5  # Limit to avoid infinite loop in test
@@ -210,16 +146,12 @@ def test_streaming_batch_pattern_example(connection):
 
             batch_count += 1
             total_rows += len(batch)
-            print(f"  Received batch {batch_count} of {len(batch)} rows")
 
             # Show first row of each batch for debugging
             if batch:
                 print(f"    First row: {batch[0]}")
 
-        print(f"Total streaming rows received: {total_rows} in {batch_count} batches")
 
-    finally:
-        cursor.close()
 
 
 if __name__ == "__main__":
