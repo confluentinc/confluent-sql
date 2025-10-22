@@ -7,6 +7,7 @@ retrieving results from Confluent SQL services.
 
 import random
 import time
+from dataclasses import dataclass
 from typing import Optional, List, Tuple, Union, Dict
 
 from .connection import Connection
@@ -16,6 +17,96 @@ from .exceptions import (
     ProgrammingError,
     OperationalError,
 )
+
+
+@dataclass
+class Statement:
+    statement_id: str
+    name: str
+    spec: dict
+    status: dict
+    results: list[dict]
+    traits: dict
+    schema: Optional[dict]
+    description: Optional[list[tuple]]
+    _deleted: bool = False
+
+    @property
+    def is_running(self) -> bool:
+        return self.phase not in ["COMPLETED", "STOPPED", "FAILED"]
+
+    @property
+    def phase(self) -> str:
+        if self._deleted:
+            return "DELETED"
+        return self.status["phase"]
+
+    @property
+    def compute_pool_id(self) -> str:
+        return self.spec["compute_pool_id"]
+
+    @property
+    def principal(self) -> str:
+        return self.spec["principal"]
+
+    @property
+    def is_bounded(self) -> bool:
+        return self.traits["is_bounded"]
+
+    @property
+    def sql_kind(self) -> str:
+        return self.traits["sql_kind"]
+
+    @property
+    def is_append_only(self) -> bool:
+        return self.traits["is_append_only"]
+
+    @property
+    def connection_refs(self) -> list:
+        return self.traits.get("connection_refs", [])
+
+    def set_deleted(self):
+        self._deleted = True
+
+    @classmethod
+    def from_response(cls, response: dict) -> "Statement":
+        try:
+            # Mandatory fields
+            statement_id = response["metadata"]["uid"]
+            name = response["name"]
+            spec = response["spec"]
+            status = response["status"]
+            # TODO: We should probably set a flag and avoid erroring out here.
+            if status['phase'] == "FAILED":
+                raise OperationalError(status['detail'])
+            # XXX: Should this be optional?
+            # traits = status["traits"]
+            traits = status.get("traits", {})
+
+            # Optional fields with defaults
+            results = response.get("results", [])
+
+            # Optional fields
+            schema = traits.get("schema", {}).get("columns")
+            # XXX: Is this used anywhere?
+            description = (
+                [(col["name"], col["type"]["type"]) for col in schema]
+                if schema is not None
+                else None
+            )
+        except KeyError as e:
+            raise OperationalError(f"Error parsing statement response, missing {e}.") from e
+
+        return cls(
+            statement_id,
+            name,
+            spec,
+            status,
+            results,
+            traits,
+            schema,
+            description,
+        )
 
 
 class Cursor:
@@ -35,17 +126,13 @@ class Cursor:
         """
         self.connection = connection
         self._closed = False
-        self._description = None
         self._rowcount = -1
         self._arraysize = 1
-        self._last_executed = None
+        self._last_executed: Optional[str] = None
 
         # Statement execution state
-        self._statement_id = None
-        self._statement_status = None
-        self._result_schema = None
-        self._result_traits = None
-        self._all_results = []
+        self._statement: Optional[Statement] = None
+        self._all_results: list[dict] = []
         self._current_result_index = 0
 
     def execute(
@@ -79,12 +166,11 @@ class Cursor:
             raise ProgrammingError("SQL statement cannot be empty")
 
         self._last_executed = operation
-        self._statement_id = None
-        self._statement_status = None
-        self._result_schema = None
-        self._result_traits = None
         self._all_results = []
         self._current_result_index = 0
+        # XXX: Should we check if a statement is present?
+        # XXX: Should we do anything else if it is?
+        self._statement = None
 
         try:
             # Step 1: Submit the SQL statement
@@ -98,11 +184,8 @@ class Cursor:
             # All queries are treated as streaming - database server handles result management
             # TODO: handle snapshot queries
             self._setup_cursor_state()
-
         except Exception as e:
-            if isinstance(e, (InterfaceError, ProgrammingError, OperationalError)):
-                raise
-            raise OperationalError(f"Failed to execute statement: {e}")
+            raise OperationalError("Failed to execute statement") from e
 
         return self
 
@@ -117,6 +200,9 @@ class Cursor:
         Raises:
             OperationalError: If polling times out or fails
         """
+        assert self._statement is not None, (
+            "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
+        )
         start_time = time.time()
         base_delay = 1.0  # Start with 1 second
         max_delay = 30.0  # Maximum delay between polls
@@ -125,37 +211,29 @@ class Cursor:
         while time.time() - start_time < timeout:
             try:
                 # Check statement status - this will raise OperationalError if status/phase is missing
-                self._check_statement_status()
+                self._update_statement_status()
 
                 # Statement is ready when it's not in PENDING status
                 # Check for failure states first - exit immediately
-                if self._statement_status in ["FAILED", "DEGRADED"]:
+                if self._statement.phase in ["FAILED", "DEGRADED"]:
                     return
 
-                # For bounded queries, wait for COMPLETED status
-                if (
-                    self._result_traits
-                    and self._result_traits.get("is_bounded") is True
-                ):
-                    if self._statement_status in ["COMPLETED"]:
-                        return
-                else:
-                    # For unbounded queries, RUNNING is acceptable
-                    if self._statement_status in ["RUNNING"]:
-                        return
+                # Wait for COMPLETED status
+                if self._statement.phase == "COMPLETED":
+                    return
+
+                # For unbounded queries, RUNNING is acceptable
+                if not self._statement.is_bounded and self._statement.phase == "RUNNING":
+                    return
 
                 # Exponential backoff with jitter to prevent thundering herd
                 jitter = random.uniform(0.75, 1.25)  # ±25% randomness
                 actual_delay = current_delay * jitter
                 time.sleep(actual_delay)
                 current_delay = min(current_delay * 1.5, max_delay)
-
             except Exception as e:
-                raise OperationalError(f"Failed to poll statement status: {e}")
-
-        raise OperationalError(
-            f"Statement submission timed out after {timeout} seconds"
-        )
+                raise OperationalError("Failed to poll statement status") from e
+        raise OperationalError(f"Statement submission timed out after {timeout} seconds")
 
     def _setup_cursor_state(self) -> None:
         """
@@ -163,34 +241,16 @@ class Cursor:
         This sets description and rowcount but does not parse results.
         All queries are treated as streaming - database server handles result management.
         """
+        assert self._statement is not None, (
+            "Calling _setup_cursor_state but _statement is None, this is probably a bug"
+        )
+
         # Set rowcount for non-query statements
-        if not self._result_schema:
+        if not self._statement.schema:
             self._rowcount = 0
         else:
-            self._rowcount = -1  # Will be set when results are fetched
-
-        # Set description for query statements
-        if self._result_schema:
-            self._description = [
-                (col["name"], col["type"]["type"], None, None, None, None, None)
-                for col in self._result_schema
-            ]
-
-        # Store additional useful metadata
-        if hasattr(self, "_statement_name"):
-            self._statement_name = getattr(self, "_statement_name", None)
-
-        # Store execution context for debugging/tracing
-        if hasattr(self, "_spec") and self._spec:
-            self._compute_pool_id = self._spec.get("compute_pool_id")
-            self._principal = self._spec.get("principal")
-
-        # Store statement characteristics
-        if self._result_traits:
-            self._sql_kind = self._result_traits.get("sql_kind")
-            self._is_bounded = self._result_traits.get("is_bounded")
-            self._is_append_only = self._result_traits.get("is_append_only")
-            self._connection_refs = self._result_traits.get("connection_refs", [])
+            # Will be set when results are fetched
+            self._rowcount = -1
 
     def _submit_statement(
         self,
@@ -211,155 +271,10 @@ class Cursor:
         """
         try:
             # Delegate to connection object for statement execution
-            response = self.connection.execute_statement(
-                operation, parameters, statement_name
-            )
-            print(response)
-            """
-            sample response from API:
-            {
-            "api_version": "sql/v1",
-            "kind": "Statement",
-            "metadata": {
-                "self": "https://flink.us-west1.aws.confluent.cloud/sql/v1/environments/env-123/statements/my-statement",
-                "created_at": "1996-03-19T01:02:03-04:05",
-                "updated_at": "2023-03-31T00:00:00-00:00",
-                "uid": "12345678-1234-1234-1234-123456789012",
-                "resource_version": "a23av",
-                "labels": {
-                "user.confluent.io/hidden": "true",
-                "property1": "string",
-                "property2": "string"
-                },
-                "resource_name": ""
-            },
-            "name": "sql123",
-            "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-            "environment_id": "string",
-            "spec": {
-                "statement": "SELECT * FROM TABLE WHERE VALUE1 = VALUE2;",
-                "properties": {
-                "sql.current-catalog": "my_environment",
-                "sql.current-database": "my_kafka_cluster"
-                },
-                "compute_pool_id": "fcp-00000",
-                "principal": "sa-abc123",
-                "stopped": false
-            },
-            "status": {
-                "phase": "RUNNING",
-                "scaling_status": {
-                "scaling_state": "OK",
-                "last_updated": "1996-03-19T01:02:03-04:05"
-                },
-                "detail": "Statement is running successfully",
-                "traits": {
-                "sql_kind": "SELECT",
-                "is_bounded": true,
-                "is_append_only": true,
-                "upsert_columns": [
-                    0
-                ],
-                "schema": {
-                    "columns": [
-                    {
-                        "name": "Column_Name",
-                        "type": {
-                        "type": "CHAR",
-                        "nullable": true,
-                        "length": 8
-                        }
-                    }
-                    ]
-                },
-                "connection_refs": [
-                    "my-postgres-connection",
-                    "my-kafka-connection"
-                ]
-                },
-                "network_kind": "PUBLIC",
-                "latest_offsets": {
-                "topic-1": "partition:0,offset:100;partition:1,offset:200",
-                "topic-2": "partition:0,offset:50"
-                },
-                "latest_offsets_timestamp": "2023-03-31T00:00:00-00:00"
-            },
-            "result": {
-                "api_version": "sql/v1",
-                "kind": "StatementResult",
-                "metadata": {
-                "self": "https://flink.us-west1.aws.confluent.cloud/sql/v1/environments/env-123/statements",
-                "next": "https://flink.us-west1.aws.confluent.cloud/sql/v1/environments/env-abc123/statements?page_token=UvmDWOB1iwfAIBPj6EYb",
-                "created_at": "2006-01-02T15:04:05-07:00"
-                },
-                "results": {
-                "data": [
-                    {
-                    "op": 0,
-                    "row": [
-                        "101",
-                        "Jay",
-                        [
-                        null,
-                        "abc"
-                        ],
-                        [
-                        null,
-                        "456"
-                        ],
-                        "1990-01-12 12:00.12",
-                        [
-                        [
-                            null,
-                            "Alice"
-                        ],
-                        [
-                            "42",
-                            "Bob"
-                        ]
-                        ]
-                    ]
-                    }
-                ]
-                }
-            }
-            }
-        """
-
-            # Parse the response from connection
-            self._statement_id = response.get("metadata", {}).get("uid")
-            self._statement_name = response.get("name")
-
-            # Store the full response components as object attributes
-            self._spec = response.get("spec")
-            self._status = response.get("status")
-            self._result = response.get("result")
-
-            # Handle status/phase extraction with proper error handling
-            if self._status and self._status.get("phase"):
-                self._statement_status = self._status["phase"]
-            elif self._status:
-                # Status exists but no phase - this is unexpected, treat as error
-                raise OperationalError("Statement response missing phase information")
-            else:
-                # No status at all - this is unexpected, treat as error
-                raise OperationalError("Statement response missing status information")
-
-            # Extract result schema and traits if available (may be present in RUNNING/COMPLETED responses)
-            if (
-                self._status
-                and self._status.get("traits")
-                and self._status["traits"].get("schema")
-            ):
-                self._result_schema = self._status["traits"]["schema"]["columns"]
-
-            if self._status and self._status.get("traits"):
-                self._result_traits = self._status["traits"]
-
+            response = self.connection.execute_statement(operation, parameters, statement_name)
+            self._statement = Statement.from_response(response)
         except Exception as e:
-            if isinstance(e, OperationalError):
-                raise
-            raise OperationalError(f"Failed to submit {operation}: {e}")
+            raise OperationalError(f"Failed to submit {operation}") from e
 
     def _parse_results_from_response(self, data: List[Dict]) -> None:
         """
@@ -369,9 +284,9 @@ class Cursor:
         Args:
             data: List of result data from the API response
         """
-        # Don't clear existing results - append to them
-        # self._all_results = []  # REMOVED - this was overwriting previous results
-
+        assert self._statement is not None, (
+            "Calling _parse_results_from_response but _statement is None, this is probably a bug"
+        )
         for item in data:
             # Extract row data only - no operation processing
             row_data = item.get("row", [])
@@ -380,8 +295,8 @@ class Cursor:
             result_row = {}
 
             # Add column data if we have schema
-            if self._result_schema and len(row_data) == len(self._result_schema):
-                for i, col in enumerate(self._result_schema):
+            if self._statement.schema and len(row_data) == len(self._statement.schema):
+                for i, col in enumerate(self._statement.schema):
                     result_row[col["name"]] = row_data[i]
             else:
                 # Fallback: use generic column names
@@ -390,160 +305,21 @@ class Cursor:
 
             self._all_results.append(result_row)
 
-    def _check_statement_status(self) -> None:
+    def _update_statement_status(self) -> None:
         """
         Check the current status of the statement.
 
         Raises:
             OperationalError: If status check fails
         """
+        assert self._statement is not None, (
+            "Calling _update_statement_status but _statement is None, this is probably a bug"
+        )
         try:
-            # Delegate to connection object for status checking
-            response = self.connection.get_statement_status(self._statement_name)
-
-            """
-            sample response from API:
-            {
-                "api_version": "sql/v1",
-                "kind": "Statement",
-                "metadata": {
-                    "self": "https://flink.us-west1.aws.confluent.cloud/sql/v1/environments/env-123/statements/my-statement",
-                    "created_at": "1996-03-19T01:02:03-04:05",
-                    "updated_at": "2023-03-31T00:00:00-00:00",
-                    "uid": "12345678-1234-1234-1234-123456789012",
-                    "resource_version": "a23av",
-                    "labels": {
-                    "user.confluent.io/hidden": "true",
-                    "property1": "string",
-                    "property2": "string"
-                    },
-                    "resource_name": ""
-                },
-                "name": "sql123",
-                "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-                "environment_id": "string",
-                "spec": {
-                    "statement": "SELECT * FROM TABLE WHERE VALUE1 = VALUE2;",
-                    "properties": {
-                    "sql.current-catalog": "my_environment",
-                    "sql.current-database": "my_kafka_cluster"
-                    },
-                    "compute_pool_id": "fcp-00000",
-                    "principal": "sa-abc123",
-                    "stopped": false
-                },
-                "status": {
-                    "phase": "RUNNING",
-                    "scaling_status": {
-                    "scaling_state": "OK",
-                    "last_updated": "1996-03-19T01:02:03-04:05"
-                    },
-                    "detail": "Statement is running successfully",
-                    "traits": {
-                    "sql_kind": "SELECT",
-                    "is_bounded": true,
-                    "is_append_only": true,
-                    "upsert_columns": [
-                        0
-                    ],
-                    "schema": {
-                        "columns": [
-                        {
-                            "name": "Column_Name",
-                            "type": {
-                            "type": "CHAR",
-                            "nullable": true,
-                            "length": 8
-                            }
-                        }
-                        ]
-                    },
-                    "connection_refs": [
-                        "my-postgres-connection",
-                        "my-kafka-connection"
-                    ]
-                    },
-                    "network_kind": "PUBLIC",
-                    "latest_offsets": {
-                    "topic-1": "partition:0,offset:100;partition:1,offset:200",
-                    "topic-2": "partition:0,offset:50"
-                    },
-                    "latest_offsets_timestamp": "2023-03-31T00:00:00-00:00"
-                },
-                "result": {
-                    "api_version": "sql/v1",
-                    "kind": "StatementResult",
-                    "metadata": {
-                    "self": "https://flink.us-west1.aws.confluent.cloud/sql/v1/environments/env-123/statements",
-                    "next": "https://flink.us-west1.aws.confluent.cloud/sql/v1/environments/env-abc123/statements?page_token=UvmDWOB1iwfAIBPj6EYb",
-                    "created_at": "2006-01-02T15:04:05-07:00"
-                    },
-                    "results": {
-                    "data": [
-                        {
-                        "op": 0,
-                        "row": [
-                            "101",
-                            "Jay",
-                            [
-                            null,
-                            "abc"
-                            ],
-                            [
-                            null,
-                            "456"
-                            ],
-                            "1990-01-12 12:00.12",
-                            [
-                            [
-                                null,
-                                "Alice"
-                            ],
-                            [
-                                "42",
-                                "Bob"
-                            ]
-                            ]
-                        ]
-                        }
-                    ]
-                    }
-                }
-            }
-            """
-
-            # Update the full response components as object attributes
-            self._spec = response.get("spec")
-            self._status = response.get("status")
-            self._results = response.get("result")
-
-            # Update status from the API response
-            if self._status and self._status.get("phase"):
-                self._statement_status = self._status["phase"]
-            elif self._status:
-                # Status exists but no phase - this is unexpected
-                raise OperationalError(
-                    "Status check response missing phase information"
-                )
-            else:
-                # No status at all - this is unexpected
-                raise OperationalError(
-                    "Status check response missing status information"
-                )
-
-            # Update result schema and traits if available
-            if (
-                self._status
-                and self._status.get("traits")
-                and self._status["traits"].get("schema")
-            ):
-                self._result_schema = self._status["traits"]["schema"]["columns"]
-
-            if self._status and self._status.get("traits"):
-                self._result_traits = self._status["traits"]
-
+            response = self.connection.get_statement_status(self._statement.name)
+            self._statement = Statement.from_response(response)
         except Exception as e:
-            raise OperationalError(f"Failed to check statement status: {e}")
+            raise OperationalError("Error checking statement status") from e
 
     def _handle_failed_statement(self) -> None:
         """
@@ -552,9 +328,12 @@ class Cursor:
         Raises:
             DatabaseError: With detailed error message from the API
         """
+        assert self._statement is not None, (
+            "Calling _handle_failed_statement but _statement is None, this is probably a bug"
+        )
         try:
             # Delegate to connection object to get statement details
-            response = self.connection.get_statement_status(self._statement_name)
+            response = self.connection.get_statement_status(self._statement.name)
 
             # Extract error details from the response
             error_message = "Statement execution failed"
@@ -582,11 +361,11 @@ class Cursor:
         if self._closed:
             raise InterfaceError("Cursor is closed")
 
-        if not self._statement_id:
+        if not self._statement:
             raise InterfaceError("No result set available. Call execute() first.")
 
         # Check if this is an unbounded streaming query
-        if self._result_traits and self._result_traits.get("is_bounded") is False:
+        if not self._statement.is_bounded:
             raise InterfaceError(
                 "fetchall() is not supported for unbounded streaming queries. "
                 "Use fetchone() or fetchmany() in a loop for streaming data, "
@@ -594,15 +373,12 @@ class Cursor:
             )
 
         # All queries are treated as streaming - check if statement is ready
-        if (
-            self._statement_status in ["RUNNING"]
-            and self._result_traits.get("is_bounded") is True
-        ):
+        if self._statement.phase == "RUNNING":
             raise InterfaceError("Statement is not ready for result fetching.")
-        elif self._statement_status not in ["COMPLETED", "STOPPED", "RUNNING"]:
+        elif self._statement.phase not in ["COMPLETED", "STOPPED", "RUNNING"]:
             raise InterfaceError("Statement is not ready for result fetching.")
 
-        if not self._result_schema:
+        if not self._statement.schema:
             # Non-query statement (INSERT, UPDATE, DELETE, etc.)
             return []
 
@@ -632,21 +408,21 @@ class Cursor:
         if self._all_results:
             return
 
+        assert self._statement is not None, (
+            "Calling _fetch_all_pages but _statement is None, this is probably a bug"
+        )
+
         try:
             # Start with the first page
-            response = self.connection.get_statement_results(self._statement_name)
-            self._parse_results_from_response(
-                response.get("results", {}).get("data", [])
-            )
+            response = self.connection.get_statement_results(self._statement.name)
+            self._parse_results_from_response(response.get("results", {}).get("data", []))
 
             # Check for pagination and fetch all remaining pages
             next_url = response.get("metadata", {}).get("next", "")
             while next_url and len(next_url) > 0:
                 # Fetch the next page using the Connection method
                 next_response = self.connection.get_statement_results_from_url(next_url)
-                self._parse_results_from_response(
-                    next_response.get("results", {}).get("data", [])
-                )
+                self._parse_results_from_response(next_response.get("results", {}).get("data", []))
 
                 # Get the next URL for the next iteration
                 next_url = next_response.get("metadata", {}).get("next", "")
@@ -670,19 +446,19 @@ class Cursor:
         if self._closed:
             raise InterfaceError("Cursor is closed")
 
-        if not self._statement_id:
+        if not self._statement:
             raise InterfaceError("No result set available. Call execute() first.")
 
         # All queries are treated as streaming - check if statement is ready
-        if self._statement_status not in ["COMPLETED", "STOPPED", "RUNNING"]:
+        if self._statement.phase not in ["COMPLETED", "STOPPED", "RUNNING"]:
             raise InterfaceError("Statement is not ready for result fetching.")
 
-        if not self._result_schema:
+        if not self._statement.schema:
             # Non-query statement
             return None
 
         # For unbounded streaming queries, fetch results incrementally
-        if self._result_traits and self._result_traits.get("is_bounded") is False:
+        if not self._statement.is_bounded:
             return self._fetch_next_streaming_row()
 
         # For bounded queries, use the existing logic
@@ -694,8 +470,6 @@ class Cursor:
         if self._current_result_index < len(self._all_results):
             row = self._all_results[self._current_result_index]
             self._current_result_index += 1
-
-            # Return raw data as tuple
             return tuple(row.values())
 
         return None
@@ -792,14 +566,14 @@ class Cursor:
         if self._closed:
             raise InterfaceError("Cursor is closed")
 
-        if not self._statement_id:
+        if not self._statement:
             raise InterfaceError("No result set available. Call execute() first.")
 
         # All queries are treated as streaming - check if statement is ready
-        if self._statement_status not in ["COMPLETED", "STOPPED", "RUNNING"]:
+        if self._statement.phase not in ["COMPLETED", "STOPPED", "RUNNING"]:
             raise InterfaceError("Statement is not ready for result fetching.")
 
-        if not self._result_schema:
+        if not self._statement.schema:
             # Non-query statement
             return []
 
@@ -807,7 +581,7 @@ class Cursor:
         results = []
 
         # For unbounded streaming queries, fetch results incrementally
-        if self._result_traits and self._result_traits.get("is_bounded") is False:
+        if not self._statement.is_bounded:
             return self._fetch_streaming_batch(fetch_size)
 
         # For bounded queries, use the existing logic
@@ -838,26 +612,15 @@ class Cursor:
         """
         if not self._closed:
             # Try to delete any running statement
-            if self._statement_id and self._statement_status not in [
-                "COMPLETED",
-                "STOPPED",
-                "FAILED",
-            ]:
-                try:
-                    self._delete_statement()
-                except Exception:
-                    # Ignore errors during cleanup
-                    pass
+            # XXX: Do we need to also cleanup completed statements?
+            if self._statement is not None and self._statement.is_running:
+                self._delete_statement()
 
             self._closed = True
-            self._description = None
             self._rowcount = -1
-            self._statement_id = None
-            self._statement_status = None
-            self._result_schema = None
-            self._result_traits = None
             self._all_results = []
             self._current_result_index = 0
+            self._statement = None
 
     def _delete_statement(self) -> None:
         """
@@ -866,102 +629,12 @@ class Cursor:
         Raises:
             OperationalError: If statement deletion fails
         """
+        assert self._statement is not None, (
+            "Calling _delete_statement but _statement is None, this is probably a bug"
+        )
         try:
-            # Delegate to connection object for statement deletion
-            self.connection.delete_statement(self._statement_id)
-
-            # Mark as deleted
-            self._statement_status = "DELETED"
-
+            self.connection.delete_statement(self._statement.statement_id)
+            print(self._statement)
+            self._statement.set_deleted()
         except Exception as e:
             raise OperationalError(f"Failed to delete statement: {e}")
-
-    @property
-    def description(self) -> Optional[List[Tuple]]:
-        """
-        Get the description of the result set columns.
-
-        Returns:
-            A list of tuples describing the columns, or None if no result set
-        """
-        return self._description
-
-    @property
-    def rowcount(self) -> int:
-        """
-        Get the number of rows affected by the last operation.
-
-        Returns:
-            The number of rows affected, or -1 if not applicable
-        """
-        return self._rowcount
-
-    @property
-    def arraysize(self) -> int:
-        """
-        Get or set the number of rows to fetch with fetchmany().
-
-        Returns:
-            The current arraysize value
-        """
-        return self._arraysize
-
-    @arraysize.setter
-    def arraysize(self, value: int) -> None:
-        """
-        Set the number of rows to fetch with fetchmany().
-
-        Args:
-            value: The new arraysize value
-        """
-        self._arraysize = value
-
-    @property
-    def statement_name(self) -> Optional[str]:
-        """
-        Get the name of the current statement.
-
-        Returns:
-            The statement name, or None if no statement is active
-        """
-        return getattr(self, "_statement_name", None)
-
-    @property
-    def sql_kind(self) -> Optional[str]:
-        """
-        Get the SQL statement type (SELECT, INSERT, etc.).
-
-        Returns:
-            The SQL statement type, or None if not available
-        """
-        return getattr(self, "_sql_kind", None)
-
-    @property
-    def is_bounded(self) -> Optional[bool]:
-        """
-        Get whether the result set is bounded (finite).
-
-        Returns:
-            True if bounded, False if unbounded, None if not available
-        """
-        return getattr(self, "_is_bounded", None)
-
-    @property
-    def is_append_only(self) -> Optional[bool]:
-        """
-        Get whether the result set is append-only.
-
-        Returns:
-            True if append-only, False otherwise, None if not available
-        """
-        return getattr(self, "_is_append_only", None)
-
-    @property
-    def connection_refs(self) -> List[str]:
-        """
-        Get the external connections used by this statement.
-
-        Returns:
-            List of connection references, empty list if none
-        """
-        return getattr(self, "_connection_refs", [])

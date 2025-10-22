@@ -91,15 +91,15 @@ def test_cursor_metadata_streaming(connection_manager):
         cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
 
         # Test metadata
-        assert cursor.statement_name is not None
-        assert cursor.sql_kind == "SELECT"
-        assert cursor.is_bounded is False  # This should be an unbounded streaming query
-        assert cursor.is_append_only is True
-        assert cursor.connection_refs == []  # Should be empty for this query
+        assert cursor._statement.name is not None
+        assert cursor._statement.sql_kind == "SELECT"
+        assert cursor._statement.is_bounded is False  # This should be an unbounded streaming query
+        assert cursor._statement.is_append_only is True
+        assert cursor._statement.connection_refs == []  # Should be empty for this query
 
         # Test description - should have multiple columns from the clicks table
-        assert cursor.description is not None
-        assert len(cursor.description) > 1  # Should have multiple columns
+        assert cursor._statement.description is not None
+        assert len(cursor._statement.description) > 1  # Should have multiple columns
 
 
 def test_streaming_pattern_example(connection_manager):

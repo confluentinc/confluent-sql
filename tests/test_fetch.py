@@ -10,11 +10,11 @@ def test_one(connection_manager):
         cursor.execute("SELECT 1 as test_value")
 
         # Test metadata
-        assert cursor.statement_name is not None
-        assert cursor.sql_kind == "SELECT"
-        assert cursor.is_bounded is True
-        assert cursor.description is not None
-        assert len(cursor.description) == 1
+        assert cursor._statement.name is not None
+        assert cursor._statement.sql_kind == "SELECT"
+        assert cursor._statement.is_bounded is True
+        assert cursor._statement.description is not None
+        assert len(cursor._statement.description) == 1
 
         # Test results
         results = cursor.fetchall()
@@ -43,21 +43,28 @@ def test_pagination(connection_manager):
         assert len(results) == 3
 
         # Verify structure
-        for row in results:
-            assert len(row) == 2  # operation + id + name  # insert operation
-            assert isinstance(row[0], int)  # id
-            assert isinstance(row[1], str)  # name
+        assert results == [
+            ("1", "Alice"),
+            ("2", "Bob"),
+            ("3", "Charlie")
+        ]
 
 
 def test_fetchone_iteration(connection_manager):
     """Test fetchone iteration."""
     with connection_manager() as connection:
         cursor = connection.cursor()
-        cursor.execute("SELECT 1 as value")
+
+        # This was causing the server to return a syntax error.
+        # Could be used on a different test to check that we
+        # report the error in a nice way whan that happens.
+        # cursor.execute("SELECT 1 as value")
+
+        cursor.execute("SELECT 1 as test_value")
 
         # Should get one row
         row = cursor.fetchone()
-        assert row == ("+I", 1)
+        assert row == ("1", )
 
         # Should get None after that
         row = cursor.fetchone()
@@ -104,13 +111,13 @@ def test_cursor_metadata(connection_manager):
         cursor.execute("SELECT 42 as answer")
 
         # Test metadata
-        assert cursor.statement_name is not None
-        assert cursor.sql_kind == "SELECT"
-        assert cursor.is_bounded is True
-        assert cursor.is_append_only is True
-        assert cursor.connection_refs == []
+        assert cursor._statement.name is not None
+        assert cursor._statement.sql_kind == "SELECT"
+        assert cursor._statement.is_bounded is True
+        assert cursor._statement.is_append_only is True
+        assert cursor._statement.connection_refs == []
 
         # Test description
-        assert cursor.description is not None
-        assert len(cursor.description) == 1
-        assert cursor.description[0][0] == "answer"
+        assert cursor._statement.description is not None
+        assert len(cursor._statement.description) == 1
+        assert cursor._statement.description[0][0] == "answer"

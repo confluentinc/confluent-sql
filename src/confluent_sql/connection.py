@@ -127,7 +127,7 @@ class Connection:
         self.api_key = api_key
         self.api_secret = api_secret
         self._closed = False
-        self._cursors = []
+        self._cursors: list[Cursor] = []
         self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
 
         base_url = (
@@ -177,11 +177,14 @@ class Connection:
         self._cursors.append(cursor)
         return cursor
 
-    def _request(self, url, method="GET", **kwargs):
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs):
         try:
-            return self._client.request(method, url, **kwargs).raise_for_status().json()
+            response = self._client.request(method, url, **kwargs)
+            if raise_for_status:
+                response.raise_for_status()
+            return response.json()
         except httpx.HTTPStatusError as e:
-            raise OperationalError("Received error response from server") from e
+            raise OperationalError(f"Error {e.response.status_code}") from e
         except Exception as e:
             raise OperationalError("Error sending request") from e
 
@@ -286,4 +289,4 @@ class Connection:
         Raises:
             OperationalError: If statement deletion fails
         """
-        self._request(f"/statements/{statement_name}", method="DELETE")
+        self._request(f"/statements/{statement_name}", method="DELETE", raise_for_status=False)
