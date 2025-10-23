@@ -6,6 +6,7 @@ connections to Confluent SQL services.
 """
 
 import uuid
+import logging
 from typing import Optional, Dict, Any, Union, Tuple, List, TYPE_CHECKING
 
 import httpx
@@ -15,6 +16,8 @@ from .exceptions import InterfaceError, OperationalError
 
 if TYPE_CHECKING:
     from .cursor import Cursor
+
+logger = logging.getLogger(__name__)
 
 
 def connect(
@@ -117,25 +120,18 @@ class Connection:
             host: The base URL for Confluent Cloud API (optional)
             **kwargs: Additional connection parameters
         """
-        self.flink_api_key = flink_api_key
-        self.flink_api_secret = flink_api_secret
         self.environment = environment
         self.compute_pool_id = compute_pool_id
         self.organization_id = organization_id
-        self.cloud_provider = cloud_provider
-        self.cloud_region = cloud_region
         self.api_key = api_key
         self.api_secret = api_secret
         self._closed = False
         self._cursors: list[Cursor] = []
-        self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
 
-        base_url = (
-            f"{self.host}/sql/v1/organizations/"
-            f"{self.organization_id}/environments/{self.environment}"
-        )
-        basic_auth = httpx.BasicAuth(username=self.flink_api_key, password=self.flink_api_secret)
-
+        # Create httpx client for making API calls
+        host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
+        base_url = f"{host}/sql/v1/organizations/{organization_id}/environments/{environment}"
+        basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
         # Create httpx client for making API calls
         self._client = httpx.Client(
             auth=basic_auth,
@@ -155,8 +151,9 @@ class Connection:
                 cursor.close()
             self._cursors.clear()
             self._closed = True
-            if hasattr(self, "_client"):
-                self._client.close()
+            self._client.close()
+        else:
+            logger.info("Trying to close a closed connection, ignoring")
 
     def cursor(self) -> "Cursor":
         """
@@ -177,14 +174,14 @@ class Connection:
         self._cursors.append(cursor)
         return cursor
 
-    def _request(self, url, method="GET", raise_for_status=True, **kwargs):
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         try:
             response = self._client.request(method, url, **kwargs)
             if raise_for_status:
                 response.raise_for_status()
-            return response.json()
+            return response
         except httpx.HTTPStatusError as e:
-            raise OperationalError(f"Error {e.response.status_code}") from e
+            raise OperationalError(f"Error sending request {e.response.status_code}") from e
         except Exception as e:
             raise OperationalError("Error sending request") from e
 
@@ -210,9 +207,9 @@ class Connection:
         """
         # Create the statement payload as per Flink SQL API documentation
         if statement_name is None:
-            # Generate a DB-API compliant UUID for the statement name
             statement_name = f"dbapi-{str(uuid.uuid4())}"
 
+        # TODO: apply parameters to the statement
         # TODO: add properties for snapshot queries
 
         payload = {
@@ -228,7 +225,7 @@ class Connection:
         }
 
         # Submit statement using the API
-        return self._request("/statements", method="POST", json=payload)
+        return self._request("/statements", method="POST", json=payload).json()
 
     def get_statement_status(self, statement_name: str) -> Dict[str, Any]:
         """
@@ -243,11 +240,9 @@ class Connection:
         Raises:
             OperationalError: If status check fails
         """
-        return self._request(f"/statements/{statement_name}")
+        return self._request(f"/statements/{statement_name}").json()
 
-    def get_statement_results(
-        self, statement_name: str, page_token: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def get_statement_results(self, statement_name: str) -> list:
         """
         Get results for a completed statement.
 
@@ -261,23 +256,13 @@ class Connection:
         Raises:
             OperationalError: If results retrieval fails
         """
-        params = {"page_token": page_token} if page_token else {}
-        return self._request(f"/statements/{statement_name}/results", params=params)
-
-    def get_statement_results_from_url(self, url: str) -> Dict[str, Any]:
-        """
-        Get results for a statement from a specific URL (for pagination).
-
-        Args:
-            url: The full URL to fetch results from
-
-        Returns:
-            Dictionary containing the results
-
-        Raises:
-            OperationalError: If results retrieval fails
-        """
-        return self._request(url)
+        next_url = f"/statements/{statement_name}/results"
+        results = []
+        while next_url:
+            response = self._request(next_url).json()
+            results.extend(response.get("results", {}).get("data", []))
+            next_url = response.get("metadata", {}).get("next")
+        return results
 
     def delete_statement(self, statement_name: str) -> None:
         """
@@ -285,8 +270,14 @@ class Connection:
 
         Args:
             statement_name: The name of the statement to delete
-
-        Raises:
-            OperationalError: If statement deletion fails
         """
-        self._request(f"/statements/{statement_name}", method="DELETE", raise_for_status=False)
+        response = self._request(
+            f"/statements/{statement_name}", method="DELETE", raise_for_status=False
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if response.status_code != 404:
+                raise OperationalError("Error deleting statement") from e
+            # If the response if 404, it means we don't need to delete the statement.
+            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")

@@ -4,6 +4,25 @@ from contextlib import contextmanager
 import confluent_sql
 import pytest
 
+@pytest.fixture
+def mock_connection_manager():
+    """Create a connection for testing."""
+    @contextmanager
+    def manager():
+        conn = confluent_sql.connect(
+        flink_api_key="TEST",
+        flink_api_secret="TEST",
+        environment="TEST",
+        organization_id="TEST",
+        compute_pool_id="TEST",
+        cloud_region="TEST",
+        cloud_provider="TEST",
+        )
+        try:
+            yield conn
+        finally:
+            conn.close()
+    return manager
 
 @pytest.fixture
 def connection_manager():

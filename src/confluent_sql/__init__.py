@@ -22,7 +22,7 @@ from .exceptions import (
 # DB-API v2 module globals
 apilevel = "2.0"
 threadsafety = 1  # Threads may share the module but not connections
-paramstyle = "qmark"  # Use question mark style parameters
+paramstyle = "pyformat"  # Use question mark style parameters
 
 __all__ = [
     "connect",

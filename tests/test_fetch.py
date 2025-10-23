@@ -19,7 +19,7 @@ def test_one(connection_manager):
         # Test results
         results = cursor.fetchall()
         assert len(results) == 1
-        assert results[0] == ("1",)
+        assert results[0] == ("+I", "1")
 
 
 def test_pagination(connection_manager):
@@ -38,15 +38,13 @@ def test_pagination(connection_manager):
 
         cursor.execute(query)
 
-        # Test results
         results = cursor.fetchall()
         assert len(results) == 3
 
-        # Verify structure
         assert results == [
-            ("1", "Alice"),
-            ("2", "Bob"),
-            ("3", "Charlie")
+            ("+I", "1", "Alice"),
+            ("+I", "2", "Bob"),
+            ("+I", "3", "Charlie"),
         ]
 
 
@@ -64,7 +62,7 @@ def test_fetchone_iteration(connection_manager):
 
         # Should get one row
         row = cursor.fetchone()
-        assert row == ("1", )
+        assert row == ("+I", "1")
 
         # Should get None after that
         row = cursor.fetchone()

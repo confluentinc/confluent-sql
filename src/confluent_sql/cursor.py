@@ -5,10 +5,14 @@ This module provides the Cursor class for executing SQL statements and
 retrieving results from Confluent SQL services.
 """
 
+import logging
 import random
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, List, Tuple, Union, Dict
+
+import httpx
 
 from .connection import Connection
 from .exceptions import (
@@ -19,27 +23,84 @@ from .exceptions import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+class Op(Enum):
+    INSERT = 0
+    UPDATE_BEFORE = 1
+    UPDATE_AFTER = 2
+    DELETE = 3
+
+    def __str__(self):
+        if self is self.INSERT:
+            return "+I"
+        elif self is self.UPDATE_BEFORE:
+            return "-U"
+        elif self is self.UPDATE_AFTER:
+            return "+U"
+        elif self is self.DELETE:
+            return "-D"
+        else:
+            raise ValueError(f"Unknown value for Op: '{self.value}'. This is probably a bug")
+
+
+class Phase(Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    DELETING = "DELETING"
+    FAILED = "FAILED"
+    # This is not documented in the rest api docs, but mentioned here:
+    # https://docs.confluent.io/cloud/current/flink/concepts/statements.html#flink-sql-statements
+    DEGRADED = "DEGRADED"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+
+    # This is only used internally,
+    # never returned by the api.
+    DELETED = "DELETED"
+
+
 @dataclass
 class Statement:
     statement_id: str
     name: str
     spec: dict
     status: dict
-    results: list[dict]
     traits: dict
-    schema: Optional[dict]
-    description: Optional[list[tuple]]
+    # Internal state
+    _phase: Phase
     _deleted: bool = False
 
     @property
-    def is_running(self) -> bool:
-        return self.phase not in ["COMPLETED", "STOPPED", "FAILED"]
+    def is_ready(self) -> bool:
+        if self.is_bounded:
+            return self.phase in [Phase.COMPLETED, Phase.STOPPED]
+        else:
+            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.RUNNING]
 
     @property
-    def phase(self) -> str:
+    def is_running(self) -> bool:
+        return self.phase == Phase.RUNNING
+
+    @property
+    def is_completed(self) -> bool:
+        return self.phase is Phase.COMPLETED
+
+    @property
+    def is_failed(self) -> bool:
+        return self.phase is Phase.FAILED
+
+    @property
+    def is_degraded(self) -> bool:
+        return self.phase is Phase.DEGRADED
+
+    @property
+    def phase(self) -> Phase:
         if self._deleted:
-            return "DELETED"
-        return self.status["phase"]
+            return Phase.DELETED
+        return self._phase
 
     @property
     def compute_pool_id(self) -> str:
@@ -50,20 +111,36 @@ class Statement:
         return self.spec["principal"]
 
     @property
-    def is_bounded(self) -> bool:
-        return self.traits["is_bounded"]
-
-    @property
     def sql_kind(self) -> str:
         return self.traits["sql_kind"]
+
+    @property
+    def is_bounded(self) -> bool:
+        return self.traits["is_bounded"]
 
     @property
     def is_append_only(self) -> bool:
         return self.traits["is_append_only"]
 
     @property
+    def schema(self) -> Optional[dict]:
+        return self.traits.get("schema", {}).get("columns")
+
+    @property
     def connection_refs(self) -> list:
         return self.traits.get("connection_refs", [])
+
+    @property
+    def description(self) -> Optional[list[tuple]]:
+        # This is required by the cursor object, see https://peps.python.org/pep-0249/#description
+        # It's a list of 7-item tuples, the items represent:
+        # (name, type_code, display_size, internal_size, precision, scale, null_ok)
+        if self.schema is not None:
+            return [
+                (col["name"], col["type"]["type"], None, None, None, None, None)
+                for col in self.schema
+            ]
+        return None
 
     def set_deleted(self):
         self._deleted = True
@@ -76,37 +153,26 @@ class Statement:
             name = response["name"]
             spec = response["spec"]
             status = response["status"]
-            # TODO: We should probably set a flag and avoid erroring out here.
-            if status['phase'] == "FAILED":
-                raise OperationalError(status['detail'])
-            # XXX: Should this be optional?
-            # traits = status["traits"]
-            traits = status.get("traits", {})
 
-            # Optional fields with defaults
-            results = response.get("results", [])
+            # Check the phase first.
+            try:
+                phase = Phase(status["phase"])
+            except ValueError:
+                raise OperationalError(
+                    f"Received an unknown phase for statement from the server: {status['phase']}. "
+                    "This is probably a bug"
+                )
 
-            # Optional fields
-            schema = traits.get("schema", {}).get("columns")
-            # XXX: Is this used anywhere?
-            description = (
-                [(col["name"], col["type"]["type"]) for col in schema]
-                if schema is not None
-                else None
-            )
+            # If it's failed, we won't get 'traits', and it's probably good to raise an error.
+            # TODO: Should we instead set the phase and avoid erroring out here?
+            if phase is Phase.FAILED:
+                raise OperationalError(status["detail"])
+
+            traits = status["traits"]
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
-        return cls(
-            statement_id,
-            name,
-            spec,
-            status,
-            results,
-            traits,
-            schema,
-            description,
-        )
+        return cls(statement_id, name, spec, status, traits, phase)
 
 
 class Cursor:
@@ -124,24 +190,51 @@ class Cursor:
         Args:
             connection: The Connection object this cursor is associated with
         """
-        self.connection = connection
+        self.rowcount = -1
+        self.arraysize = 1
+
+        # Cursor state
+        self._connection = connection
         self._closed = False
-        self._rowcount = -1
-        self._arraysize = 1
-        self._last_executed: Optional[str] = None
 
         # Statement execution state
         self._statement: Optional[Statement] = None
-        self._all_results: list[dict] = []
-        self._current_result_index = 0
+        self._results: list[dict] = []
+        self._index = 0
+
+    @property
+    def description(self) -> Optional[list[tuple]]:
+        # Required by DB-API: https://peps.python.org/pep-0249/#description
+        if self._statement is None:
+            return None
+        else:
+            return self._statement.description
+
+    def close(self) -> None:
+        """
+        Close the cursor and free associated resources.
+
+        This method marks the cursor as closed and releases any
+        resources associated with it. It also attempts to delete
+        any running statement to prevent orphaned jobs.
+        """
+        if not self._closed:
+            if self._statement is not None:
+                self._delete_statement()
+                self._statement = None
+
+            self.rowcount = -1
+            self._closed = True
+            self._results = []
+            self._index = 0
 
     def execute(
         self,
         operation: str,
-        parameters: Optional[Union[Tuple, List, Dict]] = None,
+        parameters: Optional[Union[tuple, list, dict]] = None,
         timeout: int = 3000,
         statement_name: Optional[str] = None,
-    ) -> "Cursor":
+    ):
         """
         Execute a SQL statement.
 
@@ -151,9 +244,6 @@ class Cursor:
             timeout: Maximum time to wait for statement completion in seconds (default: 3000)
             statement_name: Optional name for the statement (defaults to DB-API UUID if not provided)
 
-        Returns:
-            Self for method chaining
-
         Raises:
             InterfaceError: If the cursor is closed
             ProgrammingError: If the SQL statement is invalid
@@ -162,32 +252,108 @@ class Cursor:
         if self._closed:
             raise InterfaceError("Cursor is closed")
 
-        if not operation or not operation.strip():
+        if not operation.strip():
             raise ProgrammingError("SQL statement cannot be empty")
 
-        self._last_executed = operation
-        self._all_results = []
-        self._current_result_index = 0
-        # XXX: Should we check if a statement is present?
-        # XXX: Should we do anything else if it is?
-        self._statement = None
+        # If a statement is present, delete it first
+        if self._statement is not None:
+            self._delete_statement()
+            self._statement = None
 
-        try:
-            # Step 1: Submit the SQL statement
-            self._submit_statement(operation, parameters, statement_name)
+        # Then reset the state
+        self._results = []
+        self._index = 0
+        self.rowcount = -1
 
-            # Step 2: Wait for statement to be ready (not in PENDING status)
-            # in this loop, if FAILED or DEGRADED, raise an error
-            self._wait_for_statement_ready(timeout)
+        # Now submit the statement and wait for it to be ready
+        self._submit_statement(operation, parameters, statement_name)
+        self._wait_for_statement_ready(timeout)
 
-            # Step 3: Set up cursor state for all successful statements
-            # All queries are treated as streaming - database server handles result management
-            # TODO: handle snapshot queries
-            self._setup_cursor_state()
-        except Exception as e:
-            raise OperationalError("Failed to execute statement") from e
+    def executemany(self, operation: str, seq_of_parameters: list[Union[tuple, list, dict]]):
+        # Implement this if needed.
+        # XXX: We'd need to handle multiple statements with a single cursor here,
+        #      all the logic currently implies each cursor handles a single statement at a time
+        raise NotImplementedError("executemany not implemented")
 
-        return self
+    def _fetch_results(self):
+        if self._closed:
+            raise InterfaceError("Cursor is closed")
+
+        if not self._statement:
+            raise InterfaceError("No statement was used. Call execute() first.")
+
+        if not self._statement.is_ready:
+            raise InterfaceError("Statement is not ready for result fetching.")
+
+        if not self._statement.schema:
+            raise InterfaceError("Trying to fetch results for a non-query statement")
+
+        if not self._statement.is_bounded:
+            self._delete_statement()
+            raise NotImplementedError("Support for unbounded queries not implemented")
+
+        if not self._results:
+            results = self._connection.get_statement_results(self._statement.name)
+            self.rowcount = len(results)
+
+            for row in results:
+                # Extract row data only - no operation processing
+                op = Op(row.get("op"))
+                data = row.get("row", [])
+                result = {"op": f"{op}"}
+
+                # Add column data if we have schema
+                if self._statement.schema and len(data) == len(self._statement.schema):
+                    for i, col in enumerate(self._statement.schema):
+                        result[col["name"]] = data[i]
+                else:
+                    # Fallback: use generic column names
+                    for i, value in enumerate(data):
+                        result[f"col_{i}"] = value
+
+                self._results.append(result)
+
+    def _get_next_results(self, limit: Optional[int] = None) -> list[tuple]:
+        remaining = len(self._results) - self._index
+
+        if remaining == 0:
+            return []
+
+        if remaining < 0:
+            raise InterfaceError("Trying fetch a negative number of elements")
+
+        if limit is None:
+            limit = remaining
+        else:
+            limit = min(remaining, limit)
+
+        start = self._index
+        end = self._index + limit
+        self._index += limit
+        return [tuple(row.values()) for row in self._results[start:end]]
+
+    def fetchone(self) -> Optional[Tuple]:
+        self._fetch_results()
+        res = self._get_next_results(1)
+        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
+        # Here we want to return None if no results are available,
+        # not an empty list: https://peps.python.org/pep-0249/#fetchone
+        if not res:
+            return None
+        return res[0]
+
+    def fetchmany(self, size: Optional[int] = None) -> List[Tuple]:
+        self._fetch_results()
+
+        # Get the next batch of results
+        if size is None:
+            size = self.arraysize
+
+        return self._get_next_results(size)
+
+    def fetchall(self) -> List[tuple]:
+        self._fetch_results()
+        return self._get_next_results()
 
     def _wait_for_statement_ready(self, timeout: int) -> None:
         """
@@ -209,48 +375,29 @@ class Cursor:
         current_delay = base_delay
 
         while time.time() - start_time < timeout:
-            try:
-                # Check statement status - this will raise OperationalError if status/phase is missing
-                self._update_statement_status()
+            response = self._connection.get_statement_status(self._statement.name)
+            self._statement = Statement.from_response(response)
 
-                # Statement is ready when it's not in PENDING status
-                # Check for failure states first - exit immediately
-                if self._statement.phase in ["FAILED", "DEGRADED"]:
-                    return
+            # Statement is ready when it's not in PENDING status.
+            # We first check if it failed, and return early if so:
+            if self._statement.is_failed or self._statement.is_degraded:
+                # TODO: Do something here
+                return
 
-                # Wait for COMPLETED status
-                if self._statement.phase == "COMPLETED":
-                    return
+            # Any kind of query in the completed phase is ready
+            if self._statement.is_completed:
+                return
 
-                # For unbounded queries, RUNNING is acceptable
-                if not self._statement.is_bounded and self._statement.phase == "RUNNING":
-                    return
+            # For unbounded queries, RUNNING is enough though
+            if not self._statement.is_bounded and self._statement.is_running:
+                return
 
-                # Exponential backoff with jitter to prevent thundering herd
-                jitter = random.uniform(0.75, 1.25)  # ±25% randomness
-                actual_delay = current_delay * jitter
-                time.sleep(actual_delay)
-                current_delay = min(current_delay * 1.5, max_delay)
-            except Exception as e:
-                raise OperationalError("Failed to poll statement status") from e
+            # Exponential backoff with jitter to prevent thundering herd
+            jitter = random.uniform(0.75, 1.25)  # ±25% randomness
+            actual_delay = current_delay * jitter
+            time.sleep(actual_delay)
+            current_delay = min(current_delay * 1.5, max_delay)
         raise OperationalError(f"Statement submission timed out after {timeout} seconds")
-
-    def _setup_cursor_state(self) -> None:
-        """
-        Set up cursor state after successful statement execution.
-        This sets description and rowcount but does not parse results.
-        All queries are treated as streaming - database server handles result management.
-        """
-        assert self._statement is not None, (
-            "Calling _setup_cursor_state but _statement is None, this is probably a bug"
-        )
-
-        # Set rowcount for non-query statements
-        if not self._statement.schema:
-            self._rowcount = 0
-        else:
-            # Will be set when results are fetched
-            self._rowcount = -1
 
     def _submit_statement(
         self,
@@ -269,57 +416,8 @@ class Cursor:
         Raises:
             OperationalError: If statement submission fails
         """
-        try:
-            # Delegate to connection object for statement execution
-            response = self.connection.execute_statement(operation, parameters, statement_name)
-            self._statement = Statement.from_response(response)
-        except Exception as e:
-            raise OperationalError(f"Failed to submit {operation}") from e
-
-    def _parse_results_from_response(self, data: List[Dict]) -> None:
-        """
-        Parse results from the API response data and append to existing results.
-        Returns raw results without processing changelog operations.
-
-        Args:
-            data: List of result data from the API response
-        """
-        assert self._statement is not None, (
-            "Calling _parse_results_from_response but _statement is None, this is probably a bug"
-        )
-        for item in data:
-            # Extract row data only - no operation processing
-            row_data = item.get("row", [])
-
-            # Create result row with just the data
-            result_row = {}
-
-            # Add column data if we have schema
-            if self._statement.schema and len(row_data) == len(self._statement.schema):
-                for i, col in enumerate(self._statement.schema):
-                    result_row[col["name"]] = row_data[i]
-            else:
-                # Fallback: use generic column names
-                for i, value in enumerate(row_data):
-                    result_row[f"col_{i}"] = value
-
-            self._all_results.append(result_row)
-
-    def _update_statement_status(self) -> None:
-        """
-        Check the current status of the statement.
-
-        Raises:
-            OperationalError: If status check fails
-        """
-        assert self._statement is not None, (
-            "Calling _update_statement_status but _statement is None, this is probably a bug"
-        )
-        try:
-            response = self.connection.get_statement_status(self._statement.name)
-            self._statement = Statement.from_response(response)
-        except Exception as e:
-            raise OperationalError("Error checking statement status") from e
+        response = self._connection.execute_statement(operation, parameters, statement_name)
+        self._statement = Statement.from_response(response)
 
     def _handle_failed_statement(self) -> None:
         """
@@ -333,7 +431,7 @@ class Cursor:
         )
         try:
             # Delegate to connection object to get statement details
-            response = self.connection.get_statement_status(self._statement.name)
+            response = self._connection.get_statement_status(self._statement.name)
 
             # Extract error details from the response
             error_message = "Statement execution failed"
@@ -348,280 +446,6 @@ class Cursor:
         except Exception as e:
             raise DatabaseError(f"Statement failed: {e}")
 
-    def fetchall(self) -> List[Tuple]:
-        """
-        Fetch all remaining rows from the result set.
-
-        Returns:
-            A list of tuples, where each tuple represents a row
-
-        Raises:
-            InterfaceError: If the cursor is closed, no result set is available, or query is unbounded
-        """
-        if self._closed:
-            raise InterfaceError("Cursor is closed")
-
-        if not self._statement:
-            raise InterfaceError("No result set available. Call execute() first.")
-
-        # Check if this is an unbounded streaming query
-        if not self._statement.is_bounded:
-            raise InterfaceError(
-                "fetchall() is not supported for unbounded streaming queries. "
-                "Use fetchone() or fetchmany() in a loop for streaming data, "
-                "or implement a polling pattern for continuous updates."
-            )
-
-        # All queries are treated as streaming - check if statement is ready
-        if self._statement.phase == "RUNNING":
-            raise InterfaceError("Statement is not ready for result fetching.")
-        elif self._statement.phase not in ["COMPLETED", "STOPPED", "RUNNING"]:
-            raise InterfaceError("Statement is not ready for result fetching.")
-
-        if not self._statement.schema:
-            # Non-query statement (INSERT, UPDATE, DELETE, etc.)
-            return []
-
-        # If we haven't fetched results yet, fetch them now
-        if not self._all_results:
-            self._fetch_all_pages()
-
-        # Convert results to tuples - return raw data without changelog operations
-        result_tuples = []
-        for row in self._all_results:
-            # Return raw data as tuples
-            result_tuples.append(tuple(row.values()))
-
-        self._rowcount = len(result_tuples)
-        return result_tuples
-
-    def _fetch_all_pages(self) -> None:
-        """
-        Fetch all pages of results using pagination.
-        This is where result parsing actually happens (lazy evaluation).
-        All queries are treated as streaming - database server handles result management.
-
-        Raises:
-            OperationalError: If fetching results fails
-        """
-        # If results are already parsed, don't fetch again
-        if self._all_results:
-            return
-
-        assert self._statement is not None, (
-            "Calling _fetch_all_pages but _statement is None, this is probably a bug"
-        )
-
-        try:
-            # Start with the first page
-            response = self.connection.get_statement_results(self._statement.name)
-            self._parse_results_from_response(response.get("results", {}).get("data", []))
-
-            # Check for pagination and fetch all remaining pages
-            next_url = response.get("metadata", {}).get("next", "")
-            while next_url and len(next_url) > 0:
-                # Fetch the next page using the Connection method
-                next_response = self.connection.get_statement_results_from_url(next_url)
-                self._parse_results_from_response(next_response.get("results", {}).get("data", []))
-
-                # Get the next URL for the next iteration
-                next_url = next_response.get("metadata", {}).get("next", "")
-
-        except Exception as e:
-            print(f"Failed to fetch results from API: {e}")
-            # If results API fails, return empty results
-            self._all_results = []
-
-    def fetchone(self) -> Optional[Tuple]:
-        """
-        Fetch the next row from the result set.
-        For unbounded streaming queries, this acts as a yielding iterator.
-
-        Returns:
-            A tuple representing the next row, or None if no more rows
-
-        Raises:
-            InterfaceError: If the cursor is closed or no result set is available
-        """
-        if self._closed:
-            raise InterfaceError("Cursor is closed")
-
-        if not self._statement:
-            raise InterfaceError("No result set available. Call execute() first.")
-
-        # All queries are treated as streaming - check if statement is ready
-        if self._statement.phase not in ["COMPLETED", "STOPPED", "RUNNING"]:
-            raise InterfaceError("Statement is not ready for result fetching.")
-
-        if not self._statement.schema:
-            # Non-query statement
-            return None
-
-        # For unbounded streaming queries, fetch results incrementally
-        if not self._statement.is_bounded:
-            return self._fetch_next_streaming_row()
-
-        # For bounded queries, use the existing logic
-        # If we haven't fetched results yet, fetch them now
-        if not self._all_results:
-            self._fetch_all_pages()
-
-        # Get the current result and advance the index
-        if self._current_result_index < len(self._all_results):
-            row = self._all_results[self._current_result_index]
-            self._current_result_index += 1
-            return tuple(row.values())
-
-        return None
-
-    def _fetch_next_streaming_row(self) -> Optional[Tuple]:
-        """
-        Fetch the next row from an unbounded streaming query.
-        This implements a yielding iterator pattern for streaming data.
-
-        Returns:
-            A tuple representing the next row, or None if no more rows available
-        """
-        # For streaming queries, we need to fetch results incrementally
-        # This is a simplified implementation - in practice, you might want to
-        # implement more sophisticated streaming logic
-
-        # Check if we have cached results to return
-        if self._current_result_index < len(self._all_results):
-            row = self._all_results[self._current_result_index]
-            self._current_result_index += 1
-
-            # Return raw data as tuple
-            return tuple(row.values())
-
-        # For streaming queries, we would typically:
-        # 1. Poll the API for new results
-        # 2. Parse and cache new results
-        # 3. Return the next available row
-        #
-        # For now, we'll return None to indicate no more data
-        # In a full implementation, this would involve:
-        # - Polling the results API endpoint
-        # - Parsing new results as they arrive
-        # - Managing connection state for continuous streaming
-
-        return None
-
-    def _fetch_streaming_batch(self, size: int) -> List[Tuple]:
-        """
-        Fetch a batch of rows from an unbounded streaming query.
-        This implements a yielding iterator pattern for streaming data.
-
-        Args:
-            size: Number of rows to fetch
-
-        Returns:
-            A list of tuples representing the rows
-        """
-        results = []
-
-        # For streaming queries, we need to fetch results incrementally
-        # This is a simplified implementation - in practice, you might want to
-        # implement more sophisticated streaming logic
-
-        # Check if we have cached results to return
-        remaining = len(self._all_results) - self._current_result_index
-        batch_size = min(size, remaining)
-
-        for i in range(batch_size):
-            row = self._all_results[self._current_result_index + i]
-
-            # Return raw data as tuple
-            results.append(tuple(row.values()))
-
-        self._current_result_index += batch_size
-
-        # For streaming queries, we would typically:
-        # 1. Poll the API for new results if we need more data
-        # 2. Parse and cache new results as they arrive
-        # 3. Return available results (might be fewer than requested)
-        #
-        # For now, we'll return what we have available
-        # In a full implementation, this would involve:
-        # - Polling the results API endpoint for new data
-        # - Parsing new results as they arrive
-        # - Managing connection state for continuous streaming
-
-        return results
-
-    def fetchmany(self, size: Optional[int] = None) -> List[Tuple]:
-        """
-        Fetch the next set of rows from the result set.
-        For unbounded streaming queries, this acts as a yielding iterator.
-
-        Args:
-            size: Number of rows to fetch (defaults to arraysize)
-
-        Returns:
-            A list of tuples, where each tuple represents a row
-
-        Raises:
-            InterfaceError: If the cursor is closed or no result set is available
-        """
-        if self._closed:
-            raise InterfaceError("Cursor is closed")
-
-        if not self._statement:
-            raise InterfaceError("No result set available. Call execute() first.")
-
-        # All queries are treated as streaming - check if statement is ready
-        if self._statement.phase not in ["COMPLETED", "STOPPED", "RUNNING"]:
-            raise InterfaceError("Statement is not ready for result fetching.")
-
-        if not self._statement.schema:
-            # Non-query statement
-            return []
-
-        fetch_size = size if size is not None else self._arraysize
-        results = []
-
-        # For unbounded streaming queries, fetch results incrementally
-        if not self._statement.is_bounded:
-            return self._fetch_streaming_batch(fetch_size)
-
-        # For bounded queries, use the existing logic
-        # If we haven't fetched results yet, fetch them now
-        if not self._all_results:
-            self._fetch_all_pages()
-
-        # Get the next batch of results
-        remaining = len(self._all_results) - self._current_result_index
-        batch_size = min(fetch_size, remaining)
-
-        for i in range(batch_size):
-            row = self._all_results[self._current_result_index + i]
-
-            # Return raw data as tuple
-            results.append(tuple(row.values()))
-
-        self._current_result_index += batch_size
-        return results
-
-    def close(self) -> None:
-        """
-        Close the cursor and free associated resources.
-
-        This method marks the cursor as closed and releases any
-        resources associated with it. It also attempts to delete
-        any running statement to prevent orphaned jobs.
-        """
-        if not self._closed:
-            # Try to delete any running statement
-            # XXX: Do we need to also cleanup completed statements?
-            if self._statement is not None and self._statement.is_running:
-                self._delete_statement()
-
-            self._closed = True
-            self._rowcount = -1
-            self._all_results = []
-            self._current_result_index = 0
-            self._statement = None
-
     def _delete_statement(self) -> None:
         """
         Delete a running statement to prevent orphaned jobs.
@@ -632,9 +456,5 @@ class Cursor:
         assert self._statement is not None, (
             "Calling _delete_statement but _statement is None, this is probably a bug"
         )
-        try:
-            self.connection.delete_statement(self._statement.statement_id)
-            print(self._statement)
-            self._statement.set_deleted()
-        except Exception as e:
-            raise OperationalError(f"Failed to delete statement: {e}")
+        self._connection.delete_statement(self._statement.statement_id)
+        self._statement.set_deleted()
