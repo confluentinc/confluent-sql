@@ -8,11 +8,8 @@ retrieving results from Confluent SQL services.
 import logging
 import random
 import time
-from dataclasses import dataclass
-from enum import Enum
+from itertools import islice
 from typing import Optional, List, Tuple, Union, Dict
-
-import httpx
 
 from .connection import Connection
 from .exceptions import (
@@ -21,158 +18,10 @@ from .exceptions import (
     ProgrammingError,
     OperationalError,
 )
+from .statement import Statement, Op
 
 
 logger = logging.getLogger(__name__)
-
-
-class Op(Enum):
-    INSERT = 0
-    UPDATE_BEFORE = 1
-    UPDATE_AFTER = 2
-    DELETE = 3
-
-    def __str__(self):
-        if self is self.INSERT:
-            return "+I"
-        elif self is self.UPDATE_BEFORE:
-            return "-U"
-        elif self is self.UPDATE_AFTER:
-            return "+U"
-        elif self is self.DELETE:
-            return "-D"
-        else:
-            raise ValueError(f"Unknown value for Op: '{self.value}'. This is probably a bug")
-
-
-class Phase(Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    DELETING = "DELETING"
-    FAILED = "FAILED"
-    # This is not documented in the rest api docs, but mentioned here:
-    # https://docs.confluent.io/cloud/current/flink/concepts/statements.html#flink-sql-statements
-    DEGRADED = "DEGRADED"
-    STOPPING = "STOPPING"
-    STOPPED = "STOPPED"
-
-    # This is only used internally,
-    # never returned by the api.
-    DELETED = "DELETED"
-
-
-@dataclass
-class Statement:
-    statement_id: str
-    name: str
-    spec: dict
-    status: dict
-    traits: dict
-    # Internal state
-    _phase: Phase
-    _deleted: bool = False
-
-    @property
-    def is_ready(self) -> bool:
-        if self.is_bounded:
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED]
-        else:
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.RUNNING]
-
-    @property
-    def is_running(self) -> bool:
-        return self.phase == Phase.RUNNING
-
-    @property
-    def is_completed(self) -> bool:
-        return self.phase is Phase.COMPLETED
-
-    @property
-    def is_failed(self) -> bool:
-        return self.phase is Phase.FAILED
-
-    @property
-    def is_degraded(self) -> bool:
-        return self.phase is Phase.DEGRADED
-
-    @property
-    def phase(self) -> Phase:
-        if self._deleted:
-            return Phase.DELETED
-        return self._phase
-
-    @property
-    def compute_pool_id(self) -> str:
-        return self.spec["compute_pool_id"]
-
-    @property
-    def principal(self) -> str:
-        return self.spec["principal"]
-
-    @property
-    def sql_kind(self) -> str:
-        return self.traits["sql_kind"]
-
-    @property
-    def is_bounded(self) -> bool:
-        return self.traits["is_bounded"]
-
-    @property
-    def is_append_only(self) -> bool:
-        return self.traits["is_append_only"]
-
-    @property
-    def schema(self) -> Optional[dict]:
-        return self.traits.get("schema", {}).get("columns")
-
-    @property
-    def connection_refs(self) -> list:
-        return self.traits.get("connection_refs", [])
-
-    @property
-    def description(self) -> Optional[list[tuple]]:
-        # This is required by the cursor object, see https://peps.python.org/pep-0249/#description
-        # It's a list of 7-item tuples, the items represent:
-        # (name, type_code, display_size, internal_size, precision, scale, null_ok)
-        if self.schema is not None:
-            return [
-                (col["name"], col["type"]["type"], None, None, None, None, None)
-                for col in self.schema
-            ]
-        return None
-
-    def set_deleted(self):
-        self._deleted = True
-
-    @classmethod
-    def from_response(cls, response: dict) -> "Statement":
-        try:
-            # Mandatory fields
-            statement_id = response["metadata"]["uid"]
-            name = response["name"]
-            spec = response["spec"]
-            status = response["status"]
-
-            # Check the phase first.
-            try:
-                phase = Phase(status["phase"])
-            except ValueError:
-                raise OperationalError(
-                    f"Received an unknown phase for statement from the server: {status['phase']}. "
-                    "This is probably a bug"
-                )
-
-            # If it's failed, we won't get 'traits', and it's probably good to raise an error.
-            # TODO: Should we instead set the phase and avoid erroring out here?
-            if phase is Phase.FAILED:
-                raise OperationalError(status["detail"])
-
-            traits = status["traits"]
-        except KeyError as e:
-            raise OperationalError(f"Error parsing statement response, missing {e}.") from e
-
-        return cls(statement_id, name, spec, status, traits, phase)
 
 
 class Cursor:
@@ -196,11 +45,12 @@ class Cursor:
         # Cursor state
         self._connection = connection
         self._closed = False
+        self._index = 0
+        self._next_page = None
 
         # Statement execution state
         self._statement: Optional[Statement] = None
         self._results: list[dict] = []
-        self._index = 0
 
     @property
     def description(self) -> Optional[list[tuple]]:
@@ -234,6 +84,7 @@ class Cursor:
         parameters: Optional[Union[tuple, list, dict]] = None,
         timeout: int = 3000,
         statement_name: Optional[str] = None,
+        bounded: bool = True,
     ):
         """
         Execute a SQL statement.
@@ -266,14 +117,21 @@ class Cursor:
         self.rowcount = -1
 
         # Now submit the statement and wait for it to be ready
-        self._submit_statement(operation, parameters, statement_name)
+        self._submit_statement(operation, parameters, statement_name, bounded)
         self._wait_for_statement_ready(timeout)
 
     def executemany(self, operation: str, seq_of_parameters: list[Union[tuple, list, dict]]):
         # Implement this if needed.
-        # XXX: We'd need to handle multiple statements with a single cursor here,
-        #      all the logic currently implies each cursor handles a single statement at a time
+        # XXX: We need to handle multiple statements with a single cursor here,
+        #      the logic currently implies each cursor handles a single statement at a time
         raise NotImplementedError("executemany not implemented")
+
+    def _get_indexed_result(self):
+        res = self._results[self._index]
+        if self._keyed_results:
+            return res
+        else:
+            return tuple(res.values())
 
     def _fetch_results(self):
         if self._closed:
@@ -288,52 +146,68 @@ class Cursor:
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
-        if not self._statement.is_bounded:
-            self._delete_statement()
-            raise NotImplementedError("Support for unbounded queries not implemented")
+        # if not self._statement.is_bounded:
+        #     self._delete_statement()
+        #     raise NotImplementedError("Support for unbounded queries not implemented")
 
-        if not self._results:
-            results = self._connection.get_statement_results(self._statement.name)
-            self.rowcount = len(results)
+        if not self._results or self._next_page is not None:
+            results, next_page = self._connection.get_statement_results(
+                self._statement.name, self._next_page
+            )
+            self._next_page = next_page
+            self.rowcount += len(results)
 
             for row in results:
                 # Extract row data only - no operation processing
+                # XXX: `op` field might be optional?
                 op = Op(row.get("op"))
                 data = row.get("row", [])
-                result = {"op": f"{op}"}
+                self._results.append((f"{op}", tuple(data)))
+                # result = {"op": f"{op}"}
 
-                # Add column data if we have schema
-                if self._statement.schema and len(data) == len(self._statement.schema):
-                    for i, col in enumerate(self._statement.schema):
-                        result[col["name"]] = data[i]
-                else:
-                    # Fallback: use generic column names
-                    for i, value in enumerate(data):
-                        result[f"col_{i}"] = value
+                # # Add column data if we have schema
+                # if self._statement.schema and len(data) == len(self._statement.schema):
+                #     for i, col in enumerate(self._statement.schema):
+                #         result[col["name"]] = data[i]
+                # else:
+                #     # Fallback: use generic column names
+                #     for i, value in enumerate(data):
+                #         result[f"col_{i}"] = value
 
-                self._results.append(result)
+                # self._results.append(result)
 
-    def _get_next_results(self, limit: Optional[int] = None) -> list[tuple]:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
         remaining = len(self._results) - self._index
-
-        if remaining == 0:
-            return []
 
         if remaining < 0:
             raise InterfaceError("Trying fetch a negative number of elements")
 
-        if limit is None:
-            limit = remaining
-        else:
-            limit = min(remaining, limit)
+        if self._results and remaining == 0 and self._next_page is None:
+            raise StopIteration
 
-        start = self._index
-        end = self._index + limit
-        self._index += limit
-        return [tuple(row.values()) for row in self._results[start:end]]
+        if remaining == 0:
+            self._fetch_results()
+
+        # We need to check again, as might not have results anyway
+        remaining = len(self._results) - self._index
+        if remaining == 0:
+            raise StopIteration
+
+        res = self._results[self._index]
+        self._index += 1
+        return res
+
+
+    def _get_next_results(self, limit: Optional[int] = None) -> list[tuple]:
+        if limit is None:
+            return list(self)
+        else:
+            return list(islice(self, limit))
 
     def fetchone(self) -> Optional[Tuple]:
-        self._fetch_results()
         res = self._get_next_results(1)
         assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
         # Here we want to return None if no results are available,
@@ -343,8 +217,6 @@ class Cursor:
         return res[0]
 
     def fetchmany(self, size: Optional[int] = None) -> List[Tuple]:
-        self._fetch_results()
-
         # Get the next batch of results
         if size is None:
             size = self.arraysize
@@ -352,7 +224,6 @@ class Cursor:
         return self._get_next_results(size)
 
     def fetchall(self) -> List[tuple]:
-        self._fetch_results()
         return self._get_next_results()
 
     def _wait_for_statement_ready(self, timeout: int) -> None:
@@ -375,6 +246,7 @@ class Cursor:
         current_delay = base_delay
 
         while time.time() - start_time < timeout:
+            logger.info(f"Checking statement '{self._statement.name}' status...")
             response = self._connection.get_statement_status(self._statement.name)
             self._statement = Statement.from_response(response)
 
@@ -404,6 +276,7 @@ class Cursor:
         operation: str,
         parameters: Optional[Union[Tuple, List, Dict]] = None,
         statement_name: Optional[str] = None,
+        bounded: bool = True,
     ) -> None:
         """
         Submit a SQL statement for execution.
@@ -416,7 +289,10 @@ class Cursor:
         Raises:
             OperationalError: If statement submission fails
         """
-        response = self._connection.execute_statement(operation, parameters, statement_name)
+        logger.info(f"Submitting statement {operation}")
+        response = self._connection.execute_statement(
+            operation, parameters, statement_name, bounded
+        )
         self._statement = Statement.from_response(response)
 
     def _handle_failed_statement(self) -> None:
@@ -456,5 +332,5 @@ class Cursor:
         assert self._statement is not None, (
             "Calling _delete_statement but _statement is None, this is probably a bug"
         )
-        self._connection.delete_statement(self._statement.statement_id)
+        self._connection.delete_statement(self._statement.name)
         self._statement.set_deleted()

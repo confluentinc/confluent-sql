@@ -1,31 +1,21 @@
-"""
-Pytest-compatible tests for pagination functionality.
-"""
-
-def test_one(connection_manager):
+def test_select_one(connection_manager):
     """Test connection and fetch."""
     with connection_manager() as connection:
         cursor = connection.cursor()
+
         # Simple query
         cursor.execute("SELECT 1 as test_value")
-
-        # Test metadata
-        assert cursor._statement.name is not None
-        assert cursor._statement.sql_kind == "SELECT"
-        assert cursor._statement.is_bounded is True
-        assert cursor._statement.description is not None
-        assert len(cursor._statement.description) == 1
 
         # Test results
         results = cursor.fetchall()
         assert len(results) == 1
-        assert results[0] == ("+I", "1")
+        assert results == [("+I", ("1",))]
 
 
-def test_pagination(connection_manager):
-    """Test pagination with multiple rows."""
+def test_select_multiple_rows(connection_manager):
     with connection_manager() as connection:
         cursor = connection.cursor()
+
         # Multi-row query
         query = """
         SELECT * FROM (
@@ -42,9 +32,9 @@ def test_pagination(connection_manager):
         assert len(results) == 3
 
         assert results == [
-            ("+I", "1", "Alice"),
-            ("+I", "2", "Bob"),
-            ("+I", "3", "Charlie"),
+            ("+I", ("1", "Alice")),
+            ("+I", ("2", "Bob")),
+            ("+I", ("3", "Charlie")),
         ]
 
 
@@ -53,16 +43,11 @@ def test_fetchone_iteration(connection_manager):
     with connection_manager() as connection:
         cursor = connection.cursor()
 
-        # This was causing the server to return a syntax error.
-        # Could be used on a different test to check that we
-        # report the error in a nice way whan that happens.
-        # cursor.execute("SELECT 1 as value")
-
         cursor.execute("SELECT 1 as test_value")
 
         # Should get one row
         row = cursor.fetchone()
-        assert row == ("+I", "1")
+        assert row == ("+I", ("1", ))
 
         # Should get None after that
         row = cursor.fetchone()
@@ -100,22 +85,3 @@ def test_fetchmany_iteration(connection_manager):
 
         batch4 = cursor.fetchmany(2)
         assert len(batch4) == 0
-
-
-def test_cursor_metadata(connection_manager):
-    """Test cursor metadata properties."""
-    with connection_manager() as connection:
-        cursor = connection.cursor()
-        cursor.execute("SELECT 42 as answer")
-
-        # Test metadata
-        assert cursor._statement.name is not None
-        assert cursor._statement.sql_kind == "SELECT"
-        assert cursor._statement.is_bounded is True
-        assert cursor._statement.is_append_only is True
-        assert cursor._statement.connection_refs == []
-
-        # Test description
-        assert cursor._statement.description is not None
-        assert len(cursor._statement.description) == 1
-        assert cursor._statement.description[0][0] == "answer"

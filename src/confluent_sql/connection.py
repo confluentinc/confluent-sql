@@ -190,6 +190,7 @@ class Connection:
         statement: str,
         parameters: Optional[Union[Tuple, List, Dict]] = None,
         statement_name: Optional[str] = None,
+        bounded: bool = True,
     ) -> Dict[str, Any]:
         """
         Execute a SQL statement and return the response.
@@ -210,7 +211,10 @@ class Connection:
             statement_name = f"dbapi-{str(uuid.uuid4())}"
 
         # TODO: apply parameters to the statement
-        # TODO: add properties for snapshot queries
+
+        properties = {}
+        if bounded:
+            properties["sql.snapshot.mode"] = "now"
 
         payload = {
             "name": statement_name,
@@ -218,7 +222,7 @@ class Connection:
             "environment_id": self.environment,
             "spec": {
                 "statement": statement,
-                "properties": {},
+                "properties": properties,
                 "compute_pool_id": self.compute_pool_id,
                 "stopped": False,
             },
@@ -242,7 +246,9 @@ class Connection:
         """
         return self._request(f"/statements/{statement_name}").json()
 
-    def get_statement_results(self, statement_name: str) -> list:
+    def get_statement_results(
+        self, statement_name: str, next_url: Optional[str]
+    ) -> tuple[list, Optional[str]]:
         """
         Get results for a completed statement.
 
@@ -251,18 +257,22 @@ class Connection:
             page_token: Optional page token for pagination
 
         Returns:
-            Dictionary containing the results
+            A 2-tuple: (list of results, optional url to fetch next page)
 
         Raises:
             OperationalError: If results retrieval fails
         """
-        next_url = f"/statements/{statement_name}/results"
-        results = []
-        while next_url:
-            response = self._request(next_url).json()
-            results.extend(response.get("results", {}).get("data", []))
-            next_url = response.get("metadata", {}).get("next")
-        return results
+        if next_url is None:
+            next_url = f"/statements/{statement_name}/results"
+        response = self._request(next_url).json()
+        results = response.get("results", {}).get("data", [])
+        logger.info(f"got {len(results)} results for statement {statement_name}")
+        next_url = response.get("metadata", {}).get("next")
+        # next_url is an empty string even if it's not set,
+        # so we need to explicitely set to None in that case.
+        if not next_url:
+            next_url = None
+        return (results, next_url)
 
     def delete_statement(self, statement_name: str) -> None:
         """

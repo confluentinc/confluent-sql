@@ -1,11 +1,7 @@
-#!/usr/bin/env python3
 """
 Test streaming query functionality for confluent-sql library.
 """
 
-import os
-
-import confluent_sql
 import pytest
 from confluent_sql.exceptions import InterfaceError
 
@@ -16,16 +12,10 @@ def test_unbounded_query_fetchall_error(connection_manager):
         cursor = connection.cursor()
 
         # Use real unbounded streaming query from Confluent Cloud examples
-        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
+        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks` LIMIT 10", bounded=False)
+        results = cursor.fetchall()
+        assert len(results) <= 10
 
-        # Should raise an error for unbounded queries
-        with pytest.raises(InterfaceError) as exc_info:
-            cursor.fetchall()
-
-        assert "fetchall() is not supported for unbounded streaming queries" in str(
-            exc_info.value
-        )
-        assert "Use fetchone() or fetchmany() in a loop" in str(exc_info.value)
 
 
 def test_streaming_query_fetchone(connection_manager):
@@ -34,7 +24,7 @@ def test_streaming_query_fetchone(connection_manager):
         cursor = connection.cursor()
 
         # Use real unbounded streaming query from Confluent Cloud examples
-        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
+        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`", bounded=False)
 
         # Should work for streaming queries (yielding iterator)
         # Get a few rows to test the pattern
@@ -60,7 +50,7 @@ def test_streaming_query_fetchmany(connection_manager):
         cursor = connection.cursor()
 
         # Use real unbounded streaming query from Confluent Cloud examples
-        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
+        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`", bounded=False)
 
         # Should work for streaming queries (yielding iterator)
         # Get a few batches to test the pattern
@@ -88,7 +78,7 @@ def test_cursor_metadata_streaming(connection_manager):
         cursor = connection.cursor()
 
         # Use real unbounded streaming query from Confluent Cloud examples
-        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
+        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`", bounded=False)
 
         # Test metadata
         assert cursor._statement.name is not None
@@ -108,7 +98,7 @@ def test_streaming_pattern_example(connection_manager):
         cursor = connection.cursor()
 
         # Use real unbounded streaming query from Confluent Cloud examples
-        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
+        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`", bounded=False)
 
         # Simulate streaming pattern
         print("Streaming pattern example:")
@@ -131,7 +121,7 @@ def test_streaming_batch_pattern_example(connection_manager):
         cursor = connection.cursor()
 
         # Use real unbounded streaming query from Confluent Cloud examples
-        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`")
+        cursor.execute("SELECT * FROM `examples`.`marketplace`.`clicks`", bounded=False)
 
         # Simulate streaming batch pattern
         total_rows = 0
@@ -150,10 +140,3 @@ def test_streaming_batch_pattern_example(connection_manager):
             # Show first row of each batch for debugging
             if batch:
                 print(f"    First row: {batch[0]}")
-
-
-
-
-if __name__ == "__main__":
-    # Run tests if called directly
-    pytest.main([__file__, "-v"])

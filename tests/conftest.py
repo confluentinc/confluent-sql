@@ -6,7 +6,25 @@ import pytest
 
 @pytest.fixture
 def mock_connection_manager():
-    """Create a connection for testing."""
+    """
+    Create a connection for testing, with fake parameters.
+
+    This will fail on any real attempt to connect, so it can only be used
+    if the responses from the server have been mocked.
+
+    Implemented as a context manager, usage:
+
+    ```python
+    def test_function(mock_connection_manager):
+        with mock_connection_manager() as conn:
+            with patch.object(connection._client, "request") as request_mock:
+                mocked_response = Mock()
+                # Implement what you need with the mock
+                request_mock.return_value = mocked_response
+                cursor = conn.cursor()
+                # Rest of the code
+    ```
+    """
     @contextmanager
     def manager():
         conn = confluent_sql.connect(
@@ -26,7 +44,19 @@ def mock_connection_manager():
 
 @pytest.fixture
 def connection_manager():
-    """Create a connection for testing."""
+    """
+    Create a connection for testing.
+
+    This uses real api keys, and should only be used for integration tests.
+    Implemented as a context manager, usage:
+
+    ```python
+    def test_function(connection_manager):
+        with connection_manager() as conn:
+            cursor = conn.cursor()
+            # Rest of the code
+    ```
+    """
     flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY")
     flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET")
     environment = os.getenv("CONFLUENT_ENV_ID")
