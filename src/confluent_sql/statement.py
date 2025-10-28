@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from .exceptions import OperationalError
+from .exceptions import OperationalError, DatabaseError
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,7 @@ class Statement:
         # This is required by the cursor object, see https://peps.python.org/pep-0249/#description
         # It's a list of 7-item tuples, the items represent:
         # (name, type_code, display_size, internal_size, precision, scale, null_ok)
+        # TODO: we can probably add more info here.
         if self.schema is not None:
             return [
                 (col["name"], col["type"]["type"], None, None, None, None, None)
@@ -149,7 +150,7 @@ class Statement:
             # If it's failed, we won't get 'traits', and it's probably good to raise an error.
             # TODO: Should we instead set the phase and avoid erroring out here?
             if phase is Phase.FAILED:
-                raise OperationalError(status["detail"])
+                raise DatabaseError(status["detail"])
 
             traits = status["traits"]
         except KeyError as e:

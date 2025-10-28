@@ -9,16 +9,17 @@ import logging
 import random
 import time
 from itertools import islice
-from typing import Optional, List, Tuple, Union, Dict
+from typing import Optional, List, Tuple, Union, Dict, TYPE_CHECKING
 
-from .connection import Connection
 from .exceptions import (
     InterfaceError,
-    DatabaseError,
     ProgrammingError,
     OperationalError,
 )
 from .statement import Statement, Op
+
+if TYPE_CHECKING:
+    from .connection import Connection
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class Cursor:
     results from a Confluent SQL service connection.
     """
 
-    def __init__(self, connection: Connection):
+    def __init__(self, connection: "Connection"):
         """
         Initialize a new cursor.
 
@@ -60,24 +61,6 @@ class Cursor:
         else:
             return self._statement.description
 
-    def close(self) -> None:
-        """
-        Close the cursor and free associated resources.
-
-        This method marks the cursor as closed and releases any
-        resources associated with it. It also attempts to delete
-        any running statement to prevent orphaned jobs.
-        """
-        if not self._closed:
-            if self._statement is not None:
-                self._delete_statement()
-                self._statement = None
-
-            self.rowcount = -1
-            self._closed = True
-            self._results = []
-            self._index = 0
-
     def execute(
         self,
         operation: str,
@@ -100,6 +83,7 @@ class Cursor:
             ProgrammingError: If the SQL statement is invalid
             OperationalError: If the statement cannot be executed
         """
+        # TODO: Handle parameters, see self._submit_statement
         if self._closed:
             raise InterfaceError("Cursor is closed")
 
@@ -126,14 +110,51 @@ class Cursor:
         #      the logic currently implies each cursor handles a single statement at a time
         raise NotImplementedError("executemany not implemented")
 
-    def _get_indexed_result(self):
-        res = self._results[self._index]
-        if self._keyed_results:
-            return res
-        else:
-            return tuple(res.values())
+    def fetchone(self) -> Optional[Tuple]:
+        res = self._get_next_results(1)
+        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
+        # If no results are available, `res` is an empty list,
+        # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
+        return res[0] if res else None
 
-    def _fetch_results(self):
+    def fetchmany(self, size: Optional[int] = None) -> List[Tuple]:
+        if size is None:
+            size = self.arraysize
+        if size <= 0:
+            raise InterfaceError("fetchmany must be called with size > 0, aborting")
+
+        return self._get_next_results(size)
+
+    def fetchall(self) -> List[tuple]:
+        """
+        Fetch all the results from the current cursor.
+        Beware that this will download and put into memory all the available results.
+        Make sure the result set can fit in memory, and that you are not making too many calls
+        at once to fetch the whole result set.
+        If you want more control, use the cursor as an iterator, or use `fetchone`/`fetchmany`
+        to fetch results one-by-one or in batches.
+        """
+        return self._get_next_results()
+
+    def close(self) -> None:
+        """
+        Close the cursor and free associated resources.
+
+        This method marks the cursor as closed and releases any
+        resources associated with it. It also attempts to delete
+        any running statement to prevent orphaned jobs.
+        """
+        if not self._closed:
+            if self._statement is not None:
+                self._delete_statement()
+                self._statement = None
+
+            self.rowcount = -1
+            self._closed = True
+            self._results = []
+            self._index = 0
+
+    def _fetch_next_page(self):
         if self._closed:
             raise InterfaceError("Cursor is closed")
 
@@ -146,11 +167,8 @@ class Cursor:
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
-        # if not self._statement.is_bounded:
-        #     self._delete_statement()
-        #     raise NotImplementedError("Support for unbounded queries not implemented")
-
         if not self._results or self._next_page is not None:
+            logger.info(f"Fetching next page of results for statement {self._statement.name}")
             results, next_page = self._connection.get_statement_results(
                 self._statement.name, self._next_page
             )
@@ -158,73 +176,47 @@ class Cursor:
             self.rowcount += len(results)
 
             for row in results:
-                # Extract row data only - no operation processing
-                # XXX: `op` field might be optional?
-                op = Op(row.get("op"))
-                data = row.get("row", [])
-                self._results.append((f"{op}", tuple(data)))
-                # result = {"op": f"{op}"}
+                data = tuple(row.get("row", []))
+                # op (operation) is not mandatory
+                op_id = row.get("op", None)
 
-                # # Add column data if we have schema
-                # if self._statement.schema and len(data) == len(self._statement.schema):
-                #     for i, col in enumerate(self._statement.schema):
-                #         result[col["name"]] = data[i]
-                # else:
-                #     # Fallback: use generic column names
-                #     for i, value in enumerate(data):
-                #         result[f"col_{i}"] = value
-
-                # self._results.append(result)
+                if op_id is not None:
+                    op = Op(op_id)
+                    result = (f"{op}", data)
+                else:
+                    result = data
+                self._results.append(result)
 
     def __iter__(self):
         return self
 
-    def __next__(self):
+    @property
+    def _remaining(self):
         remaining = len(self._results) - self._index
-
         if remaining < 0:
-            raise InterfaceError("Trying fetch a negative number of elements")
+            raise InterfaceError(
+                "Internal index bigger than results list. This is probably a bug."
+            )
+        return remaining
 
-        if self._results and remaining == 0 and self._next_page is None:
-            raise StopIteration
-
-        if remaining == 0:
-            self._fetch_results()
-
-        # We need to check again, as might not have results anyway
-        remaining = len(self._results) - self._index
-        if remaining == 0:
-            raise StopIteration
+    def __next__(self):
+        if self._remaining == 0:
+            if self._results and not self._next_page:
+                raise StopIteration
+            self._fetch_next_page()
+            # Check again, as we might not have new results for any reason
+            if self._remaining == 0:
+                raise StopIteration
 
         res = self._results[self._index]
         self._index += 1
         return res
-
 
     def _get_next_results(self, limit: Optional[int] = None) -> list[tuple]:
         if limit is None:
             return list(self)
         else:
             return list(islice(self, limit))
-
-    def fetchone(self) -> Optional[Tuple]:
-        res = self._get_next_results(1)
-        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
-        # Here we want to return None if no results are available,
-        # not an empty list: https://peps.python.org/pep-0249/#fetchone
-        if not res:
-            return None
-        return res[0]
-
-    def fetchmany(self, size: Optional[int] = None) -> List[Tuple]:
-        # Get the next batch of results
-        if size is None:
-            size = self.arraysize
-
-        return self._get_next_results(size)
-
-    def fetchall(self) -> List[tuple]:
-        return self._get_next_results()
 
     def _wait_for_statement_ready(self, timeout: int) -> None:
         """
@@ -289,38 +281,12 @@ class Cursor:
         Raises:
             OperationalError: If statement submission fails
         """
+        # TODO: Handle parameters, see Connection.execute_statement
         logger.info(f"Submitting statement {operation}")
         response = self._connection.execute_statement(
             operation, parameters, statement_name, bounded
         )
         self._statement = Statement.from_response(response)
-
-    def _handle_failed_statement(self) -> None:
-        """
-        Handle a failed statement by retrieving detailed error information.
-
-        Raises:
-            DatabaseError: With detailed error message from the API
-        """
-        assert self._statement is not None, (
-            "Calling _handle_failed_statement but _statement is None, this is probably a bug"
-        )
-        try:
-            # Delegate to connection object to get statement details
-            response = self._connection.get_statement_status(self._statement.name)
-
-            # Extract error details from the response
-            error_message = "Statement execution failed"
-            if response.get("status") and response["status"].get("detail"):
-                error_message = response["status"]["detail"]
-
-            raise DatabaseError(f"Statement failed: {error_message}")
-
-        except DatabaseError:
-            # Re-raise DatabaseError as-is
-            raise
-        except Exception as e:
-            raise DatabaseError(f"Statement failed: {e}")
 
     def _delete_statement(self) -> None:
         """

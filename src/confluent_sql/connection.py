@@ -7,15 +7,13 @@ connections to Confluent SQL services.
 
 import uuid
 import logging
-from typing import Optional, Dict, Any, Union, Tuple, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, Union, Tuple, List
 
 import httpx
 
+from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
 
-
-if TYPE_CHECKING:
-    from .cursor import Cursor
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +101,7 @@ class Connection:
         cloud_region: str,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
+        host: Optional[str] = None,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -118,21 +117,28 @@ class Connection:
             api_key: Confluent Cloud API key for general Confluent Cloud resources (optional)
             api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
             host: The base URL for Confluent Cloud API (optional)
-            **kwargs: Additional connection parameters
         """
         self.environment = environment
         self.compute_pool_id = compute_pool_id
         self.organization_id = organization_id
         self.api_key = api_key
         self.api_secret = api_secret
+        self.host = host
+
+        # Internal state
         self._closed = False
         self._cursors: list[Cursor] = []
+        self._database_name: Optional[str] = None
 
         # Create httpx client for making API calls
-        host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
-        base_url = f"{host}/sql/v1/organizations/{organization_id}/environments/{environment}"
-        basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
+        if self.host is None:
+            self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
+        base_url = (
+            f"{self.host}/sql/v1/organizations/{organization_id}/environments/{environment}"
+        )
+
         # Create httpx client for making API calls
+        basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
         self._client = httpx.Client(
             auth=basic_auth,
             base_url=base_url,
@@ -168,22 +174,12 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        from .cursor import Cursor
-
         cursor = Cursor(self)
         self._cursors.append(cursor)
         return cursor
 
-    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
-        try:
-            response = self._client.request(method, url, **kwargs)
-            if raise_for_status:
-                response.raise_for_status()
-            return response
-        except httpx.HTTPStatusError as e:
-            raise OperationalError(f"Error sending request {e.response.status_code}") from e
-        except Exception as e:
-            raise OperationalError("Error sending request") from e
+    def use_database(self, database_name: str):
+        self._database_name = database_name
 
     def execute_statement(
         self,
@@ -198,7 +194,7 @@ class Connection:
         Args:
             statement: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
-            statement_name: Optional name for the statement (defaults to DB-API UUID if not provided)
+            statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}')
 
         Returns:
             Dictionary containing the API response
@@ -206,13 +202,19 @@ class Connection:
         Raises:
             OperationalError: If statement execution fails
         """
+        # TODO: apply parameters to the statement
         # Create the statement payload as per Flink SQL API documentation
         if statement_name is None:
             statement_name = f"dbapi-{str(uuid.uuid4())}"
 
-        # TODO: apply parameters to the statement
+        # Each connection uses a single environment, also
+        # called catalog, so we set the property here
+        properties = {
+            "sql.current-catalog": self.environment
+        }
 
-        properties = {}
+        if self._database_name is not None:
+            properties["sql.current-database"] = self._database_name
         if bounded:
             properties["sql.snapshot.mode"] = "now"
 
@@ -229,7 +231,8 @@ class Connection:
         }
 
         # Submit statement using the API
-        return self._request("/statements", method="POST", json=payload).json()
+        res = self._request("/statements", method="POST", json=payload)
+        return res.json()
 
     def get_statement_status(self, statement_name: str) -> Dict[str, Any]:
         """
@@ -281,6 +284,7 @@ class Connection:
         Args:
             statement_name: The name of the statement to delete
         """
+        logger.info(f"Deleting statement {statement_name}")
         response = self._request(
             f"/statements/{statement_name}", method="DELETE", raise_for_status=False
         )
@@ -291,3 +295,13 @@ class Connection:
                 raise OperationalError("Error deleting statement") from e
             # If the response if 404, it means we don't need to delete the statement.
             logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
+
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+        try:
+            response = self._client.request(method, url, **kwargs)
+            logger.debug("Response: ", response.content)
+            if raise_for_status:
+                response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as e:
+            raise OperationalError(f"Error sending request {e.response.status_code}") from e
