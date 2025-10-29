@@ -12,12 +12,11 @@ def raise_not_found():
     raise httpx.HTTPStatusError("Statement not found", request=Mock(), response=mock_response)
 
 
-def test_connection_error(mock_connection_manager):
+def test_connection_error(mock_connection):
     """Test that we get meaningful error message when a response returns an error."""
-    with mock_connection_manager() as connection:
-        with patch.object(connection._client, "request") as request_mock:
-            response_mock = Mock()
-            response_mock.raise_for_status = raise_not_found
-            request_mock.return_value = response_mock
-            with pytest.raises(OperationalError, match="Error sending request 404"):
-                connection._get_statement_status("test-name")
+    with patch.object(mock_connection._client, "request") as request_mock:
+        response_mock = Mock()
+        response_mock.raise_for_status = raise_not_found
+        request_mock.return_value = response_mock
+        with pytest.raises(OperationalError, match="Error sending request 404"):
+            mock_connection._get_statement_status("test-name")

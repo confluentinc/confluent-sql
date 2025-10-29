@@ -9,7 +9,6 @@ import os
 import pytest
 
 import confluent_sql
-from confluent_sql.statement import Phase
 
 
 @pytest.mark.skipif(

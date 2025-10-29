@@ -23,9 +23,9 @@ def test_unbounded_query_with_finite_statement(cursor):
     cursor.execute("SELECT 42 as answer", bounded=False)
     assert cursor._statement.is_bounded is True
 
-def test_unbounded_query_with_finit_statement(cursor):
-    # For an actual unbounded query, we need a different statement, and to use an actual
-    # table that comes from a kafka topic.
-    cursor.execute("SELECT * FROM sample_data_orders", bounded=False)
+def test_unbounded_query_with_data(table_connection_with_data, test_table_name):
+    # For an actual unbounded query, we need to use an actual table that comes from a kafka topic.
+    cursor = table_connection_with_data.cursor()
+    cursor.execute(f"SELECT * FROM {test_table_name}", bounded=False)
     assert cursor._statement.is_bounded is False
 

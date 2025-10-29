@@ -145,8 +145,8 @@ if __name__ == "__main__":
     print("==> Trying to get tables without setting dbname gives a warning: 'cc.tables'")
     print(cc.tables)
 
-    db_name = cc.databases[0].name
     print("==> Set a dbname with 'cc.use_database(db_name)'")
+    db_name = cc.databases[0].name
     cc.use_database(db_name)
     print(f"==> Get tables in database '{db_name}' with 'cc.tables'")
     print(cc.tables)
