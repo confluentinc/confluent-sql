@@ -32,8 +32,7 @@ class Cursor:
     This class provides methods for executing SQL statements and fetching
     results from a Confluent SQL service connection.
     """
-
-    def __init__(self, connection: "Connection"):
+    def __init__(self, connection: "Connection", with_schema: bool = False):
         """
         Initialize a new cursor.
 
@@ -48,6 +47,7 @@ class Cursor:
         self._closed = False
         self._index = 0
         self._next_page = None
+        self._with_schema = with_schema
 
         # Statement execution state
         self._statement: Optional[Statement] = None
@@ -92,6 +92,8 @@ class Cursor:
 
         # If a statement is present, delete it first
         if self._statement is not None:
+            logger.warning("Running execute on an cursor with a previous statement")
+            logger.warning(f"Deleting previous statement: '{self._statement.name}'")
             self._delete_statement()
             self._statement = None
 
@@ -110,14 +112,14 @@ class Cursor:
         #      the logic currently implies each cursor handles a single statement at a time
         raise NotImplementedError("executemany not implemented")
 
-    def fetchone(self) -> Optional[Tuple]:
+    def fetchone(self) -> Optional[dict]:
         res = self._get_next_results(1)
         assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
         # If no results are available, `res` is an empty list,
         # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
         return res[0] if res else None
 
-    def fetchmany(self, size: Optional[int] = None) -> List[Tuple]:
+    def fetchmany(self, size: Optional[int] = None) -> list[dict]:
         if size is None:
             size = self.arraysize
         if size <= 0:
@@ -125,7 +127,7 @@ class Cursor:
 
         return self._get_next_results(size)
 
-    def fetchall(self) -> List[tuple]:
+    def fetchall(self) -> list[dict]:
         """
         Fetch all the results from the current cursor.
         Beware that this will download and put into memory all the available results.
@@ -169,23 +171,20 @@ class Cursor:
 
         if not self._results or self._next_page is not None:
             logger.info(f"Fetching next page of results for statement {self._statement.name}")
-            results, next_page = self._connection.get_statement_results(
+            results, next_page = self._connection._get_statement_results(
                 self._statement.name, self._next_page
             )
             self._next_page = next_page
             self.rowcount += len(results)
 
-            for row in results:
-                data = tuple(row.get("row", []))
+            for res in results:
+                row = {"row": tuple(res.get("row", []))}
 
                 # op is not mandatory
-                op_id = row.get("op", None)
+                op_id = res.get("op", None)
                 if op_id is not None:
-                    op = Op(op_id)
-                    result = (f"{op}", data)
-                else:
-                    result = data
-                self._results.append(result)
+                    row["op"] = Op(op_id)
+                self._results.append(row)
 
     def __iter__(self):
         return self
@@ -199,7 +198,8 @@ class Cursor:
             )
         return remaining
 
-    def __next__(self):
+    def __next__(self) -> dict:
+        assert self._statement is not None, "Trying to fetch results with null statement"
         if self._remaining == 0:
             if self._results and not self._next_page:
                 raise StopIteration
@@ -210,9 +210,11 @@ class Cursor:
 
         res = self._results[self._index]
         self._index += 1
+        if self._with_schema and self._statement.schema is not None:
+            res["row"] = self._map_row_to_schema(res["row"])
         return res
 
-    def _get_next_results(self, limit: Optional[int] = None) -> list[tuple]:
+    def _get_next_results(self, limit: Optional[int] = None) -> list[dict]:
         if limit is None:
             return list(self)
         else:
@@ -239,7 +241,7 @@ class Cursor:
 
         while time.time() - start_time < timeout:
             logger.info(f"Checking statement '{self._statement.name}' status...")
-            response = self._connection.get_statement_status(self._statement.name)
+            response = self._connection._get_statement_status(self._statement.name)
             self._statement = Statement.from_response(response)
 
             # Statement is ready when it's not in PENDING status.
@@ -283,7 +285,7 @@ class Cursor:
         """
         # TODO: Handle parameters, see Connection.execute_statement
         logger.info(f"Submitting statement {operation}")
-        response = self._connection.execute_statement(
+        response = self._connection._execute_statement(
             operation, parameters, statement_name, bounded
         )
         self._statement = Statement.from_response(response)
@@ -298,5 +300,30 @@ class Cursor:
         assert self._statement is not None, (
             "Calling _delete_statement but _statement is None, this is probably a bug"
         )
-        self._connection.delete_statement(self._statement.name)
+        self._connection._delete_statement(self._statement.name)
         self._statement.set_deleted()
+
+    def _map_row_to_schema(self, values) -> dict:
+        assert self._statement is not None, "statement is none, this is probably a bug"
+        if self._statement.schema is None:
+            raise InterfaceError("schema not present, can't map values to keys")
+        return _map_tuple_to_schema(self._statement.schema, values)
+
+def _map_tuple_to_schema(schema: dict, values: tuple) -> dict:
+    """
+    Recursively transforms a tuple or list of data values into a
+    dictionary based on the provided schema.
+    """
+    result_dict = {}
+
+    for field_schema, value in zip(schema, values):
+        field_name = field_schema["name"]
+        type_info = field_schema.get("type")
+        if type_info is None:
+            type_info = field_schema.get("field_type")
+        if isinstance(type_info, dict) and type_info.get("type") == "ROW":
+            sub_schema_fields = type_info["fields"]
+            result_dict[field_name] = _map_tuple_to_schema(sub_schema_fields, value)
+        else:
+            result_dict[field_name] = value
+    return result_dict

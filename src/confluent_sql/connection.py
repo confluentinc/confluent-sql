@@ -28,6 +28,8 @@ def connect(
     cloud_region: str,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
+    host: Optional[str] = None,
+    dbname: Optional[str] = None,
 ) -> "Connection":
     """
     Create a connection to a Confluent SQL service.
@@ -42,6 +44,8 @@ def connect(
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
+        host: The base URL for Confluent Cloud API (optional)
+        dbname: The name of the database to use (optional)
 
     Returns:
         A Connection object representing the database connection
@@ -79,6 +83,7 @@ def connect(
         cloud_region,
         api_key=api_key,
         api_secret=api_secret,
+        dbname=dbname,
     )
 
 
@@ -102,6 +107,7 @@ class Connection:
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         host: Optional[str] = None,
+        dbname: Optional[str] = None,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -117,6 +123,7 @@ class Connection:
             api_key: Confluent Cloud API key for general Confluent Cloud resources (optional)
             api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
             host: The base URL for Confluent Cloud API (optional)
+            dbname: The name of the database to use (optional)
         """
         self.environment = environment
         self.compute_pool_id = compute_pool_id
@@ -128,14 +135,12 @@ class Connection:
         # Internal state
         self._closed = False
         self._cursors: list[Cursor] = []
-        self._database_name: Optional[str] = None
+        self._dbname = dbname
 
         # Create httpx client for making API calls
         if self.host is None:
             self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
-        base_url = (
-            f"{self.host}/sql/v1/organizations/{organization_id}/environments/{environment}"
-        )
+        base_url = f"{self.host}/sql/v1/organizations/{organization_id}/environments/{environment}"
 
         # Create httpx client for making API calls
         basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
@@ -161,7 +166,7 @@ class Connection:
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
-    def cursor(self) -> "Cursor":
+    def cursor(self, with_schema: bool = False) -> "Cursor":
         """
         Create and return a new cursor object.
 
@@ -174,14 +179,11 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        cursor = Cursor(self)
+        cursor = Cursor(self, with_schema)
         self._cursors.append(cursor)
         return cursor
 
-    def use_database(self, database_name: str):
-        self._database_name = database_name
-
-    def execute_statement(
+    def _execute_statement(
         self,
         statement: str,
         parameters: Optional[Union[Tuple, List, Dict]] = None,
@@ -209,12 +211,10 @@ class Connection:
 
         # Each connection uses a single environment, also
         # called catalog, so we set the property here
-        properties = {
-            "sql.current-catalog": self.environment
-        }
+        properties = {"sql.current-catalog": self.environment}
 
-        if self._database_name is not None:
-            properties["sql.current-database"] = self._database_name
+        if self._dbname is not None:
+            properties["sql.current-database"] = self._dbname
         if bounded:
             properties["sql.snapshot.mode"] = "now"
 
@@ -234,7 +234,7 @@ class Connection:
         res = self._request("/statements", method="POST", json=payload)
         return res.json()
 
-    def get_statement_status(self, statement_name: str) -> Dict[str, Any]:
+    def _get_statement_status(self, statement_name: str) -> Dict[str, Any]:
         """
         Get the current status of a statement.
 
@@ -249,7 +249,7 @@ class Connection:
         """
         return self._request(f"/statements/{statement_name}").json()
 
-    def get_statement_results(
+    def _get_statement_results(
         self, statement_name: str, next_url: Optional[str]
     ) -> tuple[list, Optional[str]]:
         """
@@ -277,7 +277,7 @@ class Connection:
             next_url = None
         return (results, next_url)
 
-    def delete_statement(self, statement_name: str) -> None:
+    def _delete_statement(self, statement_name: str) -> None:
         """
         Delete a statement.
 

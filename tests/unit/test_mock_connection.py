@@ -20,4 +20,4 @@ def test_connection_error(mock_connection_manager):
             response_mock.raise_for_status = raise_not_found
             request_mock.return_value = response_mock
             with pytest.raises(OperationalError, match="Error sending request 404"):
-                connection.get_statement_status("test-name")
+                connection._get_statement_status("test-name")

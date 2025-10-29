@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import confluent_sql
 import pytest
 
+
 @pytest.fixture
 def mock_connection_manager():
     """
@@ -25,25 +26,29 @@ def mock_connection_manager():
                 # Rest of the code
     ```
     """
+
     @contextmanager
     def manager():
         conn = confluent_sql.connect(
-        flink_api_key="TEST",
-        flink_api_secret="TEST",
-        environment="TEST",
-        organization_id="TEST",
-        compute_pool_id="TEST",
-        cloud_region="TEST",
-        cloud_provider="TEST",
+            flink_api_key="TEST",
+            flink_api_secret="TEST",
+            environment="TEST",
+            organization_id="TEST",
+            compute_pool_id="TEST",
+            cloud_region="TEST",
+            cloud_provider="TEST",
+            dbname="TEST",
         )
         try:
             yield conn
         finally:
             conn.close()
+
     return manager
 
+
 @pytest.fixture
-def connection_manager():
+def connection():
     """
     Create a connection for testing.
 
@@ -62,8 +67,9 @@ def connection_manager():
     environment = os.getenv("CONFLUENT_ENV_ID")
     organization_id = os.getenv("CONFLUENT_ORG_ID")
     compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID")
-    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "aws")
-    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "us-east-2")
+    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER")
+    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION")
+    dbname = os.getenv("CONFLUENT_TEST_DBNAME")
 
     if not all(
         [
@@ -74,13 +80,12 @@ def connection_manager():
             compute_pool_id,
             cloud_region,
             cloud_provider,
+            dbname,
         ]
     ):
         pytest.skip("Missing required environment variables for integration test")
 
-    @contextmanager
-    def manager():
-        conn = confluent_sql.connect(
+    conn = confluent_sql.connect(
         flink_api_key=flink_api_key,
         flink_api_secret=flink_api_secret,
         environment=environment,
@@ -88,9 +93,14 @@ def connection_manager():
         compute_pool_id=compute_pool_id,
         cloud_region=cloud_region,
         cloud_provider=cloud_provider,
-        )
-        try:
-            yield conn
-        finally:
-            conn.close()
-    return manager
+        dbname=dbname,
+    )
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def cursor(connection):
+    cursor = connection.cursor(with_schema=True)
+    yield cursor
+    cursor.close()
