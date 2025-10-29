@@ -177,9 +177,9 @@ class Cursor:
 
             for row in results:
                 data = tuple(row.get("row", []))
-                # op (operation) is not mandatory
-                op_id = row.get("op", None)
 
+                # op is not mandatory
+                op_id = row.get("op", None)
                 if op_id is not None:
                     op = Op(op_id)
                     result = (f"{op}", data)
