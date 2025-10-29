@@ -26,8 +26,7 @@ uv add confluent-sql
 
 ## Quick Start
 
-### Basic Connection
-
+Setup the connection:
 ```python
 import confluent_sql
 
@@ -39,27 +38,33 @@ connection = confluent_sql.connect(
     compute_pool_id="lfcp-789012",
     region="us-east-2",
     organization_id="org-123456",
-    cloud_provider="aws"
+    cloud_provider="aws",
+    dbname="your-database-name"
 )
-
-# Create cursor and execute query
-cursor = connection.cursor()
-cursor.execute("SELECT customer_id, name FROM customers")
-
-# Fetch results (includes changelog operations)
-for row in cursor:
-    print(row)  # e.g., ('+I', 1, 'John')
-
-# Clean up
-cursor.close()
-connection.close()
 ```
 
-Example:
+Create a cursor and run a query:
 ```python
+cursor = connection.cursor()
 cursor.execute("SELECT customer_id, name FROM customers")
-results = cursor.fetchall()
-# Results: [('+I', 1, 'John'), ('+I', 2, 'Jane')]
+```
+
+Fetch results using fetchone, fetchmany and fetchall:
+```python
+print(cursor.fetchone())
+print(cursor.fetchmany(2))
+print(cursor.fetchall())
+```
+
+Fetch results using the cursor as an iterator:
+```python
+for row in cursor:
+    print(row)
+```
+
+Clean up:
+```python
+connection.close() # This will also close all the cursors
 ```
 
 ## Development
@@ -83,24 +88,21 @@ uv pip install -e .
 
 ### Running Tests
 
+Set required environment variables for integration tests.
+If any of the variables is not set, integration tests will be skipped.
+
 ```bash
-# Set required environment variables
-export FLINK_API_KEY="your-key"
-export FLINK_API_SECRET="your-secret"
-export ENV_ID="env-123456"
-export ORG_ID="org-123456"
-export COMPUTE_POOL_ID="lfcp-789012"
-export FLINK_REGION="us-east-2"
+export CONFLUENT_FLINK_API_KEY="your-key"
+export CONFLUENT_FLINK_API_SECRET="your-secret"
+export CONFLUENT_ENV_ID="env-123456"
+export CONFLUENT_ORG_ID="org-123456"
+export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012"
+export CONFLUENT_CLOUD_PROVIDER="aws"
+export CONFLUENT_CLOUD_REGION="us-east-2"
+export CONFLUENT_TEST_DBNAME="test-db"
+```
 
-# Run all tests
+Run tests:
+```bash
 uv run pytest
-
-# Run only unit tests
-uv run pytest -m "not integration"
-
-# Run only integration tests
-uv run pytest -m integration
-
-# Run with coverage
-uv run pytest --cov=confluent_sql --cov-report=html
 ```
