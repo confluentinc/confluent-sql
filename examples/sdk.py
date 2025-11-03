@@ -156,7 +156,7 @@ if __name__ == "__main__":
         cur.execute("CREATE TABLE IF NOT EXISTS test_table (`id` BIGINT, `name` STRING)")
         print("==> Inserting values into the table")
         cur.execute("INSERT INTO test_table VALUES (1, 'test_name'), (2, 'test_name_2')")
-        print("Retrieving values from table")
+        print("==> Retrieving values from table")
         print(cc.run("SELECT * FROM test_table"))
         print("==> Deleting table")
         cur.execute("DROP TABLE IF EXISTS test_table")
