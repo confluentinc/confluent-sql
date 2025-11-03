@@ -272,7 +272,7 @@ class Connection:
         logger.info(f"got {len(results)} results for statement {statement_name}")
         next_url = response.get("metadata", {}).get("next")
         # next_url is an empty string even if it's not set,
-        # so we need to explicitely set to None in that case.
+        # so we need to explicitly set to None in that case.
         if not next_url:
             next_url = None
         return (results, next_url)
