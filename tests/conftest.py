@@ -16,7 +16,7 @@ def connection():
 
     This uses real api keys, and should only be used for integration tests.
     This fixture is execute once per testing session, so the connection is
-    shared between the various tests. So, avoid running tests in parallell.
+    shared between the various tests. So, avoid running tests in parallel.
     """
     flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY")
     flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET")
