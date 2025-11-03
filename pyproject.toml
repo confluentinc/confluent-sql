@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "confluent-sql"
+version = "0.1.0"
+description = "DB-API v2 compliant driver for Confluent SQL"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.23.0,<0.29.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
