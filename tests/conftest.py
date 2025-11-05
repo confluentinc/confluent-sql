@@ -131,7 +131,18 @@ def table_connection(connection, test_table_name):
     # Then create it from scratch. Will have 10 total columns.
     # (The 10-ness will be useful later when we query INFORMATION_SCHEMA.COLUMNS for the table)
     cursor.execute(
-        f"CREATE TABLE {test_table_name} (`c1` BIGINT, `c2` STRING, `c3` STRING, `c4` STRING, `c5` STRING, `c6` STRING, `c7` STRING, `c8` STRING, `c9` STRING, `c10` STRING)"
+        f"""CREATE TABLE {test_table_name} (
+            `c1` BIGINT,
+            `c2` STRING,
+            `c3` STRING,
+            `c4` STRING,
+            `c5` STRING,
+            `c6` STRING,
+            `c7` STRING,
+            `c8` STRING,
+            `c9` STRING,
+            `c10` STRING
+        )"""
     )
     cursor.close()
 
