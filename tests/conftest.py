@@ -81,7 +81,7 @@ def table_connection(connection, test_table_name):
     # First delete the table if it was left here for any reason
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
     # Then create it from scratch. Will have 10 total columns.
-    # (The 10-ness will be useful later when when query INFORMATION_SCHEMA.COLUMNS for the table)
+    # (The 10-ness will be useful later when we query INFORMATION_SCHEMA.COLUMNS for the table)
     cursor.execute(
         f"CREATE TABLE {test_table_name} (`c1` BIGINT, `c2` STRING, `c3` STRING, `c4` STRING, `c5` STRING, `c6` STRING, `c7` STRING, `c8` STRING, `c9` STRING, `c10` STRING)"
     )
@@ -125,7 +125,7 @@ def cursor_with_nonstreaming_data(table_connection, test_table_name):
     cursor = table_connection.cursor(with_schema=True)
 
     # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making tests faster.
-    # The table has 10 visible columns, so this will return 10 rows. {test_table_name} is a 10-column table,
+    # The table {test_table_name} has 10 visible columns, so this query will return 10 rows.
     cursor.execute(
         f"""SELECT * FROM `INFORMATION_SCHEMA`.`COLUMNS`
                 WHERE TABLE_NAME = '{test_table_name}'

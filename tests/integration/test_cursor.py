@@ -1,7 +1,7 @@
 from confluent_sql.statement import Phase
 
 """A one column, one row very fast to complete query."""
-SINGLE_ROW_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES`"
+SINGLE_ROW_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES` LIMIT 1"
 # (Queries against INFORMATION_SCHEMA execute very quickly)
 
 
