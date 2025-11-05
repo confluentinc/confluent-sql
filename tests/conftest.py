@@ -80,10 +80,15 @@ def table_connection(connection, test_table_name):
     cursor = connection.cursor()
     # First delete the table if it was left here for any reason
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
-    # Then create it from scratch
-    cursor.execute(f"CREATE TABLE IF NOT EXISTS {test_table_name} (`id` BIGINT, `name` STRING)")
+    # Then create it from scratch. Will have 10 total columns.
+    # (The 10-ness will be useful later when when query INFORMATION_SCHEMA.COLUMNS for the table)
+    cursor.execute(
+        f"CREATE TABLE {test_table_name} (`c1` BIGINT, `c2` STRING, `c3` STRING, `c4` STRING, `c5` STRING, `c6` STRING, `c7` STRING, `c8` STRING, `c9` STRING, `c10` STRING)"
+    )
     cursor.close()
+
     yield connection
+
     cursor = connection.cursor()
     # Delete it at the end if everything went fine
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
@@ -91,23 +96,23 @@ def table_connection(connection, test_table_name):
 
 
 @pytest.fixture(scope="session")
-def table_connection_with_data(table_connection, test_table_name):
+def populated_table_connection(table_connection, test_table_name):
     """This fixture adds some data to the table before serving the shared connection."""
     cursor = table_connection.cursor()
     cursor.execute(
         f"""
     INSERT INTO {test_table_name}
     VALUES
-        (1, 'name1'),
-        (2, 'name2'),
-        (3, 'name3'),
-        (4, 'name4'),
-        (5, 'name5'),
-        (6, 'name6'),
-        (7, 'name7'),
-        (8, 'name8'),
-        (9, 'name9'),
-        (10, 'name10')
+        (1, 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1'),
+        (2, 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2'),
+        (3, 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3'),
+        (4, 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4'),
+        (5, 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5'),
+        (6, 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6'),
+        (7, 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7'),
+        (8, 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8'),
+        (9, 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9'),
+        (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10')
     """
     )
     cursor.close()
@@ -115,11 +120,21 @@ def table_connection_with_data(table_connection, test_table_name):
 
 
 @pytest.fixture
-def cursor_with_data(table_connection_with_data, test_table_name):
-    """A cursor with 'SELECT * FROM {test_table_name}' already executed."""
-    cursor = table_connection_with_data.cursor(with_schema=True)
-    cursor.execute(f"SELECT * FROM {test_table_name}")
+def cursor_with_nonstreaming_data(table_connection, test_table_name):
+    """A cursor with a 10-row non-streaming select already executed."""
+    cursor = table_connection.cursor(with_schema=True)
+
+    # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making tests faster.
+    # The table has 10 visible columns, so this will return 10 rows. {test_table_name} is a 10-column table,
+    cursor.execute(
+        f"""SELECT * FROM `INFORMATION_SCHEMA`.`COLUMNS`
+                WHERE TABLE_NAME = '{test_table_name}'
+                AND TABLE_SCHEMA = '{table_connection._dbname}'
+                AND IS_HIDDEN='NO'"""
+    )
+
     yield cursor
+
     cursor.close()
 
 
