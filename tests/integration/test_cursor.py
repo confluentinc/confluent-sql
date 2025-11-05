@@ -43,7 +43,8 @@ def test_cursor_description_connection_closed_raises(single_test_connection):
     # Test that asking for a description when the connection is closed raises an error
     cursor = single_test_connection.cursor()
     single_test_connection.close()
-    pytest.raises(InterfaceError, lambda: cursor.description)
+    with pytest.raises(InterfaceError, match="Connection is closed"):
+        _ = cursor.description
 
 
 def test_cursor_description_cursor_closed_raises(connection):

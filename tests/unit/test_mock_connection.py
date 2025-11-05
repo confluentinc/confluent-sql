@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from mock import Mock
+from unittest.mock import Mock
 from confluent_sql.exceptions import OperationalError
 
 
