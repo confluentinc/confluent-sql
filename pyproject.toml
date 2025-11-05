@@ -7,15 +7,35 @@ name = "confluent-sql"
 version = "0.1.0"
 description = "DB-API v2 compliant driver for Confluent SQL"
 requires-python = ">=3.9"
-dependencies = [
-    "httpx>=0.23.0,<0.29.0",
+dependencies = ["httpx>=0.23.0,<0.29.0"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "-v",
+    "--import-mode=importlib",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "--cov=confluent_sql",
+    "--cov-report=html",
 ]
+testpaths = "tests"
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+mock_use_standalone_module = true
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
 
 [dependency-groups]
 dev = [
+    "mock>=5.2.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "pytest-mock>=3.15.1",
 ]

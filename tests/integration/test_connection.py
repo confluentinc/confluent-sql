@@ -9,6 +9,7 @@ import os
 import pytest
 
 import confluent_sql
+from confluent_sql.connection import Connection
 
 
 @pytest.mark.skipif(
@@ -51,3 +52,17 @@ def test_confluent_sql_connection():
     # We can check that the `environment_id` passed to the `connect` function is present:
     catalog_ids = [res["row"]["Catalog ID"] for res in result]
     assert environment_id in catalog_ids
+
+
+@pytest.mark.parametrize("delete_statement", [False, True])
+def test_closing_cursor(connection: Connection, delete_statement: bool, mocker):
+    """Test that auto closing a cursor with possible also delete statement works as expected."""
+    with connection.closing_cursor(delete_statement=delete_statement) as cursor:
+        assert cursor is not None
+        delete_statement_spy = mocker.spy(cursor, "delete_statement")
+        cursor.execute("SELECT 1 FROM `INFORMATION_SCHEMA`.`TABLES`")
+
+    assert cursor.is_closed is True
+    assert delete_statement_spy.call_count == (
+        1 if delete_statement else 0
+    ), "Unexpected call count for delete_statement"

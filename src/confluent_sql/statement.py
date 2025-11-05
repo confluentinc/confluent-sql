@@ -25,7 +25,9 @@ class Op(Enum):
         elif self is self.DELETE:
             return "-D"
         else:
-            raise ValueError(f"Unknown value for Op: '{self.value}'. This is probably a bug")
+            raise ValueError(
+                f"Unknown value for Op: '{self.value}'. This is probably a bug"
+            )
 
 
 class Phase(Enum):
@@ -126,7 +128,13 @@ class Statement:
             ]
         return None
 
+    @property
+    def is_deleted(self) -> bool:
+        """Has this statement been explicitly deleted?"""
+        return self._deleted
+
     def set_deleted(self):
+        """Mark this statement as deleted."""
         self._deleted = True
 
     @classmethod
@@ -154,6 +162,8 @@ class Statement:
 
             traits = status["traits"]
         except KeyError as e:
-            raise OperationalError(f"Error parsing statement response, missing {e}.") from e
+            raise OperationalError(
+                f"Error parsing statement response, missing {e}."
+            ) from e
 
         return cls(statement_id, name, spec, status, traits, phase)

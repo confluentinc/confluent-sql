@@ -5,6 +5,7 @@ This module provides the connect function and Connection class for establishing
 connections to Confluent SQL services.
 """
 
+from contextlib import contextmanager
 import uuid
 import logging
 from typing import Optional, Dict, Any, Union, Tuple, List
@@ -28,7 +29,6 @@ def connect(
     cloud_region: str,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
-    host: Optional[str] = None,
     dbname: Optional[str] = None,
 ) -> "Connection":
     """
@@ -44,7 +44,6 @@ def connect(
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
-        host: The base URL for Confluent Cloud API (optional)
         dbname: The name of the database to use (optional)
 
     Returns:
@@ -134,7 +133,6 @@ class Connection:
 
         # Internal state
         self._closed = False
-        self._cursors: list[Cursor] = []
         self._dbname = dbname
 
         # Create httpx client for making API calls
@@ -158,9 +156,6 @@ class Connection:
         and marks the connection as closed.
         """
         if not self._closed:
-            for cursor in self._cursors:
-                cursor.close()
-            self._cursors.clear()
             self._closed = True
             self._client.close()
         else:
@@ -168,7 +163,8 @@ class Connection:
 
     def cursor(self, with_schema: bool = False) -> "Cursor":
         """
-        Create and return a new cursor object.
+        Create and return a new cursor object. The cursor will need
+        to be manually closed by the caller.
 
         Returns:
             A new Cursor object associated with this connection
@@ -179,9 +175,42 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        cursor = Cursor(self, with_schema)
-        self._cursors.append(cursor)
-        return cursor
+        return Cursor(self, with_schema)
+
+    @contextmanager
+    def closing_cursor(
+        self, with_schema: bool = False, delete_statement: bool = False
+    ) -> "Cursor":
+        """
+        Context manager for creating and automatically closing a cursor.
+        If delete_statement is True, the statement associated with the cursor
+        will also be deleted when the cursor is closed.
+
+        Yields:
+            A new Cursor object associated with this connection
+
+        Raises:
+            InterfaceError: If the connection is closed
+        """
+        cursor = self.cursor(with_schema=with_schema)
+        try:
+            yield cursor
+        finally:
+            try:
+                if delete_statement:
+                    cursor.delete_statement()
+            finally:
+                cursor.close()
+
+    @property
+    def is_closed(self) -> bool:
+        """
+        Check if the connection is closed.
+
+        Returns:
+            True if the connection is closed, False otherwise
+        """
+        return self._closed
 
     def _execute_statement(
         self,
@@ -204,6 +233,7 @@ class Connection:
         Raises:
             OperationalError: If statement execution fails
         """
+
         # TODO: apply parameters to the statement
         # Create the statement payload as per Flink SQL API documentation
         if statement_name is None:
@@ -294,9 +324,16 @@ class Connection:
             if response.status_code != 404:
                 raise OperationalError("Error deleting statement") from e
             # If the response is 404, it means we don't need to delete the statement.
-            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
+            logger.info(
+                f"Statement '{statement_name}' not found while deleting, ignoring"
+            )
 
-    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+    def _request(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        if self._closed:
+            raise InterfaceError("Connection is closed")
+
         try:
             response = self._client.request(method, url, **kwargs)
             logger.debug("Response: ", response.content)
@@ -304,4 +341,6 @@ class Connection:
                 response.raise_for_status()
             return response
         except httpx.HTTPStatusError as e:
-            raise OperationalError(f"Error sending request {e.response.status_code}") from e
+            raise OperationalError(
+                f"Error sending request {e.response.status_code}"
+            ) from e
