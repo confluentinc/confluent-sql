@@ -31,6 +31,7 @@ def test_unbounded_query_with_finite_statement(cursor):
     assert cursor._statement.is_bounded is True
 
 
+@pytest.mark.slow
 def test_unbounded_query_with_data(populated_table_connection, test_table_name):
     # For an actual unbounded query, we need to use an actual table that comes from a kafka topic.
     cursor = populated_table_connection.cursor()

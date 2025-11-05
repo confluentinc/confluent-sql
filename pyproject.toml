@@ -28,6 +28,7 @@ filterwarnings = [
     "ignore::PendingDeprecationWarning",
 ]
 mock_use_standalone_module = true
+markers = ["slow: mark a test as a slow test"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
