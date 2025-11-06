@@ -1,6 +1,3 @@
-from confluent_sql.statement import Op
-
-
 def test_fetchall_gets_all_results(cursor_with_nonstreaming_data):
     results = cursor_with_nonstreaming_data.fetchall()
     assert len(results) == 10

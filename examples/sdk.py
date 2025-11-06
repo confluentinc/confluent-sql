@@ -75,7 +75,9 @@ class ConfluentCloud:
         self._current_db = dbname
 
     def use_database(self, dbname: str):
-        logger.warning("Closing existing connection and all the cursors to create a new one")
+        logger.warning(
+            "Closing existing connection and all the cursors to create a new one"
+        )
         self.connection.close()
         self._init_connection(dbname)
 
@@ -142,7 +144,9 @@ if __name__ == "__main__":
     print("==> Get available databases with 'cc.databases'")
     print(cc.databases)
 
-    print("==> Trying to get tables without setting dbname gives a warning: 'cc.tables'")
+    print(
+        "==> Trying to get tables without setting dbname gives a warning: 'cc.tables'"
+    )
     print(cc.tables)
 
     print("==> Set a dbname with 'cc.use_database(db_name)'")
@@ -153,9 +157,13 @@ if __name__ == "__main__":
 
     with cc.cursor(with_schema=True) as cur:
         print("==> Creating table 'test_table' on 'dbt_adapter'")
-        cur.execute("CREATE TABLE IF NOT EXISTS test_table (`id` BIGINT, `name` STRING)")
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS test_table (`id` BIGINT, `name` STRING)"
+        )
         print("==> Inserting values into the table")
-        cur.execute("INSERT INTO test_table VALUES (1, 'test_name'), (2, 'test_name_2')")
+        cur.execute(
+            "INSERT INTO test_table VALUES (1, 'test_name'), (2, 'test_name_2')"
+        )
         print("==> Retrieving values from table")
         print(cc.run("SELECT * FROM test_table"))
         print("==> Deleting table")

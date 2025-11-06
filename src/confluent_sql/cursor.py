@@ -32,6 +32,7 @@ class Cursor:
     This class provides methods for executing SQL statements and fetching
     results from a Confluent SQL service connection.
     """
+
     def __init__(self, connection: "Connection", with_schema: bool = False):
         """
         Initialize a new cursor.
@@ -55,6 +56,8 @@ class Cursor:
 
     @property
     def description(self) -> Optional[list[tuple]]:
+        self._raise_if_closed()
+
         # Required by DB-API: https://peps.python.org/pep-0249/#description
         if self._statement is None:
             return None
@@ -84,20 +87,14 @@ class Cursor:
             OperationalError: If the statement cannot be executed
         """
         # TODO: Handle parameters, see self._submit_statement
-        if self._closed:
-            raise InterfaceError("Cursor is closed")
+
+        self._raise_if_closed()
 
         if not operation.strip():
             raise ProgrammingError("SQL statement cannot be empty")
 
-        # If a statement is present, delete it first
-        if self._statement is not None:
-            logger.warning("Running execute on an cursor with a previous statement")
-            logger.warning(f"Deleting previous statement: '{self._statement.name}'")
-            self._delete_statement()
-            self._statement = None
-
-        # Then reset the state
+        # Reset internal state
+        self._statement = None
         self._results = []
         self._index = 0
         self.rowcount = -1
@@ -106,20 +103,28 @@ class Cursor:
         self._submit_statement(operation, parameters, statement_name, bounded)
         self._wait_for_statement_ready(timeout)
 
-    def executemany(self, operation: str, seq_of_parameters: list[Union[tuple, list, dict]]):
+    def executemany(
+        self, operation: str, seq_of_parameters: list[Union[tuple, list, dict]]
+    ):
         # Implement this if needed.
         # XXX: We need to handle multiple statements with a single cursor here,
         #      the logic currently implies each cursor handles a single statement at a time
         raise NotImplementedError("executemany not implemented")
 
     def fetchone(self) -> Optional[dict]:
+        self._raise_if_closed()
+
         res = self._get_next_results(1)
-        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
+        assert len(res) <= 1, (
+            "fetchone returned more than one result, this is probably a bug"
+        )
         # If no results are available, `res` is an empty list,
         # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
         return res[0] if res else None
 
     def fetchmany(self, size: Optional[int] = None) -> list[dict]:
+        self._raise_if_closed()
+
         if size is None:
             size = self.arraysize
         if size <= 0:
@@ -136,6 +141,8 @@ class Cursor:
         If you want more control, use the cursor as an iterator, or use `fetchone`/`fetchmany`
         to fetch results one-by-one or in batches.
         """
+        self._raise_if_closed()
+
         return self._get_next_results()
 
     def close(self) -> None:
@@ -148,13 +155,46 @@ class Cursor:
         """
         if not self._closed:
             if self._statement is not None:
-                self._delete_statement()
                 self._statement = None
 
             self.rowcount = -1
             self._closed = True
             self._results = []
             self._index = 0
+
+    def delete_statement(self) -> None:
+        """
+        Delete the CCloud Flink-side statement to prevent orphaned jobs / statement records.
+
+        Raises:
+            OperationalError: If statement deletion fails.
+            InterfaceError: If the cursor is closed or if there is no statement to delete.
+        """
+        self._raise_if_closed()
+
+        if self._statement is None:
+            raise InterfaceError("No statement to delete")
+
+        if not self._statement.is_deleted:
+            self._connection._delete_statement(self._statement.name)
+            self._statement.set_deleted()
+
+    @property
+    def is_closed(self) -> bool:
+        """
+        Check if the cursor is closed.
+
+        Returns:
+            True if the cursor is closed, False otherwise
+        """
+        return self._closed
+
+    def _raise_if_closed(self) -> None:
+        """Raise InterfaceError if the cursor or connection is closed."""
+        if self._closed:
+            raise InterfaceError("Cursor is closed")
+        if self._connection.is_closed:
+            raise InterfaceError("Connection is closed")
 
     def _fetch_next_page(self):
         if self._closed:
@@ -170,7 +210,9 @@ class Cursor:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
         if not self._results or self._next_page is not None:
-            logger.info(f"Fetching next page of results for statement {self._statement.name}")
+            logger.info(
+                f"Fetching next page of results for statement {self._statement.name}"
+            )
             results, next_page = self._connection._get_statement_results(
                 self._statement.name, self._next_page
             )
@@ -199,7 +241,9 @@ class Cursor:
         return remaining
 
     def __next__(self) -> dict:
-        assert self._statement is not None, "Trying to fetch results with null statement"
+        assert self._statement is not None, (
+            "Trying to fetch results with null statement"
+        )
         if self._remaining == 0:
             if self._results and not self._next_page:
                 raise StopIteration
@@ -263,7 +307,9 @@ class Cursor:
             actual_delay = current_delay * jitter
             time.sleep(actual_delay)
             current_delay = min(current_delay * 1.5, max_delay)
-        raise OperationalError(f"Statement submission timed out after {timeout} seconds")
+        raise OperationalError(
+            f"Statement submission timed out after {timeout} seconds"
+        )
 
     def _submit_statement(
         self,
@@ -290,24 +336,12 @@ class Cursor:
         )
         self._statement = Statement.from_response(response)
 
-    def _delete_statement(self) -> None:
-        """
-        Delete a running statement to prevent orphaned jobs.
-
-        Raises:
-            OperationalError: If statement deletion fails
-        """
-        assert self._statement is not None, (
-            "Calling _delete_statement but _statement is None, this is probably a bug"
-        )
-        self._connection._delete_statement(self._statement.name)
-        self._statement.set_deleted()
-
     def _map_row_to_schema(self, values) -> dict:
         assert self._statement is not None, "statement is none, this is probably a bug"
         if self._statement.schema is None:
             raise InterfaceError("schema not present, can't map values to keys")
         return _map_tuple_to_schema(self._statement.schema, values)
+
 
 def _map_tuple_to_schema(schema: dict, values: tuple) -> dict:
     """

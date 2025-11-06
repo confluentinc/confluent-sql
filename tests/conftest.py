@@ -3,16 +3,64 @@ import os
 import confluent_sql
 import pytest
 
+from confluent_sql.connection import Connection
+
 
 @pytest.fixture(scope="session")
 def test_table_name():
     return "pytest_table"
 
 
+@pytest.fixture()
+def connection_factory():
+    """
+    Returns a factory function to create new connections. Connection parameters
+    default from environment variables.
+
+    This is useful for tests that need to create multiple connections.
+    Each call to the factory will create a new connection.
+    """
+
+    def _create_connection(
+        flink_api_key=os.getenv("CONFLUENT_FLINK_API_KEY"),
+        flink_api_secret=os.getenv("CONFLUENT_FLINK_API_SECRET"),
+        environment=os.getenv("CONFLUENT_ENV_ID"),
+        organization_id=os.getenv("CONFLUENT_ORG_ID"),
+        compute_pool_id=os.getenv("CONFLUENT_COMPUTE_POOL_ID"),
+        cloud_provider=os.getenv("CONFLUENT_CLOUD_PROVIDER"),
+        cloud_region=os.getenv("CONFLUENT_CLOUD_REGION"),
+        dbname=os.getenv("CONFLUENT_TEST_DBNAME"),
+    ) -> Connection:
+        return confluent_sql.connect(
+            flink_api_key=flink_api_key,
+            flink_api_secret=flink_api_secret,
+            environment=environment,
+            organization_id=organization_id,
+            compute_pool_id=compute_pool_id,
+            cloud_region=cloud_region,
+            cloud_provider=cloud_provider,
+            dbname=dbname,
+        )
+
+    return _create_connection
+
+
+@pytest.fixture()
+def single_test_connection(connection_factory):
+    """
+    Returns a single connection for tests that need only one connection.
+
+    This connection is closed at the end of the test.
+    """
+    conn = connection_factory()
+    yield conn
+    conn.close()
+
+
 @pytest.fixture(scope="session")
 def connection():
     """
-    Create a connection for testing.
+    Create a connection for testing. Will automatically close at the end of the session.
 
     This uses real api keys, and should only be used for integration tests.
     This fixture is execute once per testing session, so the connection is
@@ -83,7 +131,18 @@ def table_connection(connection, test_table_name):
     # Then create it from scratch. Will have 10 total columns.
     # (The 10-ness will be useful later when we query INFORMATION_SCHEMA.COLUMNS for the table)
     cursor.execute(
-        f"CREATE TABLE {test_table_name} (`c1` BIGINT, `c2` STRING, `c3` STRING, `c4` STRING, `c5` STRING, `c6` STRING, `c7` STRING, `c8` STRING, `c9` STRING, `c10` STRING)"
+        f"""CREATE TABLE {test_table_name} (
+            `c1` BIGINT,
+            `c2` STRING,
+            `c3` STRING,
+            `c4` STRING,
+            `c5` STRING,
+            `c6` STRING,
+            `c7` STRING,
+            `c8` STRING,
+            `c9` STRING,
+            `c10` STRING
+        )"""
     )
     cursor.close()
 
