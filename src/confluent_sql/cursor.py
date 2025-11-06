@@ -9,14 +9,14 @@ import logging
 import random
 import time
 from itertools import islice
-from typing import Optional, List, Tuple, Union, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 from .exceptions import (
     InterfaceError,
-    ProgrammingError,
     OperationalError,
+    ProgrammingError,
 )
-from .statement import Statement, Op
+from .statement import Op, Statement
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -33,12 +33,13 @@ class Cursor:
     results from a Confluent SQL service connection.
     """
 
-    def __init__(self, connection: "Connection", with_schema: bool = False):
+    def __init__(self, connection: "Connection", as_dict: bool = False):
         """
         Initialize a new cursor.
 
         Args:
-            connection: The Connection object this cursor is associated with
+            connection: The Connection object this cursor is associated with.
+            as_dict: If True, fetch results as dictionaries; otherwise, as tuples.
         """
         self.rowcount = -1
         self.arraysize = 1
@@ -48,7 +49,7 @@ class Cursor:
         self._closed = False
         self._index = 0
         self._next_page = None
-        self._with_schema = with_schema
+        self._results_as_dicts = as_dict
 
         # Statement execution state
         self._statement: Optional[Statement] = None
@@ -225,7 +226,18 @@ class Cursor:
                 # op is not mandatory
                 op_id = res.get("op", None)
                 if op_id is not None:
-                    row["op"] = Op(op_id)
+                    op = Op(op_id)
+
+                    # Temporary until smarter changelog parsing.
+                    if op != Op.INSERT:
+                        logger.error(
+                            f"Received non-INSERT op {op} in results, not smart enough to handle this yet."
+                        )
+                        raise NotImplementedError(
+                            "Only INSERT op is supported in results for now."
+                        )
+                    row["op"] = op
+
                 self._results.append(row)
 
     def __iter__(self):
@@ -240,7 +252,12 @@ class Cursor:
             )
         return remaining
 
-    def __next__(self) -> dict:
+    def __next__(self) -> tuple[any] | dict[str, any]:
+        """
+        Return the next row from the result set.
+
+        Will be a tuple if as_dict is False, or a dict based on the statement schema if as_dict is True
+        """
         assert self._statement is not None, (
             "Trying to fetch results with null statement"
         )
@@ -252,10 +269,12 @@ class Cursor:
             if self._remaining == 0:
                 raise StopIteration
 
-        res = self._results[self._index]
+        # By default, we return the raw row as a tuple.
+        res: tuple[any] = self._results[self._index]["row"]
         self._index += 1
-        if self._with_schema and self._statement.schema is not None:
-            res["row"] = self._map_row_to_schema(res["row"])
+        if self._results_as_dicts and self._statement.schema is not None:
+            res: dict[str, any] = self._map_row_to_dict(res)
+
         return res
 
     def _get_next_results(self, limit: Optional[int] = None) -> list[dict]:
@@ -336,14 +355,14 @@ class Cursor:
         )
         self._statement = Statement.from_response(response)
 
-    def _map_row_to_schema(self, values) -> dict:
+    def _map_row_to_dict(self, values) -> dict:
         assert self._statement is not None, "statement is none, this is probably a bug"
         if self._statement.schema is None:
             raise InterfaceError("schema not present, can't map values to keys")
-        return _map_tuple_to_schema(self._statement.schema, values)
+        return _map_tuple_to_dict(self._statement.schema, values)
 
 
-def _map_tuple_to_schema(schema: dict, values: tuple) -> dict:
+def _map_tuple_to_dict(schema: dict, values: tuple) -> dict:
     """
     Recursively transforms a tuple or list of data values into a
     dictionary based on the provided schema.
@@ -357,7 +376,7 @@ def _map_tuple_to_schema(schema: dict, values: tuple) -> dict:
             type_info = field_schema.get("field_type")
         if isinstance(type_info, dict) and type_info.get("type") == "ROW":
             sub_schema_fields = type_info["fields"]
-            result_dict[field_name] = _map_tuple_to_schema(sub_schema_fields, value)
+            result_dict[field_name] = _map_tuple_to_dict(sub_schema_fields, value)
         else:
             result_dict[field_name] = value
     return result_dict

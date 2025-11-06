@@ -6,6 +6,7 @@ Credentials must be provided via environment variables.
 """
 
 import os
+
 import pytest
 
 import confluent_sql
@@ -41,7 +42,7 @@ def test_confluent_sql_connection():
         cloud_provider=cloud_provider,
     )
     # Test cursor creation
-    cursor = connection.cursor(with_schema=True)
+    cursor = connection.cursor(as_dict=True)
     assert cursor is not None
 
     # Check that we can list the catalogs (environments) available
@@ -50,7 +51,7 @@ def test_confluent_sql_connection():
     # We should always have the catalog that corresponds to the environment
     # of the connection. SHOW CATALOGS returns a list of rows with name and id.
     # We can check that the `environment_id` passed to the `connect` function is present:
-    catalog_ids = [res["row"]["Catalog ID"] for res in result]
+    catalog_ids = [res["Catalog ID"] for res in result]
     assert environment_id in catalog_ids
 
 

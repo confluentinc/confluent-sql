@@ -1,35 +1,97 @@
-def test_fetchall_gets_all_results(cursor_with_nonstreaming_data):
-    results = cursor_with_nonstreaming_data.fetchall()
-    assert len(results) == 10
+from typing import Any, TypeAlias
+
+import pytest
+
+DictResults: TypeAlias = list[dict[str, Any]]
+TupleResults: TypeAlias = list[tuple[Any, ...]]
 
 
-def test_fetchone_returns_none_at_the_end(cursor_with_nonstreaming_data):
+@pytest.mark.parametrize("as_dict", [True, False])
+def test_fetchall_gets_all_results(
+    as_dict: bool,
+    cursor_with_nonstreaming_data_factory,
+    expected_nonstreaming_data_dicts: DictResults,
+    expected_nonstreaming_data_tuples: TupleResults,
+):
+    if as_dict:
+        expected_results = expected_nonstreaming_data_dicts
+    else:
+        expected_results = expected_nonstreaming_data_tuples
+
+    cursor = cursor_with_nonstreaming_data_factory(as_dict=as_dict)
+    results = cursor.fetchall()
+    assert results == expected_results
+
+
+@pytest.mark.parametrize("as_dict", [True, False])
+def test_fetchone_returns_none_at_the_end(
+    cursor_with_nonstreaming_data_factory,
+    as_dict: bool,
+    expected_nonstreaming_data_dicts: DictResults,
+    expected_nonstreaming_data_tuples: TupleResults,
+):
+    if as_dict:
+        expected_results = expected_nonstreaming_data_dicts
+    else:
+        expected_results = expected_nonstreaming_data_tuples
+
+    cursor = cursor_with_nonstreaming_data_factory(as_dict=as_dict)
+
     # Exhaust all rows first
-    rows = cursor_with_nonstreaming_data.fetchall()
-    assert len(rows) == 10
+    for expected_row in expected_results:
+        row = cursor.fetchone()
+        assert row == expected_row
 
     # Should get None after that
-    row = cursor_with_nonstreaming_data.fetchone()
+    row = cursor.fetchone()
     assert row is None
 
 
-def test_fetchmany_iteration(cursor_with_nonstreaming_data):
+@pytest.mark.parametrize("as_dict", [True, False])
+def test_fetchmany_iteration(
+    as_dict: bool,
+    cursor_with_nonstreaming_data_factory,
+    expected_nonstreaming_data_dicts: DictResults,
+    expected_nonstreaming_data_tuples: TupleResults,
+):
+    if as_dict:
+        expected_results = expected_nonstreaming_data_dicts
+    else:
+        expected_results = expected_nonstreaming_data_tuples
+
+    cursor = cursor_with_nonstreaming_data_factory(as_dict=as_dict)
+
     # Fetch in batches
-    batch1 = cursor_with_nonstreaming_data.fetchmany(4)
-    assert len(batch1) == 4
+    batch1 = cursor.fetchmany(4)
+    assert batch1 == expected_results[:4]
 
-    batch2 = cursor_with_nonstreaming_data.fetchmany(4)
-    assert len(batch2) == 4
+    batch2 = cursor.fetchmany(4)
+    assert batch2 == expected_results[4:8]
 
-    batch3 = cursor_with_nonstreaming_data.fetchmany(4)
-    assert len(batch3) == 2
+    batch3 = cursor.fetchmany(4)
+    assert batch3 == expected_results[8:10]
 
-    batch4 = cursor_with_nonstreaming_data.fetchmany(4)
-    assert len(batch4) == 0
+    batch4 = cursor.fetchmany(4)
+    assert len(batch4) == 0  # No more rows
 
 
-def test_cursor_as_iterator(cursor_with_nonstreaming_data):
-    i = 0
+@pytest.mark.parametrize("as_dict", [True, False])
+def test_cursor_as_iterator(
+    as_dict: bool,
+    cursor_with_nonstreaming_data_factory,
+    expected_nonstreaming_data_dicts: DictResults,
+    expected_nonstreaming_data_tuples: TupleResults,
+):
+    expected_results: DictResults | TupleResults
+    if as_dict:
+        expected_results = expected_nonstreaming_data_dicts
+    else:
+        expected_results = expected_nonstreaming_data_tuples
+
+    cursor_with_nonstreaming_data = cursor_with_nonstreaming_data_factory(
+        as_dict=as_dict
+    )
+
     for row in cursor_with_nonstreaming_data:
-        i += 1
-    assert i == 10
+        expected_row = expected_results.pop(0)
+        assert row == expected_row

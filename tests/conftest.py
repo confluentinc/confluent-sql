@@ -1,9 +1,11 @@
 import os
+from typing import Any, Callable, Generator
 
-import confluent_sql
 import pytest
 
+import confluent_sql
 from confluent_sql.connection import Connection
+from confluent_sql.cursor import Cursor
 
 
 @pytest.fixture(scope="session")
@@ -12,7 +14,7 @@ def test_table_name():
 
 
 @pytest.fixture()
-def connection_factory():
+def connection_factory() -> Callable[..., Connection]:
     """
     Returns a factory function to create new connections. Connection parameters
     default from environment variables.
@@ -22,6 +24,7 @@ def connection_factory():
     """
 
     def _create_connection(
+        *,
         flink_api_key=os.getenv("CONFLUENT_FLINK_API_KEY"),
         flink_api_secret=os.getenv("CONFLUENT_FLINK_API_SECRET"),
         environment=os.getenv("CONFLUENT_ENV_ID"),
@@ -46,7 +49,9 @@ def connection_factory():
 
 
 @pytest.fixture()
-def single_test_connection(connection_factory):
+def single_test_connection(
+    connection_factory: Callable[..., Connection],
+) -> Generator[Connection, Any, None]:
     """
     Returns a single connection for tests that need only one connection.
 
@@ -58,7 +63,7 @@ def single_test_connection(connection_factory):
 
 
 @pytest.fixture(scope="session")
-def connection():
+def connection() -> Generator[Connection, Any, None]:
     """
     Create a connection for testing. Will automatically close at the end of the session.
 
@@ -104,19 +109,19 @@ def connection():
 
 
 @pytest.fixture
-def cursor(connection):
+def cursor(connection: Connection):
     """
     Returns a cursor for the shared connection.
 
     This cursor is unique for each test, even if they all share the same connection.
     """
-    cursor = connection.cursor(with_schema=True)
+    cursor = connection.cursor(as_dict=True)
     yield cursor
     cursor.close()
 
 
 @pytest.fixture(scope="session")
-def table_connection(connection, test_table_name):
+def table_connection(connection: Connection, test_table_name: str):
     """
     This fixture takes the shared connection, and adds a table to it.
 
@@ -128,6 +133,8 @@ def table_connection(connection, test_table_name):
     cursor = connection.cursor()
     # First delete the table if it was left here for any reason
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
+    cursor.delete_statement()
+
     # Then create it from scratch. Will have 10 total columns.
     # (The 10-ness will be useful later when we query INFORMATION_SCHEMA.COLUMNS for the table)
     cursor.execute(
@@ -144,6 +151,7 @@ def table_connection(connection, test_table_name):
             `c10` STRING
         )"""
     )
+    cursor.delete_statement()
     cursor.close()
 
     yield connection
@@ -151,11 +159,12 @@ def table_connection(connection, test_table_name):
     cursor = connection.cursor()
     # Delete it at the end if everything went fine
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
+    cursor.delete_statement()
     cursor.close()
 
 
 @pytest.fixture(scope="session")
-def populated_table_connection(table_connection, test_table_name):
+def populated_table_connection(table_connection: Connection, test_table_name: str):
     """This fixture adds some data to the table before serving the shared connection."""
     cursor = table_connection.cursor()
     cursor.execute(
@@ -174,27 +183,84 @@ def populated_table_connection(table_connection, test_table_name):
         (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10')
     """
     )
+    cursor.delete_statement()
     cursor.close()
+
     yield table_connection
 
 
 @pytest.fixture
-def cursor_with_nonstreaming_data(table_connection, test_table_name):
-    """A cursor with a 10-row non-streaming select already executed."""
-    cursor = table_connection.cursor(with_schema=True)
+def cursor_with_nonstreaming_data_factory(
+    table_connection: Connection, test_table_name: str
+) -> Generator[Callable[[bool], Cursor], Any, None]:
+    """A factory fixture that creates cursors with a 10-row, two-column
+    non-streaming select already executed. The caller can specify if the
+    cursor should return dictionaries or tuples.
+    """
+    created_cursors: list[Cursor] = []
 
-    # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making tests faster.
-    # The table {test_table_name} has 10 visible columns, so this query will return 10 rows.
-    cursor.execute(
-        f"""SELECT * FROM `INFORMATION_SCHEMA`.`COLUMNS`
+    def _create_cursor(as_dict: bool = False) -> Cursor:
+        """A dict cursor with a 10-row, two column non-streaming select already executed."""
+        cursor = table_connection.cursor(as_dict=as_dict)
+
+        # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making tests faster.
+        # The table {test_table_name} has 10 visible columns, so this query will return 10 rows x 2 columns.
+        cursor.execute(
+            f"""SELECT
+                    `COLUMN_NAME` as `column`,
+                    `DATA_TYPE` as `type`
+                FROM `INFORMATION_SCHEMA`.`COLUMNS`
                 WHERE TABLE_NAME = '{test_table_name}'
-                AND TABLE_SCHEMA = '{table_connection._dbname}'
-                AND IS_HIDDEN='NO'"""
-    )
+                    AND TABLE_SCHEMA = '{table_connection._dbname}'
+                    AND IS_HIDDEN='NO'"""
+        )
 
-    yield cursor
+        created_cursors.append(cursor)
+        return cursor
 
-    cursor.close()
+    yield _create_cursor
+
+    # Cleanup all created cursors
+
+    for cursor in created_cursors:
+        cursor.delete_statement()
+        cursor.close()
+
+
+@pytest.fixture()
+def expected_nonstreaming_data_tuples() -> list[tuple]:
+    """The expected data from the cursor_with_nonstreaming_data fixture as from fetchall() and
+    the cursor was in simple non-return-dicts mode."""
+    return [
+        ("c1", "BIGINT"),
+        ("c2", "VARCHAR"),
+        ("c3", "VARCHAR"),
+        ("c4", "VARCHAR"),
+        ("c5", "VARCHAR"),
+        ("c6", "VARCHAR"),
+        ("c7", "VARCHAR"),
+        ("c8", "VARCHAR"),
+        ("c9", "VARCHAR"),
+        ("c10", "VARCHAR"),
+    ]
+
+
+@pytest.fixture()
+def expected_nonstreaming_data_dicts() -> list[dict]:
+    """The expected data from the cursor_with_nonstreaming_data fixture as from fetchall() if
+    the cursor was in "return dictionaries" mode."""
+    return [
+        {"column": "c1", "type": "BIGINT"},
+        {"column": "c2", "type": "VARCHAR"},
+        {"column": "c3", "type": "VARCHAR"},
+        {"column": "c4", "type": "VARCHAR"},
+        {"column": "c5", "type": "VARCHAR"},
+        {"column": "c6", "type": "VARCHAR"},
+        {"column": "c7", "type": "VARCHAR"},
+        {"column": "c8", "type": "VARCHAR"},
+        {"column": "c9", "type": "VARCHAR"},
+        {"column": "c10", "type": "VARCHAR"},
+    ]
 
 
 @pytest.fixture

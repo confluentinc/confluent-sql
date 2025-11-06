@@ -5,16 +5,15 @@ This module provides the connect function and Connection class for establishing
 connections to Confluent SQL services.
 """
 
-from contextlib import contextmanager
-import uuid
 import logging
-from typing import Optional, Dict, Any, Union, Tuple, List
+import uuid
+from contextlib import contextmanager
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import httpx
 
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
-
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +160,13 @@ class Connection:
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
-    def cursor(self, with_schema: bool = False) -> "Cursor":
+    def cursor(self, *, as_dict: bool = False) -> "Cursor":
         """
         Create and return a new cursor object. The cursor will need
         to be manually closed by the caller.
+
+        Statement results fetched via this cursor will be returned
+        as dictionaries if as_dict is True, otherwise as tuples.
 
         Returns:
             A new Cursor object associated with this connection
@@ -175,12 +177,12 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        return Cursor(self, with_schema)
+        return Cursor(self, as_dict)
 
     @contextmanager
     def closing_cursor(
         self, with_schema: bool = False, delete_statement: bool = False
-    ) -> "Cursor":
+    ) -> Generator[Cursor, any, None]:
         """
         Context manager for creating and automatically closing a cursor.
         If delete_statement is True, the statement associated with the cursor
@@ -192,7 +194,7 @@ class Connection:
         Raises:
             InterfaceError: If the connection is closed
         """
-        cursor = self.cursor(with_schema=with_schema)
+        cursor = self.cursor(as_dict=with_schema)
         try:
             yield cursor
         finally:
@@ -218,7 +220,7 @@ class Connection:
         parameters: Optional[Union[Tuple, List, Dict]] = None,
         statement_name: Optional[str] = None,
         bounded: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, any]:
         """
         Execute a SQL statement and return the response.
 
@@ -264,7 +266,7 @@ class Connection:
         res = self._request("/statements", method="POST", json=payload)
         return res.json()
 
-    def _get_statement_status(self, statement_name: str) -> Dict[str, Any]:
+    def _get_statement_status(self, statement_name: str) -> Dict[str, any]:
         """
         Get the current status of a statement.
 
