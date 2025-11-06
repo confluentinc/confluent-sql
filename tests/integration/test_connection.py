@@ -63,6 +63,6 @@ def test_closing_cursor(connection: Connection, delete_statement: bool, mocker):
         cursor.execute("SELECT 1 FROM `INFORMATION_SCHEMA`.`TABLES`")
 
     assert cursor.is_closed is True
-    assert delete_statement_spy.call_count == (
-        1 if delete_statement else 0
-    ), "Unexpected call count for delete_statement"
+    assert delete_statement_spy.call_count == (1 if delete_statement else 0), (
+        "Unexpected call count for delete_statement"
+    )

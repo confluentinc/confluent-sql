@@ -115,9 +115,9 @@ class Cursor:
         self._raise_if_closed()
 
         res = self._get_next_results(1)
-        assert (
-            len(res) <= 1
-        ), "fetchone returned more than one result, this is probably a bug"
+        assert len(res) <= 1, (
+            "fetchone returned more than one result, this is probably a bug"
+        )
         # If no results are available, `res` is an empty list,
         # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
         return res[0] if res else None
@@ -241,9 +241,9 @@ class Cursor:
         return remaining
 
     def __next__(self) -> dict:
-        assert (
-            self._statement is not None
-        ), "Trying to fetch results with null statement"
+        assert self._statement is not None, (
+            "Trying to fetch results with null statement"
+        )
         if self._remaining == 0:
             if self._results and not self._next_page:
                 raise StopIteration
@@ -275,9 +275,9 @@ class Cursor:
         Raises:
             OperationalError: If polling times out or fails
         """
-        assert (
-            self._statement is not None
-        ), "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
+        assert self._statement is not None, (
+            "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
+        )
         start_time = time.time()
         base_delay = 1.0  # Start with 1 second
         max_delay = 30.0  # Maximum delay between polls
