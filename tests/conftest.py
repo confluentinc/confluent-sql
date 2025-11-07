@@ -228,39 +228,42 @@ def cursor_with_nonstreaming_data_factory(
 
 
 @pytest.fixture()
-def expected_nonstreaming_data_tuples() -> list[tuple]:
-    """The expected data from the cursor_with_nonstreaming_data fixture as from fetchall() and
-    the cursor was in simple non-return-dicts mode."""
-    return [
-        ("c1", "BIGINT"),
-        ("c2", "VARCHAR"),
-        ("c3", "VARCHAR"),
-        ("c4", "VARCHAR"),
-        ("c5", "VARCHAR"),
-        ("c6", "VARCHAR"),
-        ("c7", "VARCHAR"),
-        ("c8", "VARCHAR"),
-        ("c9", "VARCHAR"),
-        ("c10", "VARCHAR"),
-    ]
+def expected_nonstreaming_results_factory() -> Callable[
+    [bool], list[tuple[Any, ...] | dict[str, Any]]
+]:
+    """A factory fixture that returns the expected data from the
+    cursor_with_nonstreaming_data fixture, either as dicts or tuples.
+    """
 
+    def _get_expected_results(as_dict: bool) -> list[Any]:
+        if as_dict:
+            return [
+                {"column": "c1", "type": "BIGINT"},
+                {"column": "c2", "type": "VARCHAR"},
+                {"column": "c3", "type": "VARCHAR"},
+                {"column": "c4", "type": "VARCHAR"},
+                {"column": "c5", "type": "VARCHAR"},
+                {"column": "c6", "type": "VARCHAR"},
+                {"column": "c7", "type": "VARCHAR"},
+                {"column": "c8", "type": "VARCHAR"},
+                {"column": "c9", "type": "VARCHAR"},
+                {"column": "c10", "type": "VARCHAR"},
+            ]
+        else:
+            return [
+                ("c1", "BIGINT"),
+                ("c2", "VARCHAR"),
+                ("c3", "VARCHAR"),
+                ("c4", "VARCHAR"),
+                ("c5", "VARCHAR"),
+                ("c6", "VARCHAR"),
+                ("c7", "VARCHAR"),
+                ("c8", "VARCHAR"),
+                ("c9", "VARCHAR"),
+                ("c10", "VARCHAR"),
+            ]
 
-@pytest.fixture()
-def expected_nonstreaming_data_dicts() -> list[dict]:
-    """The expected data from the cursor_with_nonstreaming_data fixture as from fetchall() if
-    the cursor was in "return dictionaries" mode."""
-    return [
-        {"column": "c1", "type": "BIGINT"},
-        {"column": "c2", "type": "VARCHAR"},
-        {"column": "c3", "type": "VARCHAR"},
-        {"column": "c4", "type": "VARCHAR"},
-        {"column": "c5", "type": "VARCHAR"},
-        {"column": "c6", "type": "VARCHAR"},
-        {"column": "c7", "type": "VARCHAR"},
-        {"column": "c8", "type": "VARCHAR"},
-        {"column": "c9", "type": "VARCHAR"},
-        {"column": "c10", "type": "VARCHAR"},
-    ]
+    return _get_expected_results
 
 
 @pytest.fixture
