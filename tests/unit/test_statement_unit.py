@@ -3,6 +3,8 @@ import pytest
 from confluent_sql import DatabaseError, OperationalError
 from confluent_sql.statement import Phase, Statement
 
+"""Unit tests over Statement class."""
+
 
 class TestStatementIsReady:
     """Tests for Statement.is_ready property."""
@@ -50,6 +52,8 @@ class TestStatementIsReady:
 
 
 class TestStatementProperties:
+    """Tests for various Statement properties."""
+
     def test_compute_pool_id(self, statement_json_factory):
         """Test that compute_pool_id property returns correct value."""
         statement_json = statement_json_factory(compute_pool_id="test-pool-id")
@@ -92,6 +96,8 @@ class TestStatementProperties:
 
 
 class TestStatementFromResponse:
+    """Tests for Statement.from_response class method error paths."""
+
     def test_hates_unknown_status_phase(self, statement_json_factory):
         """Test that from_response raises on unknown status.phase."""
         with pytest.raises(
