@@ -111,13 +111,21 @@ def connection() -> Generator[Connection, Any, None]:
 @pytest.fixture
 def cursor(connection: Connection):
     """
-    Returns a cursor for the shared connection.
+    Returns a tuple-returning cursor for the shared connection. Deletes the statement and closes
+    the cursor at the end of the test.
 
     This cursor is unique for each test, even if they all share the same connection.
     """
-    cursor = connection.cursor(as_dict=True)
+    cursor = connection.cursor()
+
     yield cursor
-    cursor.close()
+
+    try:
+        cursor.delete_statement()
+        cursor.close()
+    except Exception:
+        # Ignore any errors during cleanup
+        pass
 
 
 @pytest.fixture(scope="session")
@@ -131,6 +139,7 @@ def table_connection(connection: Connection, test_table_name: str):
     it wasn't dropped in a previous run for any reason.
     """
     cursor = connection.cursor()
+
     # First delete the table if it was left here for any reason
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
     cursor.delete_statement()
@@ -164,9 +173,10 @@ def table_connection(connection: Connection, test_table_name: str):
 
 
 @pytest.fixture(scope="session")
-def populated_table_connection(table_connection: Connection, test_table_name: str):
+def populated_table_connection(
+    table_connection: Connection, cursor: Cursor, test_table_name: str
+):
     """This fixture adds some data to the table before serving the shared connection."""
-    cursor = table_connection.cursor()
     cursor.execute(
         f"""
     INSERT INTO {test_table_name}
@@ -183,8 +193,6 @@ def populated_table_connection(table_connection: Connection, test_table_name: st
         (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10')
     """
     )
-    cursor.delete_statement()
-    cursor.close()
 
     yield table_connection
 
@@ -193,14 +201,14 @@ def populated_table_connection(table_connection: Connection, test_table_name: st
 def cursor_with_nonstreaming_data_factory(
     table_connection: Connection, test_table_name: str
 ) -> Generator[Callable[[bool], Cursor], Any, None]:
-    """A factory fixture that creates cursors with a 10-row, two-column
+    """A factory fixture that creates cursors with a ten row, two column
     non-streaming select already executed. The caller can specify if the
     cursor should return dictionaries or tuples.
     """
     created_cursors: list[Cursor] = []
 
     def _create_cursor(as_dict: bool = False) -> Cursor:
-        """A dict cursor with a 10-row, two column non-streaming select already executed."""
+        """A dict cursor with a ten row, two column non-streaming select already executed."""
         cursor = table_connection.cursor(as_dict=as_dict)
 
         # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making tests faster.

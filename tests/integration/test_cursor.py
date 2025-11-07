@@ -1,6 +1,6 @@
 import pytest
 
-from confluent_sql.exceptions import InterfaceError, ProgrammingError
+from confluent_sql import Connection, Cursor, InterfaceError, ProgrammingError
 from confluent_sql.statement import Phase
 
 """A one column very fast to complete query."""
@@ -8,7 +8,7 @@ SINGLE_COLUMN_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES`"
 # (Queries against INFORMATION_SCHEMA execute very quickly)
 
 
-def test_cursor_metadata(cursor):
+def test_cursor_metadata(cursor: Cursor):
     # 'Cursor.execute' defaults to snapshot queries
     cursor.execute(SINGLE_COLUMN_QUERY)
 
@@ -32,14 +32,18 @@ def test_unbounded_query_with_finite_statement(cursor):
 
 
 @pytest.mark.slow
-def test_unbounded_query_with_data(populated_table_connection, test_table_name):
+def test_unbounded_query_with_data(
+    populated_table_connection: Connection, test_table_name: str
+):
     # For an actual unbounded query, we need to use an actual table that comes from a kafka topic.
     cursor = populated_table_connection.cursor()
     cursor.execute(f"SELECT * FROM {test_table_name}", bounded=False)
     assert cursor._statement.is_bounded is False
 
 
-def test_cursor_description_connection_closed_raises(single_test_connection):
+def test_cursor_description_connection_closed_raises(
+    single_test_connection: Connection,
+):
     # Test that asking for a description when the connection is closed raises an error
     cursor = single_test_connection.cursor()
     single_test_connection.close()
@@ -97,9 +101,9 @@ def test_delete_statement_succeeds(cursor, connection, mocker):
     assert cursor._statement.is_deleted
 
 
-def test_delete_statement_no_statement_raises(cursor):
-    with pytest.raises(InterfaceError, match="No statement to delete"):
-        cursor.delete_statement()
+def test_delete_statement_no_statement_happy(cursor):
+    # No exception should be raised if no statement was executed.
+    cursor.delete_statement()
 
 
 def test_delete_statement_cursor_closed_raises(cursor):

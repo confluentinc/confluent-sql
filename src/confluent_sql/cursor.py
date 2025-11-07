@@ -165,20 +165,21 @@ class Cursor:
 
     def delete_statement(self) -> None:
         """
-        Delete the CCloud Flink-side statement to prevent orphaned jobs / statement records.
+        Delete any possible CCloud Flink-side statement to prevent orphaned jobs / statement records.
+
+        If no statement was executed, or if the statement was already deleted, this is a no-op.
 
         Raises:
             OperationalError: If statement deletion fails.
-            InterfaceError: If the cursor is closed or if there is no statement to delete.
+            InterfaceError: If the cursor or connection is closed.
         """
         self._raise_if_closed()
 
-        if self._statement is None:
-            raise InterfaceError("No statement to delete")
+        if self._statement is None or self._statement.is_deleted:
+            return
 
-        if not self._statement.is_deleted:
-            self._connection._delete_statement(self._statement.name)
-            self._statement.set_deleted()
+        self._connection._delete_statement(self._statement.name)
+        self._statement.set_deleted()
 
     @property
     def is_closed(self) -> bool:
