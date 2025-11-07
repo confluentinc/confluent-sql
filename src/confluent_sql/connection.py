@@ -93,6 +93,16 @@ class Connection:
     methods for creating cursors and managing the connection lifecycle.
     """
 
+    environment: str
+    organization_id: str
+    compute_pool_id: str
+    api_key: str
+    api_secret: str
+    host: str
+    _closed: bool
+    _dbname: str
+    _client: httpx.Client
+
     def __init__(
         self,
         flink_api_key: str,
@@ -149,10 +159,7 @@ class Connection:
 
     def close(self) -> None:
         """
-        Close the connection and free associated resources.
-
-        This method closes all cursors associated with this connection
-        and marks the connection as closed.
+        Close the connection.
         """
         if not self._closed:
             self._closed = True
@@ -180,13 +187,11 @@ class Connection:
         return Cursor(self, as_dict)
 
     @contextmanager
-    def closing_cursor(
-        self, with_schema: bool = False, delete_statement: bool = False
-    ) -> Generator[Cursor, any, None]:
+    def closing_cursor(self, as_dict: bool = False) -> Generator[Cursor, any, None]:
         """
         Context manager for creating and automatically closing a cursor.
-        If delete_statement is True, the statement associated with the cursor
-        will also be deleted when the cursor is closed.
+        Args:
+            as_dict: If True, fetch results as dictionaries, otherwise as tuples
 
         Yields:
             A new Cursor object associated with this connection
@@ -194,15 +199,11 @@ class Connection:
         Raises:
             InterfaceError: If the connection is closed
         """
-        cursor = self.cursor(as_dict=with_schema)
+        cursor = self.cursor(as_dict=as_dict)
         try:
             yield cursor
         finally:
-            try:
-                if delete_statement:
-                    cursor.delete_statement()
-            finally:
-                cursor.close()
+            cursor.close()
 
     @property
     def is_closed(self) -> bool:
@@ -266,9 +267,9 @@ class Connection:
         res = self._request("/statements", method="POST", json=payload)
         return res.json()
 
-    def _get_statement_status(self, statement_name: str) -> Dict[str, any]:
+    def _get_statement(self, statement_name: str) -> Dict[str, any]:
         """
-        Get the current status of a statement.
+        Get the current structure of a statement.
 
         Args:
             statement_name: The name of the statement to check
@@ -292,7 +293,7 @@ class Connection:
             page_token: Optional page token for pagination
 
         Returns:
-            A 2-tuple: (list of results, optional url to fetch next page)
+            A 2-tuple: (list of results in changelog row format, optional url to fetch next page)
 
         Raises:
             OperationalError: If results retrieval fails

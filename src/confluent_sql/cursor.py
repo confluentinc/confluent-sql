@@ -8,6 +8,7 @@ retrieving results from Confluent SQL services.
 import logging
 import random
 import time
+import warnings
 from itertools import islice
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
@@ -88,11 +89,24 @@ class Cursor:
             OperationalError: If the statement cannot be executed
         """
         # TODO: Handle parameters, see self._submit_statement
-
         self._raise_if_closed()
+
+        if parameters is not None:
+            raise NotImplementedError("Parameterized queries are not supported yet")
 
         if not operation.strip():
             raise ProgrammingError("SQL statement cannot be empty")
+
+        # Delete any previous statement if present and bounded
+        if self._statement is not None:
+            if self._statement.is_bounded:
+                self.delete_statement()
+            else:
+                warnings.warn(
+                    "Executing a new statement on a cursor with an existing unbounded/streaming statement. "
+                    "The previous statement will not be deleted automatically.",
+                    stacklevel=2,
+                )
 
         # Reset internal state
         self._statement = None
@@ -129,7 +143,7 @@ class Cursor:
         if size is None:
             size = self.arraysize
         if size <= 0:
-            raise InterfaceError("fetchmany must be called with size > 0, aborting")
+            raise InterfaceError(f"size must be a non-negative integer, got {size}")
 
         return self._get_next_results(size)
 
@@ -151,11 +165,22 @@ class Cursor:
         Close the cursor and free associated resources.
 
         This method marks the cursor as closed and releases any
-        resources associated with it. It also attempts to delete
-        any running statement to prevent orphaned jobs.
+        local resources associated with it.
+
+        If the statement is bounded (non-streaming), it will also attempt to
+        delete the statement from the server to free server-side resources. Streaming
+        statements will not be implicitly deleted.
         """
         if not self._closed:
             if self._statement is not None:
+                if self._statement.is_bounded:
+                    # Auto-deletion of bounded (non-streaming) statements is always safe.
+                    try:
+                        self.delete_statement()
+                    except Exception as e:
+                        logger.error(
+                            f"Error deleting statement {self._statement.name} during cursor close: {e}"
+                        )
                 self._statement = None
 
             self.rowcount = -1
@@ -199,8 +224,7 @@ class Cursor:
             raise InterfaceError("Connection is closed")
 
     def _fetch_next_page(self):
-        if self._closed:
-            raise InterfaceError("Cursor is closed")
+        self._raise_if_closed()
 
         if not self._statement:
             raise InterfaceError("No statement was used. Call execute() first.")
@@ -278,7 +302,13 @@ class Cursor:
 
         return res
 
-    def _get_next_results(self, limit: Optional[int] = None) -> list[dict]:
+    def _get_next_results(
+        self, limit: Optional[int] = None
+    ) -> list[dict[str, any] | tuple[any]]:
+        """
+        Get the next results from the cursor, up to the specified limit.
+        Returns either tuples or dicts based on the `as_dict` flag the cursor was created with.
+        """
         if limit is None:
             return list(self)
         else:
@@ -305,7 +335,7 @@ class Cursor:
 
         while time.time() - start_time < timeout:
             logger.info(f"Checking statement '{self._statement.name}' status...")
-            response = self._connection._get_statement_status(self._statement.name)
+            response = self._connection._get_statement(self._statement.name)
             self._statement = Statement.from_response(response)
 
             # Statement is ready when it's not in PENDING status.

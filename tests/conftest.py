@@ -1,4 +1,6 @@
+import logging
 import os
+import types
 from typing import Any, Callable, Generator
 
 import pytest
@@ -6,6 +8,9 @@ import pytest
 import confluent_sql
 from confluent_sql.connection import Connection
 from confluent_sql.cursor import Cursor
+from confluent_sql.statement import Op
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="session")
@@ -14,14 +19,19 @@ def test_table_name():
 
 
 @pytest.fixture()
-def connection_factory() -> Callable[..., Connection]:
+def connection_factory() -> Generator[None, Callable[..., Connection], None]:
     """
     Returns a factory function to create new connections. Connection parameters
     default from environment variables.
 
     This is useful for tests that need to create multiple connections.
     Each call to the factory will create a new connection.
+
+    The connections created by this factory will be automatically closed
+    at the end of the test that used them (if not closed earlier).
     """
+
+    connections: list[Connection] = []
 
     def _create_connection(
         *,
@@ -34,7 +44,7 @@ def connection_factory() -> Callable[..., Connection]:
         cloud_region=os.getenv("CONFLUENT_CLOUD_REGION"),
         dbname=os.getenv("CONFLUENT_TEST_DBNAME"),
     ) -> Connection:
-        return confluent_sql.connect(
+        connection = confluent_sql.connect(
             flink_api_key=flink_api_key,
             flink_api_secret=flink_api_secret,
             environment=environment,
@@ -45,21 +55,26 @@ def connection_factory() -> Callable[..., Connection]:
             dbname=dbname,
         )
 
-    return _create_connection
+        connections.append(connection)
+        return connection
+
+    yield _create_connection
+
+    # Cleanup all created connections
+    for connection in connections:
+        connection.close()
 
 
 @pytest.fixture()
 def single_test_connection(
     connection_factory: Callable[..., Connection],
-) -> Generator[Connection, Any, None]:
+) -> Connection:
     """
     Returns a single connection for tests that need only one connection.
 
     This connection is closed at the end of the test.
     """
-    conn = connection_factory()
-    yield conn
-    conn.close()
+    return connection_factory()
 
 
 @pytest.fixture(scope="session")
@@ -121,11 +136,9 @@ def cursor(connection: Connection):
     yield cursor
 
     try:
-        cursor.delete_statement()
         cursor.close()
-    except Exception:
-        # Ignore any errors during cleanup
-        pass
+    except Exception as e:
+        logger.error(f"Error closing cursor in fixture: {e}")
 
 
 @pytest.fixture(scope="session")
@@ -142,7 +155,6 @@ def table_connection(connection: Connection, test_table_name: str):
 
     # First delete the table if it was left here for any reason
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
-    cursor.delete_statement()
 
     # Then create it from scratch. Will have 10 total columns.
     # (The 10-ness will be useful later when we query INFORMATION_SCHEMA.COLUMNS for the table)
@@ -160,39 +172,36 @@ def table_connection(connection: Connection, test_table_name: str):
             `c10` STRING
         )"""
     )
-    cursor.delete_statement()
     cursor.close()
 
     yield connection
 
+    # Drop the table at the end of the session if all went well
     cursor = connection.cursor()
-    # Delete it at the end if everything went fine
     cursor.execute(f"DROP TABLE IF EXISTS {test_table_name}")
-    cursor.delete_statement()
     cursor.close()
 
 
 @pytest.fixture(scope="session")
-def populated_table_connection(
-    table_connection: Connection, cursor: Cursor, test_table_name: str
-):
+def populated_table_connection(table_connection: Connection, test_table_name: str):
     """This fixture adds some data to the table before serving the shared connection."""
-    cursor.execute(
-        f"""
-    INSERT INTO {test_table_name}
-    VALUES
-        (1, 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1'),
-        (2, 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2'),
-        (3, 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3'),
-        (4, 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4'),
-        (5, 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5'),
-        (6, 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6'),
-        (7, 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7'),
-        (8, 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8'),
-        (9, 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9'),
-        (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10')
-    """
-    )
+    with table_connection.closing_cursor() as cursor:
+        cursor.execute(
+            f"""
+        INSERT INTO {test_table_name}
+        VALUES
+            (1, 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1', 'name1'),
+            (2, 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2', 'name2'),
+            (3, 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3', 'name3'),
+            (4, 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4', 'name4'),
+            (5, 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5', 'name5'),
+            (6, 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6', 'name6'),
+            (7, 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7'),
+            (8, 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8'),
+            (9, 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9'),
+            (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10')
+        """
+        )
 
     yield table_connection
 
@@ -275,35 +284,129 @@ def expected_nonstreaming_results_factory() -> Callable[
 
 
 @pytest.fixture
-def mock_connection():
+def mock_connection(mocker, statement_json_factory):
     """
-    Create a connection for testing, with fake parameters.
+    Create a connection for testing cursor behavior with mocked client responses.
 
-    This will fail on any real attempt to connect, so it can only be used
-    if the responses from the server have been mocked.
-    TODO: I don't really like this, we should probably be injecting a test
-          client inside the Connection object rather than doing this...
+    Any executed statement will appear to complete immediately with no results.
 
-    ```python
-    def test_function(mock_connection):
-        with patch.object(mock_connection._client, "request") as request_mock:
-            mocked_response = Mock()
-            # Implement what you need with the mock
-            request_mock.return_value = mocked_response
-            cursor = mock_connection.cursor()
-            # Rest of the code
-    ```
+    Can override statement results by replacing mocked_conn._get_statement_results.return_value
+    is with the resired result rows. Use fixture result_row_maker() to assist.
     """
 
-    conn = confluent_sql.connect(
-        flink_api_key="TEST",
-        flink_api_secret="TEST",
-        environment="TEST",
-        organization_id="TEST",
-        compute_pool_id="TEST",
-        cloud_region="TEST",
-        cloud_provider="TEST",
-        dbname="TEST",
-    )
-    yield conn
-    conn.close()
+    # Create a mock instance with spec so attribute/method names are validated
+    mock_conn = mocker.create_autospec(Connection, instance=True)
+    mock_conn._closed = False
+    mock_conn.is_closed = False
+
+    # Make any executed statement return a completed statement with no results
+    executed_statement_from_json = statement_json_factory()
+    mock_conn._execute_statement.return_value = executed_statement_from_json
+    mock_conn._get_statement.return_value = executed_statement_from_json
+
+    # Set up default statement results to empty list.
+    # (Returns a tuple of (list of result rows, possible next_page URL))
+    mock_conn._get_statement_results.return_value = ([], None)
+
+    # Replace the MagicMock cursor with the real implementation bound to the mock instance
+    mock_conn.cursor = types.MethodType(Connection.cursor, mock_conn)
+    # Likewise for closing_cursor
+    mock_conn.closing_cursor = types.MethodType(Connection.closing_cursor, mock_conn)
+
+    yield mock_conn
+
+
+@pytest.fixture
+def result_row_maker() -> Callable[[list[Any], Op | None], dict[str, Any]]:
+    """A fixture that returns a helper function to create result row dictionaries.
+    These are helpful for overriding the return value of
+    mock_connection._get_statement_results.
+    """
+
+    def _maker(row_values: list[Any], op: Op | None = None) -> dict[str, Any]:
+        """Helper to create a result row dictionary for mocking statement results.
+
+        Args:
+            row_values: The list of values for the row.
+            op: The changelog operation code (0=INSERT, 1=DELETE, etc). Default is 0 (INSERT).
+        Returns:
+            A dictionary representing the result row.
+        """
+        if op is None:
+            # If no op is specified, code will assume it was an INSERT (op=0)
+            return {"row": row_values}
+
+        return {"row": row_values, "op": op.value}
+
+    return _maker
+
+
+@pytest.fixture()
+def statement_json_factory() -> Callable[[str, bool], dict[str, Any]]:
+    """A fixture that returns a factory function to create statement JSON dictionaries with various overrides."""
+
+    def _factory(
+        *,
+        sql_statement: str = "SELECT TRUE AS VALUE",
+        is_bounded: bool = True,
+        phase: str = "COMPLETED",
+        status_detail: str = "",
+        compute_pool_id: str = "lfcp-01x6d2",
+        principal: str = "u-0xw9v9p",
+        schema_columns: list[dict[str, Any]] | None = [
+            {
+                "name": "value",
+                "type": {
+                    "nullable": False,
+                    "type": "BOOLEAN",
+                },
+            },
+        ],
+    ) -> dict[str, Any]:
+        """Construct a statement v1 as from JSON dictionary."""
+        return {
+            "api_version": "sql/v1",
+            "environment_id": "env-asdf",
+            "kind": "Statement",
+            "metadata": {
+                "created_at": "2025-11-07T18:45:05.102478Z",
+                "labels": {},
+                "resource_version": "5",
+                "self": "https://flink.us-east-1.aws.confluent.cloud/dbapi-d4c685ef-befe-4091-9548-05d5ccb52d4a",
+                "uid": "77826b1d-314e-4c6a-b33c-46e879930160",
+                "updated_at": "2025-11-07T18:45:05.989814Z",
+            },
+            "name": "dbapi-d4c685ef-befe-4091-9548-05d5ccb52d4a",
+            "organization_id": "7c210ed4-6e1e-4355-abf9-b25e25a8b25a",
+            "spec": {
+                "compute_pool_id": compute_pool_id,
+                "execution_mode": "BATCH",
+                "principal": principal,
+                "properties": {
+                    "sql.current-catalog": "env-d0v2k7",
+                    "sql.current-database": "python_udf",
+                    "sql.snapshot.mode": "now",
+                },
+                "statement": sql_statement,
+                "stopped": False,
+            },
+            "status": {
+                "detail": status_detail,
+                "network_kind": "PUBLIC",
+                "phase": phase,
+                "scaling_status": {
+                    "last_updated": "2025-11-07T18:45:05Z",
+                    "scaling_state": "OK",
+                },
+                "traits": {
+                    "connection_refs": [],
+                    "is_append_only": True,
+                    "is_bounded": is_bounded,
+                    "schema": {"columns": schema_columns},
+                    "sql_kind": "SELECT",
+                    "upsert_columns": None,
+                },
+            },
+        }
+
+    return _factory

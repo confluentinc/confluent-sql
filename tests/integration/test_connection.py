@@ -55,15 +55,48 @@ def test_confluent_sql_connection():
     assert environment_id in catalog_ids
 
 
-@pytest.mark.parametrize("delete_statement", [False, True])
-def test_closing_cursor(connection: Connection, delete_statement: bool, mocker):
-    """Test that auto closing a cursor with possible also delete statement works as expected."""
-    with connection.closing_cursor(delete_statement=delete_statement) as cursor:
+def test_closing_cursor_after_executing_statement(connection: Connection, mocker):
+    """Test that auto closing a cursor used for a bounded statement works as expected."""
+    with connection.closing_cursor() as cursor:
         assert cursor is not None
+        assert cursor.is_closed is False
         delete_statement_spy = mocker.spy(cursor, "delete_statement")
-        cursor.execute("SELECT 1 FROM `INFORMATION_SCHEMA`.`TABLES`")
+        cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
+        row = cursor.fetchone()
+        assert isinstance(row, tuple), "Expected row to be a tuple"
+        # Sigh, the driver returns strings for all atomic values at this time.
+        assert row == ("1",)
 
-    assert cursor.is_closed is True
-    assert delete_statement_spy.call_count == (1 if delete_statement else 0), (
-        "Unexpected call count for delete_statement"
+    assert cursor.is_closed is True, (
+        "Expected cursor to be closed after exiting context manager."
+    )
+    assert delete_statement_spy.call_count == 1, (
+        "Expected delete_statement to be called once on cursor close."
+    )
+
+
+def test_closing_cursor_honors_as_dict(connection: Connection):
+    """Test that auto closing a cursor works as expected and respects as_dict flag."""
+    with connection.closing_cursor(as_dict=True) as cursor:
+        assert cursor is not None
+        assert cursor.is_closed is False
+        cursor.execute("SELECT 1 AS answer from `INFORMATION_SCHEMA`.`TABLES`")
+        row = cursor.fetchone()
+        assert isinstance(row, dict), "Expected row to be a dict when as_dict=True"
+        # Sigh, the driver returns strings for all atomic values at this time.
+        assert row["answer"] == "1"
+
+    assert cursor.is_closed is True, (
+        "Expected cursor to be closed after exiting context manager."
+    )
+
+
+def test_closing_cursor_no_statement(connection: Connection, mocker):
+    """Test that auto closing a cursor not used for any statement works as expected."""
+    with connection.closing_cursor() as cursor:
+        assert cursor is not None
+        assert cursor.is_closed is False
+
+    assert cursor.is_closed is True, (
+        "Expected cursor to be closed after exiting context manager."
     )
