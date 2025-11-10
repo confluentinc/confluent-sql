@@ -14,7 +14,7 @@ def mock_connection_cursor(mock_connection: Connection):
 
 @pytest.mark.unit
 class TestExecute:
-    """Unit tests sover cusor.execute*()."""
+    """Unit tests over cusor.execute*()."""
 
     def test_execute_with_parameters_throws(self, mock_connection_cursor: Cursor):
         """Test that executing with parameters raises NotImplementedError (at this time)."""

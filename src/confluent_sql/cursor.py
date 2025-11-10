@@ -176,7 +176,7 @@ class Cursor:
                         self.delete_statement()
                     except Exception as e:
                         logger.error(
-                            "Error deleting statement {self._statement.name} during cursor"
+                            f"Error deleting statement {self._statement.name} during cursor"
                             f"close: {e}"
                         )
                 self._statement = None

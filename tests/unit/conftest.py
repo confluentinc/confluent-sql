@@ -25,7 +25,7 @@ def mock_connection(mocker, statement_json_factory):
     Any executed statement will appear to complete immediately with no results.
 
     Can override statement results by replacing mocked_conn._get_statement_results.return_value
-    is with the resired result rows. Use fixture result_row_maker() to assist.
+    is with the desired result rows. Use fixture result_row_maker() to assist.
     """
 
     # Create a mock instance with spec so attribute/method names are validated

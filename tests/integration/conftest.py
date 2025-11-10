@@ -18,7 +18,7 @@ def pytest_runtest_setup(item):
     """Ensure that all tests within integration/ are marked as integration tests."""
     is_integration = any(item.iter_markers(name="integration"))
     if not is_integration:
-        pytest.fail("Tests within 'integration/' must be marked with @pytest.mark.unit.")
+        pytest.fail("Tests within 'integration/' must be marked with @pytest.mark.integration.")
 
 
 @pytest.fixture(scope="session")
@@ -85,7 +85,7 @@ def single_test_connection(
 def test_table_name():
     """Returns a table name to use for the table to populate for testing."""
     # Returns a fixed name for the test table, but if we have to adopt
-    # pytest-xdist, we could incude the worker id in the name to avoid collisions.
+    # pytest-xdist, we could include the worker id in the name to avoid collisions.
     return "pytest_table"
 
 
