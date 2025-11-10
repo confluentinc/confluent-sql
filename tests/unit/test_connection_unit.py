@@ -4,19 +4,18 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError
+from tests.conftest import ConnectionFactory
 
 
 def raise_not_found():
     """Mock function that raises an HTTPStatusError with a mocked 404 response."""
     mock_response = Mock()
     mock_response.status_code = 404
-    raise httpx.HTTPStatusError(
-        "Statement not found", request=Mock(), response=mock_response
-    )
+    raise httpx.HTTPStatusError("Statement not found", request=Mock(), response=mock_response)
 
 
 @pytest.mark.unit
-def test_connection_error(connection_factory, mocker):
+def test_connection_error(connection_factory: ConnectionFactory, mocker):
     """Test that we get meaningful error message when a response returns an error."""
     connection = connection_factory()
     request_mock = mocker.patch.object(connection._client, "request")
@@ -31,14 +30,14 @@ def test_connection_error(connection_factory, mocker):
 class TestConnectionClosedThrows:
     """Tests for operations on a closed connection."""
 
-    def test_cursor_when_closed_raises(self, connection_factory):
+    def test_cursor_when_closed_raises(self, connection_factory: ConnectionFactory):
         """Test that asking for a cursor when the connection is closed raises an error."""
         connection = connection_factory()
         connection.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
             connection.cursor()
 
-    def making_requests_when_closed_raises(self, connection_factory):
+    def test_making_requests_when_closed_raises(self, connection_factory: ConnectionFactory):
         """Test that making requests when the connection is closed raises an error."""
         connection = connection_factory()
         connection.close()
@@ -50,50 +49,37 @@ class TestConnectionClosedThrows:
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
-    empty_values = [None, ""]
-
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_environment(self, connection_factory, value):
+    def test_requires_environment(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without an environment raises an error."""
         with pytest.raises(InterfaceError, match="Environment ID is required"):
-            connection_factory(environment=value)
+            connection_factory(environment="")
 
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_compute_pool_id(self, connection_factory, value):
+    def test_requires_compute_pool_id(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a compute pool ID raises an error."""
         with pytest.raises(InterfaceError, match="Compute pool ID is required"):
-            connection_factory(compute_pool_id=value)
+            connection_factory(compute_pool_id="")
 
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_organization_id(self, connection_factory, value):
+    def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without an organization ID raises an error."""
         with pytest.raises(InterfaceError, match="Organization ID is required"):
-            connection_factory(organization_id=value)
+            connection_factory(organization_id="")
 
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_cloud_provider(self, connection_factory, value):
+    def test_requires_cloud_provider(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a cloud provider raises an error."""
         with pytest.raises(InterfaceError, match="Cloud provider is required"):
-            connection_factory(cloud_provider=value)
+            connection_factory(cloud_provider="")
 
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_cloud_region(self, connection_factory, value):
+    def test_requires_cloud_region(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a cloud region raises an error."""
         with pytest.raises(InterfaceError, match="Cloud region is required"):
-            connection_factory(cloud_region=value)
+            connection_factory(cloud_region="")
 
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_flink_api_key(self, connection_factory, value):
+    def test_requires_flink_api_key(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API key raises an error."""
-        with pytest.raises(
-            InterfaceError, match="Flink API key and secret are required"
-        ):
-            connection_factory(flink_api_key=value)
+        with pytest.raises(InterfaceError, match="Flink API key and secret are required"):
+            connection_factory(flink_api_key="")
 
-    @pytest.mark.parametrize("value", empty_values)
-    def test_requires_flink_api_secret(self, connection_factory, value):
+    def test_requires_flink_api_secret(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API secret raises an error."""
-        with pytest.raises(
-            InterfaceError, match="Flink API key and secret are required"
-        ):
-            connection_factory(flink_api_secret=value)
+        with pytest.raises(InterfaceError, match="Flink API key and secret are required"):
+            connection_factory(flink_api_secret="")

@@ -2,6 +2,7 @@ import pytest
 
 from confluent_sql import Connection, Cursor, InterfaceError
 from confluent_sql.statement import Op
+from tests.unit.conftest import ResultRowFactory
 
 
 @pytest.fixture()
@@ -31,7 +32,7 @@ class TestExecute:
         """Prove that if executing a new statement after a bounded one, we delete the prior."""
         # Simulate that the prior statement was bounded.
         mock_connection_cursor._statement = mocker.Mock()
-        mock_connection_cursor._statement.is_bounded = True
+        mock_connection_cursor._statement.is_bounded = True  # type: ignore
 
         delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
 
@@ -45,11 +46,12 @@ class TestExecute:
         """Prove that if executing a new statement after an unbounded one, we get a warning."""
         # Simulate that the prior statement was unbounded.
         mock_connection_cursor._statement = mocker.Mock()
-        mock_connection_cursor._statement.is_bounded = False
+        mock_connection_cursor._statement.is_bounded = False  # type: ignore
 
         with pytest.warns(
             UserWarning,
-            match="Executing a new statement on a cursor with an existing unbounded/streaming statement",
+            match="Executing a new statement on a cursor with an existing"
+            " unbounded/streaming statement",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
@@ -66,18 +68,13 @@ class TestFetchMany:
         get_next_results_mock = mocker.Mock()
         get_next_results_mock.return_value = None
         mocker.patch.object(mock_connection_cursor, "_get_next_results")
-        mock_connection_cursor._get_next_results
 
         mock_connection_cursor.fetchmany()
-        mock_connection_cursor._get_next_results.assert_called_once_with(
-            expected_arraysize
-        )
+        mock_connection_cursor._get_next_results.assert_called_once_with(expected_arraysize)  # type: ignore
 
     def test_negative_size_raises(self, mock_connection_cursor: Cursor):
         """Test that fetchmany with negative size raises."""
-        with pytest.raises(
-            InterfaceError, match="size must be a non-negative integer, got -1"
-        ):
+        with pytest.raises(InterfaceError, match="size must be a non-negative integer, got -1"):
             mock_connection_cursor.fetchmany(size=-1)
 
 
@@ -85,14 +82,16 @@ class TestFetchMany:
 class TestCursorFetching:
     """Unit tests over cursor fetching methods."""
 
-    def test_handles_insert_changelog_rows(self, mock_connection, result_row_maker):
+    def test_handles_insert_changelog_rows(
+        self, mock_connection: Connection, result_row_maker: ResultRowFactory
+    ):
         """Test that a cursor can handle changelog rows with INSERT or missing ops."""
 
         # As if statement results included only INSERT changelog rows and no next page.
-        mock_connection._get_statement_results.return_value = (
+        mock_connection._get_statement_results.return_value = (  # pyright: ignore[reportAttributeAccessIssue]
             [
-                result_row_maker([1, "test"], op=Op.INSERT),
-                result_row_maker([2, "example"]),  # implied insert.
+                result_row_maker([1, "test"], Op.INSERT),
+                result_row_maker([2, "example"], None),  # implied insert.
             ],
             None,
         )
@@ -111,14 +110,15 @@ class TestCursorFetching:
 
     @pytest.mark.parametrize("op", [Op.UPDATE_BEFORE, Op.UPDATE_AFTER, Op.DELETE])
     def test_raises_if_statement_produces_non_insert_changelog_rows(
-        self, mock_connection, result_row_maker, op: Op
+        self, mock_connection: Connection, result_row_maker: ResultRowFactory, op: Op
     ):
-        """Test that an error is raised on fetch*() if a statement produces non-insert changelog rows."""
+        """Test that an error is raised on fetch*() if a statement
+        produces non-insert changelog rows."""
 
-        # As if statement results included a non-insert changelog row then no next page.
-        mock_connection._get_statement_results.return_value = (
+        # As if statement results included a non-insert changelog row + no next page.
+        mock_connection._get_statement_results.return_value = (  # type: ignore
             [
-                result_row_maker([1, "test"], op=op),
+                result_row_maker([1, "test"], op),
             ],
             None,
         )
@@ -164,7 +164,7 @@ def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mo
     """Test that if deleting the statement on close raises, we log but do not raise."""
     # Simulate that the prior statement was bounded.
     mock_connection_cursor._statement = mocker.Mock()
-    mock_connection_cursor._statement.is_bounded = True
+    mock_connection_cursor._statement.is_bounded = True  # type: ignore
 
     delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
     # Make the delete_statement raise an error.

@@ -2,7 +2,8 @@
 
 import logging
 import os
-from typing import Any, Callable, Generator
+from collections.abc import Callable, Generator
+from typing import Any
 
 import pytest
 
@@ -17,9 +18,7 @@ def pytest_runtest_setup(item):
     """Ensure that all tests within integration/ are marked as integration tests."""
     is_integration = any(item.iter_markers(name="integration"))
     if not is_integration:
-        pytest.fail(
-            "Tests within 'integration/' must be marked with @pytest.mark.unit."
-        )
+        pytest.fail("Tests within 'integration/' must be marked with @pytest.mark.unit.")
 
 
 @pytest.fixture(scope="session")
@@ -31,14 +30,14 @@ def connection() -> Generator[Connection, Any, None]:
 
     This uses real api keys (from env).
     """
-    flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY")
-    flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET")
-    environment = os.getenv("CONFLUENT_ENV_ID")
-    organization_id = os.getenv("CONFLUENT_ORG_ID")
-    compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID")
-    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER")
-    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION")
-    dbname = os.getenv("CONFLUENT_TEST_DBNAME")
+    flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
+    flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
+    environment = os.getenv("CONFLUENT_ENV_ID", "")
+    organization_id = os.getenv("CONFLUENT_ORG_ID", "")
+    compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
+    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
+    dbname = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
     if not all(
         [
@@ -93,8 +92,8 @@ def test_table_name():
 @pytest.fixture
 def cursor(connection: Connection):
     """
-    Returns a tuple-returning cursor for the shared connection. Deletes the cursor (and if was a non-streaming
-    statement, will also delete the statement) at test teardown.
+    Returns a tuple-returning cursor for the shared connection. Deletes the cursor (and if was
+    a non-streaming statement, will also delete the statement) at test teardown.
 
     This cursor is unique for each test, even if they all share the same connection.
     """
@@ -166,7 +165,8 @@ def populated_table_connection(table_connection: Connection, test_table_name: st
             (7, 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7', 'name7'),
             (8, 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8', 'name8'),
             (9, 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9', 'name9'),
-            (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10')
+            (10, 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10', 'name10',
+                        'name10')
         """
         )
 
@@ -187,8 +187,10 @@ def cursor_with_nonstreaming_data_factory(
         """A dict cursor with a ten row, two column non-streaming select already executed."""
         cursor = table_connection.cursor(as_dict=as_dict)
 
-        # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making tests faster.
-        # The table {test_table_name} has 10 visible columns, so this query will return 10 rows x 2 columns.
+        # Selects from INFORMATION_SCHEMA.COLUMNS are very fast to execute (no pod creation), making
+        # tests faster.
+        # The table {test_table_name} has 10 visible columns, so this query will return 10 rows
+        # x 2 columns.
         cursor.execute(
             f"""SELECT
                     `COLUMN_NAME` as `column`,

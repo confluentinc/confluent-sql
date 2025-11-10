@@ -7,8 +7,9 @@ connections to Confluent SQL services.
 
 import logging
 import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Dict, Generator, List, Optional, Tuple, Union
+from typing import Any
 
 import httpx
 
@@ -18,7 +19,7 @@ from .exceptions import InterfaceError, OperationalError
 logger = logging.getLogger(__name__)
 
 
-def connect(
+def connect(  # noqa: PLR0913
     flink_api_key: str,
     flink_api_secret: str,
     environment: str,
@@ -26,9 +27,9 @@ def connect(
     organization_id: str,
     cloud_provider: str,
     cloud_region: str,
-    api_key: Optional[str] = None,
-    api_secret: Optional[str] = None,
-    dbname: Optional[str] = None,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    dbname: str | None = None,
 ) -> "Connection":
     """
     Create a connection to a Confluent SQL service.
@@ -96,14 +97,14 @@ class Connection:
     environment: str
     organization_id: str
     compute_pool_id: str
-    api_key: str
-    api_secret: str
-    host: str
+    api_key: str | None
+    api_secret: str | None
+    host: str | None
     _closed: bool
-    _dbname: str
+    _dbname: str | None
     _client: httpx.Client
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         flink_api_key: str,
         flink_api_secret: str,
@@ -112,10 +113,10 @@ class Connection:
         organization_id: str,
         cloud_provider: str,
         cloud_region: str,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
-        host: Optional[str] = None,
-        dbname: Optional[str] = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        host: str | None = None,
+        dbname: str | None = None,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -187,7 +188,7 @@ class Connection:
         return Cursor(self, as_dict)
 
     @contextmanager
-    def closing_cursor(self, as_dict: bool = False) -> Generator[Cursor, any, None]:
+    def closing_cursor(self, as_dict: bool = False) -> Generator[Cursor, None, None]:
         """
         Context manager for creating and automatically closing a cursor.
         Args:
@@ -218,10 +219,10 @@ class Connection:
     def _execute_statement(
         self,
         statement: str,
-        parameters: Optional[Union[Tuple, List, Dict]] = None,
-        statement_name: Optional[str] = None,
+        parameters: tuple | list | dict | None = None,
+        statement_name: str | None = None,
         bounded: bool = True,
-    ) -> Dict[str, any]:
+    ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response.
 
@@ -267,7 +268,7 @@ class Connection:
         res = self._request("/statements", method="POST", json=payload)
         return res.json()
 
-    def _get_statement(self, statement_name: str) -> Dict[str, any]:
+    def _get_statement(self, statement_name: str) -> dict[str, Any]:
         """
         Get the current structure of a statement.
 
@@ -283,8 +284,8 @@ class Connection:
         return self._request(f"/statements/{statement_name}").json()
 
     def _get_statement_results(
-        self, statement_name: str, next_url: Optional[str]
-    ) -> tuple[list, Optional[str]]:
+        self, statement_name: str, next_url: str | None
+    ) -> tuple[list, str | None]:
         """
         Get results for a completed statement.
 
@@ -324,26 +325,20 @@ class Connection:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if response.status_code != 404:
+            if response.status_code != 404:  # noqa: PLR2004
                 raise OperationalError("Error deleting statement") from e
             # If the response is 404, it means we don't need to delete the statement.
-            logger.info(
-                f"Statement '{statement_name}' not found while deleting, ignoring"
-            )
+            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
 
-    def _request(
-        self, url, method="GET", raise_for_status=True, **kwargs
-    ) -> httpx.Response:
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
         try:
             response = self._client.request(method, url, **kwargs)
-            logger.debug("Response: ", response.content)
+            logger.debug("Response: %s", response.content)
             if raise_for_status:
                 response.raise_for_status()
             return response
         except httpx.HTTPStatusError as e:
-            raise OperationalError(
-                f"Error sending request {e.response.status_code}"
-            ) from e
+            raise OperationalError(f"Error sending request {e.response.status_code}") from e

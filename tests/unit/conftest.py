@@ -1,7 +1,8 @@
-"""Pytest configuration + fixtures for integration tests."""
+"""Pytest configuration + fixtures for unit tests."""
 
 import types
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any, TypeAlias
 
 import pytest
 
@@ -49,8 +50,11 @@ def mock_connection(mocker, statement_json_factory):
     yield mock_conn
 
 
+ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], dict[str, Any]]
+
+
 @pytest.fixture
-def result_row_maker() -> Callable[[list[Any], Op | None], dict[str, Any]]:
+def result_row_maker() -> ResultRowFactory:
     """A fixture that returns a helper function to create result row dictionaries
     in changelog format.
 
@@ -75,11 +79,15 @@ def result_row_maker() -> Callable[[list[Any], Op | None], dict[str, Any]]:
     return _maker
 
 
-@pytest.fixture()
-def statement_json_factory() -> Callable[[str, bool], dict[str, Any]]:
-    """A fixture that returns a factory function to create statement v1 JSON dictionaries with various overrides."""
+StatementJsonFactory: TypeAlias = Callable[..., dict[str, Any]]
 
-    def _factory(
+
+@pytest.fixture()
+def statement_json_factory() -> StatementJsonFactory:
+    """A fixture that returns a factory function to create statement v1 JSON dictionaries
+    with various overrides."""
+
+    def _factory(  # noqa: PLR0913
         *,
         sql_statement: str = "SELECT TRUE AS VALUE",
         is_bounded: bool = True,
@@ -87,17 +95,11 @@ def statement_json_factory() -> Callable[[str, bool], dict[str, Any]]:
         status_detail: str = "",
         compute_pool_id: str = "lfcp-01x6d2",
         principal: str = "u-0xw9v9p",
-        schema_columns: list[dict[str, Any]] | None = [
-            {
-                "name": "value",
-                "type": {
-                    "nullable": False,
-                    "type": "BOOLEAN",
-                },
-            },
-        ],
+        schema_columns: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
+        if schema_columns is None:
+            schema_columns = [{"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}}]
         return {
             "api_version": "sql/v1",
             "environment_id": "env-asdf",

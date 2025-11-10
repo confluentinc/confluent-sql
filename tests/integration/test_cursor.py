@@ -14,6 +14,7 @@ class TestCursor:
         # 'Cursor.execute' defaults to snapshot queries
         cursor.execute(SINGLE_COLUMN_QUERY)
 
+        assert cursor._statement is not None
         assert cursor._statement.is_bounded is True
         assert cursor._statement.phase is Phase.COMPLETED
         assert cursor._statement.name is not None
@@ -35,9 +36,11 @@ class TestCursor:
     def test_unbounded_query_with_data(
         self, populated_table_connection: Connection, test_table_name: str
     ):
-        # For an actual unbounded query, we need to use an actual table that comes from a kafka topic.
+        # For an actual unbounded query, we need to use an actual table that comes from
+        # a kafka topic.
         cursor = populated_table_connection.cursor()
         cursor.execute(f"SELECT * FROM {test_table_name}", bounded=False)
+        assert cursor._statement is not None
         assert cursor._statement.is_bounded is False
 
     def test_cursor_description_connection_closed_raises(

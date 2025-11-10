@@ -2,6 +2,7 @@ import pytest
 
 from confluent_sql import DatabaseError, OperationalError
 from confluent_sql.statement import Phase, Statement
+from tests.unit.conftest import StatementJsonFactory
 
 """Unit tests over Statement class."""
 
@@ -11,7 +12,7 @@ class TestStatementIsReady:
     """Tests for Statement.is_ready property."""
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED"])
-    def test_bounded_is_ready(self, statement_json_factory, phase):
+    def test_bounded_is_ready(self, statement_json_factory: StatementJsonFactory, phase):
         """Test that a bounded statement in COMPLETED or
         STOPPED phase is ready."""
         statement_json = statement_json_factory(
@@ -21,7 +22,7 @@ class TestStatementIsReady:
         statement = Statement.from_response(statement_json)
         assert statement.is_ready
 
-    def test_bounded_not_ready(self, statement_json_factory):
+    def test_bounded_not_ready(self, statement_json_factory: StatementJsonFactory):
         """Test that a bounded statement not in COMPLETED or
         STOPPED phase is not ready."""
         statement_json = statement_json_factory(
@@ -32,7 +33,7 @@ class TestStatementIsReady:
         assert not statement.is_ready
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "RUNNING"])
-    def test_unbounded_is_ready(self, statement_json_factory, phase):
+    def test_unbounded_is_ready(self, statement_json_factory: StatementJsonFactory, phase: str):
         """Test that an unbounded statement in COMPLETED, STOPPED,
         or RUNNING phase is ready."""
         statement_json = statement_json_factory(
@@ -42,7 +43,7 @@ class TestStatementIsReady:
         statement = Statement.from_response(statement_json)
         assert statement.is_ready
 
-    def test_unbounded_pending_not_ready(self, statement_json_factory):
+    def test_unbounded_pending_not_ready(self, statement_json_factory: StatementJsonFactory):
         """Test that an unbounded statement not in PENDING phase is not ready."""
         statement_json = statement_json_factory(
             phase="PENDING",
@@ -56,25 +57,25 @@ class TestStatementIsReady:
 class TestStatementProperties:
     """Tests for various Statement properties."""
 
-    def test_compute_pool_id(self, statement_json_factory):
+    def test_compute_pool_id(self, statement_json_factory: StatementJsonFactory):
         """Test that compute_pool_id property returns correct value."""
         statement_json = statement_json_factory(compute_pool_id="test-pool-id")
         statement = Statement.from_response(statement_json)
         assert statement.compute_pool_id == "test-pool-id"
 
-    def test_principal(self, statement_json_factory):
+    def test_principal(self, statement_json_factory: StatementJsonFactory):
         """Test that principal property returns correct value."""
         statement_json = statement_json_factory(principal="test-principal")
         statement = Statement.from_response(statement_json)
         assert statement.principal == "test-principal"
 
-    def test_phase_property(self, statement_json_factory):
+    def test_phase_property(self, statement_json_factory: StatementJsonFactory):
         """Test that phase property returns correct Phase enum."""
         statement_json = statement_json_factory(phase="RUNNING")
         statement = Statement.from_response(statement_json)
         assert statement.phase == Phase.RUNNING
 
-    def test_phase_when_deleted(self, statement_json_factory):
+    def test_phase_when_deleted(self, statement_json_factory: StatementJsonFactory):
         """Test that phase property returns DELETED when statement is deleted."""
         statement_json = statement_json_factory()
         statement = Statement.from_response(statement_json)
@@ -90,7 +91,9 @@ class TestStatementProperties:
             ("STOPPED", False),
         ],
     )
-    def test_is_running(self, statement_json_factory, phase, expected):
+    def test_is_running(
+        self, statement_json_factory: StatementJsonFactory, phase: str, expected: bool
+    ):
         """Test that is_running property returns correct boolean."""
         statement_json = statement_json_factory(phase=phase)
         statement = Statement.from_response(statement_json)
@@ -101,22 +104,19 @@ class TestStatementProperties:
 class TestStatementFromResponse:
     """Tests for Statement.from_response class method error paths."""
 
-    def test_hates_unknown_status_phase(self, statement_json_factory):
+    def test_hates_unknown_status_phase(self, statement_json_factory: StatementJsonFactory):
         """Test that from_response raises on unknown status.phase."""
-        with pytest.raises(
-            OperationalError, match="Received an unknown phase for statement"
-        ):
+        with pytest.raises(OperationalError, match="Received an unknown phase for statement"):
             Statement.from_response(statement_json_factory(phase="UNKNOWN"))
 
-    def test_raises_databaseerror_if_failed(self, statement_json_factory):
-        """Test that a failed statement raises DatabaseError with details when if the statement failed."""
-        failed_statement_json = statement_json_factory(
-            phase="FAILED", status_detail="Some error"
-        )
+    def test_raises_databaseerror_if_failed(self, statement_json_factory: StatementJsonFactory):
+        """Test that a failed statement raises DatabaseError with details when if the
+        statement failed."""
+        failed_statement_json = statement_json_factory(phase="FAILED", status_detail="Some error")
         with pytest.raises(DatabaseError, match="Some error"):
             Statement.from_response(failed_statement_json)
 
-    def test_hates_missing_keys(self, statement_json_factory):
+    def test_hates_missing_keys(self, statement_json_factory: StatementJsonFactory):
         """Test that from_response raises if required keys are missing."""
         incomplete_json = statement_json_factory()
         del incomplete_json["spec"]

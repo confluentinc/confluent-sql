@@ -1,7 +1,8 @@
 """Fixtures and setup for all tests."""
 
 import os
-from typing import Callable, Generator
+from collections.abc import Callable, Generator
+from typing import TypeAlias
 
 import pytest
 
@@ -26,8 +27,11 @@ def pytest_runtest_setup(item):
 # Fixtures common to all tests ...
 
 
+ConnectionFactory: TypeAlias = Callable[..., Connection]
+
+
 @pytest.fixture()
-def connection_factory() -> Generator[None, Callable[..., Connection], None]:
+def connection_factory() -> Generator[ConnectionFactory, None, None]:
     """
     Returns a factory function to create new connections. Connection parameters
     default from environment variables, and will just be blank if env
@@ -43,17 +47,34 @@ def connection_factory() -> Generator[None, Callable[..., Connection], None]:
 
     connections: list[Connection] = []
 
-    def _create_connection(
+    def _create_connection(  # noqa: PLR0913
         *,
-        flink_api_key=os.getenv("CONFLUENT_FLINK_API_KEY"),
-        flink_api_secret=os.getenv("CONFLUENT_FLINK_API_SECRET"),
-        environment=os.getenv("CONFLUENT_ENV_ID"),
-        organization_id=os.getenv("CONFLUENT_ORG_ID"),
-        compute_pool_id=os.getenv("CONFLUENT_COMPUTE_POOL_ID"),
-        cloud_provider=os.getenv("CONFLUENT_CLOUD_PROVIDER"),
-        cloud_region=os.getenv("CONFLUENT_CLOUD_REGION"),
-        dbname=os.getenv("CONFLUENT_TEST_DBNAME"),
+        flink_api_key: str | None = None,
+        flink_api_secret: str | None = None,
+        environment: str | None = None,
+        organization_id: str | None = None,
+        compute_pool_id: str | None = None,
+        cloud_provider: str | None = None,
+        cloud_region: str | None = None,
+        dbname: str | None = None,
     ) -> Connection:
+        if flink_api_key is None:
+            flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
+        if flink_api_secret is None:
+            flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
+        if environment is None:
+            environment = os.getenv("CONFLUENT_ENV_ID", "")
+        if organization_id is None:
+            organization_id = os.getenv("CONFLUENT_ORG_ID", "")
+        if compute_pool_id is None:
+            compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
+        if cloud_provider is None:
+            cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+        if cloud_region is None:
+            cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
+        if dbname is None:
+            dbname = os.getenv("CONFLUENT_TEST_DBNAME", "")
+
         connection = connect(
             flink_api_key=flink_api_key,
             flink_api_secret=flink_api_secret,

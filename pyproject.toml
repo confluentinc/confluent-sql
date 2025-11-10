@@ -6,8 +6,18 @@ build-backend = "hatchling.build"
 name = "confluent-sql"
 version = "0.1.0"
 description = "DB-API v2 compliant driver for Confluent SQL"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["httpx>=0.23.0,<0.29.0"]
+
+[tool.ruff]
+lint.select = ["UP", "PL", "E", "F", "B", "SIM", "I"]
+line-length = 100
+
+[tool.pyright]
+verboseOutput = true
+pythonVersion = "3.10"
+pythonPlatform = "All"
+include = ["src", "tests"]
 
 [tool.pytest.ini_options]
 addopts = [
@@ -29,6 +39,7 @@ dev = ["pytest", "pytest-cov"]
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.407",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.15.1",

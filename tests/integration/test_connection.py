@@ -27,13 +27,13 @@ class TestConnection:
     )
     def test_confluent_sql_connection(self):
         """Test connection to Confluent Cloud Flink SQL service."""
-        flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY")
-        flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET")
-        environment_id = os.getenv("CONFLUENT_ENV_ID")
-        organization_id = os.getenv("CONFLUENT_ORG_ID")
-        compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID")
-        cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER")
-        cloud_region = os.getenv("CONFLUENT_CLOUD_REGION")
+        flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
+        flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
+        environment_id = os.getenv("CONFLUENT_ENV_ID", "")
+        organization_id = os.getenv("CONFLUENT_ORG_ID", "")
+        compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
+        cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+        cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
         connection = confluent_sql.connect(
             flink_api_key=flink_api_key,
             flink_api_secret=flink_api_secret,
@@ -53,12 +53,10 @@ class TestConnection:
         # We should always have the catalog that corresponds to the environment
         # of the connection. SHOW CATALOGS returns a list of rows with name and id.
         # We can check that the `environment_id` passed to the `connect` function is present:
-        catalog_ids = [res["Catalog ID"] for res in result]
+        catalog_ids = [res["Catalog ID"] for res in result]  # type: ignore
         assert environment_id in catalog_ids
 
-    def test_closing_cursor_after_executing_statement(
-        self, connection: Connection, mocker
-    ):
+    def test_closing_cursor_after_executing_statement(self, connection: Connection, mocker):
         """Test that auto closing a cursor used for a bounded statement works as expected."""
         with connection.closing_cursor() as cursor:
             assert cursor is not None
