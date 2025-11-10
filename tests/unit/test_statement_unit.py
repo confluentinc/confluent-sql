@@ -6,6 +6,7 @@ from confluent_sql.statement import Phase, Statement
 """Unit tests over Statement class."""
 
 
+@pytest.mark.unit
 class TestStatementIsReady:
     """Tests for Statement.is_ready property."""
 
@@ -51,6 +52,7 @@ class TestStatementIsReady:
         assert not statement.is_ready
 
 
+@pytest.mark.unit
 class TestStatementProperties:
     """Tests for various Statement properties."""
 
@@ -95,6 +97,7 @@ class TestStatementProperties:
         assert statement.is_running == expected
 
 
+@pytest.mark.unit
 class TestStatementFromResponse:
     """Tests for Statement.from_response class method error paths."""
 

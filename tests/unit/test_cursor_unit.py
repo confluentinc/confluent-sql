@@ -11,6 +11,7 @@ def mock_connection_cursor(mock_connection: Connection):
         yield mock_cursor
 
 
+@pytest.mark.unit
 class TestExecute:
     """Unit tests sover cusor.execute*()."""
 
@@ -53,6 +54,7 @@ class TestExecute:
             mock_connection_cursor.execute("SELECT 1 AS col")
 
 
+@pytest.mark.unit
 class TestFetchMany:
     """Unit tests over cursor.fetchmany()."""
 
@@ -79,6 +81,7 @@ class TestFetchMany:
             mock_connection_cursor.fetchmany(size=-1)
 
 
+@pytest.mark.unit
 class TestCursorFetching:
     """Unit tests over cursor fetching methods."""
 
@@ -156,6 +159,7 @@ class TestCursorFetching:
             mock_connection_cursor._fetch_next_page()
 
 
+@pytest.mark.unit
 def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mocker):
     """Test that if deleting the statement on close raises, we log but do not raise."""
     # Simulate that the prior statement was bounded.

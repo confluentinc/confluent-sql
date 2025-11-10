@@ -18,7 +18,11 @@ addopts = [
     "--cov-report=html",
 ]
 testpaths = "tests"
-markers = ["slow: mark a test as a slow test"]
+markers = [
+    "unit: mark a test as a unit test",
+    "integration: mark a test as an integration test",
+    "slow: mark a test as a slow (longer than a few seconds integration) test",
+]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]

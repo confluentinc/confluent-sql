@@ -5,8 +5,6 @@ import pytest
 
 from confluent_sql import InterfaceError, OperationalError
 
-"""Unit tests over Connection class / connection() pseudo-constructor."""
-
 
 def raise_not_found():
     """Mock function that raises an HTTPStatusError with a mocked 404 response."""
@@ -17,6 +15,7 @@ def raise_not_found():
     )
 
 
+@pytest.mark.unit
 def test_connection_error(connection_factory, mocker):
     """Test that we get meaningful error message when a response returns an error."""
     connection = connection_factory()
@@ -28,6 +27,7 @@ def test_connection_error(connection_factory, mocker):
         connection._get_statement("test-name")
 
 
+@pytest.mark.unit
 class TestConnectionClosedThrows:
     """Tests for operations on a closed connection."""
 
@@ -46,6 +46,7 @@ class TestConnectionClosedThrows:
             connection._get_statement("test-name")
 
 
+@pytest.mark.unit
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
