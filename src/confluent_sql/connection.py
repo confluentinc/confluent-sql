@@ -5,21 +5,21 @@ This module provides the connect function and Connection class for establishing
 connections to Confluent SQL services.
 """
 
-from contextlib import contextmanager
-import uuid
 import logging
-from typing import Optional, Dict, Any, Union, Tuple, List
+import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Any
 
 import httpx
 
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
 
-
 logger = logging.getLogger(__name__)
 
 
-def connect(
+def connect(  # noqa: PLR0913
     flink_api_key: str,
     flink_api_secret: str,
     environment: str,
@@ -27,9 +27,9 @@ def connect(
     organization_id: str,
     cloud_provider: str,
     cloud_region: str,
-    api_key: Optional[str] = None,
-    api_secret: Optional[str] = None,
-    dbname: Optional[str] = None,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    dbname: str | None = None,
 ) -> "Connection":
     """
     Create a connection to a Confluent SQL service.
@@ -94,7 +94,17 @@ class Connection:
     methods for creating cursors and managing the connection lifecycle.
     """
 
-    def __init__(
+    environment: str
+    organization_id: str
+    compute_pool_id: str
+    api_key: str | None
+    api_secret: str | None
+    host: str | None
+    _closed: bool
+    _dbname: str | None
+    _client: httpx.Client
+
+    def __init__(  # noqa: PLR0913
         self,
         flink_api_key: str,
         flink_api_secret: str,
@@ -103,10 +113,10 @@ class Connection:
         organization_id: str,
         cloud_provider: str,
         cloud_region: str,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
-        host: Optional[str] = None,
-        dbname: Optional[str] = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        host: str | None = None,
+        dbname: str | None = None,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -150,10 +160,7 @@ class Connection:
 
     def close(self) -> None:
         """
-        Close the connection and free associated resources.
-
-        This method closes all cursors associated with this connection
-        and marks the connection as closed.
+        Close the connection.
         """
         if not self._closed:
             self._closed = True
@@ -161,10 +168,13 @@ class Connection:
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
-    def cursor(self, with_schema: bool = False) -> "Cursor":
+    def cursor(self, *, as_dict: bool = False) -> "Cursor":
         """
         Create and return a new cursor object. The cursor will need
         to be manually closed by the caller.
+
+        Statement results fetched via this cursor will be returned
+        as dictionaries if as_dict is True, otherwise as tuples.
 
         Returns:
             A new Cursor object associated with this connection
@@ -175,16 +185,14 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        return Cursor(self, with_schema)
+        return Cursor(self, as_dict)
 
     @contextmanager
-    def closing_cursor(
-        self, with_schema: bool = False, delete_statement: bool = False
-    ) -> "Cursor":
+    def closing_cursor(self, as_dict: bool = False) -> Generator[Cursor, None, None]:
         """
         Context manager for creating and automatically closing a cursor.
-        If delete_statement is True, the statement associated with the cursor
-        will also be deleted when the cursor is closed.
+        Args:
+            as_dict: If True, fetch results as dictionaries, otherwise as tuples
 
         Yields:
             A new Cursor object associated with this connection
@@ -192,15 +200,11 @@ class Connection:
         Raises:
             InterfaceError: If the connection is closed
         """
-        cursor = self.cursor(with_schema=with_schema)
+        cursor = self.cursor(as_dict=as_dict)
         try:
             yield cursor
         finally:
-            try:
-                if delete_statement:
-                    cursor.delete_statement()
-            finally:
-                cursor.close()
+            cursor.close()
 
     @property
     def is_closed(self) -> bool:
@@ -215,10 +219,10 @@ class Connection:
     def _execute_statement(
         self,
         statement: str,
-        parameters: Optional[Union[Tuple, List, Dict]] = None,
-        statement_name: Optional[str] = None,
+        parameters: tuple | list | dict | None = None,
+        statement_name: str | None = None,
         bounded: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response.
 
@@ -264,9 +268,9 @@ class Connection:
         res = self._request("/statements", method="POST", json=payload)
         return res.json()
 
-    def _get_statement_status(self, statement_name: str) -> Dict[str, Any]:
+    def _get_statement(self, statement_name: str) -> dict[str, Any]:
         """
-        Get the current status of a statement.
+        Get the current structure of a statement.
 
         Args:
             statement_name: The name of the statement to check
@@ -280,8 +284,8 @@ class Connection:
         return self._request(f"/statements/{statement_name}").json()
 
     def _get_statement_results(
-        self, statement_name: str, next_url: Optional[str]
-    ) -> tuple[list, Optional[str]]:
+        self, statement_name: str, next_url: str | None
+    ) -> tuple[list, str | None]:
         """
         Get results for a completed statement.
 
@@ -290,7 +294,7 @@ class Connection:
             page_token: Optional page token for pagination
 
         Returns:
-            A 2-tuple: (list of results, optional url to fetch next page)
+            A 2-tuple: (list of results in changelog row format, optional url to fetch next page)
 
         Raises:
             OperationalError: If results retrieval fails
@@ -321,26 +325,20 @@ class Connection:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if response.status_code != 404:
+            if response.status_code != 404:  # noqa: PLR2004
                 raise OperationalError("Error deleting statement") from e
             # If the response is 404, it means we don't need to delete the statement.
-            logger.info(
-                f"Statement '{statement_name}' not found while deleting, ignoring"
-            )
+            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
 
-    def _request(
-        self, url, method="GET", raise_for_status=True, **kwargs
-    ) -> httpx.Response:
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
         try:
             response = self._client.request(method, url, **kwargs)
-            logger.debug("Response: ", response.content)
+            logger.debug("Response: %s", response.content)
             if raise_for_status:
                 response.raise_for_status()
             return response
         except httpx.HTTPStatusError as e:
-            raise OperationalError(
-                f"Error sending request {e.response.status_code}"
-            ) from e
+            raise OperationalError(f"Error sending request {e.response.status_code}") from e

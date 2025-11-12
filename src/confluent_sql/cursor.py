@@ -8,15 +8,16 @@ retrieving results from Confluent SQL services.
 import logging
 import random
 import time
+import warnings
 from itertools import islice
-from typing import Optional, List, Tuple, Union, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .exceptions import (
     InterfaceError,
-    ProgrammingError,
     OperationalError,
+    ProgrammingError,
 )
-from .statement import Statement, Op
+from .statement import Op, Statement
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -33,12 +34,13 @@ class Cursor:
     results from a Confluent SQL service connection.
     """
 
-    def __init__(self, connection: "Connection", with_schema: bool = False):
+    def __init__(self, connection: "Connection", as_dict: bool = False):
         """
         Initialize a new cursor.
 
         Args:
-            connection: The Connection object this cursor is associated with
+            connection: The Connection object this cursor is associated with.
+            as_dict: If True, fetch results as dictionaries; otherwise, as tuples.
         """
         self.rowcount = -1
         self.arraysize = 1
@@ -48,14 +50,14 @@ class Cursor:
         self._closed = False
         self._index = 0
         self._next_page = None
-        self._with_schema = with_schema
+        self._results_as_dicts = as_dict
 
         # Statement execution state
-        self._statement: Optional[Statement] = None
-        self._results: list[dict] = []
+        self._statement: Statement | None = None
+        self._results: list[dict[str, tuple | Op]] = []
 
     @property
-    def description(self) -> Optional[list[tuple]]:
+    def description(self) -> list[tuple] | None:
         self._raise_if_closed()
 
         # Required by DB-API: https://peps.python.org/pep-0249/#description
@@ -67,9 +69,9 @@ class Cursor:
     def execute(
         self,
         operation: str,
-        parameters: Optional[Union[tuple, list, dict]] = None,
+        parameters: tuple | list | dict | None = None,
         timeout: int = 3000,
-        statement_name: Optional[str] = None,
+        statement_name: str | None = None,
         bounded: bool = True,
     ):
         """
@@ -79,7 +81,8 @@ class Cursor:
             operation: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
             timeout: Maximum time to wait for statement completion in seconds (default: 3000)
-            statement_name: Optional name for the statement (defaults to DB-API UUID if not provided)
+            statement_name: Optional name for the statement (defaults to DB-API UUID
+                            if not provided)
 
         Raises:
             InterfaceError: If the cursor is closed
@@ -87,11 +90,24 @@ class Cursor:
             OperationalError: If the statement cannot be executed
         """
         # TODO: Handle parameters, see self._submit_statement
-
         self._raise_if_closed()
+
+        if parameters is not None:
+            raise NotImplementedError("Parameterized queries are not supported yet")
 
         if not operation.strip():
             raise ProgrammingError("SQL statement cannot be empty")
+
+        # Delete any previous statement if present and bounded
+        if self._statement is not None:
+            if self._statement.is_bounded:
+                self.delete_statement()
+            else:
+                warnings.warn(
+                    "Executing a new statement on a cursor with an existing unbounded/streaming "
+                    "statement. The previous statement will not be deleted automatically.",
+                    stacklevel=2,
+                )
 
         # Reset internal state
         self._statement = None
@@ -103,36 +119,32 @@ class Cursor:
         self._submit_statement(operation, parameters, statement_name, bounded)
         self._wait_for_statement_ready(timeout)
 
-    def executemany(
-        self, operation: str, seq_of_parameters: list[Union[tuple, list, dict]]
-    ):
+    def executemany(self, operation: str, seq_of_parameters: list[tuple | list | dict]):
         # Implement this if needed.
         # XXX: We need to handle multiple statements with a single cursor here,
         #      the logic currently implies each cursor handles a single statement at a time
         raise NotImplementedError("executemany not implemented")
 
-    def fetchone(self) -> Optional[dict]:
+    def fetchone(self) -> dict | tuple | None:
         self._raise_if_closed()
 
         res = self._get_next_results(1)
-        assert len(res) <= 1, (
-            "fetchone returned more than one result, this is probably a bug"
-        )
+        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
         # If no results are available, `res` is an empty list,
         # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
         return res[0] if res else None
 
-    def fetchmany(self, size: Optional[int] = None) -> list[dict]:
+    def fetchmany(self, size: int | None = None) -> list[dict | tuple]:
         self._raise_if_closed()
 
         if size is None:
             size = self.arraysize
         if size <= 0:
-            raise InterfaceError("fetchmany must be called with size > 0, aborting")
+            raise InterfaceError(f"size must be a non-negative integer, got {size}")
 
         return self._get_next_results(size)
 
-    def fetchall(self) -> list[dict]:
+    def fetchall(self) -> list[dict | tuple]:
         """
         Fetch all the results from the current cursor.
         Beware that this will download and put into memory all the available results.
@@ -150,11 +162,23 @@ class Cursor:
         Close the cursor and free associated resources.
 
         This method marks the cursor as closed and releases any
-        resources associated with it. It also attempts to delete
-        any running statement to prevent orphaned jobs.
+        local resources associated with it.
+
+        If the statement is bounded (non-streaming), it will also attempt to
+        delete the statement from the server to free server-side resources. Streaming
+        statements will not be implicitly deleted.
         """
         if not self._closed:
             if self._statement is not None:
+                if self._statement.is_bounded:
+                    # Auto-deletion of bounded (non-streaming) statements is always safe.
+                    try:
+                        self.delete_statement()
+                    except Exception as e:
+                        logger.error(
+                            f"Error deleting statement {self._statement.name} during cursor"
+                            f"close: {e}"
+                        )
                 self._statement = None
 
             self.rowcount = -1
@@ -164,20 +188,22 @@ class Cursor:
 
     def delete_statement(self) -> None:
         """
-        Delete the CCloud Flink-side statement to prevent orphaned jobs / statement records.
+        Delete any possible CCloud Flink-side statement to prevent orphaned jobs / statement
+        records.
+
+        If no statement was executed, or if the statement was already deleted, this is a no-op.
 
         Raises:
             OperationalError: If statement deletion fails.
-            InterfaceError: If the cursor is closed or if there is no statement to delete.
+            InterfaceError: If the cursor or connection is closed.
         """
         self._raise_if_closed()
 
-        if self._statement is None:
-            raise InterfaceError("No statement to delete")
+        if self._statement is None or self._statement.is_deleted:
+            return
 
-        if not self._statement.is_deleted:
-            self._connection._delete_statement(self._statement.name)
-            self._statement.set_deleted()
+        self._connection._delete_statement(self._statement.name)
+        self._statement.set_deleted()
 
     @property
     def is_closed(self) -> bool:
@@ -197,8 +223,7 @@ class Cursor:
             raise InterfaceError("Connection is closed")
 
     def _fetch_next_page(self):
-        if self._closed:
-            raise InterfaceError("Cursor is closed")
+        self._raise_if_closed()
 
         if not self._statement:
             raise InterfaceError("No statement was used. Call execute() first.")
@@ -210,9 +235,7 @@ class Cursor:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
         if not self._results or self._next_page is not None:
-            logger.info(
-                f"Fetching next page of results for statement {self._statement.name}"
-            )
+            logger.info(f"Fetching next page of results for statement {self._statement.name}")
             results, next_page = self._connection._get_statement_results(
                 self._statement.name, self._next_page
             )
@@ -220,12 +243,23 @@ class Cursor:
             self.rowcount += len(results)
 
             for res in results:
-                row = {"row": tuple(res.get("row", []))}
+                row: dict[str, tuple | Op] = {"row": tuple(res.get("row", []))}
 
                 # op is not mandatory
                 op_id = res.get("op", None)
                 if op_id is not None:
-                    row["op"] = Op(op_id)
+                    op = Op(op_id)
+
+                    # Temporary until smarter changelog parsing.
+                    if op != Op.INSERT:
+                        logger.error(
+                            f"""Received non-INSERT op {op} in results, not smart enough to handle
+                            this yet."""
+                        )
+                        raise NotImplementedError("Only INSERT op is supported in results for now.")
+
+                    row["op"] = op
+
                 self._results.append(row)
 
     def __iter__(self):
@@ -235,15 +269,17 @@ class Cursor:
     def _remaining(self):
         remaining = len(self._results) - self._index
         if remaining < 0:
-            raise InterfaceError(
-                "Internal index bigger than results list. This is probably a bug."
-            )
+            raise InterfaceError("Internal index bigger than results list. This is probably a bug.")
         return remaining
 
-    def __next__(self) -> dict:
-        assert self._statement is not None, (
-            "Trying to fetch results with null statement"
-        )
+    def __next__(self) -> tuple[Any] | dict[str, Any]:
+        """
+        Return the next row from the result set.
+
+        Will be a tuple if as_dict is False, or a dict based on the statement schema if as_dict
+        is True
+        """
+        assert self._statement is not None, "Trying to fetch results with null statement"
         if self._remaining == 0:
             if self._results and not self._next_page:
                 raise StopIteration
@@ -252,13 +288,19 @@ class Cursor:
             if self._remaining == 0:
                 raise StopIteration
 
-        res = self._results[self._index]
+        # By default, we return the raw row as a tuple.
+        res: Any = self._results[self._index]["row"]
         self._index += 1
-        if self._with_schema and self._statement.schema is not None:
-            res["row"] = self._map_row_to_schema(res["row"])
+        if self._results_as_dicts and self._statement.schema is not None:
+            res = self._map_row_to_dict(res)
+
         return res
 
-    def _get_next_results(self, limit: Optional[int] = None) -> list[dict]:
+    def _get_next_results(self, limit: int | None = None) -> list[dict[str, Any] | tuple[Any]]:
+        """
+        Get the next results from the cursor, up to the specified limit.
+        Returns either tuples or dicts based on the `as_dict` flag the cursor was created with.
+        """
         if limit is None:
             return list(self)
         else:
@@ -285,7 +327,7 @@ class Cursor:
 
         while time.time() - start_time < timeout:
             logger.info(f"Checking statement '{self._statement.name}' status...")
-            response = self._connection._get_statement_status(self._statement.name)
+            response = self._connection._get_statement(self._statement.name)
             self._statement = Statement.from_response(response)
 
             # Statement is ready when it's not in PENDING status.
@@ -307,15 +349,13 @@ class Cursor:
             actual_delay = current_delay * jitter
             time.sleep(actual_delay)
             current_delay = min(current_delay * 1.5, max_delay)
-        raise OperationalError(
-            f"Statement submission timed out after {timeout} seconds"
-        )
+        raise OperationalError(f"Statement submission timed out after {timeout} seconds")
 
     def _submit_statement(
         self,
         operation: str,
-        parameters: Optional[Union[Tuple, List, Dict]] = None,
-        statement_name: Optional[str] = None,
+        parameters: tuple | list | dict | None = None,
+        statement_name: str | None = None,
         bounded: bool = True,
     ) -> None:
         """
@@ -324,7 +364,8 @@ class Cursor:
         Args:
             operation: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
-            statement_name: Optional name for the statement (defaults to DB-API UUID if not provided)
+            statement_name: Optional name for the statement (defaults to DB-API UUID if
+                            not provided)
 
         Raises:
             OperationalError: If statement submission fails
@@ -336,28 +377,28 @@ class Cursor:
         )
         self._statement = Statement.from_response(response)
 
-    def _map_row_to_schema(self, values) -> dict:
+    def _map_row_to_dict(self, values) -> dict:
         assert self._statement is not None, "statement is none, this is probably a bug"
         if self._statement.schema is None:
             raise InterfaceError("schema not present, can't map values to keys")
-        return _map_tuple_to_schema(self._statement.schema, values)
+        return _map_tuple_to_dict(self._statement.schema, values)
 
 
-def _map_tuple_to_schema(schema: dict, values: tuple) -> dict:
+def _map_tuple_to_dict(schema: dict, values: tuple) -> dict:
     """
     Recursively transforms a tuple or list of data values into a
     dictionary based on the provided schema.
     """
     result_dict = {}
 
-    for field_schema, value in zip(schema, values):
+    for field_schema, value in zip(schema, values, strict=True):
         field_name = field_schema["name"]
         type_info = field_schema.get("type")
         if type_info is None:
             type_info = field_schema.get("field_type")
         if isinstance(type_info, dict) and type_info.get("type") == "ROW":
             sub_schema_fields = type_info["fields"]
-            result_dict[field_name] = _map_tuple_to_schema(sub_schema_fields, value)
+            result_dict[field_name] = _map_tuple_to_dict(sub_schema_fields, value)
         else:
             result_dict[field_name] = value
     return result_dict

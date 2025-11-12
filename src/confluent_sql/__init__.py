@@ -5,18 +5,19 @@ This module provides a DB-API v2 compliant interface for connecting to and
 executing SQL queries against Confluent SQL services.
 """
 
-from .connection import connect
+from .connection import Connection, connect
+from .cursor import Cursor
 from .exceptions import (
-    Warning,
-    Error,
-    InterfaceError,
     DatabaseError,
     DataError,
-    OperationalError,
+    Error,
     IntegrityError,
+    InterfaceError,
     InternalError,
-    ProgrammingError,
     NotSupportedError,
+    OperationalError,
+    ProgrammingError,
+    Warning,
 )
 
 # DB-API v2 module globals
@@ -26,6 +27,8 @@ paramstyle = "pyformat"  # Use question mark style parameters
 
 __all__ = [
     "connect",
+    "Connection",
+    "Cursor",
     "Warning",
     "Error",
     "InterfaceError",

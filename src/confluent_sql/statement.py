@@ -1,15 +1,15 @@
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
-from .exceptions import OperationalError, DatabaseError
-
+from .exceptions import DatabaseError, OperationalError
 
 logger = logging.getLogger(__name__)
 
 
 class Op(Enum):
+    """Row operation types for Flink SQL changelog streams."""
+
     INSERT = 0
     UPDATE_BEFORE = 1
     UPDATE_AFTER = 2
@@ -25,9 +25,7 @@ class Op(Enum):
         elif self is self.DELETE:
             return "-D"
         else:
-            raise ValueError(
-                f"Unknown value for Op: '{self.value}'. This is probably a bug"
-            )
+            raise ValueError(f"Unknown value for Op: '{self.value}'. This is probably a bug")
 
 
 class Phase(Enum):
@@ -108,7 +106,7 @@ class Statement:
         return self.traits["is_append_only"]
 
     @property
-    def schema(self) -> Optional[dict]:
+    def schema(self) -> dict | None:
         return self.traits.get("schema", {}).get("columns")
 
     @property
@@ -116,7 +114,7 @@ class Statement:
         return self.traits.get("connection_refs", [])
 
     @property
-    def description(self) -> Optional[list[tuple]]:
+    def description(self) -> list[tuple] | None:
         # This is required by the cursor object, see https://peps.python.org/pep-0249/#description
         # It's a list of 7-item tuples, the items represent:
         # (name, type_code, display_size, internal_size, precision, scale, null_ok)
@@ -149,11 +147,11 @@ class Statement:
             # Check the phase first.
             try:
                 phase = Phase(status["phase"])
-            except ValueError:
+            except ValueError as err:
                 raise OperationalError(
                     f"Received an unknown phase for statement from the server: {status['phase']}. "
                     "This is probably a bug"
-                )
+                ) from err
 
             # If it's failed, we won't get 'traits', and it's probably good to raise an error.
             # TODO: Should we instead set the phase and avoid erroring out here?
@@ -162,8 +160,6 @@ class Statement:
 
             traits = status["traits"]
         except KeyError as e:
-            raise OperationalError(
-                f"Error parsing statement response, missing {e}."
-            ) from e
+            raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
         return cls(statement_id, name, spec, status, traits, phase)
