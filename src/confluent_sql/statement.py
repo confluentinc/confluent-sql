@@ -121,7 +121,7 @@ class Statement:
         # TODO: we can probably add more info here.
         if self.schema is not None:
             return [
-                (col["name"], col["type"]["type"], None, None, None, None, None)
+                (col["name"], col["type"]["type"], None, None, None, None, col["type"]["nullable"])
                 for col in self.schema
             ]
         return None
