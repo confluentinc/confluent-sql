@@ -21,7 +21,8 @@ FromResponseScalarTypes: TypeAlias = str | bool | None
 
 # Grr, row types are fully recursive and come to us in JSON as a nested list.
 FromResponseTypes: TypeAlias = FromResponseScalarTypes | list["FromResponseTypes"]
-"""Describes all possible encoding types returned from from-response API calls, including nested row types."""
+"""Describes all possible encoding types returned from from-response API calls, including
+   nested row types."""
 
 
 class SchemaTypeConverter:

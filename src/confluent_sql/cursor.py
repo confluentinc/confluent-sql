@@ -13,7 +13,6 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from confluent_sql.statement import Schema
-from confluent_sql.types import SchemaTypeConverter
 
 from .exceptions import (
     InterfaceError,
@@ -58,7 +57,8 @@ class Cursor:
         # Statement execution state
         self._statement: Statement | None = None
 
-        # TODO -- simplify to get dir of the dict-ness, stop storing the changelog operation, no need.
+        # TODO -- simplify to get dir of the dict-ness, stop storing the changelog operation,
+        # no need.
         self._results: list[dict[str, tuple | Op]] = []
 
     @property

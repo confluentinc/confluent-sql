@@ -1,6 +1,6 @@
 import pytest
 
-from confluent_sql import Connection, Cursor, InterfaceError
+from confluent_sql import Cursor, InterfaceError
 from confluent_sql.statement import Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
