@@ -65,8 +65,7 @@ class TestConnection:
             cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
             row = cursor.fetchone()
             assert isinstance(row, tuple), "Expected row to be a tuple"
-            # Sigh, the driver returns strings for all atomic values at this time.
-            assert row == ("1",)
+            assert row == (1,)
 
         assert cursor.is_closed is True, (
             "Expected cursor to be closed after exiting context manager."
@@ -83,8 +82,7 @@ class TestConnection:
             cursor.execute("SELECT 1 AS answer from `INFORMATION_SCHEMA`.`TABLES`")
             row = cursor.fetchone()
             assert isinstance(row, dict), "Expected row to be a dict when as_dict=True"
-            # Sigh, the driver returns strings for all atomic values at this time.
-            assert row["answer"] == "1"
+            assert row["answer"] == 1
 
         assert cursor.is_closed is True, (
             "Expected cursor to be closed after exiting context manager."

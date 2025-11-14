@@ -12,6 +12,9 @@ import warnings
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
+from confluent_sql.statement import Schema
+from confluent_sql.types import SchemaTypeConverter
+
 from .exceptions import (
     InterfaceError,
     OperationalError,
@@ -54,6 +57,8 @@ class Cursor:
 
         # Statement execution state
         self._statement: Statement | None = None
+
+        # TODO -- simplify to get dir of the dict-ness, stop storing the changelog operation, no need.
         self._results: list[dict[str, tuple | Op]] = []
 
     @property
@@ -243,7 +248,12 @@ class Cursor:
             self.rowcount += len(results)
 
             for res in results:
-                row: dict[str, tuple | Op] = {"row": tuple(res.get("row", []))}
+                # Promote the row to Python values using the statement's type converter
+                decoded_row = self._statement.type_converter.to_python_row(  # pyright: ignore[reportOptionalMemberAccess]
+                    tuple(res.get("row", []))
+                )
+
+                row: dict[str, tuple | Op] = {"row": decoded_row}
 
                 # op is not mandatory
                 op_id = res.get("op", None)
@@ -330,6 +340,14 @@ class Cursor:
             response = self._connection._get_statement(self._statement.name)
             self._statement = Statement.from_response(response)
 
+            # We only support append-only statements for now. Our changelog
+            # parsing is not smart enough to handle updates/deletes from streaming statements.
+            # (This is different from bounded vs unbounded: even if we relax and start to
+            #  return pages of results from unbounded statements, we still can't handle
+            #  non-append-only changelogs).
+            if not self._statement.is_append_only:
+                raise NotImplementedError("Only append-only statements are supported for now.")
+
             # Statement is ready when it's not in PENDING status.
             # We first check if it failed, and return early if so:
             if self._statement.is_failed or self._statement.is_degraded:
@@ -384,21 +402,15 @@ class Cursor:
         return _map_tuple_to_dict(self._statement.schema, values)
 
 
-def _map_tuple_to_dict(schema: dict, values: tuple) -> dict:
+def _map_tuple_to_dict(schema: Schema, values: tuple) -> dict:
     """
-    Recursively transforms a tuple or list of data values into a
+    Recursively transforms a tuple of data values into a
     dictionary based on the provided schema.
     """
     result_dict = {}
 
-    for field_schema, value in zip(schema, values, strict=True):
-        field_name = field_schema["name"]
-        type_info = field_schema.get("type")
-        if type_info is None:
-            type_info = field_schema.get("field_type")
-        if isinstance(type_info, dict) and type_info.get("type") == "ROW":
-            sub_schema_fields = type_info["fields"]
-            result_dict[field_name] = _map_tuple_to_dict(sub_schema_fields, value)
-        else:
-            result_dict[field_name] = value
+    for column, value in zip(schema.columns, values, strict=True):
+        field_name = column.name
+        # Skip recursive mapping for nonatomic types for now.
+        result_dict[field_name] = value
     return result_dict

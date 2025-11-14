@@ -13,6 +13,9 @@ dependencies = ["httpx>=0.23.0,<0.29.0"]
 lint.select = ["UP", "PL", "E", "F", "B", "SIM", "I"]
 line-length = 100
 
+[tool.ruff.lint.pylint]
+max-args = 10
+
 [tool.pyright]
 verboseOutput = true
 pythonVersion = "3.10"
