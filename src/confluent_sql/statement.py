@@ -205,7 +205,7 @@ class Statement:
 class ColumnTypeDefinition:
     """Fields corresponding to statement.traits.schema.columns[].type members.
 
-    Describes the Flink-side type defitition of a projected column.
+    Describes the Flink-side type definition of a projected column.
     """
 
     type: str
@@ -316,9 +316,10 @@ class Traits:
     """The names of connections that the SQL statement references (e.g., in FROM clauses)."""
     is_append_only: bool
     """Indicates the special case where results of a statement are insert/append only
-       (indicicating simple changelog parsing)."""
+       (indicating simple changelog parsing. May be either a streaming or batch/snapshot query.)."""
     is_bounded: bool
-    """Does the result set have a bounded number of rows (aka not a streaming result?)"""
+    """Does the result set have a bounded number of rows (aka not a streaming result?
+       Implies is_append_only.)"""
     schema: Schema | None
     """The schema of the result set, if any."""
     sql_kind: str  # TODO will grow into an enum some day soon. It always does.

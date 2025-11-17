@@ -57,7 +57,7 @@ class Cursor:
         # Statement execution state
         self._statement: Statement | None = None
 
-        # TODO -- simplify to get dir of the dict-ness, stop storing the changelog operation,
+        # TODO -- simplify to get rid of the dict-ness, stop storing the changelog operation,
         # no need.
         self._results: list[dict[str, tuple | Op]] = []
 

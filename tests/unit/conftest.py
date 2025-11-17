@@ -171,19 +171,3 @@ def mock_connection_factory(mocker, statement_response_factory) -> MockConnectio
         return mock_conn
 
     return _factory
-
-
-# @pytest.fixture
-# def mock_connection(mock_connection_factory):
-#     """
-#     Create a connection for testing cursor behavior with mocked client responses.
-
-#     Any executed statement will appear to complete immediately with no results.
-
-#     Can override statement results by replacing mocked_conn._get_statement_results.return_value
-#     is with the desired result rows. Use fixture result_row_maker() to assist.
-
-#     Or use mock_connection_factory() to create multiple mock connections with different statement
-#     responses.
-#     """
-#     return mock_connection_factory(None)
