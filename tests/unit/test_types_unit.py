@@ -86,11 +86,11 @@ class TestIntegerConverter:
 
     @pytest.mark.parametrize("value, expected", [("123", 123), (None, None)])
     def test_to_python_value(self, value, expected):
-        converter = IntegerConverter(ColumnTypeDefinition(type="INT", nullable=False))
+        converter = IntegerConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
         assert converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        converter = IntegerConverter(ColumnTypeDefinition(type="INT", nullable=False))
+        converter = IntegerConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
         with pytest.raises(
             ValueError,
             match="Expected integers to be encoded as JSON strings but got <class 'int'>",
