@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -53,12 +55,13 @@ class Phase(Enum):
 
 @dataclass
 class Statement:
-    # From the API response fields
+    # From the API response fields ...
     statement_id: str
     name: str
     spec: StrAnyDict
     status: StrAnyDict
-    traits: "Traits"
+    # Parsed fields ...
+    traits: Traits
 
     # Internal state
     _phase: Phase
@@ -114,7 +117,7 @@ class Statement:
         return self.traits.is_append_only
 
     @property
-    def schema(self) -> "Schema|None":
+    def schema(self) -> Schema | None:
         return self.traits.schema
 
     @property
@@ -151,11 +154,15 @@ class Statement:
         self._deleted = True
 
     _type_converter: SchemaTypeConverter | None = None
+    """Cached SchemaTypeConverter for this statement's schema."""
 
     @property
-    def type_converter(self) -> "SchemaTypeConverter|None":
-        """Get or create the SchemaTypeConverter for this statement's schema to assist
-        with promoting from from-statement-results-encoded values to Python values."""
+    def type_converter(self) -> SchemaTypeConverter | None:
+        """Get or create the SchemaTypeConverter for this statement's schema.
+
+        The converter handles conversion from JSON-from-API row values to Python values
+        based on the statement's schema, for all columns in the result set.
+        """
         if self.schema is None:
             return None
         if self._type_converter is None:
@@ -163,7 +170,8 @@ class Statement:
         return self._type_converter
 
     @classmethod
-    def from_response(cls, response: StrAnyDict) -> "Statement":
+    def from_response(cls, response: StrAnyDict) -> Statement:
+        """Create a Statement object from the JSON response returned by the statements API."""
         try:
             # Mandatory fields
             statement_id = response["metadata"]["uid"]
@@ -185,6 +193,7 @@ class Statement:
             if phase is Phase.FAILED:
                 raise DatabaseError(status["detail"])
 
+            # Parse traits, which includes the statement schema.
             traits = Traits.from_response(status["traits"])
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
@@ -194,7 +203,10 @@ class Statement:
 
 @dataclass(kw_only=True)
 class ColumnTypeDefinition:
-    """Fields corresponding to statement.traits.schema.columns[].type members."""
+    """Fields corresponding to statement.traits.schema.columns[].type members.
+
+    Describes the Flink-side type defitition of a projected column.
+    """
 
     type: str
     """Flink name of the type, e.g., "INT", "STRING", "ROW", etc."""
@@ -208,7 +220,7 @@ class ColumnTypeDefinition:
     value_type: str | None = None  # if type == "MAP"
     element_type: str | None = None  # if type == "ARRAY"
 
-    fields: list["RowColumn"] | None = None
+    fields: list[RowColumn] | None = None
     """The interior fields of a ROW type, if applicable."""
 
     class_name: str | None = None
@@ -220,7 +232,8 @@ class ColumnTypeDefinition:
         return self.type
 
     @classmethod
-    def from_response(cls, data: StrAnyDict) -> "ColumnTypeDefinition":
+    def from_response(cls, data: StrAnyDict) -> ColumnTypeDefinition:
+        """Create a ColumnTypeDefinition from JSON response data within from-API statement traits"""
         return cls(
             type=data["type"],
             nullable=data["nullable"],
@@ -241,14 +254,17 @@ class ColumnTypeDefinition:
 
 @dataclass(kw_only=True)
 class Column:
-    """Fields correspond to statement.traits.schema.columns[] members"""
+    """Fields correspond to statement.traits.schema.columns[] members
+    Describes a projected column in the statement's result set: name, type definition,
+    description (column comment).
+    """
 
     name: str
     type: ColumnTypeDefinition
     description: str | None = None
 
     @classmethod
-    def from_response(cls, data: StrAnyDict) -> "Column":
+    def from_response(cls, data: StrAnyDict) -> Column:
         column_type = ColumnTypeDefinition.from_response(data["type"])
         return cls(name=data["name"], type=column_type, description=data.get("description"))
 
@@ -270,7 +286,7 @@ class RowColumn:
         return self.field_type
 
     @classmethod
-    def from_response(cls, data: StrAnyDict) -> "RowColumn":
+    def from_response(cls, data: StrAnyDict) -> RowColumn:
         column_type = ColumnTypeDefinition.from_response(data["type"])
         return cls(name=data["name"], field_type=column_type, description=data.get("description"))
 
@@ -283,7 +299,7 @@ class Schema:
     """The columns in the schema."""
 
     @classmethod
-    def from_response(cls, data: StrAnyDict) -> "Schema":
+    def from_response(cls, data: StrAnyDict) -> Schema:
         columns = [Column.from_response(col) for col in data.get("columns", [])]
         return cls(columns=columns)
 
@@ -310,7 +326,7 @@ class Traits:
     """Zero-based indices of upsert columns, if any."""
 
     @classmethod
-    def from_response(cls, data: StrAnyDict) -> "Traits":
+    def from_response(cls, data: StrAnyDict) -> Traits:
         schema_data = data.get("schema")
         schema = Schema.from_response(schema_data) if schema_data else None
         return cls(

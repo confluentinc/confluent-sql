@@ -19,15 +19,19 @@ __all__ = [
 FromResponseScalarTypes: TypeAlias = str | bool | None
 """Describes all possible scalar encoding types returned from from-response API calls."""
 
-# Grr, row types are fully recursive and come to us in JSON as a nested list.
+# Row types are fully recursive and come to us in JSON as a nested list.
 FromResponseTypes: TypeAlias = FromResponseScalarTypes | list["FromResponseTypes"]
-"""Describes all possible encoding types returned from from-response API calls, including
-   nested row types."""
+"""
+Describes all possible encoding types returned from from-response API calls, including
+nested row types.
+"""
 
 
 class SchemaTypeConverter:
     """
-    Acts on behalf of a Schema to convert SQL string values to Python values."""
+    Acts on behalf of a Schema to convert SQL string values to Python values,
+    and in the near future, vice versa.
+    """
 
     _schema: Schema
     _type_converters: list[TypeConverter]
@@ -94,7 +98,7 @@ class IntegerConverter(TypeConverter):
 
         if not isinstance(response_value, str):
             raise ValueError(
-                f"Expected SQL integers to be encoded as JSON strings but got {type(response_value)}"
+                f"Expected integers to be encoded as JSON strings but got {type(response_value)}"
             )
 
         return int(response_value)
@@ -117,13 +121,13 @@ class BooleanConverter(TypeConverter):
 
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "BOOLEAN": BooleanConverter,
-    #
+    # Integer types
     "TINYINT": IntegerConverter,
     "SMALLINT": IntegerConverter,
     "INT": IntegerConverter,
     "INTEGER": IntegerConverter,
     "BIGINT": IntegerConverter,
-    #
+    # String types
     "CHAR": StringConverter,
     "VARCHAR": StringConverter,
     "STRING": StringConverter,

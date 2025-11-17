@@ -112,16 +112,28 @@ class TestCursorFetching:
         statement_response = statement_response_factory(
             sql_statement="SELECT 'Joe' as name, TRUE AS value",
             schema_columns=[
-                {"name": "name", "type": {"nullable": False, "type": "STRING"}},
-                {"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}},
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "value",
+                    "type": {
+                        "type": "BOOLEAN",
+                        "nullable": False,
+                    },
+                },
             ],
         )
 
         # As if statement results included only INSERT changelog rows and no next page.
         statement_results_return_value = (
             [
-                result_row_maker(["Joe", True], Op.INSERT),
-                result_row_maker(["Joe", False], None),  # implied insert.
+                result_row_maker(["Joe", "TRUE"], Op.INSERT),
+                result_row_maker(["Joe", "FALSE"], None),  # implied insert.
             ],
             None,
         )
@@ -160,15 +172,27 @@ class TestCursorFetching:
         statement_response = statement_response_factory(
             sql_statement="SELECT 'Joe' as name, TRUE AS value",
             schema_columns=[
-                {"name": "name", "type": {"nullable": False, "type": "STRING"}},
-                {"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}},
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "value",
+                    "type": {
+                        "type": "BOOLEAN",
+                        "nullable": False,
+                    },
+                },
             ],
         )
 
         # As if statement results included a non-insert changelog row + no next page.
         get_statement_results_return_value = (
             [
-                result_row_maker(["Joe", True], op),
+                result_row_maker(["Joe", "TRUE"], op),
             ],
             None,
         )
