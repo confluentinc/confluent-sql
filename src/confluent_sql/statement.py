@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeAlias
 
-from confluent_sql.types import SchemaTypeConverter
+from confluent_sql.types import StatementTypeConverter
 
 from .exceptions import DatabaseError, OperationalError
 
@@ -153,11 +153,11 @@ class Statement:
         """Mark this statement as deleted."""
         self._deleted = True
 
-    _type_converter: SchemaTypeConverter | None = None
+    _type_converter: StatementTypeConverter | None = None
     """Cached SchemaTypeConverter for this statement's schema."""
 
     @property
-    def type_converter(self) -> SchemaTypeConverter | None:
+    def type_converter(self) -> StatementTypeConverter | None:
         """Get or create the SchemaTypeConverter for this statement's schema.
 
         The converter handles conversion from JSON-from-API row values to Python values
@@ -166,7 +166,7 @@ class Statement:
         if self.schema is None:
             return None
         if self._type_converter is None:
-            self._type_converter = SchemaTypeConverter(self.schema)
+            self._type_converter = StatementTypeConverter(self.schema)
         return self._type_converter
 
     @classmethod

@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "SchemaTypeConverter",
+    "StatementTypeConverter",
 ]
 
 """
@@ -27,10 +27,10 @@ nested row types.
 """
 
 
-class SchemaTypeConverter:
+class StatementTypeConverter:
     """
-    Acts on behalf of a Schema to convert SQL string values to Python values,
-    and in the near future, vice versa.
+    Acts on behalf of a statement's Schema to convert from-API-JSON-changelog values to Python,
+    values.
     """
 
     _schema: Schema
@@ -38,7 +38,7 @@ class SchemaTypeConverter:
 
     def __init__(self, schema: Schema):
         self._schema = schema
-        self._type_converters = [get_data_type_converter(col.type) for col in schema.columns]
+        self._type_converters = [get_api_type_converter(col.type) for col in schema.columns]
 
     def to_python_row(self, sql_row: tuple[FromResponseTypes]) -> tuple[Any]:
         """Convert a SQL row (list of from-results-API encoded values) to a Python row
@@ -50,7 +50,7 @@ class SchemaTypeConverter:
 
 
 class TypeConverter:
-    """Base class for all Flink -> Python data type converters."""
+    """Base class for all Flink <-> Python data type converters."""
 
     _column_type: ColumnTypeDefinition
 
@@ -61,16 +61,19 @@ class TypeConverter:
         """Convert from statement-response-API-JSON representation to its Python value."""
         raise NotImplementedError("Subclasses should implement this method.")
 
+    # Future: a method to convert from Python value to string encoding for embedding
+    # into a statement.
 
-def get_data_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
+
+def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
     """Return the appropriate TypeConverter for a given from-Statement-JSON type description."""
     # Find the appropriate converter class mapped from the Flink type name
     cls = _flink_type_name_to_converter_map.get(column_type.type_name)
-    if cls:
-        return cls(column_type)
+    if not cls:
+        # Another type mapping needed!
+        raise NotImplementedError(f"TypeConverter for {column_type.type_name} is not implemented.")
 
-    # Add more type mappings as needed!
-    raise NotImplementedError(f"TypeConverter for {column_type.type_name} is not implemented.")
+    return cls(column_type)
 
 
 class StringConverter(TypeConverter):

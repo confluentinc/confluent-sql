@@ -90,18 +90,37 @@ class TestCursorFetch:
             cursor.execute("""
                 SELECT *
                 FROM (VALUES (
-                        123,
+                        cast(12 AS TINYINT),
+                        cast(12345 AS SMALLINT),
+                        cast(123 AS INT),
+                        cast(12345678901 AS BIGINT),
+                           
                         TRUE,
-                        'hello',
+                           
+                        cast ('c' as CHAR),
+                        cast ('charn' as CHAR(5)),
+                        cast ('string' as STRING),
+                        cast ('varchar' as VARCHAR),
+                        cast ('varcharn' as VARCHAR(10)),
                            
                         cast(NULL AS INTEGER),
                         cast(NULL AS BOOLEAN),
                         cast(NULL AS STRING)
                     ))
                 AS t(
+                        tinyint_value,
+                        smallint_value,
                         int_value,
+                        bigint_value,
+                           
                         bool_value,
+                           
+                        char_value,
+                        charn_value,
                         string_value,
+                        varchar_value,
+                        varcharn_value,
+                           
                            
                         null_int_value,
                         null_bool_value,
@@ -112,9 +131,20 @@ class TestCursorFetch:
             results = cursor.fetchone()
 
             assert results == {
+                # Numeric types
+                "tinyint_value": 12,
+                "smallint_value": 12345,
                 "int_value": 123,
+                "bigint_value": 12345678901,
+                # Boolean type
                 "bool_value": True,
-                "string_value": "hello",
+                # String types
+                "char_value": "c",
+                "charn_value": "charn",
+                "string_value": "string",
+                "varchar_value": "varchar",
+                "varcharn_value": "varcharn",
+                # Various NULLs
                 "null_int_value": None,
                 "null_bool_value": None,
                 "null_string_value": None,
