@@ -93,7 +93,7 @@ class TestIntegerConverter:
         converter = IntegerConverter(ColumnTypeDefinition(type="INT", nullable=False))
         with pytest.raises(
             ValueError,
-            match="Expected SQL integers to be encoded as JSON strings but got <class 'int'>",
+            match="Expected integers to be encoded as JSON strings but got <class 'int'>",
         ):
             converter.to_python_value(123)  # type: ignore
 
