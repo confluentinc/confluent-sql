@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
-    from .statement import ColumnType, Schema
+    from .statement import ColumnTypeDefinition, Schema
 
 
 __all__ = [
@@ -48,62 +48,82 @@ class SchemaTypeConverter:
 class TypeConverter:
     """Base class for all Flink -> Python data type converters."""
 
-    _column_type: ColumnType
+    _column_type: ColumnTypeDefinition
 
-    def __init__(self, column_type: ColumnType):
+    def __init__(self, column_type: ColumnTypeDefinition):
         self._column_type = column_type
 
-    def to_python_value(self, sql_value: str) -> Any:
-        """Convert a SQL string representation to its Python value."""
+    def to_python_value(self, response_value: FromResponseTypes) -> Any:
+        """Convert from statement-response-API-JSON representation to its Python value."""
         raise NotImplementedError("Subclasses should implement this method.")
 
 
-def get_data_type_converter(column_type: ColumnType) -> TypeConverter:
-    """Factory method to get the appropriate TypeConverter for a given ColumnType."""
-    cls = _flink_type_to_converter_map.get(column_type.type)
+def get_data_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
+    """Return the appropriate TypeConverter for a given from-Statement-JSON type description."""
+    # Find the appropriate converter class mapped from the Flink type name
+    cls = _flink_type_name_to_converter_map.get(column_type.type_name)
     if cls:
         return cls(column_type)
 
-    # Add more type mappings as needed.
-    raise NotImplementedError(f"TypeConverter for {column_type.type} is not implemented.")
+    # Add more type mappings as needed!
+    raise NotImplementedError(f"TypeConverter for {column_type.type_name} is not implemented.")
 
 
 class StringConverter(TypeConverter):
     """Handles Flink types for CHAR, VARCHAR, STRING"""
 
-    def to_python_value(self, sql_value: str | None) -> str | None:
-        if sql_value is None:
-            return None
-        return sql_value
-
-
-class BooleanConverter(TypeConverter):
-    def to_python_value(self, sql_value: str | bool | None) -> bool | None:
-        breakpoint()
-
-        if sql_value is None:
+    def to_python_value(self, response_value: FromResponseTypes) -> str | None:
+        """Expect string or None from the response value, return as-is or raise ValueError."""
+        if response_value is None:
             return None
 
-        if isinstance(sql_value, bool):
-            return sql_value
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected string value for StringConverter but got {type(response_value)}"
+            )
 
-        return sql_value.lower() == "true"
+        return response_value
 
 
 class IntegerConverter(TypeConverter):
-    def to_python_value(self, sql_value: str | None) -> int | None:
-        if sql_value is None:
+    def to_python_value(self, response_value: FromResponseTypes) -> int | None:
+        """Expect string-encoded integer or None from the response value, return as int
+        or raise ValueError."""
+        if response_value is None:
             return None
-        return int(sql_value)
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected SQL integers to be encoded as JSON strings but got {type(response_value)}"
+            )
+
+        return int(response_value)
 
 
-_flink_type_to_converter_map: dict[str, type[TypeConverter]] = {
-    "BOOLEAN": StringConverter,
+class BooleanConverter(TypeConverter):
+    def to_python_value(self, response_value: FromResponseTypes) -> bool | None:
+        """Expect string 'TRUE'/'FALSE' or None from the response value, return as bool
+        or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected string value for BooleanConverter but got {type(response_value)}"
+            )
+
+        return response_value.lower() == "true"
+
+
+_flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
+    "BOOLEAN": BooleanConverter,
+    #
     "TINYINT": IntegerConverter,
     "SMALLINT": IntegerConverter,
     "INT": IntegerConverter,
     "INTEGER": IntegerConverter,
     "BIGINT": IntegerConverter,
+    #
     "CHAR": StringConverter,
     "VARCHAR": StringConverter,
     "STRING": StringConverter,

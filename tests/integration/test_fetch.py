@@ -1,5 +1,7 @@
 import pytest
 
+from confluent_sql.connection import Connection
+
 
 @pytest.mark.integration
 class TestCursorFetch:
@@ -73,3 +75,47 @@ class TestCursorFetch:
         for row in cursor:
             expected_row = expected_results.pop(0)
             assert row == expected_row
+
+    @pytest.mark.slow
+    def test_rich_result_decoding(
+        self,
+        connection: Connection,
+        test_table_name: str,
+    ):
+        """Test decoding types from a query projecting rich types."""
+        with connection.closing_cursor(as_dict=True) as cursor:
+            # Select a single row with all of our supported types with representative variations.
+            # (Even though is a simple projection, a Flink job will be created
+            # to run the query, hence being marked as slow.)
+            cursor.execute("""
+                SELECT *
+                FROM (VALUES (
+                        123,
+                        TRUE,
+                        'hello',
+                           
+                        cast(NULL AS INTEGER),
+                        cast(NULL AS BOOLEAN),
+                        cast(NULL AS STRING)
+                    ))
+                AS t(
+                        int_value,
+                        bool_value,
+                        string_value,
+                           
+                        null_int_value,
+                        null_bool_value,
+                        null_string_value
+                    )
+                """)
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "int_value": 123,
+                "bool_value": True,
+                "string_value": "hello",
+                "null_int_value": None,
+                "null_bool_value": None,
+                "null_string_value": None,
+            }

@@ -193,11 +193,11 @@ class Statement:
 
 
 @dataclass(kw_only=True)
-class ColumnType:
+class ColumnTypeDefinition:
     """Fields corresponding to statement.traits.schema.columns[].type members."""
 
     type: str
-    """Name of the type, e.g., "INT", "STRING", "ROW", etc."""
+    """Flink name of the type, e.g., "INT", "STRING", "ROW", etc."""
     nullable: bool
     length: int | None = None
     precision: int | None = None
@@ -212,10 +212,15 @@ class ColumnType:
     """The interior fields of a ROW type, if applicable."""
 
     class_name: str | None = None
-    """The class name of the structured data type (if applicable)."""
+    """The Flink-side class name of the structured data type (if applicable)."""
+
+    @property
+    def type_name(self) -> str:
+        """Return the Flink type name. Aliasing for clarity."""
+        return self.type
 
     @classmethod
-    def from_response(cls, data: StrAnyDict) -> "ColumnType":
+    def from_response(cls, data: StrAnyDict) -> "ColumnTypeDefinition":
         return cls(
             type=data["type"],
             nullable=data["nullable"],
@@ -239,12 +244,12 @@ class Column:
     """Fields correspond to statement.traits.schema.columns[] members"""
 
     name: str
-    type: ColumnType
+    type: ColumnTypeDefinition
     description: str | None = None
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> "Column":
-        column_type = ColumnType.from_response(data["type"])
+        column_type = ColumnTypeDefinition.from_response(data["type"])
         return cls(name=data["name"], type=column_type, description=data.get("description"))
 
 
@@ -256,17 +261,17 @@ class RowColumn:
     """
 
     name: str
-    field_type: ColumnType
+    field_type: ColumnTypeDefinition
     description: str | None = None
 
     @property
-    def type(self) -> ColumnType:
+    def type(self) -> ColumnTypeDefinition:
         """Alias for field_type to match Column. The API design is inconsistent here."""
         return self.field_type
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> "RowColumn":
-        column_type = ColumnType.from_response(data["type"])
+        column_type = ColumnTypeDefinition.from_response(data["type"])
         return cls(name=data["name"], field_type=column_type, description=data.get("description"))
 
 
