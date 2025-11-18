@@ -4,7 +4,9 @@ from typing import Any, TypeAlias
 import pytest
 
 from confluent_sql import DatabaseError, OperationalError
+from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import Phase, Schema, Statement
+from confluent_sql.types import StatementTypeConverter
 from tests.unit.conftest import StatementResponseFactory
 
 """Unit tests over Statement class."""
@@ -108,6 +110,32 @@ class TestStatementProperties:
         statement_json = statement_response_factory(phase=phase)
         statement = Statement.from_response(statement_json)
         assert statement.is_running == expected
+
+    def test_type_converter_raises_if_no_schema(
+        self, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that type_converter property raises if statement has no schema."""
+        # Create a statement response with no schema.
+        statement_json = statement_response_factory(null_schema=True)
+        statement = Statement.from_response(statement_json)
+
+        with pytest.raises(
+            InterfaceError,
+            match="Cannot get type converter for statement with no schema.",
+        ):
+            _ = statement.type_converter
+
+    def test_type_converter_returns_converter(
+        self,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that type_converter property returns a StatementTypeConverter
+        when schema is present."""
+        statement_json = statement_response_factory()
+        statement = Statement.from_response(statement_json)
+
+        type_converter = statement.type_converter
+        assert isinstance(type_converter, StatementTypeConverter)
 
 
 @pytest.mark.unit

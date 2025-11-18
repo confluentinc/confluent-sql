@@ -8,7 +8,7 @@ from typing import Any, TypeAlias
 
 from confluent_sql.types import StatementTypeConverter
 
-from .exceptions import DatabaseError, OperationalError
+from .exceptions import DatabaseError, InterfaceError, OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -157,16 +157,21 @@ class Statement:
     """Cached SchemaTypeConverter for this statement's schema."""
 
     @property
-    def type_converter(self) -> StatementTypeConverter | None:
+    def type_converter(self) -> StatementTypeConverter:
         """Get or create the SchemaTypeConverter for this statement's schema.
 
         The converter handles conversion from JSON-from-API row values to Python values
         based on the statement's schema, for all columns in the result set.
+
+        Should only be called after statement submission for statements that produce a result set,
+        otherwise will raise InterfaceError.
         """
         if self.schema is None:
-            return None
+            raise InterfaceError("Cannot get type converter for statement with no schema.")
+
         if self._type_converter is None:
             self._type_converter = StatementTypeConverter(self.schema)
+
         return self._type_converter
 
     @classmethod

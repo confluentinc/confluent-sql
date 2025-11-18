@@ -247,11 +247,10 @@ class Cursor:
             self._next_page = next_page
             self.rowcount += len(results)
 
+            # Use the statement's type converter to decode rows from API JSON to Python values
+            type_converter = self._statement.type_converter
             for res in results:
-                # Promote the row to Python values using the statement's type converter
-                decoded_row = self._statement.type_converter.to_python_row(  # pyright: ignore[reportOptionalMemberAccess]
-                    tuple(res.get("row", []))
-                )
+                decoded_row = type_converter.to_python_row(tuple(res.get("row", [])))
 
                 row: dict[str, tuple | Op] = {"row": decoded_row}
 

@@ -70,12 +70,21 @@ def statement_response_factory() -> StatementResponseFactory:
         compute_pool_id: str = "lfcp-01x6d2",
         principal: str = "u-0xw9v9p",
         schema_columns: list[dict[str, Any]] | None = None,
+        null_schema: bool = False,
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
-        if schema_columns is None:
-            schema_columns = [{"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}}]
 
-        return {
+        if not null_schema:
+            if schema_columns is None:
+                # Default to a simple schema with one BOOLEAN column
+                schema_columns = [{"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}}]
+            maybe_schema = {"columns": schema_columns}
+        else:
+            # Caller asked to simulate no schema at all (for as best we are aware of how Flink might
+            # do it at this time).
+            maybe_schema = None
+
+        response = {
             "api_version": "sql/v1",
             "environment_id": "env-asdf",
             "kind": "Statement",
@@ -113,12 +122,17 @@ def statement_response_factory() -> StatementResponseFactory:
                     "connection_refs": [],
                     "is_append_only": is_append_only,
                     "is_bounded": is_bounded,
-                    "schema": {"columns": schema_columns},
+                    "schema": maybe_schema,
                     "sql_kind": "SELECT",
                     "upsert_columns": None,
                 },
             },
         }
+
+        if null_schema:
+            response["status"]["traits"]["schema"] = None
+
+        return response
 
     return _factory
 
