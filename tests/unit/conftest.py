@@ -129,9 +129,6 @@ def statement_response_factory() -> StatementResponseFactory:
             },
         }
 
-        if null_schema:
-            response["status"]["traits"]["schema"] = None
-
         return response
 
     return _factory
