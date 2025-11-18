@@ -1,10 +1,18 @@
+from collections.abc import Callable
+from typing import Any, TypeAlias
+
 import pytest
 
 from confluent_sql import DatabaseError, OperationalError
-from confluent_sql.statement import Phase, Statement
-from tests.unit.conftest import StatementJsonFactory
+from confluent_sql.exceptions import InterfaceError
+from confluent_sql.statement import Phase, Schema, Statement
+from confluent_sql.types import StatementTypeConverter
+from tests.unit.conftest import StatementResponseFactory
 
 """Unit tests over Statement class."""
+
+# Stop complaining about inlined constants. These are test cases!
+# ruff: noqa: PLR2004
 
 
 @pytest.mark.unit
@@ -12,20 +20,20 @@ class TestStatementIsReady:
     """Tests for Statement.is_ready property."""
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED"])
-    def test_bounded_is_ready(self, statement_json_factory: StatementJsonFactory, phase):
+    def test_bounded_is_ready(self, statement_response_factory: StatementResponseFactory, phase):
         """Test that a bounded statement in COMPLETED or
         STOPPED phase is ready."""
-        statement_json = statement_json_factory(
+        statement_json = statement_response_factory(
             phase=phase,
             is_bounded=True,
         )
         statement = Statement.from_response(statement_json)
         assert statement.is_ready
 
-    def test_bounded_not_ready(self, statement_json_factory: StatementJsonFactory):
+    def test_bounded_not_ready(self, statement_response_factory: StatementResponseFactory):
         """Test that a bounded statement not in COMPLETED or
         STOPPED phase is not ready."""
-        statement_json = statement_json_factory(
+        statement_json = statement_response_factory(
             phase="RUNNING",
             is_bounded=True,
         )
@@ -33,19 +41,23 @@ class TestStatementIsReady:
         assert not statement.is_ready
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "RUNNING"])
-    def test_unbounded_is_ready(self, statement_json_factory: StatementJsonFactory, phase: str):
+    def test_unbounded_is_ready(
+        self, statement_response_factory: StatementResponseFactory, phase: str
+    ):
         """Test that an unbounded statement in COMPLETED, STOPPED,
         or RUNNING phase is ready."""
-        statement_json = statement_json_factory(
+        statement_json = statement_response_factory(
             phase=phase,
             is_bounded=False,
         )
         statement = Statement.from_response(statement_json)
         assert statement.is_ready
 
-    def test_unbounded_pending_not_ready(self, statement_json_factory: StatementJsonFactory):
+    def test_unbounded_pending_not_ready(
+        self, statement_response_factory: StatementResponseFactory
+    ):
         """Test that an unbounded statement not in PENDING phase is not ready."""
-        statement_json = statement_json_factory(
+        statement_json = statement_response_factory(
             phase="PENDING",
             is_bounded=False,
         )
@@ -57,27 +69,27 @@ class TestStatementIsReady:
 class TestStatementProperties:
     """Tests for various Statement properties."""
 
-    def test_compute_pool_id(self, statement_json_factory: StatementJsonFactory):
+    def test_compute_pool_id(self, statement_response_factory: StatementResponseFactory):
         """Test that compute_pool_id property returns correct value."""
-        statement_json = statement_json_factory(compute_pool_id="test-pool-id")
+        statement_json = statement_response_factory(compute_pool_id="test-pool-id")
         statement = Statement.from_response(statement_json)
         assert statement.compute_pool_id == "test-pool-id"
 
-    def test_principal(self, statement_json_factory: StatementJsonFactory):
+    def test_principal(self, statement_response_factory: StatementResponseFactory):
         """Test that principal property returns correct value."""
-        statement_json = statement_json_factory(principal="test-principal")
+        statement_json = statement_response_factory(principal="test-principal")
         statement = Statement.from_response(statement_json)
         assert statement.principal == "test-principal"
 
-    def test_phase_property(self, statement_json_factory: StatementJsonFactory):
+    def test_phase_property(self, statement_response_factory: StatementResponseFactory):
         """Test that phase property returns correct Phase enum."""
-        statement_json = statement_json_factory(phase="RUNNING")
+        statement_json = statement_response_factory(phase="RUNNING")
         statement = Statement.from_response(statement_json)
         assert statement.phase == Phase.RUNNING
 
-    def test_phase_when_deleted(self, statement_json_factory: StatementJsonFactory):
+    def test_phase_when_deleted(self, statement_response_factory: StatementResponseFactory):
         """Test that phase property returns DELETED when statement is deleted."""
-        statement_json = statement_json_factory()
+        statement_json = statement_response_factory()
         statement = Statement.from_response(statement_json)
         # Simulate deletion
         statement.set_deleted()
@@ -92,36 +104,211 @@ class TestStatementProperties:
         ],
     )
     def test_is_running(
-        self, statement_json_factory: StatementJsonFactory, phase: str, expected: bool
+        self, statement_response_factory: StatementResponseFactory, phase: str, expected: bool
     ):
         """Test that is_running property returns correct boolean."""
-        statement_json = statement_json_factory(phase=phase)
+        statement_json = statement_response_factory(phase=phase)
         statement = Statement.from_response(statement_json)
         assert statement.is_running == expected
+
+    def test_type_converter_raises_if_no_schema(
+        self, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that type_converter property raises if statement has no schema."""
+        # Create a statement response with no schema.
+        statement_json = statement_response_factory(null_schema=True)
+        statement = Statement.from_response(statement_json)
+
+        with pytest.raises(
+            InterfaceError,
+            match="Cannot get type converter for statement with no schema.",
+        ):
+            _ = statement.type_converter
+
+    def test_type_converter_returns_converter(
+        self,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that type_converter property returns a StatementTypeConverter
+        when schema is present."""
+        statement_json = statement_response_factory()
+        statement = Statement.from_response(statement_json)
+
+        type_converter = statement.type_converter
+        assert isinstance(type_converter, StatementTypeConverter)
 
 
 @pytest.mark.unit
 class TestStatementFromResponse:
     """Tests for Statement.from_response class method error paths."""
 
-    def test_hates_unknown_status_phase(self, statement_json_factory: StatementJsonFactory):
+    def test_hates_unknown_status_phase(self, statement_response_factory: StatementResponseFactory):
         """Test that from_response raises on unknown status.phase."""
         with pytest.raises(OperationalError, match="Received an unknown phase for statement"):
-            Statement.from_response(statement_json_factory(phase="UNKNOWN"))
+            Statement.from_response(statement_response_factory(phase="UNKNOWN"))
 
-    def test_raises_databaseerror_if_failed(self, statement_json_factory: StatementJsonFactory):
+    def test_raises_databaseerror_if_failed(
+        self, statement_response_factory: StatementResponseFactory
+    ):
         """Test that a failed statement raises DatabaseError with details when if the
         statement failed."""
-        failed_statement_json = statement_json_factory(phase="FAILED", status_detail="Some error")
+        failed_statement_json = statement_response_factory(
+            phase="FAILED", status_detail="Some error"
+        )
         with pytest.raises(DatabaseError, match="Some error"):
             Statement.from_response(failed_statement_json)
 
-    def test_hates_missing_keys(self, statement_json_factory: StatementJsonFactory):
+    def test_hates_missing_keys(self, statement_response_factory: StatementResponseFactory):
         """Test that from_response raises if required keys are missing."""
-        incomplete_json = statement_json_factory()
+        incomplete_json = statement_response_factory()
         del incomplete_json["spec"]
 
         with pytest.raises(
             OperationalError, match="Error parsing statement response, missing 'spec'"
         ):
             Statement.from_response(incomplete_json)
+
+
+@pytest.mark.unit
+class TestSchemaParsing:
+    """Tests for parsing Schema from Statement responses with realistic column type descriptions."""
+
+    nullable_field_values = [True, False]
+
+    SchemaFactory: TypeAlias = Callable[[list[dict[str, Any]]], Schema]
+
+    @pytest.fixture()
+    def schema_factory(self, statement_response_factory: StatementResponseFactory) -> SchemaFactory:
+        def _schema_maker(
+            schema_columns: list[dict[str, Any]],
+        ) -> Schema:
+            statement_dict = statement_response_factory(
+                schema_columns=schema_columns,
+            )
+            statement = Statement.from_response(statement_dict)
+            assert statement.schema is not None
+            return statement.schema
+
+        return _schema_maker
+
+    @pytest.mark.parametrize("nullable", nullable_field_values)
+    def test_int(self, schema_factory: SchemaFactory, nullable: bool):
+        schema = schema_factory(
+            [{"name": "id", "type": {"type": "INT", "nullable": nullable}}],
+        )
+        assert len(schema.columns) == 1
+        id_column = schema.columns[0]
+        assert id_column.name == "id"
+        assert id_column.type.type == "INT"
+        assert id_column.type.nullable == nullable
+
+    @pytest.mark.parametrize("nullable", nullable_field_values)
+    def test_string(self, schema_factory: SchemaFactory, nullable: bool):
+        schema = schema_factory(
+            [{"name": "name", "type": {"type": "STRING", "length": 100, "nullable": nullable}}],
+        )
+        assert len(schema.columns) == 1
+        name_column = schema.columns[0]
+        assert name_column.name == "name"
+        assert name_column.type.type == "STRING"
+        assert name_column.type.length == 100
+        assert name_column.type.nullable == nullable
+
+    @pytest.mark.parametrize("nullable", nullable_field_values)
+    def test_decimal(self, schema_factory: SchemaFactory, nullable: bool):
+        schema = schema_factory(
+            [
+                {
+                    "name": "price",
+                    "type": {"type": "DECIMAL", "precision": 10, "scale": 2, "nullable": nullable},
+                }
+            ],
+        )
+        assert len(schema.columns) == 1
+        price_column = schema.columns[0]
+        assert price_column.name == "price"
+        assert price_column.type.type == "DECIMAL"
+        assert price_column.type.precision == 10
+        assert price_column.type.scale == 2
+        assert price_column.type.nullable == nullable
+
+    @pytest.mark.parametrize("nullable", nullable_field_values)
+    def test_interval_day_to_second(self, schema_factory: SchemaFactory, nullable: bool):
+        schema = schema_factory(
+            [
+                {
+                    "name": "duration",
+                    "type": {
+                        "type": "INTERVAL_DAY_TO_SECOND",
+                        "fractional_precision": 3,
+                        "resolution": "DAY_TO_SECOND",
+                        "nullable": nullable,
+                    },
+                }
+            ],
+        )
+        assert len(schema.columns) == 1
+        duration_column = schema.columns[0]
+        assert duration_column.name == "duration"
+        assert duration_column.type.type == "INTERVAL_DAY_TO_SECOND"
+        assert duration_column.type.fractional_precision == 3
+        assert duration_column.type.resolution == "DAY_TO_SECOND"
+        assert duration_column.type.nullable == nullable
+
+    @pytest.mark.parametrize("nullable", nullable_field_values)
+    def test_row_type(self, schema_factory: SchemaFactory, nullable: bool):
+        schema = schema_factory(
+            [
+                {
+                    "name": "details",
+                    "type": {
+                        "type": "ROW",
+                        "fields": [
+                            {
+                                "name": "age",
+                                "type": {"type": "INT", "nullable": True},
+                                "description": "Age in years",
+                            },
+                            {
+                                "name": "address",
+                                "type": {"type": "STRING", "length": 100, "nullable": True},
+                                "description": "Residential address",
+                            },
+                        ],
+                        "nullable": nullable,
+                    },
+                }
+            ],
+        )
+        assert len(schema.columns) == 1
+        details_column = schema.columns[0]
+        assert details_column.name == "details"
+        assert details_column.type.type == "ROW"
+        assert details_column.type.nullable == nullable
+        assert details_column.type.fields is not None
+        assert len(details_column.type.fields) == 2
+
+        age_field = details_column.type.fields[0]
+        assert age_field.name == "age"
+        assert age_field.field_type.type == age_field.type.type == "INT"
+        assert age_field.type.nullable is True
+        assert age_field.description == "Age in years"
+
+        address_field = details_column.type.fields[1]
+        assert address_field.name == "address"
+        assert address_field.field_type.type == address_field.type.type == "STRING"
+        assert address_field.type.length == 100
+        assert address_field.type.nullable is True
+        assert address_field.description == "Residential address"
+
+    def test_multiple_columns(self, schema_factory: SchemaFactory):
+        schema = schema_factory(
+            [
+                {"name": "id", "type": {"type": "INT", "nullable": False}},
+                {"name": "name", "type": {"type": "STRING", "length": 50, "nullable": True}},
+            ],
+        )
+        assert len(schema.columns) == 2
+        assert [col.name for col in schema.columns] == ["id", "name"]
+
+        # Don't bother about the rest, let the individual column tests handle that.

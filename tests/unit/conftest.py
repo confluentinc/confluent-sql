@@ -1,5 +1,7 @@
 """Pytest configuration + fixtures for unit tests."""
 
+from __future__ import annotations
+
 import types
 from collections.abc import Callable
 from typing import Any, TypeAlias
@@ -15,39 +17,6 @@ def pytest_runtest_setup(item):
     is_unit = any(item.iter_markers(name="unit"))
     if not is_unit:
         pytest.fail("Tests within 'unit/' must be marked with @pytest.mark.unit.")
-
-
-@pytest.fixture
-def mock_connection(mocker, statement_json_factory):
-    """
-    Create a connection for testing cursor behavior with mocked client responses.
-
-    Any executed statement will appear to complete immediately with no results.
-
-    Can override statement results by replacing mocked_conn._get_statement_results.return_value
-    is with the desired result rows. Use fixture result_row_maker() to assist.
-    """
-
-    # Create a mock instance with spec so attribute/method names are validated
-    mock_conn = mocker.create_autospec(Connection, instance=True)
-    mock_conn._closed = False
-    mock_conn.is_closed = False
-
-    # Make any executed statement return a completed statement with no results
-    executed_statement_from_json = statement_json_factory()
-    mock_conn._execute_statement.return_value = executed_statement_from_json
-    mock_conn._get_statement.return_value = executed_statement_from_json
-
-    # Set up default statement results to empty list.
-    # (Returns a tuple of (list of result rows, possible next_page URL))
-    mock_conn._get_statement_results.return_value = ([], None)
-
-    # Replace the MagicMock cursor with the real implementation bound to the mock instance
-    mock_conn.cursor = types.MethodType(Connection.cursor, mock_conn)
-    # Likewise for closing_cursor
-    mock_conn.closing_cursor = types.MethodType(Connection.closing_cursor, mock_conn)
-
-    yield mock_conn
 
 
 ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], dict[str, Any]]
@@ -79,11 +48,15 @@ def result_row_maker() -> ResultRowFactory:
     return _maker
 
 
-StatementJsonFactory: TypeAlias = Callable[..., dict[str, Any]]
+StatementResponse: TypeAlias = dict[str, Any]
+"""A type alias for statement v1 JSON dictionaries."""
+
+StatementResponseFactory: TypeAlias = Callable[..., StatementResponse]
+"""A factory type alias for creating statement v1 JSON dictionaries."""
 
 
 @pytest.fixture()
-def statement_json_factory() -> StatementJsonFactory:
+def statement_response_factory() -> StatementResponseFactory:
     """A fixture that returns a factory function to create statement v1 JSON dictionaries
     with various overrides."""
 
@@ -91,16 +64,27 @@ def statement_json_factory() -> StatementJsonFactory:
         *,
         sql_statement: str = "SELECT TRUE AS VALUE",
         is_bounded: bool = True,
+        is_append_only: bool = True,
         phase: str = "COMPLETED",
         status_detail: str = "",
         compute_pool_id: str = "lfcp-01x6d2",
         principal: str = "u-0xw9v9p",
         schema_columns: list[dict[str, Any]] | None = None,
+        null_schema: bool = False,
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
-        if schema_columns is None:
-            schema_columns = [{"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}}]
-        return {
+
+        if not null_schema:
+            if schema_columns is None:
+                # Default to a simple schema with one BOOLEAN column
+                schema_columns = [{"name": "value", "type": {"nullable": False, "type": "BOOLEAN"}}]
+            maybe_schema = {"columns": schema_columns}
+        else:
+            # Caller asked to simulate no schema at all (for as best we are aware of how Flink might
+            # do it at this time).
+            maybe_schema = None
+
+        response = {
             "api_version": "sql/v1",
             "environment_id": "env-asdf",
             "kind": "Statement",
@@ -136,13 +120,65 @@ def statement_json_factory() -> StatementJsonFactory:
                 },
                 "traits": {
                     "connection_refs": [],
-                    "is_append_only": True,
+                    "is_append_only": is_append_only,
                     "is_bounded": is_bounded,
-                    "schema": {"columns": schema_columns},
+                    "schema": maybe_schema,
                     "sql_kind": "SELECT",
                     "upsert_columns": None,
                 },
             },
         }
+
+        return response
+
+    return _factory
+
+
+GetStatementsResultsValue: TypeAlias = tuple[list[dict[str, Any]], str | None]
+"""A type alias for the return value of _get_statement_results()."""
+
+MockConnectionFactory: TypeAlias = Callable[
+    [StatementResponse | None, GetStatementsResultsValue | None], Connection
+]
+"""A factory type alias for creating mock Connection instances."""
+
+
+@pytest.fixture
+def mock_connection_factory(mocker, statement_response_factory) -> MockConnectionFactory:
+    """
+    A factory fixture that creates mock Connection instances for testing cursor behavior
+    with mocked client responses.
+
+    Any executed statement will appear to complete immediately with no results.
+
+    Can call the returned factory with an optional statement_response to override
+    the statement dict returned from any executed statement (use statement_response_factory()
+    to help create such dicts).
+    """
+
+    def _factory(
+        statement_response: StatementResponse | None,
+        get_statement_results_value: GetStatementsResultsValue | None,
+    ) -> Connection:
+        # Create a mock instance with spec so attribute/method names are validated
+        mock_conn = mocker.create_autospec(Connection, instance=True)
+        mock_conn._closed = False
+        mock_conn.is_closed = False
+
+        # Make any executed statement return a completed statement with no results
+        executed_statement_from_json = statement_response or statement_response_factory()
+        mock_conn._execute_statement.return_value = executed_statement_from_json
+        mock_conn._get_statement.return_value = executed_statement_from_json
+
+        # Set up default statement results to empty list.
+        # (Returns a tuple of (list of result rows, possible next_page URL))
+        mock_conn._get_statement_results.return_value = get_statement_results_value or ([], None)
+
+        # Replace the MagicMock cursor with the real implementation bound to the mock instance
+        mock_conn.cursor = types.MethodType(Connection.cursor, mock_conn)
+        # Likewise for closing_cursor
+        mock_conn.closing_cursor = types.MethodType(Connection.closing_cursor, mock_conn)
+
+        return mock_conn
 
     return _factory

@@ -72,8 +72,11 @@ class TestCursor:
         assert len(description) == 1
         assert description[0][0] == "answer"
         assert description[0][1] == "INTEGER"
-        for idx in range(2, 7):
+        # display_size, internal_size, precision, scale are all None
+        for idx in range(2, 6):
             assert description[0][idx] is None
+        # null_ok is False
+        assert description[0][6] is False
 
     def test_execute_after_close_raises(self, cursor):
         cursor.close()

@@ -1,13 +1,14 @@
 import pytest
 
-from confluent_sql import Connection, Cursor, InterfaceError
+from confluent_sql import Cursor, InterfaceError
 from confluent_sql.statement import Op
-from tests.unit.conftest import ResultRowFactory
+from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
 
 @pytest.fixture()
-def mock_connection_cursor(mock_connection: Connection):
+def mock_connection_cursor(mock_connection_factory: MockConnectionFactory):
     """Fixture that provides a cursor from a mock connection. Closes the cursor after use."""
+    mock_connection = mock_connection_factory(None, None)
     with mock_connection.closing_cursor() as mock_cursor:
         yield mock_cursor
 
@@ -55,6 +56,23 @@ class TestExecute:
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
+    def test_execute_non_append_only_statement_raises(
+        self, mock_connection_cursor: Cursor, statement_response_factory: StatementResponseFactory
+    ):
+        """Prove that executing a non-append-only statement raises NotImplementedError
+        until our changelog parser were to improve."""
+        # Mock the connection's _get_statement to return a non-append-only statement.
+        non_append_only_statement_dict = statement_response_factory(is_append_only=False)
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            non_append_only_statement_dict
+        )
+
+        with pytest.raises(
+            NotImplementedError,
+            match="Only append-only statements are supported for now.",
+        ):
+            mock_connection_cursor.execute("SELECT 1 AS col")
+
 
 @pytest.mark.unit
 class TestFetchMany:
@@ -83,48 +101,108 @@ class TestCursorFetching:
     """Unit tests over cursor fetching methods."""
 
     def test_handles_insert_changelog_rows(
-        self, mock_connection: Connection, result_row_maker: ResultRowFactory
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+        result_row_maker: ResultRowFactory,
     ):
         """Test that a cursor can handle changelog rows with INSERT or missing ops."""
 
+        # Statement columns needs to match the result rows being returned.
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 'Joe' as name, TRUE AS value",
+            schema_columns=[
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "value",
+                    "type": {
+                        "type": "BOOLEAN",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
         # As if statement results included only INSERT changelog rows and no next page.
-        mock_connection._get_statement_results.return_value = (  # pyright: ignore[reportAttributeAccessIssue]
+        statement_results_return_value = (
             [
-                result_row_maker([1, "test"], Op.INSERT),
-                result_row_maker([2, "example"], None),  # implied insert.
+                result_row_maker(["Joe", "TRUE"], Op.INSERT),
+                result_row_maker(["Joe", "FALSE"], None),  # implied insert.
             ],
             None,
         )
 
+        mock_connection = mock_connection_factory(
+            statement_response, statement_results_return_value
+        )
+
         cursor = mock_connection.cursor()
-        cursor.execute("SELECT 1 AS col1, 'test' AS col2")
+        cursor.execute("SELECT true as value")
 
         row1 = cursor.fetchone()
-        assert row1 == (1, "test")
+        assert row1 == ("Joe", True)
 
         row2 = cursor.fetchone()
-        assert row2 == (2, "example")
+        assert row2 == (
+            "Joe",
+            False,
+        )
 
         row3 = cursor.fetchone()
         assert row3 is None  # No more rows
 
     @pytest.mark.parametrize("op", [Op.UPDATE_BEFORE, Op.UPDATE_AFTER, Op.DELETE])
     def test_raises_if_statement_produces_non_insert_changelog_rows(
-        self, mock_connection: Connection, result_row_maker: ResultRowFactory, op: Op
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        result_row_maker: ResultRowFactory,
+        statement_response_factory: StatementResponseFactory,
+        op: Op,
     ):
         """Test that an error is raised on fetch*() if a statement
         produces non-insert changelog rows."""
 
+        # Statement columns needs to match the result rows being returned.
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 'Joe' as name, TRUE AS value",
+            schema_columns=[
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "value",
+                    "type": {
+                        "type": "BOOLEAN",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
         # As if statement results included a non-insert changelog row + no next page.
-        mock_connection._get_statement_results.return_value = (  # type: ignore
+        get_statement_results_return_value = (
             [
-                result_row_maker([1, "test"], op),
+                result_row_maker(["Joe", "TRUE"], op),
             ],
             None,
         )
 
+        mock_connection = mock_connection_factory(
+            statement_response, get_statement_results_return_value
+        )
+
         cursor = mock_connection.cursor()
-        cursor.execute("SELECT 1 AS col")
+        cursor.execute("SELECT true as value")
 
         with pytest.raises(
             NotImplementedError,
