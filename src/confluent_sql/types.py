@@ -107,6 +107,10 @@ class StringConverter(TypeConverter):
             )
         # Escape single quotes by doubling them
         escaped_value = python_value.replace("'", "''")
+
+        # Escape backticks by doubling them
+        escaped_value = escaped_value.replace("`", "``")
+
         # Return wrapped in single quotes
         return f"'{escaped_value}'"
 

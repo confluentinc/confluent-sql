@@ -110,9 +110,15 @@ class TestStringConverter:
     @pytest.mark.parametrize(
         "value, expected",
         [
+            # Simple string -- gets wrapped in single quotes
             ("hello", "'hello'"),
+            # String with single quote -- single quote gets escaped by doubling it
             ("O'Reilly", "'O''Reilly'"),
+            # Same variation, but with SQL injection attempt
             ("Robert'); DROP TABLE Students;--", "'Robert''); DROP TABLE Students;--'"),
+            # Backtick SQL injection attempt, the backtick gets escaped by doubling it
+            ("Bobby `; DROP TABLE Students;--", "'Bobby ``; DROP TABLE Students;--'"),
+            # Empty string becomes two single quotes.
             ("", "''"),
         ],
     )
