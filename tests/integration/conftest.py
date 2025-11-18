@@ -70,6 +70,16 @@ def connection() -> Generator[Connection, Any, None]:
 
 
 @pytest.fixture()
+def dbname():
+    """Returns the database name used for integration tests."""
+    dbname = os.getenv("CONFLUENT_TEST_DBNAME", "")
+    if not dbname:
+        pytest.skip("Missing CONFLUENT_TEST_DBNAME environment variable for integration test")
+
+    return dbname
+
+
+@pytest.fixture()
 def single_test_connection(
     connection_factory: Callable[..., Connection],
 ) -> Connection:

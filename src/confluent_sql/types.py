@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from confluent_sql.exceptions import InterfaceError
+
 if TYPE_CHECKING:
     from .statement import ColumnTypeDefinition, Schema
 
@@ -11,6 +13,7 @@ if TYPE_CHECKING:
 __all__ = [
     "StatementTypeConverter",
     "TypeConverter",
+    "convert_statement_parameters",
 ]
 
 """
@@ -60,10 +63,12 @@ class TypeConverter:
 
     def to_python_value(self, response_value: FromResponseTypes) -> Any:
         """Convert from statement-response-API-JSON representation to its Python value."""
-        raise NotImplementedError("Subclasses should implement this method.")
+        raise NotImplementedError("Subclasses should implement this method.")  # pragma: no cover
 
-    # Future: a method to convert from Python value to string encoding for embedding
-    # into a statement.
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert from Python value to its for-statement-string-interpolation representation."""
+        raise NotImplementedError("Subclasses should implement this method.")  # pragma: no cover
 
 
 def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
@@ -92,6 +97,19 @@ class StringConverter(TypeConverter):
 
         return response_value
 
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python string value to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, str):
+            raise ValueError(
+                f"Expected Python string value for StringConverter but got {type(python_value)}"
+            )
+        # Escape single quotes by doubling them
+        escaped_value = python_value.replace("'", "''")
+        # Return wrapped in single quotes
+        return f"'{escaped_value}'"
+
 
 class IntegerConverter(TypeConverter):
     def to_python_value(self, response_value: FromResponseTypes) -> int | None:
@@ -106,6 +124,16 @@ class IntegerConverter(TypeConverter):
             )
 
         return int(response_value)
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python integer value to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, int):
+            raise ValueError(
+                f"Expected Python integer value for IntegerConverter but got {type(python_value)}"
+            )
+        return str(python_value)
 
 
 class BooleanConverter(TypeConverter):
@@ -122,13 +150,45 @@ class BooleanConverter(TypeConverter):
 
         return response_value.lower() == "true"
 
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python boolean value to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, bool):
+            raise ValueError(
+                f"Expected Python boolean value for BooleanConverter but got {type(python_value)}"
+            )
+        return "TRUE" if python_value else "FALSE"
+
+
+class NullConverter(TypeConverter):
+    def to_python_value(self, response_value: FromResponseTypes) -> None:
+        """Expect None from the response value, return None or raise ValueError."""
+        if response_value is not None:
+            raise ValueError(
+                f"Expected None value for NullConverter but got {type(response_value)}"
+            )
+
+        # implicitly return None
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python None value to its statement-embedding representation."""
+        if python_value is not None:
+            raise ValueError(
+                f"Expected Python None value for NullConverter but got {type(python_value)}"
+            )
+        return "NULL"
+
 
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
+    # Null type
+    "NULL": NullConverter,
+    # Boolean type
     "BOOLEAN": BooleanConverter,
     # Integer types
     "TINYINT": IntegerConverter,
     "SMALLINT": IntegerConverter,
-    "INT": IntegerConverter,
     "INTEGER": IntegerConverter,
     "BIGINT": IntegerConverter,
     # String types
@@ -136,3 +196,32 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "VARCHAR": StringConverter,
     "STRING": StringConverter,
 }
+
+
+_python_type_to_type_converter: dict[type, type[TypeConverter]] = {
+    str: StringConverter,
+    int: IntegerConverter,
+    bool: BooleanConverter,
+    None.__class__: NullConverter,
+}
+
+
+def convert_statement_parameters(
+    parameters: tuple | list,
+) -> tuple:
+    """Convert a list or tuple of Python parameters to a tuple of their string representations
+    for interpolation into a %s-laden statement string.
+
+    Returns: A tuple of string representations of the parameters.
+    """
+    converted_params = []
+    for param in parameters:
+        converter_cls = _python_type_to_type_converter.get(type(param))
+        if not converter_cls:
+            raise InterfaceError(
+                f"Conversion for parameter of type {type(param)} is not implemented."
+            )
+        param_as_flink_string = converter_cls.to_statement_string(param)
+        converted_params.append(param_as_flink_string)
+
+    return tuple(converted_params)

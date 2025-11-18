@@ -76,11 +76,43 @@ class TestCursorFetch:
             expected_row = expected_results.pop(0)
             assert row == expected_row
 
-    @pytest.mark.slow
+    def test_encoding_decoding_round_tripping(
+        self,
+        connection: Connection,
+    ):
+        """Test round-tripping values of all supported types."""
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    cast(%s as int) AS null_value,
+                    %s AS bool_value,
+                    %s AS int_value,
+                    %s AS bigint_value,
+                    %s AS string_value
+                """,
+                (
+                    None,  # NULL
+                    True,  # BOOLEAN
+                    123,  # INT
+                    12345678901,  # BIGINT
+                    "test-string",  # STRING
+                ),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "null_value": None,
+                "bool_value": True,
+                "int_value": 123,
+                "bigint_value": 12345678901,
+                "string_value": "test-string",
+            }
+
     def test_rich_result_decoding(
         self,
         connection: Connection,
-        test_table_name: str,
     ):
         """Test decoding types from a query projecting rich types."""
         with connection.closing_cursor(as_dict=True) as cursor:
@@ -120,7 +152,6 @@ class TestCursorFetch:
                         string_value,
                         varchar_value,
                         varcharn_value,
-                           
                            
                         null_int_value,
                         null_bool_value,
