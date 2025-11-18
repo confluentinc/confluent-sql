@@ -80,7 +80,7 @@ class TestExecute:
 
 
 @pytest.mark.unit
-class TestCurorInterpolatingParameters:
+class TestCursorInterpolatingParameters:
     @pytest.mark.parametrize(
         "parameters_iterable_type",
         [list, tuple],
