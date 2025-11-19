@@ -135,10 +135,16 @@ class TestStringConverter:
         """Test that to_statement_string guards against malicious subclasses of str."""
 
         class MaliciousStr(str):
-            """A string subclass that attempts to inject SQL code via overridden __str__ method."""
+            """A string subclass that attempts to inject SQL code via overridden __str__
+            and __iter__ methods."""
+
+            poison = "malicious_code()'; DROP TABLE users;--"
 
             def __str__(self):
-                return "malicious_code()'; DROP TABLE users;--"
+                return self.poison
+
+            def __iter__(self):
+                return iter(self.poison)
 
         malicious_value = MaliciousStr("innocent_looking_string")
         result = StringConverter.to_statement_string(malicious_value)
