@@ -112,12 +112,10 @@ class TestStringConverter:
         [
             # Simple string -- gets wrapped in single quotes
             ("hello", "'hello'"),
-            # String with single quote -- single quote gets escaped by doubling it
+            # String with an innocent interior single quote -- single quote gets escaped by doubling
             ("O'Reilly", "'O''Reilly'"),
             # Same variation, but with SQL injection attempt
             ("Robert'); DROP TABLE Students;--", "'Robert''); DROP TABLE Students;--'"),
-            # Backtick SQL injection attempt, the backtick gets escaped by doubling it
-            ("Bobby `; DROP TABLE Students;--", "'Bobby ``; DROP TABLE Students;--'"),
             # Empty string becomes two single quotes.
             ("", "''"),
         ],
@@ -132,6 +130,23 @@ class TestStringConverter:
             match="Expected Python string value for StringConverter but got <class 'int'>",
         ):
             StringConverter.to_statement_string(123)
+
+    def test_to_statement_guard_against_malicious_subclass(self):
+        """Test that to_statement_string guards against malicious subclasses of str."""
+
+        class MaliciousStr(str):
+            """A string subclass that attempts to inject SQL code via overridden __str__ method."""
+
+            def __str__(self):
+                return "malicious_code()'; DROP TABLE users;--"
+
+        malicious_value = MaliciousStr("innocent_looking_string")
+        result = StringConverter.to_statement_string(malicious_value)
+
+        # The result should be the escaped version of the poison string -- they
+        # should not be able to inject code by overriding __str__.
+
+        assert result == "'malicious_code()''; DROP TABLE users;--'"
 
 
 @pytest.mark.unit
@@ -169,6 +184,23 @@ class TestIntegerConverter:
             match="Expected Python integer value for IntegerConverter but got <class 'str'>",
         ):
             IntegerConverter.to_statement_string("123")
+
+    def test_to_statement_guard_against_malicious_subclass(self):
+        """Test that to_statement_string guards against malicious subclasses of int."""
+
+        class MaliciousInt(int):
+            """An integer subclass that attempts to inject SQL code via overridden __str__ method."""
+
+            def __str__(self):
+                return "0'; DROP TABLE users;--"
+
+        malicious_value = MaliciousInt(42)
+        result = IntegerConverter.to_statement_string(malicious_value)
+
+        # The result should be the stringified integer value -- they
+        # should not be able to inject code by overriding __str__.
+
+        assert result == "42"
 
 
 @pytest.mark.unit

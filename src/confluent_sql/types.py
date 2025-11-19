@@ -100,16 +100,31 @@ class StringConverter(TypeConverter):
     @classmethod
     def to_statement_string(cls, python_value: Any) -> str:
         """Convert a Python string value to its for-statement-string-interpolation
-        representation."""
+        string literal representation."""
+
+        ##
+        ## Flink only uses single quotes to delimit string literals, and escapes
+        ## single quotes inside string literals by doubling them.
+        ##
+        ## Backslash escaping is not supported in Flink SQL string literals -- that
+        ## is, a backslash is just a normal character in a Flink SQL string literal.
+        ##
+        ## Backticks are used in Flink SQL to delimit identifiers, not string literals,
+        ## and to have special meaning they must be the outermost delimiters. They
+        ## do not need to be internally escaped in string literals.
+        ##
+
         if not isinstance(python_value, str):
             raise ValueError(
                 f"Expected Python string value for StringConverter but got {type(python_value)}"
             )
+
+        # Ensure we're dealing with a standard str here, and not a subclass
+        # that might do something "creative" when we do string operations on it.
+        python_value = str(python_value)
+
         # Escape single quotes by doubling them
         escaped_value = python_value.replace("'", "''")
-
-        # Escape backticks by doubling them
-        escaped_value = escaped_value.replace("`", "``")
 
         # Return wrapped in single quotes
         return f"'{escaped_value}'"
@@ -137,7 +152,11 @@ class IntegerConverter(TypeConverter):
             raise ValueError(
                 f"Expected Python integer value for IntegerConverter but got {type(python_value)}"
             )
-        return str(python_value)
+
+        # Guard against "creative" types that pass as int but aren't really ints
+        # by recasting to int before stringifying.
+
+        return str(int(python_value))
 
 
 class BooleanConverter(TypeConverter):
@@ -173,7 +192,7 @@ class NullConverter(TypeConverter):
                 f"Expected None value for NullConverter but got {type(response_value)}"
             )
 
-        # implicitly return None
+        return None  # noqa: PLR1711 # explicit return for clarity.
 
     @classmethod
     def to_statement_string(cls, python_value: Any) -> str:
