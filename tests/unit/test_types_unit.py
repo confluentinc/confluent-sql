@@ -189,7 +189,7 @@ class TestIntegerConverter:
         """Test that to_statement_string guards against malicious subclasses of int."""
 
         class MaliciousInt(int):
-            """An integer subclass that attempts to inject SQL code via overridden __str__ method."""
+            """An integer subclass that attempts to inject SQL code via overridden __str__."""
 
             def __str__(self):
                 return "0'; DROP TABLE users;--"
