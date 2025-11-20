@@ -345,10 +345,8 @@ class DateConverter(TypeConverter):
                 f"but got {type(python_value)}"
             )
 
-        # We might find it better to prefix the string with DATE keyword here,
-        # but for now leave that to statement template. Will just return quoted date for
-        # now.
-        return f"'{python_value.isoformat()}'"
+        # Our use cases need the prefixed 'DATE' keyword, so include it here.
+        return f"DATE '{python_value.isoformat()}'"
 
 
 class TimeConverter(TypeConverter):
