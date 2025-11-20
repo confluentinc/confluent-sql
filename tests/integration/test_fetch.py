@@ -100,6 +100,7 @@ class TestCursorFetch:
                     %s AS time_value,
                     %s AS time_value_micro,
                     cast(%s as timestamp) AS timestamp_value,
+                    cast(%s as timestamp) AS timestamp_value_micros,
                     cast(%s as timestamp_ltz) AS timestamp_ltz_value,
                     %s AS string_value,
                     %s as varbinary_value
@@ -114,7 +115,8 @@ class TestCursorFetch:
                     date(2024, 6, 15),  # DATE
                     time(12, 34, 56),  # TIME
                     time(12, 34, 56, 789000),  # TIME with microseconds
-                    datetime(2024, 6, 15, 12, 34, 56),  # TIMESTAMP
+                    datetime(2025, 6, 15, 12, 34, 56),  # TIMESTAMP no microseconds
+                    datetime(2024, 6, 15, 12, 34, 56, 123456),  # TIMESTAMP with microseconds
                     datetime(
                         2023, 6, 15, 12, 34, 56, tzinfo=timezone(timedelta(hours=2))
                     ),  # TIMESTAMP_LTZ
@@ -137,7 +139,8 @@ class TestCursorFetch:
                 "time_value_micro": time(
                     12, 34, 56
                 ),  # Sigh, the microseconds get lost in the round trip, Flink-side.
-                "timestamp_value": datetime(2024, 6, 15, 12, 34, 56),
+                "timestamp_value": datetime(2025, 6, 15, 12, 34, 56),  # No micros to lose here.
+                "timestamp_value_micros": datetime(2024, 6, 15, 12, 34, 56, 123456),
                 # GMT+02:00 gets converted to UTC time in the round trip, so comes
                 # out as 10:34:56 UTC.
                 "timestamp_ltz_value": datetime(

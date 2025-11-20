@@ -429,7 +429,7 @@ class TimestampConverter(TypeConverter):
         if python_value.tzinfo is not None:
             python_value = python_value.astimezone(tz=timezone.utc).replace(tzinfo=None)
 
-        iso_str = python_value.isoformat(sep=" ")
+        iso_str = python_value.isoformat(sep=" ", timespec="microseconds")
         return f"'{iso_str}'"
 
     def to_python_value(self, response_value: FromResponseTypes) -> datetime | None:
