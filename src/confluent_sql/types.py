@@ -364,24 +364,14 @@ class TimeConverter(TypeConverter):
             )
 
         try:
-            hour, minute, second = response_value.split(":")
-            second_parts = second.split(".")
-            if len(second_parts) == 2:  # noqa: PLR2004
-                sec, microsec_str = second_parts
-                microsec = int(microsec_str.ljust(6, "0"))  # Pad to microseconds
-            else:
-                sec = second_parts[0]
-                microsec = 0
-
-            return time(int(hour), int(minute), int(sec), microsec)
-
+            return time.fromisoformat(response_value)
         except Exception as e:
             raise ValueError(f"Invalid time string for TimeConverter: {response_value}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: Any) -> str:
         """Convert a Python datetime.time value to its for-statement-string-interpolation
-        representation, quoted HH:MM:SS.MMMMMM"""
+        representation, quoted `' TIME HH:MM:SS.MMMMMM.XXXXX'`"""
 
         if not isinstance(python_value, time):
             raise ValueError(
@@ -389,7 +379,7 @@ class TimeConverter(TypeConverter):
                 f"but got {type(python_value)}"
             )
 
-        return f"'{python_value.isoformat()}'"
+        return f"TIME '{python_value.isoformat(timespec='microseconds')}'"
 
 
 class TimestampConverter(TypeConverter):

@@ -377,8 +377,8 @@ class TestDateConverter:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            (date(2024, 6, 15), "'2024-06-15'"),
-            (date(2000, 1, 1), "'2000-01-01'"),
+            (date(2024, 6, 15), "DATE '2024-06-15'"),
+            (date(2000, 1, 1), "DATE '2000-01-01'"),
         ],
     )
     def test_to_statement_string(self, value, expected):
@@ -418,14 +418,14 @@ class TestTimeConverter:
             ValueError,
             match="Invalid time string",
         ):
-            self.converter.to_python_value("123456")  # Wrong format
+            self.converter.to_python_value("12.34.56")  # Wrong format for time.fromisoformat().
 
     @pytest.mark.parametrize(
         "value, expected",
         [
-            (time(12, 34, 56), "'12:34:56'"),
-            (time(12, 34, 56, 789000), "'12:34:56.789000'"),
-            (time(0, 0, 0), "'00:00:00'"),
+            (time(12, 34, 56), "TIME '12:34:56.000000'"),
+            (time(12, 34, 56, 789000), "TIME '12:34:56.789000'"),
+            (time(0, 0, 0), "TIME '00:00:00.000000'"),
         ],
     )
     def test_to_statement_string(self, value, expected):
@@ -652,12 +652,12 @@ class TestConvertStatementParameters:
         (123, "123"),
         (Decimal("45.67"), "45.67"),
         (12.34, "12.34"),
-        (date(2024, 6, 15), "'2024-06-15'"),
-        (time(12, 34, 56), "'12:34:56'"),
-        (time(12, 34, 56, 789000), "'12:34:56.789000'"),
         ("test", "'test'"),
         (b"\x01\x02", "x'0102'"),
-        (date(2024, 6, 15), "'2024-06-15'"),
+        (time(12, 34, 56), "TIME '12:34:56.000000'"),
+        (time(12, 34, 56, 789000), "TIME '12:34:56.789000'"),
+        (date(2024, 6, 15), "DATE '2024-06-15'"),
+        (date(2024, 6, 15), "DATE '2024-06-15'"),
         (datetime(2024, 6, 15, 12, 34, 56), "'2024-06-15 12:34:56'"),
         (
             datetime(
