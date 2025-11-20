@@ -438,7 +438,6 @@ class Cursor:
         except TypeError as e:
             raise ProgrammingError(f"Error interpolating parameters into statement: {e}") from e
 
-        # breakpoint()
         return interpolated_statement
 
     def _map_row_to_dict(self, values) -> dict:
