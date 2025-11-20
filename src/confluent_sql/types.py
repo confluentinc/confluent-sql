@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, time, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from confluent_sql.exceptions import InterfaceError
@@ -130,6 +132,50 @@ class StringConverter(TypeConverter):
         return f"'{escaped_value}'"
 
 
+class VarBinaryConverter(TypeConverter):
+    """Handles Flink type VARBINARY"""
+
+    def to_python_value(self, response_value: FromResponseTypes) -> bytes | None:
+        """Expect hex-pair encoded string or None from the response value, return as bytes
+        or raise ValueError.
+
+        Examples: "x'7f0203'" <-> b"\x7f\x02\x03"
+        """
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected string value for VarBinaryConverter but got {type(response_value)}"
+            )
+
+        if not (response_value.startswith("x'") and response_value.endswith("'")):
+            raise ValueError(
+                f"Expected hex-pair encoded string starting with x' and ending with ' "
+                f"for VarBinaryConverter but got {response_value}"
+            )
+
+        hex_string = response_value[2:-1]  # Strip off the x' and trailing '
+        try:
+            return bytes.fromhex(hex_string)
+        except ValueError as e:
+            raise ValueError(f"Invalid hex string for VarBinaryConverter: {hex_string}") from e
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python bytes value to its for-statement-string-interpolation
+        representation.
+
+        Examples: b"\x7f\x02\x03" -> "x'7f0203'"
+        """
+        if not isinstance(python_value, bytes):
+            raise ValueError(
+                f"Expected bytes value for VarBinaryConverter but got {type(python_value)}"
+            )
+        hex_string = python_value.hex()
+        return f"x'{hex_string}'"
+
+
 class IntegerConverter(TypeConverter):
     def to_python_value(self, response_value: FromResponseTypes) -> int | None:
         """Expect string-encoded integer or None from the response value, return as int
@@ -157,6 +203,60 @@ class IntegerConverter(TypeConverter):
         # by recasting to int before stringifying.
 
         return str(int(python_value))
+
+
+class DecimalConverter(TypeConverter):
+    "Handle fixed precision DECIMAL types, mapping to Python's decimal.Decimal"
+
+    def to_python_value(self, response_value: FromResponseTypes) -> Decimal | None:
+        """Expect string-encoded decimal or None from the response value, return as str
+        or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected decimal to be encoded as JSON strings but got {type(response_value)}"
+            )
+
+        return Decimal(response_value)
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python Decimal value to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, Decimal):
+            raise ValueError(
+                f"Expected Python Decimal value for DecimalConverter but got {type(python_value)}"
+            )
+        return str(python_value)
+
+
+class FloatConverter(TypeConverter):
+    """Handles Flink types for FLOAT, DOUBLE to Python float"""
+
+    def to_python_value(self, response_value: FromResponseTypes) -> float | None:
+        """Expect string-encoded float or None from the response value, return as float
+        or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected float to be encoded as JSON string but got {type(response_value)}"
+            )
+
+        return float(response_value)
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python float value to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, float):
+            raise ValueError(
+                f"Expected Python float value for FloatConverter but got {type(python_value)}"
+            )
+        return str(python_value)
 
 
 class BooleanConverter(TypeConverter):
@@ -204,6 +304,176 @@ class NullConverter(TypeConverter):
         return "NULL"
 
 
+class DateConverter(TypeConverter):
+    """Handles Flink DATE type to Python datetime.date"""
+
+    def to_python_value(self, response_value: FromResponseTypes) -> date | None:
+        """Expect string-encoded date in 'YYYY-MM-DD' format or None from the response value,
+        return as datetime.date or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected date to be encoded as JSON string but got {type(response_value)}"
+            )
+
+        try:
+            year, month, day = map(int, response_value.split("-"))
+            return date(year, month, day)
+        except Exception as e:
+            raise ValueError(f"Invalid date string for DateConverter: {response_value}") from e
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python datetime.date value to its for-statement-string-interpolation
+        representation, quoted YYYY-MM-DD."""
+
+        if not isinstance(python_value, date):
+            raise ValueError(
+                f"Expected Python datetime.date value for DateConverter "
+                f"but got {type(python_value)}"
+            )
+
+        # We might find it better to prefix the string with DATE keyword here,
+        # but for now leave that to statement template. Will just return quoted date for
+        # now.
+        return f"'{python_value.isoformat()}'"
+
+
+class TimeConverter(TypeConverter):
+    """Handles Flink TIME type to Python datetime.time"""
+
+    def to_python_value(self, response_value: FromResponseTypes) -> time | None:
+        """Expect string-encoded time in 'HH:MM:SS(.MMMMMM)' format or None from the response value,
+        return as datetime.time or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected time to be encoded as JSON string but got {type(response_value)}"
+            )
+
+        try:
+            hour, minute, second = response_value.split(":")
+            second_parts = second.split(".")
+            if len(second_parts) == 2:  # noqa: PLR2004
+                sec, microsec_str = second_parts
+                # TODO: Handle precision properly here
+                microsec = int(microsec_str.ljust(6, "0"))  # Pad to microseconds
+            else:
+                sec = second_parts[0]
+                microsec = 0
+
+            return time(int(hour), int(minute), int(sec), microsec)
+
+        except Exception as e:
+            raise ValueError(f"Invalid time string for TimeConverter: {response_value}") from e
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python datetime.time value to its for-statement-string-interpolation
+        representation, quoted HH:MM:SS.MMMMMM"""
+
+        if not isinstance(python_value, time):
+            raise ValueError(
+                f"Expected Python datetime.time value for TimeConverter "
+                f"but got {type(python_value)}"
+            )
+
+        return f"'{python_value.isoformat()}'"
+
+
+class TimestampConverter(TypeConverter):
+    """Handles converting Flink TIMESTAMP and TIMESTAMP_LTZ types to/from
+    Python datetime.datetime (with or with tzinfo).
+
+    When converting from Python datetime to Flink TIMESTAMP representation, if the
+    datetime carries tzinfo, it is transposed to the equivalent UTC time before conversion,
+    which should correspond to any submitted statement's default statement property
+    'sql.local-time-zone' default setting of UTC.
+
+    When converting from Flink TIMESTAMP type, a tz-naive datetime is returned.
+    When converting from Flink TIMESTAMP_LTZ type, a tz-aware datetime with tzinfo=UTC is returned.
+
+    Therefore, when round-tripping a tz-aware datetime through TIMESTAMP_LTZ, the original
+    tzinfo is lost (if not UTC) and replaced with UTC, but the instant in time is preserved.
+
+    When providing data intented for TIMESTAMP columns, tz-independent datetimes should be used.
+    When providing data intended for TIMESTAMP_LTZ columns, tz-aware datetimes should be used.
+    """
+
+    def __init__(self, column_type: ColumnTypeDefinition):
+        # PRevent confusion from possible aliases (test suite). Statement schema
+        # JSON spells these out canonically.
+        if column_type.type_name not in (
+            "TIMESTAMP_WITHOUT_TIME_ZONE",
+            "TIMESTAMP_WITH_LOCAL_TIME_ZONE",
+        ):
+            raise ValueError(
+                f"TimestampConverter can only be used with TIMESTAMP_WITHOUT_TIME_ZONE or"
+                f" TIMESTAMP_WITH_LOCAL_TIME_ZONE types, got {column_type.type_name}"
+            )
+        super().__init__(column_type)
+
+    @classmethod
+    def to_statement_string(cls, python_value: Any) -> str:
+        """Convert a Python datetime.datetime value to its for-statement-string-interpolation
+        representation, based on whether it has tzinfo or not."""
+
+        if not isinstance(python_value, datetime):
+            raise ValueError(
+                f"Expected Python datetime.datetime value for TimestampConverter "
+                f"but got {type(python_value)}"
+            )
+
+        # If has tzinfo, convert to UTC time regardless of destination Flink type.
+        if python_value.tzinfo is not None:
+            python_value = python_value.astimezone(tz=timezone.utc).replace(tzinfo=None)
+
+        iso_str = python_value.isoformat(sep=" ")
+        return f"'{iso_str}'"
+
+    def to_python_value(self, response_value: FromResponseTypes) -> datetime | None:
+        """Expect string-encoded timestamp in 'YYYY-MM-DD HH:MM:SS(.MMMMMM)' format
+        or None from the response value, return as datetime.datetime or raise ValueError.
+
+        If the column type is TIMESTAMP_LTZ, the returned datetime will have tzinfo=UTC,
+        otherwise it will be tz-naive.
+        """
+
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected timestamp to be encoded as JSON string but got {type(response_value)}"
+            )
+
+        try:
+            # Should only be given TZ-free strings from Flink, otherwise the logic here
+            # may be rotten and should be reconsidered.
+            dt = datetime.fromisoformat(response_value)
+
+        except Exception as e:
+            raise ValueError(
+                f"Invalid timestamp string for TimestampConverter: {response_value}"
+            ) from e
+
+        if dt.tzinfo is not None:
+            raise ValueError(
+                f"Expected timezone-naive timestamp string from Flink but got {response_value}"
+            )
+
+        # But if we're dealing with TIMESTAMP_LTZ, we should interpret
+        # the timestamp as being in UTC and set tzinfo accordingly.
+        if self._column_type.type_name == "TIMESTAMP_WITH_LOCAL_TIME_ZONE":
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt
+
+
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
     "NULL": NullConverter,
@@ -214,18 +484,46 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "SMALLINT": IntegerConverter,
     "INTEGER": IntegerConverter,
     "BIGINT": IntegerConverter,
+    # Fixed precision types
+    "DECIMAL": DecimalConverter,
+    "DEC": DecimalConverter,
+    "NUMERIC": DecimalConverter,
+    # Floating point types
+    "FLOAT": FloatConverter,
+    "DOUBLE": FloatConverter,
+    "DOUBLE PRECISION": FloatConverter,
+    # Date type
+    "DATE": DateConverter,
+    # Time type
+    "TIME": TimeConverter,
+    "TIME_WITHOUT_TIME_ZONE": TimeConverter,
+    # Timestamp type
+    "TIMESTAMP": TimestampConverter,
+    "TIMESTAMP_WITHOUT_TIME_ZONE": TimestampConverter,
+    "TIMESTAMP_LTZ": TimestampConverter,
+    "TIMESTAMP_WITH_LOCAL_TIME_ZONE": TimestampConverter,
     # String types
     "CHAR": StringConverter,
     "VARCHAR": StringConverter,
     "STRING": StringConverter,
+    # Binary types
+    "VARBINARY": VarBinaryConverter,
+    "BINARY": VarBinaryConverter,
+    "BYTES": VarBinaryConverter,
 }
 
 
 _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
-    str: StringConverter,
-    int: IntegerConverter,
-    bool: BooleanConverter,
     None.__class__: NullConverter,
+    bool: BooleanConverter,
+    int: IntegerConverter,
+    Decimal: DecimalConverter,
+    float: FloatConverter,
+    date: DateConverter,
+    time: TimeConverter,
+    str: StringConverter,
+    bytes: VarBinaryConverter,
+    datetime: TimestampConverter,
 }
 
 

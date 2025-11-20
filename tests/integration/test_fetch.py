@@ -1,3 +1,6 @@
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
+
 import pytest
 
 from confluent_sql.connection import Connection
@@ -76,6 +79,8 @@ class TestCursorFetch:
             expected_row = expected_results.pop(0)
             assert row == expected_row
 
+    @pytest.mark.slow
+    @pytest.mark.typeconv
     def test_encoding_decoding_round_tripping(
         self,
         connection: Connection,
@@ -89,14 +94,32 @@ class TestCursorFetch:
                     %s AS bool_value,
                     %s AS int_value,
                     %s AS bigint_value,
-                    %s AS string_value
+                    cast(%s as DEC(7,2)) as decimal_value,
+                    cast(%s as float) as float_value,
+                    DATE %s AS date_value,
+                    TIME %s AS time_value,
+                    TIME %s AS time_value_micro,
+                    cast(%s as timestamp) AS timestamp_value,
+                    cast(%s as timestamp_ltz) AS timestamp_ltz_value,
+                    %s AS string_value,
+                    %s as varbinary_value
                 """,
                 (
                     None,  # NULL
                     True,  # BOOLEAN
                     123,  # INT
                     12345678901,  # BIGINT
+                    Decimal("12345.67"),  # DECIMAL(7,2)
+                    12.5,  # FLOAT
+                    date(2024, 6, 15),  # DATE
+                    time(12, 34, 56),  # TIME
+                    time(12, 34, 56, 789000),  # TIME with microseconds
+                    datetime(2024, 6, 15, 12, 34, 56),  # TIMESTAMP
+                    datetime(
+                        2023, 6, 15, 12, 34, 56, tzinfo=timezone(timedelta(hours=2))
+                    ),  # TIMESTAMP_LTZ
                     "test-string",  # STRING
+                    b"\x01\x02\x03",  # BINARY
                 ),
             )
 
@@ -107,9 +130,25 @@ class TestCursorFetch:
                 "bool_value": True,
                 "int_value": 123,
                 "bigint_value": 12345678901,
+                "decimal_value": Decimal("12345.67"),
+                "float_value": 12.5,
+                "date_value": date(2024, 6, 15),
+                "time_value": time(12, 34, 56),
+                "time_value_micro": time(
+                    12, 34, 56
+                ),  # Sigh, the microseconds get lost in the round trip, Flink-side.
+                "timestamp_value": datetime(2024, 6, 15, 12, 34, 56),
+                # GMT+02:00 gets converted to UTC time in the round trip, so comes
+                # out as 10:34:56 UTC.
+                "timestamp_ltz_value": datetime(
+                    2023, 6, 15, 10, 34, 56, tzinfo=timezone(timedelta(hours=0))
+                ),
                 "string_value": "test-string",
+                "varbinary_value": b"\x01\x02\x03",
             }
 
+    @pytest.mark.slow
+    @pytest.mark.typeconv
     def test_rich_result_decoding(
         self,
         connection: Connection,
@@ -127,13 +166,24 @@ class TestCursorFetch:
                         cast(123 AS INT),
                         cast(12345678901 AS BIGINT),
                            
+                        cast ('123.323' AS DECIMAL(10,3)),
+                        cast ('54.5' as DOUBLE),
+                           
                         TRUE,
+                           
+                        DATE '2024-06-15',
+                        TIME '12:34:56',
+                        
+                        cast('2024-06-15 12:34:56' as TIMESTAMP),
+                        cast('2023-06-15 12:34:56' as TIMESTAMP_LTZ), -- will be interp as GMT.
                            
                         cast ('c' as CHAR),
                         cast ('charn' as CHAR(5)),
                         cast ('string' as STRING),
                         cast ('varchar' as VARCHAR),
                         cast ('varcharn' as VARCHAR(10)),
+                        
+                        cast(x'7f0203' AS VARBINARY),
                            
                         cast(NULL AS INTEGER),
                         cast(NULL AS BOOLEAN),
@@ -145,13 +195,23 @@ class TestCursorFetch:
                         int_value,
                         bigint_value,
                            
+                        decimal_value,
+                        double_value,
+                           
                         bool_value,
+                        date_value,
+                        time_value,
+                           
+                        timestamp_value,
+                        timestamp_ltz_value,
                            
                         char_value,
                         charn_value,
                         string_value,
                         varchar_value,
                         varcharn_value,
+                           
+                        varbinary_value,
                            
                         null_int_value,
                         null_bool_value,
@@ -167,14 +227,27 @@ class TestCursorFetch:
                 "smallint_value": 12345,
                 "int_value": 123,
                 "bigint_value": 12345678901,
+                # Fixed precision type
+                "decimal_value": Decimal("123.323"),
+                # Floating point type
+                "double_value": 54.5,
                 # Boolean type
                 "bool_value": True,
+                # date / time types
+                "date_value": date(2024, 6, 15),
+                "time_value": time(12, 34, 56),
+                "timestamp_value": datetime(2024, 6, 15, 12, 34, 56),
+                "timestamp_ltz_value": datetime(
+                    2023, 6, 15, 12, 34, 56, tzinfo=timezone(timedelta(hours=0))
+                ),
                 # String types
                 "char_value": "c",
                 "charn_value": "charn",
                 "string_value": "string",
                 "varchar_value": "varchar",
                 "varcharn_value": "varcharn",
+                # VarBinary type
+                "varbinary_value": b"\x7f\x02\x03",
                 # Various NULLs
                 "null_int_value": None,
                 "null_bool_value": None,
