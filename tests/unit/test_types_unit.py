@@ -290,6 +290,16 @@ class TestFloatConverter:
         result = FloatConverter.to_statement_string(value)
         assert result == expected
 
+    @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+    def test_to_statement_string_rejects_nan_inf(self, bad_value: float):
+        """Ensure that NaN and Infinity are rejected, as they are not supported
+        in Flink SQL statements."""
+        with pytest.raises(
+            ValueError,
+            match="Cannot convert NaN or Infinity to a Flink SQL float/double literal",
+        ):
+            FloatConverter.to_statement_string(bad_value)
+
     def test_to_statement_value_invalid_type(self):
         with pytest.raises(
             ValueError,

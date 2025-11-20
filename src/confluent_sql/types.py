@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from cmath import isnan
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
+from math import isinf
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from confluent_sql.exceptions import InterfaceError
@@ -235,6 +237,8 @@ class DecimalConverter(TypeConverter):
 class FloatConverter(TypeConverter):
     """Handles Flink types for FLOAT, DOUBLE to Python float"""
 
+    INFINTIES = {float("inf"), float("-inf")}
+
     def to_python_value(self, response_value: FromResponseTypes) -> float | None:
         """Expect string-encoded float or None from the response value, return as float
         or raise ValueError."""
@@ -256,6 +260,12 @@ class FloatConverter(TypeConverter):
             raise ValueError(
                 f"Expected Python float value for FloatConverter but got {type(python_value)}"
             )
+
+        # Check for NaN or Infinity, IEEEE 754 float representation allows these values, but Flink
+        # SQL does not (statement will crash).
+        if isnan(python_value) or isinf(python_value):
+            raise ValueError("Cannot convert NaN or Infinity to a Flink SQL float/double literal")
+
         return str(python_value)
 
 
