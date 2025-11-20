@@ -219,7 +219,6 @@ class Connection:
     def _execute_statement(
         self,
         statement: str,
-        parameters: tuple | list | dict | None = None,
         statement_name: str | None = None,
         bounded: bool = True,
     ) -> dict[str, Any]:

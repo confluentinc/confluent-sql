@@ -1,6 +1,6 @@
 import pytest
 
-from confluent_sql import Connection, Cursor, InterfaceError, ProgrammingError
+from confluent_sql import Connection, Cursor, InterfaceError
 from confluent_sql.statement import Phase
 
 """A one column very fast to complete query."""
@@ -83,11 +83,6 @@ class TestCursor:
         with pytest.raises(InterfaceError, match="Cursor is closed"):
             cursor.execute(SINGLE_COLUMN_QUERY)
 
-    @pytest.mark.parametrize("empty_query", ["   ", "\n", "\t", ""])
-    def test_execute_empty_query_raises(self, cursor, empty_query):
-        with pytest.raises(ProgrammingError, match="SQL statement cannot be empty"):
-            cursor.execute(empty_query)
-
     def test_delete_statement_succeeds(self, cursor, connection, mocker):
         cursor.execute(SINGLE_COLUMN_QUERY)
         statement_name = cursor._statement.name
@@ -114,3 +109,26 @@ class TestCursor:
         cursor.delete_statement()
         cursor.delete_statement()
         assert cursor._statement.is_deleted
+
+
+@pytest.mark.integration
+class TestCursorParameterInterpolation:
+    def test_interpolate_with_parameters(
+        self, populated_table_connection: Connection, test_table_name: str, dbname: str
+    ):
+        with populated_table_connection.closing_cursor(as_dict=True) as cursor:
+            # Query the system catalog about the test table, using parameters
+            cursor.execute(
+                """
+                SELECT TABLE_NAME, TABLE_SCHEMA
+                FROM `INFORMATION_SCHEMA`.`TABLES`
+                WHERE TABLE_NAME = %s AND TABLE_SCHEMA = %s
+                """,
+                (test_table_name, dbname),
+            )
+
+            results = cursor.fetchall()
+            assert len(results) == 1
+            row = results[0]
+            assert row["TABLE_NAME"] == test_table_name  # type: ignore[index]
+            assert row["TABLE_SCHEMA"] == dbname  # type: ignore[index]

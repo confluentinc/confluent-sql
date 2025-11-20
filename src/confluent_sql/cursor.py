@@ -13,6 +13,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from confluent_sql.statement import Schema
+from confluent_sql.types import convert_statement_parameters
 
 from .exceptions import (
     InterfaceError,
@@ -73,8 +74,8 @@ class Cursor:
 
     def execute(
         self,
-        operation: str,
-        parameters: tuple | list | dict | None = None,
+        statement: str,
+        parameters: tuple | list | None = None,
         timeout: int = 3000,
         statement_name: str | None = None,
         bounded: bool = True,
@@ -83,7 +84,7 @@ class Cursor:
         Execute a SQL statement.
 
         Args:
-            operation: The SQL statement to execute
+            statement: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
             timeout: Maximum time to wait for statement completion in seconds (default: 3000)
             statement_name: Optional name for the statement (defaults to DB-API UUID
@@ -97,10 +98,7 @@ class Cursor:
         # TODO: Handle parameters, see self._submit_statement
         self._raise_if_closed()
 
-        if parameters is not None:
-            raise NotImplementedError("Parameterized queries are not supported yet")
-
-        if not operation.strip():
+        if not statement.strip():
             raise ProgrammingError("SQL statement cannot be empty")
 
         # Delete any previous statement if present and bounded
@@ -121,7 +119,7 @@ class Cursor:
         self.rowcount = -1
 
         # Now submit the statement and wait for it to be ready
-        self._submit_statement(operation, parameters, statement_name, bounded)
+        self._submit_statement(statement, parameters, statement_name, bounded)
         self._wait_for_statement_ready(timeout)
 
     def executemany(self, operation: str, seq_of_parameters: list[tuple | list | dict]):
@@ -190,6 +188,24 @@ class Cursor:
             self._closed = True
             self._results = []
             self._index = 0
+
+    def setinputsizes(self, sizes) -> None:
+        """
+        Set the sizes of input parameters.
+
+        This method is a no-op for this implementation, as input sizes
+        are not explicitly handled.
+        """
+        pass  # noqa
+
+    def setoutputsize(self, size, column: int | None = None) -> None:
+        """
+        Set the size of output columns.
+
+        This method is a no-op for this implementation, as output sizes
+        are not explicitly handled.
+        """
+        pass  # noqa
 
     def delete_statement(self) -> None:
         """
@@ -370,8 +386,8 @@ class Cursor:
 
     def _submit_statement(
         self,
-        operation: str,
-        parameters: tuple | list | dict | None = None,
+        statement_text: str,
+        parameters: tuple | list | None = None,
         statement_name: str | None = None,
         bounded: bool = True,
     ) -> None:
@@ -386,13 +402,43 @@ class Cursor:
 
         Raises:
             OperationalError: If statement submission fails
+            ProgrammingError: If template parameter interpolation fails
         """
-        # TODO: Handle parameters, see Connection.execute_statement
-        logger.info(f"Submitting statement {operation}")
+        logger.info(f"Submitting statement {statement_text}")
+
+        interpolated_statement = self._interpolate_parameters(statement_text, parameters)
+
         response = self._connection._execute_statement(
-            operation, parameters, statement_name, bounded
+            interpolated_statement, statement_name, bounded
         )
         self._statement = Statement.from_response(response)
+
+    def _interpolate_parameters(
+        self,
+        statement_template: str,
+        parameters: tuple | list | None = None,
+    ) -> str:
+        """Interpolate parameters (if any) into the statement template, returning
+        the final statement.
+
+        Raises ProgrammingError if wrong number of parameters provided.
+        """
+        if parameters is None or len(parameters) == 0:
+            return statement_template
+
+        if not isinstance(parameters, (list, tuple)):
+            raise TypeError(f"Parameters must be a tuple or list, got {type(parameters)}")
+
+        # May raise InterfaceError if unsupported parameter type found
+        converted_params = convert_statement_parameters(parameters)
+
+        # Interpolate parameters using the %s placeholders in statement_template.
+        try:
+            interpolated_statement = statement_template % converted_params
+        except TypeError as e:
+            raise ProgrammingError(f"Error interpolating parameters into statement: {e}") from e
+
+        return interpolated_statement
 
     def _map_row_to_dict(self, values) -> dict:
         assert self._statement is not None, "statement is none, this is probably a bug"

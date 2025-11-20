@@ -1,6 +1,7 @@
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
+from confluent_sql.exceptions import ProgrammingError
 from confluent_sql.statement import Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
@@ -16,11 +17,6 @@ def mock_connection_cursor(mock_connection_factory: MockConnectionFactory):
 @pytest.mark.unit
 class TestExecute:
     """Unit tests over cusor.execute*()."""
-
-    def test_execute_with_parameters_throws(self, mock_connection_cursor: Cursor):
-        """Test that executing with parameters raises NotImplementedError (at this time)."""
-        with pytest.raises(NotImplementedError):
-            mock_connection_cursor.execute("SELECT 1", parameters={"param": "value"})
 
     def test_executemany_throws(self, mock_connection_cursor: Cursor):
         """Test that executemany raises NotImplementedError (at this time)."""
@@ -56,6 +52,15 @@ class TestExecute:
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
+    @pytest.mark.parametrize("empty_query", ["   ", "\n", "\t", ""])
+    def test_hates_empty_statement(self, mock_connection_cursor: Cursor, empty_query: str):
+        """Prove that executing an empty statement raises."""
+        with pytest.raises(
+            ProgrammingError,
+            match="SQL statement cannot be empty",
+        ):
+            mock_connection_cursor.execute(empty_query)
+
     def test_execute_non_append_only_statement_raises(
         self, mock_connection_cursor: Cursor, statement_response_factory: StatementResponseFactory
     ):
@@ -72,6 +77,70 @@ class TestExecute:
             match="Only append-only statements are supported for now.",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
+
+
+@pytest.mark.unit
+class TestCursorInterpolatingParameters:
+    @pytest.mark.parametrize(
+        "parameters_iterable_type",
+        [list, tuple],
+    )
+    def test_success(self, mock_connection_cursor: Cursor, parameters_iterable_type):
+        """Test that parameters are properly interpolated into the statement template."""
+        statement_template = "SELECT * FROM users WHERE id = %s AND active = %s and name = %s"
+
+        # pass as list or tuple ...
+        parameters = parameters_iterable_type([123, True, "O'Reilly"])
+
+        interpolated_statement = mock_connection_cursor._interpolate_parameters(
+            statement_template, parameters
+        )
+
+        expected_statement = (
+            "SELECT * FROM users WHERE id = 123 AND active = TRUE and name = 'O''Reilly'"
+        )
+        assert interpolated_statement == expected_statement
+
+    def test_too_few_param_count_error(self, mock_connection_cursor: Cursor):
+        """Test that too few params passed for query template InterfaceError."""
+        statement_template = "SELECT * FROM users WHERE id = %s AND active = %s"
+        parameters = (123,)  # Missing second parameter
+
+        with pytest.raises(
+            ProgrammingError,
+            match="Error interpolating parameters into statement: .*",
+        ):
+            mock_connection_cursor.execute(statement_template, parameters)
+
+    def test_unsupported_type_error(self, mock_connection_cursor: Cursor):
+        """Test that unsupported parameter type raises InterfaceError."""
+        statement_template = "SELECT * FROM users WHERE id = %s"
+
+        class UnsupportedType:
+            pass
+
+        parameters = (
+            UnsupportedType(),
+        )  # Random user types definitely not supported at this time.
+
+        with pytest.raises(
+            InterfaceError,
+            match="Conversion for parameter of type <class .*> is not implemented.",
+        ):
+            mock_connection_cursor.execute(statement_template, parameters)  # type: ignore
+
+    def test_params_cannot_be_bare_string(self, mock_connection_cursor: Cursor):
+        """Test that passing a bare string as parameters raises InterfaceError."""
+        statement_template = "SELECT * FROM users WHERE id = %s"
+        # Incorrectly passing a bare string. Is itself an iterable, but not a list or tuple
+        # of parameters.
+        parameters = "not-a-tuple-or-list"
+
+        with pytest.raises(
+            TypeError,
+            match="Parameters must be a tuple or list, got <class 'str'>",
+        ):
+            mock_connection_cursor.execute(statement_template, parameters)  # type: ignore
 
 
 @pytest.mark.unit
