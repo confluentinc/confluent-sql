@@ -360,7 +360,6 @@ class TimeConverter(TypeConverter):
             second_parts = second.split(".")
             if len(second_parts) == 2:  # noqa: PLR2004
                 sec, microsec_str = second_parts
-                # TODO: Handle precision properly here
                 microsec = int(microsec_str.ljust(6, "0"))  # Pad to microseconds
             else:
                 sec = second_parts[0]
