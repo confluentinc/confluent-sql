@@ -408,6 +408,8 @@ class Cursor:
 
         interpolated_statement = self._interpolate_parameters(statement_text, parameters)
 
+        logger.debug(f"Interpolated statement: {interpolated_statement}")
+
         response = self._connection._execute_statement(
             interpolated_statement, statement_name, bounded
         )
