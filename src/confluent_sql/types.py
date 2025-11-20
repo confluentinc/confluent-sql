@@ -329,8 +329,8 @@ class DateConverter(TypeConverter):
             )
 
         try:
-            year, month, day = map(int, response_value.split("-"))
-            return date(year, month, day)
+            date = datetime.fromisoformat(response_value).date()
+            return date
         except Exception as e:
             raise ValueError(f"Invalid date string for DateConverter: {response_value}") from e
 
