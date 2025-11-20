@@ -455,7 +455,7 @@ class TestTimestampConverter:
             ValueError,
             match="TimestampConverter can only be used",
         ):
-            TimestampConverter(ColumnTypeDefinition(type="TIMESTAMP", nullable=False))
+            TimestampConverter(ColumnTypeDefinition(type=bad_name, nullable=False))
 
     @pytest.mark.parametrize(
         "converter, str_value, expected",

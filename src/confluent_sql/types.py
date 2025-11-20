@@ -404,7 +404,7 @@ class TimestampConverter(TypeConverter):
     """
 
     def __init__(self, column_type: ColumnTypeDefinition):
-        # PRevent confusion from possible aliases (test suite). Statement schema
+        # Prevent confusion from possible aliases (test suite). Statement schema
         # JSON spells these out canonically.
         if column_type.type_name not in (
             "TIMESTAMP_WITHOUT_TIME_ZONE",
