@@ -52,7 +52,6 @@ class TestNullConverter:
 
 @pytest.mark.unit
 @pytest.mark.typeconv
-@pytest.mark.unit
 class TestStringConverter:
     """Unit tests over StringConverter."""
 

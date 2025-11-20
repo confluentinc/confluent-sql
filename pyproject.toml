@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["httpx>=0.23.0,<0.29.0"]
 
 [tool.ruff]
-lint.select = ["UP", "PL", "E", "F", "B", "SIM", "I"]
+lint.select = ["UP", "PL", "E", "F", "B", "SIM", "I", "D300"]
 line-length = 100
 
 [tool.ruff.format]

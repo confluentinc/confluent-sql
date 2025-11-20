@@ -206,7 +206,7 @@ class IntegerConverter(TypeConverter):
 
 
 class DecimalConverter(TypeConverter):
-    "Handle fixed precision DECIMAL types, mapping to Python's decimal.Decimal"
+    """Handle fixed precision DECIMAL types, mapping to Python's decimal.Decimal"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> Decimal | None:
         """Expect string-encoded decimal or None from the response value, return as str
