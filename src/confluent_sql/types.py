@@ -267,6 +267,13 @@ class DecimalConverter(TypeConverter[Decimal]):
 class FloatConverter(TypeConverter[float]):
     """Handles Flink types for FLOAT, DOUBLE to Python float"""
 
+    # Special cases when coming from Flink string representation.
+    transcendental_pairs = [
+        ("NaN", float("nan")),
+        ("Infinity", float("inf")),
+        ("-Infinity", float("-inf")),
+    ]
+
     def to_python_value(self, response_value: FromResponseTypes) -> float | None:
         """Expect string-encoded float or None from the response value, return as float
         or raise ValueError."""
@@ -280,16 +287,11 @@ class FloatConverter(TypeConverter[float]):
 
         # Must specifically handle 'NaN', 'Infinity', '-Infinity' strings, the Java/Flink
         # spellings.
-        if response_value[0] in ("N", "I", "-"):
-            if response_value == "NaN":
-                return float("nan")
-            elif response_value == "Infinity":
-                return float("inf")
-            elif response_value == "-Infinity":
-                return float("-inf")
+        for str_repr, float_repr in self.transcendental_pairs:
+            if response_value == str_repr:
+                return float_repr
 
-            # Explicit fallthrough to handle general negative numbers.
-
+        # Not a transcendental, parse as normal float.
         return float(response_value)
 
     @classmethod
