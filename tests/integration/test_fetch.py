@@ -95,13 +95,19 @@ class TestCursorFetch:
                     %s AS int_value,
                     %s AS bigint_value,
                     cast(%s as DEC(7,2)) as decimal_value,
+
+                    -- These float/double casts are to ensure the types are exactly what we want in
+                    -- this projection, rather than relying on implicit typing of literals. They're
+                    -- not needed to test the client-side conversion per se.
                     cast(%s as float) as float_value,
+                    cast(%s as double) as double_value,
+
                     %s AS date_value,
                     %s AS time_value,
                     %s AS time_value_micro,
-                    cast(%s as timestamp) AS timestamp_value,
-                    cast(%s as timestamp) AS timestamp_value_micros,
-                    cast(%s as timestamp_ltz) AS timestamp_ltz_value,
+                    %s AS timestamp_value,
+                    %s AS timestamp_value_micros,
+                    %s AS timestamp_ltz_value,
                     %s AS string_value,
                     %s as varbinary_value
                 """,
@@ -112,6 +118,7 @@ class TestCursorFetch:
                     12345678901,  # BIGINT
                     Decimal("12345.67"),  # DECIMAL(7,2)
                     12.5,  # FLOAT
+                    191.2342342,  # DOUBLE
                     date(2024, 6, 15),  # DATE
                     time(12, 34, 56),  # TIME
                     time(12, 34, 56, 789000),  # TIME with microseconds
@@ -134,6 +141,7 @@ class TestCursorFetch:
                 "bigint_value": 12345678901,
                 "decimal_value": Decimal("12345.67"),
                 "float_value": 12.5,
+                "double_value": 191.2342342,
                 "date_value": date(2024, 6, 15),
                 "time_value": time(12, 34, 56),
                 "time_value_micro": time(

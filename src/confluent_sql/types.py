@@ -237,8 +237,6 @@ class DecimalConverter(TypeConverter):
 class FloatConverter(TypeConverter):
     """Handles Flink types for FLOAT, DOUBLE to Python float"""
 
-    INFINTIES = {float("inf"), float("-inf")}
-
     def to_python_value(self, response_value: FromResponseTypes) -> float | None:
         """Expect string-encoded float or None from the response value, return as float
         or raise ValueError."""
@@ -255,7 +253,12 @@ class FloatConverter(TypeConverter):
     @classmethod
     def to_statement_string(cls, python_value: Any) -> str:
         """Convert a Python float value to its for-statement-string-interpolation
-        representation."""
+        representation as a Flink double.
+
+        Err on the side of casting to the higher-precision DOUBLE type to avoid
+        precision loss in FLOAT representation if the target type ended up
+        being DOUBLE.
+        """
         if not isinstance(python_value, float):
             raise ValueError(
                 f"Expected Python float value for FloatConverter but got {type(python_value)}"
@@ -266,6 +269,7 @@ class FloatConverter(TypeConverter):
         if isnan(python_value) or isinf(python_value):
             raise ValueError("Cannot convert NaN or Infinity to a Flink SQL float/double literal")
 
+        # Will be interpolated as a literal number in the statement, no quotes.
         return str(python_value)
 
 
@@ -425,12 +429,16 @@ class TimestampConverter(TypeConverter):
                 f"but got {type(python_value)}"
             )
 
-        # If has tzinfo, convert to UTC time regardless of destination Flink type.
+        # If has tzinfo, convert to UTC time w/o tzinfo for Flink TIMESTAMP_LTZ
         if python_value.tzinfo is not None:
             python_value = python_value.astimezone(tz=timezone.utc).replace(tzinfo=None)
+            # Must explicitly cast in the string forms ...
+            flink_type = "timestamp_ltz"
+        else:
+            flink_type = "timestamp"
 
         iso_str = python_value.isoformat(sep=" ", timespec="microseconds")
-        return f"'{iso_str}'"
+        return f"cast('{iso_str}' as {flink_type})"
 
     def to_python_value(self, response_value: FromResponseTypes) -> datetime | None:
         """Expect string-encoded timestamp in 'YYYY-MM-DD HH:MM:SS(.MMMMMM)' format

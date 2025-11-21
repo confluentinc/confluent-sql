@@ -522,10 +522,10 @@ class TestTimestampConverter:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            (datetime(2024, 6, 15, 12, 34, 56), "'2024-06-15 12:34:56.000000'"),
+            (datetime(2024, 6, 15, 12, 34, 56), "cast('2024-06-15 12:34:56.000000' as timestamp)"),
             (
                 datetime(2024, 6, 15, 12, 34, 56, 789000),
-                "'2024-06-15 12:34:56.789000'",
+                "cast('2024-06-15 12:34:56.789000' as timestamp)",
             ),
             (
                 datetime(
@@ -538,7 +538,7 @@ class TestTimestampConverter:
                     tzinfo=timezone(timedelta(hours=2)),
                 ),
                 # Projected 2h behind to UTC for TIMESTAMP_LTZ, so 12:34:56+02:00 becomes 10:34:56Z
-                "'2024-06-15 10:34:56.000000'",
+                "cast('2024-06-15 10:34:56.000000' as timestamp_ltz)",
             ),
             (
                 datetime(
@@ -553,7 +553,7 @@ class TestTimestampConverter:
                 ),
                 # Projected +5 hours to UTC for TIMESTAMP_LTZ, so 12:34:56.789-05:00
                 # becomes 17:34:56.789Z
-                "'2024-06-15 17:34:56.789000'",
+                "cast('2024-06-15 17:34:56.789000' as timestamp_ltz)",
             ),
         ],
     )
@@ -658,7 +658,7 @@ class TestConvertStatementParameters:
         (time(12, 34, 56, 789000), "TIME '12:34:56.789000'"),
         (date(2024, 6, 15), "DATE '2024-06-15'"),
         (date(2024, 6, 15), "DATE '2024-06-15'"),
-        (datetime(2024, 6, 15, 12, 34, 56), "'2024-06-15 12:34:56.000000'"),
+        (datetime(2024, 6, 15, 12, 34, 56), "cast('2024-06-15 12:34:56.000000' as timestamp)"),
         (
             datetime(
                 2024,
@@ -670,7 +670,7 @@ class TestConvertStatementParameters:
                 tzinfo=timezone(timedelta(hours=2)),
             ),
             # Projected 2h behind to UTC
-            "'2024-06-15 10:34:56.000000'",
+            "cast('2024-06-15 10:34:56.000000' as timestamp_ltz)",
         ),
     ]
 
