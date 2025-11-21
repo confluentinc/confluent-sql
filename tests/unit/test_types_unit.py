@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from math import isnan
 
 import pytest
 
@@ -47,7 +48,7 @@ class TestNullConverter:
             ValueError,
             match="Expected Python None value for NullConverter but got <class 'int'>",
         ):
-            NullConverter.to_statement_string(123)
+            NullConverter.to_statement_string(123)  # type: ignore
 
 
 @pytest.mark.unit
@@ -89,7 +90,7 @@ class TestStringConverter:
             ValueError,
             match="Expected Python string value for StringConverter but got <class 'int'>",
         ):
-            StringConverter.to_statement_string(123)
+            StringConverter.to_statement_string(123)  # type: ignore
 
     def test_to_statement_guard_against_malicious_subclass(self):
         """Test that to_statement_string guards against malicious subclasses of str."""
@@ -164,7 +165,7 @@ class TestVarBinaryConverter:
             ValueError,
             match="Expected bytes value for VarBinaryConverter but got <class 'str'>",
         ):
-            VarBinaryConverter.to_statement_string("hello")
+            VarBinaryConverter.to_statement_string("hello")  # type: ignore
 
 
 @pytest.mark.unit
@@ -202,7 +203,7 @@ class TestIntegerConverter:
             ValueError,
             match="Expected Python integer value for IntegerConverter but got <class 'str'>",
         ):
-            IntegerConverter.to_statement_string("123")
+            IntegerConverter.to_statement_string("123")  # type: ignore
 
 
 @pytest.mark.unit
@@ -240,7 +241,7 @@ class TestDecimalConverter:
             ValueError,
             match="Expected Python Decimal value for DecimalConverter but got <class 'int'>",
         ):
-            DecimalConverter.to_statement_string(123)
+            DecimalConverter.to_statement_string(123)  # type: ignore
 
     def test_to_statement_guard_against_malicious_subclass(self):
         """Test that to_statement_string guards against malicious subclasses of int."""
@@ -267,9 +268,26 @@ class TestFloatConverter:
 
     converter = FloatConverter(ColumnTypeDefinition(type="FLOAT", nullable=True))
 
-    @pytest.mark.parametrize("value, expected", [("123.5", float("123.5")), (None, None)])
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("123.5", float("123.5")),
+            ("0.0", float("0.0")),
+            ("NaN", float("nan")),
+            ("Infinity", float("inf")),
+            ("-Infinity", float("-inf")),
+            (None, None),
+        ],
+    )
     def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+        result = self.converter.to_python_value(value)
+        # Special handling for NaN comparison
+        if value == "NaN":
+            # nan is never equal to itself.
+            assert isnan(result)  # pyright: ignore[reportArgumentType]
+        else:
+            # Regular comparison works for regular and Infinity values.
+            assert result == expected
 
     def test_to_python_value_invalid_type(self):
         with pytest.raises(
@@ -303,9 +321,9 @@ class TestFloatConverter:
     def test_to_statement_value_invalid_type(self):
         with pytest.raises(
             ValueError,
-            match="Expected Python float value for FloatConverter but got <class 'int'>",
+            match="Expected Python float value for FloatConverter but got <class 'str'>",
         ):
-            FloatConverter.to_statement_string(123)
+            FloatConverter.to_statement_string("sdf")  # type: ignore
 
 
 @pytest.mark.unit
@@ -344,7 +362,7 @@ class TestBooleanConverter:
             ValueError,
             match="Expected Python boolean value for BooleanConverter but got <class 'str'>",
         ):
-            BooleanConverter.to_statement_string("TRUE")
+            BooleanConverter.to_statement_string("TRUE")  # type: ignore
 
 
 @pytest.mark.unit
@@ -390,7 +408,7 @@ class TestDateConverter:
             ValueError,
             match="Expected Python datetime.date value for DateConverter but got <class 'str'>",
         ):
-            DateConverter.to_statement_string("2024-06-15")
+            DateConverter.to_statement_string("2024-06-15")  # type: ignore
 
 
 @pytest.mark.unit
@@ -437,7 +455,7 @@ class TestTimeConverter:
             ValueError,
             match="Expected Python datetime.time value for TimeConverter but got <class 'str'>",
         ):
-            TimeConverter.to_statement_string("12:34:56.789")
+            TimeConverter.to_statement_string("12:34:56.789")  # type: ignore
 
 
 @pytest.mark.unit
@@ -566,7 +584,7 @@ class TestTimestampConverter:
             ValueError,
             match="Expected Python datetime.datetime value",
         ):
-            self.ts_converter.to_statement_string("2024-06-15 12:34:56")
+            self.ts_converter.to_statement_string("2024-06-15 12:34:56")  # type: ignore
 
 
 @pytest.mark.unit
@@ -688,21 +706,3 @@ class TestConvertStatementParameters:
         expected = tuple(pair[1] for pair in self.value_expected_string_pairs)
         result = convert_statement_parameters(params)
         assert result == expected
-
-    def test_to_python_value_invalid_type(self):
-        converter = NullConverter(ColumnTypeDefinition(type="NULL", nullable=True))
-        with pytest.raises(
-            ValueError, match="Expected None value for NullConverter but got <class 'int'>"
-        ):
-            converter.to_python_value(123)  # type: ignore
-
-    def test_to_statement_string(self):
-        result = NullConverter.to_statement_string(None)
-        assert result == "NULL"
-
-    def test_to_statement_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python None value for NullConverter but got <class 'int'>",
-        ):
-            NullConverter.to_statement_string(123)

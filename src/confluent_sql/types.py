@@ -6,9 +6,15 @@ from cmath import isnan
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from math import isinf
-from typing import TYPE_CHECKING, Any, TypeAlias
+from types import NoneType
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
 from confluent_sql.exceptions import InterfaceError
+
+PyType = TypeVar("PyType")
+"""The data type of the Python value being converted to/from Flink SQL representation by
+a TypeConverter subclass."""
+
 
 if TYPE_CHECKING:
     from .statement import ColumnTypeDefinition, Schema
@@ -38,7 +44,7 @@ nested row types.
 class StatementTypeConverter:
     """
     Acts on behalf of a statement's Schema to convert from-API-JSON-changelog values to Python,
-    values.
+    values. Drives per-column TypeConverter deserialization to python types based on the schema.
     """
 
     _schema: Schema
@@ -48,29 +54,43 @@ class StatementTypeConverter:
         self._schema = schema
         self._type_converters = [get_api_type_converter(col.type) for col in schema.columns]
 
-    def to_python_row(self, sql_row: tuple[FromResponseTypes]) -> tuple[Any]:
+    def to_python_row(self, sql_row: list[FromResponseTypes]) -> tuple[Any]:
         """Convert a SQL row (list of from-results-API encoded values) to a Python row
         (tuple of Python values) to be returned by a Cursor."""
         return tuple(
-            col.to_python_value(sql_value)  # type: ignore[arg-type]
-            for col, sql_value in zip(self._type_converters, sql_row, strict=True)
+            converter.to_python_value(sql_value)  # type: ignore[arg-type]
+            for converter, sql_value in zip(self._type_converters, sql_row, strict=True)
         )
 
 
-class TypeConverter:
-    """Base class for all Flink <-> Python data type converters."""
+class TypeConverter(Generic[PyType]):
+    """Base class for all Flink <-> Python data type converters.
+
+    A TypeConverter handles conversion between a specific Flink SQL type's
+    representation in the statement API JSON responses and the corresponding
+    Python type.
+
+    Conversion from Flink SQL type to Python type is handled by the instance method
+    `to_python_value()`, which takes a from-response-API-JSON-encoded value and returns
+    the corresponding Python value, and may be hinted by the ColumnTypeDefinition
+    further clarifying the Flink-side type provided at construction time (from
+    the statement's schema).
+    """
 
     _column_type: ColumnTypeDefinition
 
     def __init__(self, column_type: ColumnTypeDefinition):
         self._column_type = column_type
 
-    def to_python_value(self, response_value: FromResponseTypes) -> Any:
-        """Convert from statement-response-API-JSON representation to its Python value."""
+    def to_python_value(self, response_value: FromResponseTypes) -> PyType | None:
+        """Convert from statement-response-API-JSON representation to its Python value.
+
+        All columns might also be nullable, in which case None should be returned.
+        """
         raise NotImplementedError("Subclasses should implement this method.")  # pragma: no cover
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: PyType) -> str:
         """Convert from Python value to its for-statement-string-interpolation representation."""
         raise NotImplementedError("Subclasses should implement this method.")  # pragma: no cover
 
@@ -86,7 +106,7 @@ def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
     return cls(column_type)
 
 
-class StringConverter(TypeConverter):
+class StringConverter(TypeConverter[str]):
     """Handles Flink types for CHAR, VARCHAR, STRING"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> str | None:
@@ -102,7 +122,7 @@ class StringConverter(TypeConverter):
         return response_value
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: str) -> str:
         """Convert a Python string value to its for-statement-string-interpolation
         string literal representation."""
 
@@ -134,7 +154,7 @@ class StringConverter(TypeConverter):
         return f"'{escaped_value}'"
 
 
-class VarBinaryConverter(TypeConverter):
+class VarBinaryConverter(TypeConverter[bytes]):
     """Handles Flink type VARBINARY"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> bytes | None:
@@ -164,7 +184,7 @@ class VarBinaryConverter(TypeConverter):
             raise ValueError(f"Invalid hex string for VarBinaryConverter: {hex_string}") from e
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: bytes) -> str:
         """Convert a Python bytes value to its for-statement-string-interpolation
         representation.
 
@@ -178,7 +198,7 @@ class VarBinaryConverter(TypeConverter):
         return f"x'{hex_string}'"
 
 
-class IntegerConverter(TypeConverter):
+class IntegerConverter(TypeConverter[int]):
     def to_python_value(self, response_value: FromResponseTypes) -> int | None:
         """Expect string-encoded integer or None from the response value, return as int
         or raise ValueError."""
@@ -193,7 +213,7 @@ class IntegerConverter(TypeConverter):
         return int(response_value)
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: int) -> str:
         """Convert a Python integer value to its for-statement-string-interpolation
         representation."""
         if not isinstance(python_value, int):
@@ -207,7 +227,7 @@ class IntegerConverter(TypeConverter):
         return str(int(python_value))
 
 
-class DecimalConverter(TypeConverter):
+class DecimalConverter(TypeConverter[Decimal]):
     """Handle fixed precision DECIMAL types, mapping to Python's decimal.Decimal"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> Decimal | None:
@@ -224,7 +244,7 @@ class DecimalConverter(TypeConverter):
         return Decimal(response_value)
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: Decimal) -> str:
         """Convert a Python Decimal value to its for-statement-string-interpolation
         representation."""
         if not isinstance(python_value, Decimal):
@@ -244,7 +264,7 @@ class DecimalConverter(TypeConverter):
         return f"cast('{python_value}' as decimal({precision},{scale}))"
 
 
-class FloatConverter(TypeConverter):
+class FloatConverter(TypeConverter[float]):
     """Handles Flink types for FLOAT, DOUBLE to Python float"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> float | None:
@@ -258,10 +278,20 @@ class FloatConverter(TypeConverter):
                 f"Expected float to be encoded as JSON string but got {type(response_value)}"
             )
 
+        # Must specifically handle 'NaN', 'Infinity', '-Infinity' strings, the Java/Flink
+        # spellings.
+        if response_value[0] in ("N", "I", "-"):
+            if response_value == "NaN":
+                return float("nan")
+            elif response_value == "Infinity":
+                return float("inf")
+            elif response_value == "-Infinity":
+                return float("-inf")
+
         return float(response_value)
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: float) -> str:
         """Convert a Python float value to its for-statement-string-interpolation
         representation as a Flink double.
 
@@ -275,7 +305,8 @@ class FloatConverter(TypeConverter):
             )
 
         # Check for NaN or Infinity, IEEEE 754 float representation allows these values, but Flink
-        # SQL does not (statement will crash).
+        # SQL convert-from-string does not (statement will crash at this time, but hopefully
+        # fixed soon. Flink does support these if, say, produced by avro Kafka, so ...).
         if isnan(python_value) or isinf(python_value):
             raise ValueError("Cannot convert NaN or Infinity to a Flink SQL float/double literal")
 
@@ -283,7 +314,7 @@ class FloatConverter(TypeConverter):
         return str(python_value)
 
 
-class BooleanConverter(TypeConverter):
+class BooleanConverter(TypeConverter[bool]):
     def to_python_value(self, response_value: FromResponseTypes) -> bool | None:
         """Expect string 'TRUE'/'FALSE' or None from the response value, return as bool
         or raise ValueError."""
@@ -298,7 +329,7 @@ class BooleanConverter(TypeConverter):
         return response_value.lower() == "true"
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: bool) -> str:
         """Convert a Python boolean value to its for-statement-string-interpolation
         representation."""
         if not isinstance(python_value, bool):
@@ -308,7 +339,7 @@ class BooleanConverter(TypeConverter):
         return "TRUE" if python_value else "FALSE"
 
 
-class NullConverter(TypeConverter):
+class NullConverter(TypeConverter[NoneType]):
     def to_python_value(self, response_value: FromResponseTypes) -> None:
         """Expect None from the response value, return None or raise ValueError."""
         if response_value is not None:
@@ -319,7 +350,7 @@ class NullConverter(TypeConverter):
         return None  # noqa: PLR1711 # explicit return for clarity.
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: NoneType) -> str:
         """Convert a Python None value to its statement-embedding representation."""
         if python_value is not None:
             raise ValueError(
@@ -328,7 +359,7 @@ class NullConverter(TypeConverter):
         return "NULL"
 
 
-class DateConverter(TypeConverter):
+class DateConverter(TypeConverter[date]):
     """Handles Flink DATE type to Python datetime.date"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> date | None:
@@ -349,7 +380,7 @@ class DateConverter(TypeConverter):
             raise ValueError(f"Invalid date string for DateConverter: {response_value}") from e
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: date) -> str:
         """Convert a Python datetime.date value to its for-statement-string-interpolation
         representation, quoted YYYY-MM-DD."""
 
@@ -363,7 +394,7 @@ class DateConverter(TypeConverter):
         return f"DATE '{python_value.isoformat()}'"
 
 
-class TimeConverter(TypeConverter):
+class TimeConverter(TypeConverter[time]):
     """Handles Flink TIME type to Python datetime.time"""
 
     def to_python_value(self, response_value: FromResponseTypes) -> time | None:
@@ -383,7 +414,7 @@ class TimeConverter(TypeConverter):
             raise ValueError(f"Invalid time string for TimeConverter: {response_value}") from e
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: time) -> str:
         """Convert a Python datetime.time value to its for-statement-string-interpolation
         representation, quoted `' TIME HH:MM:SS.MMMMMM.XXXXX'`"""
 
@@ -396,7 +427,7 @@ class TimeConverter(TypeConverter):
         return f"TIME '{python_value.isoformat(timespec='microseconds')}'"
 
 
-class TimestampConverter(TypeConverter):
+class TimestampConverter(TypeConverter[datetime]):
     """Handles converting Flink TIMESTAMP and TIMESTAMP_LTZ types to/from
     Python datetime.datetime (with or with tzinfo).
 
@@ -429,7 +460,7 @@ class TimestampConverter(TypeConverter):
         super().__init__(column_type)
 
     @classmethod
-    def to_statement_string(cls, python_value: Any) -> str:
+    def to_statement_string(cls, python_value: datetime) -> str:
         """Convert a Python datetime.datetime value to its for-statement-string-interpolation
         representation, based on whether it has tzinfo or not."""
 
