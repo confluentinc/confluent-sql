@@ -19,6 +19,7 @@ from .exceptions import (
     ProgrammingError,
     Warning,
 )
+from .types import AnnotatedNull, get_typed_null
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -42,4 +43,6 @@ __all__ = [
     "apilevel",
     "threadsafety",
     "paramstyle",
+    "AnnotatedNull",
+    "get_typed_null",
 ]

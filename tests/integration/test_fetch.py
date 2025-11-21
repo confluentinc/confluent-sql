@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from confluent_sql.connection import Connection
+from confluent_sql.types import get_typed_null
 
 
 @pytest.mark.integration
@@ -90,7 +91,8 @@ class TestCursorFetch:
             cursor.execute(
                 """
                 SELECT
-                    cast(%s as int) AS null_value,
+                    %s AS nulled_int_value,
+                    %s AS nulled_string_value,
                     %s AS bool_value,
                     %s AS int_value,
                     %s AS bigint_value,
@@ -112,7 +114,8 @@ class TestCursorFetch:
                     %s as varbinary_value
                 """,
                 (
-                    None,  # NULL
+                    get_typed_null("INTEGER"),  # null-as-int-cast
+                    get_typed_null("STRING"),  # null-as-string-cast
                     True,  # BOOLEAN
                     123,  # INT
                     12345678901,  # BIGINT
@@ -135,7 +138,8 @@ class TestCursorFetch:
             results = cursor.fetchone()
 
             assert results == {
-                "null_value": None,
+                "nulled_int_value": None,
+                "nulled_string_value": None,
                 "bool_value": True,
                 "int_value": 123,
                 "bigint_value": 12345678901,

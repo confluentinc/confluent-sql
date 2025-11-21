@@ -24,6 +24,8 @@ __all__ = [
     "StatementTypeConverter",
     "TypeConverter",
     "convert_statement_parameters",
+    "get_typed_null",
+    "AnnotatedNull",
 ]
 
 """
@@ -77,6 +79,9 @@ class TypeConverter(Generic[PyType]):
     the statement's schema).
     """
 
+    PRIMARY_FLINK_TYPE_NAME: str
+    """The primary Flink SQL type name that this TypeConverter handles."""
+
     _column_type: ColumnTypeDefinition
 
     def __init__(self, column_type: ColumnTypeDefinition):
@@ -108,6 +113,8 @@ def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
 
 class StringConverter(TypeConverter[str]):
     """Handles Flink types for CHAR, VARCHAR, STRING"""
+
+    PRIMARY_FLINK_TYPE_NAME = "STRING"
 
     def to_python_value(self, response_value: FromResponseTypes) -> str | None:
         """Expect string or None from the response value, return as-is or raise ValueError."""
@@ -157,6 +164,8 @@ class StringConverter(TypeConverter[str]):
 class VarBinaryConverter(TypeConverter[bytes]):
     """Handles Flink type VARBINARY"""
 
+    PRIMARY_FLINK_TYPE_NAME = "VARBINARY"
+
     def to_python_value(self, response_value: FromResponseTypes) -> bytes | None:
         """Expect hex-pair encoded string or None from the response value, return as bytes
         or raise ValueError.
@@ -199,6 +208,10 @@ class VarBinaryConverter(TypeConverter[bytes]):
 
 
 class IntegerConverter(TypeConverter[int]):
+    """Handles Flink types for TINYINT, SMALLINT, INTEGER, BIGINT to/from Python int"""
+
+    PRIMARY_FLINK_TYPE_NAME = "INTEGER"
+
     def to_python_value(self, response_value: FromResponseTypes) -> int | None:
         """Expect string-encoded integer or None from the response value, return as int
         or raise ValueError."""
@@ -228,7 +241,9 @@ class IntegerConverter(TypeConverter[int]):
 
 
 class DecimalConverter(TypeConverter[Decimal]):
-    """Handle fixed precision DECIMAL types, mapping to Python's decimal.Decimal"""
+    """Handle fixed precision DECIMAL types, mapping to/from Python's decimal.Decimal"""
+
+    PRIMARY_FLINK_TYPE_NAME = "DECIMAL"
 
     def to_python_value(self, response_value: FromResponseTypes) -> Decimal | None:
         """Expect string-encoded decimal or None from the response value, return as str
@@ -265,7 +280,9 @@ class DecimalConverter(TypeConverter[Decimal]):
 
 
 class FloatConverter(TypeConverter[float]):
-    """Handles Flink types for FLOAT, DOUBLE to Python float"""
+    """Handles Flink types for FLOAT, DOUBLE to/from Python float"""
+
+    PRIMARY_FLINK_TYPE_NAME = "DOUBLE"
 
     # Special cases when coming from Flink string representation.
     _transcendental_spellings = {
@@ -317,6 +334,10 @@ class FloatConverter(TypeConverter[float]):
 
 
 class BooleanConverter(TypeConverter[bool]):
+    """Handles Flink type BOOLEAN to/from Python bool"""
+
+    PRIMARY_FLINK_TYPE_NAME = "BOOLEAN"
+
     def to_python_value(self, response_value: FromResponseTypes) -> bool | None:
         """Expect string 'TRUE'/'FALSE' or None from the response value, return as bool
         or raise ValueError."""
@@ -341,7 +362,22 @@ class BooleanConverter(TypeConverter[bool]):
         return "TRUE" if python_value else "FALSE"
 
 
-class NullConverter(TypeConverter[NoneType]):
+class AnnotatedNull:
+    """Marker class to indicate a parameter that should be treated as NULL
+    of a specific type."""
+
+    def __init__(self, flink_type_name: str):
+        self._flink_type_name = flink_type_name
+
+    def __str__(self) -> str:
+        return f"cast (null as {self._flink_type_name})"
+
+
+class NullResultConverter(TypeConverter[NoneType]):
+    PRIMARY_FLINK_TYPE_NAME = "NULL"
+    """Handles Flink NULL values to Python None. Only handles from
+    results -> Python None conversion"""
+
     def to_python_value(self, response_value: FromResponseTypes) -> None:
         """Expect None from the response value, return None or raise ValueError."""
         if response_value is not None:
@@ -353,16 +389,47 @@ class NullConverter(TypeConverter[NoneType]):
 
     @classmethod
     def to_statement_string(cls, python_value: NoneType) -> str:
-        """Convert a Python None value to its statement-embedding representation."""
-        if python_value is not None:
+        raise InterfaceError(
+            "NullConverter cannot convert Python None to statement string directly. "
+            "Use AnnotatedNull to specify the desired SQL type for NULL parameters."
+        )
+
+
+class AnnotatedNullParameterConverter(TypeConverter[AnnotatedNull]):
+    """Handles conversion of AnnotatedNull to SQL NULL of specified type."""
+
+    # Have to say something here, but we're not ever going to be used
+    # to go from SQL NULL to Python AnnotatedNull. We're one-way only,
+    # the opposite from NullResultConverter.
+    PRIMARY_FLINK_TYPE_NAME = ""
+
+    # Since is never used for Flink result -> Python conversion,
+    # this class is not registered _flink_type_name_to_converter_map.
+
+    def to_python_value(self, response_value: FromResponseTypes) -> None:
+        """Never needed, as AnnotatedNull is only for parameter conversion."""
+        raise InterfaceError(
+            "NullParameterConverter cannot convert from response values to Python. "
+            "It is only for converting AnnotatedNull parameters to SQL NULL strings."
+        )
+
+    @classmethod
+    def to_statement_string(cls, python_value: AnnotatedNull) -> str:
+        """Convert an AnnotatedNull to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, AnnotatedNull):
             raise ValueError(
-                f"Expected Python None value for NullConverter but got {type(python_value)}"
+                "Expected AnnotatedNull value for NullParameterConverter but got"
+                f" {type(python_value)}"
             )
-        return "NULL"
+        # Its str() will include the cast syntax to its embedded type.
+        return str(python_value)
 
 
 class DateConverter(TypeConverter[date]):
     """Handles Flink DATE type to Python datetime.date"""
+
+    PRIMARY_FLINK_TYPE_NAME = "DATE"
 
     def to_python_value(self, response_value: FromResponseTypes) -> date | None:
         """Expect string-encoded date in 'YYYY-MM-DD' format or None from the response value,
@@ -398,6 +465,8 @@ class DateConverter(TypeConverter[date]):
 
 class TimeConverter(TypeConverter[time]):
     """Handles Flink TIME type to Python datetime.time"""
+
+    PRIMARY_FLINK_TYPE_NAME = "TIME"
 
     def to_python_value(self, response_value: FromResponseTypes) -> time | None:
         """Expect string-encoded time in 'HH:MM:SS(.MMMMMM)' format or None from the response value,
@@ -447,6 +516,8 @@ class TimestampConverter(TypeConverter[datetime]):
     When providing data intented for TIMESTAMP columns, tz-independent datetimes should be used.
     When providing data intended for TIMESTAMP_LTZ columns, tz-aware datetimes should be used.
     """
+
+    PRIMARY_FLINK_TYPE_NAME = "TIMESTAMP"
 
     def __init__(self, column_type: ColumnTypeDefinition):
         # Prevent confusion from possible aliases (test suite). Statement schema
@@ -524,7 +595,7 @@ class TimestampConverter(TypeConverter[datetime]):
 
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
-    "NULL": NullConverter,
+    "NULL": NullResultConverter,
     # Boolean type
     "BOOLEAN": BooleanConverter,
     # Integer types
@@ -561,8 +632,41 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
 }
 
 
+def get_typed_null(python_or_flink_type: str | type) -> AnnotatedNull:
+    """Return an AnnotatedNull instance for the given Flink SQL type name or python type.
+
+    Flink cannot deal with bare NULL values in statements. They must be cast to a specific type.
+    This function helps create an AnnotatedNull instance that marks a parameter as NULL of
+    a specific type, either by providing the Flink SQL type name directly, or by providing
+    the corresponding Python type, which is mapped to a Flink SQL type name via the
+    registered TypeConverters.
+
+    Use get_typed_null() to create execute() parameter values that should be treated as NULL
+    of a specific type.
+    """
+    if isinstance(python_or_flink_type, str):
+        # The caller provided a Flink type name directly.
+        # Ensure is a known type from _flink_type_name_to_converter_map keys (or lowercase thereof)
+        python_or_flink_type = python_or_flink_type.upper()
+        if python_or_flink_type not in _flink_type_name_to_converter_map:
+            raise InterfaceError(f"Unknown Flink type name {python_or_flink_type}")
+        # Found in the map, roll with it as is.
+        sql_type = python_or_flink_type
+    else:
+        # Map from Python type to Flink SQL type name
+        converter_cls = _python_type_to_type_converter.get(python_or_flink_type)
+        if not converter_cls:
+            raise InterfaceError(
+                f"Cannot determine Flink SQL type name for Python type {python_or_flink_type}"
+            )
+
+        sql_type = converter_cls.PRIMARY_FLINK_TYPE_NAME
+
+    return AnnotatedNull(sql_type)
+
+
 _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
-    None.__class__: NullConverter,
+    None.__class__: NullResultConverter,
     bool: BooleanConverter,
     int: IntegerConverter,
     Decimal: DecimalConverter,
@@ -572,6 +676,7 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     str: StringConverter,
     bytes: VarBinaryConverter,
     datetime: TimestampConverter,
+    AnnotatedNull: AnnotatedNullParameterConverter,
 }
 
 
