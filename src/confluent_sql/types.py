@@ -268,11 +268,11 @@ class FloatConverter(TypeConverter[float]):
     """Handles Flink types for FLOAT, DOUBLE to Python float"""
 
     # Special cases when coming from Flink string representation.
-    _transcendental_pairs = [
-        ("NaN", float("nan")),
-        ("Infinity", float("inf")),
-        ("-Infinity", float("-inf")),
-    ]
+    _transcendental_spellings = {
+        "NaN": float("nan"),
+        "Infinity": float("inf"),
+        "-Infinity": float("-inf"),
+    }
 
     def to_python_value(self, response_value: FromResponseTypes) -> float | None:
         """Expect string-encoded float or None from the response value, return as float
@@ -285,11 +285,9 @@ class FloatConverter(TypeConverter[float]):
                 f"Expected float to be encoded as JSON string but got {type(response_value)}"
             )
 
-        # Must specifically handle 'NaN', 'Infinity', '-Infinity' strings, the Java/Flink
-        # spellings.
-        for str_repr, float_repr in self._transcendental_pairs:
-            if response_value == str_repr:
-                return float_repr
+        # Must specifically handle the Flink/Java spellings of NaN and infinities.
+        if float_repr := self._transcendental_spellings.get(response_value, None):
+            return float_repr
 
         # Not a transcendental, parse as normal float.
         return float(response_value)
