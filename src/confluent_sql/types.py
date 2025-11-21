@@ -288,6 +288,8 @@ class FloatConverter(TypeConverter[float]):
             elif response_value == "-Infinity":
                 return float("-inf")
 
+            # Explicit fallthrough to handle general negative numbers.
+
         return float(response_value)
 
     @classmethod
