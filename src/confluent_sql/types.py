@@ -231,7 +231,17 @@ class DecimalConverter(TypeConverter):
             raise ValueError(
                 f"Expected Python Decimal value for DecimalConverter but got {type(python_value)}"
             )
-        return str(python_value)
+
+        # Must include explicit cast to DECIMAL to avoid Flink interpreting
+        # the literal as a DOUBLE.
+
+        # Must include precision and scale in the cast to get any decimal
+        # value with fractional part honored, otherwise Flink will
+        # truncate to integer.
+        precision = len(python_value.as_tuple().digits)  # type: ignore[attr-defined]
+        scale = -python_value.as_tuple().exponent  # type: ignore[attr-defined]
+
+        return f"cast('{python_value}' as decimal({precision},{scale}))"
 
 
 class FloatConverter(TypeConverter):

@@ -226,9 +226,9 @@ class TestDecimalConverter:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            (Decimal("123.45"), "123.45"),
-            (Decimal("0"), "0"),
-            (Decimal("-678.90"), "-678.90"),
+            (Decimal("123.4564564"), "cast('123.4564564' as decimal(10,7))"),
+            (Decimal("0"), "cast('0' as decimal(1,0))"),
+            (Decimal("-678.90"), "cast('-678.90' as decimal(5,2))"),
         ],
     )
     def test_to_statement_string(self, value, expected):
@@ -650,7 +650,7 @@ class TestConvertStatementParameters:
         (True, "TRUE"),
         (False, "FALSE"),
         (123, "123"),
-        (Decimal("45.67"), "45.67"),
+        (Decimal("45.67"), "cast('45.67' as decimal(4,2))"),
         (12.34, "12.34"),
         ("test", "'test'"),
         (b"\x01\x02", "x'0102'"),

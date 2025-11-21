@@ -94,7 +94,7 @@ class TestCursorFetch:
                     %s AS bool_value,
                     %s AS int_value,
                     %s AS bigint_value,
-                    cast(%s as DEC(7,2)) as decimal_value,
+                    %s as decimal_value,
 
                     -- These float/double casts are to ensure the types are exactly what we want in
                     -- this projection, rather than relying on implicit typing of literals. They're
@@ -116,7 +116,7 @@ class TestCursorFetch:
                     True,  # BOOLEAN
                     123,  # INT
                     12345678901,  # BIGINT
-                    Decimal("12345.67"),  # DECIMAL(7,2)
+                    Decimal("12345.67"),  # DECIMAL
                     12.5,  # FLOAT
                     191.2342342,  # DOUBLE
                     date(2024, 6, 15),  # DATE
