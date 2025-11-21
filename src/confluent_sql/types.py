@@ -268,7 +268,7 @@ class FloatConverter(TypeConverter[float]):
     """Handles Flink types for FLOAT, DOUBLE to Python float"""
 
     # Special cases when coming from Flink string representation.
-    transcendental_pairs = [
+    _transcendental_pairs = [
         ("NaN", float("nan")),
         ("Infinity", float("inf")),
         ("-Infinity", float("-inf")),
@@ -287,7 +287,7 @@ class FloatConverter(TypeConverter[float]):
 
         # Must specifically handle 'NaN', 'Infinity', '-Infinity' strings, the Java/Flink
         # spellings.
-        for str_repr, float_repr in self.transcendental_pairs:
+        for str_repr, float_repr in self._transcendental_pairs:
             if response_value == str_repr:
                 return float_repr
 
