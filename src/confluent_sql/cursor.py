@@ -266,7 +266,7 @@ class Cursor:
             # Use the statement's type converter to decode rows from API JSON to Python values
             type_converter = self._statement.type_converter
             for res in results:
-                decoded_row = type_converter.to_python_row(tuple(res.get("row", [])))
+                decoded_row = type_converter.to_python_row(res.get("row", []))
 
                 row: dict[str, tuple | Op] = {"row": decoded_row}
 
@@ -407,6 +407,8 @@ class Cursor:
         logger.info(f"Submitting statement {statement_text}")
 
         interpolated_statement = self._interpolate_parameters(statement_text, parameters)
+
+        logger.debug(f"Interpolated statement: {interpolated_statement}")
 
         response = self._connection._execute_statement(
             interpolated_statement, statement_name, bounded

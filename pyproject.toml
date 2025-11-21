@@ -10,7 +10,16 @@ requires-python = ">=3.10"
 dependencies = ["httpx>=0.23.0,<0.29.0"]
 
 [tool.ruff]
-lint.select = ["UP", "PL", "E", "F", "B", "SIM", "I"]
+lint.select = [
+    "UP",
+    "PL",
+    "E",
+    "F",
+    "B",
+    "SIM",
+    "I",
+    "D300", # docstring conventions
+]
 line-length = 100
 
 [tool.ruff.format]
@@ -40,6 +49,7 @@ markers = [
     "unit: mark a test as a unit test",
     "integration: mark a test as an integration test",
     "slow: mark a test as a slow (longer than a few seconds integration) test",
+    "typeconv: mark a test as a type conversion test",
 ]
 
 [project.optional-dependencies]
