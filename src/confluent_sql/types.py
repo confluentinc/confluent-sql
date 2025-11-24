@@ -678,6 +678,18 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     SqlNone: SqlNoneConverter,
 }
 
+# Initialize static SqlNone members for common types, must be done after class definition
+# and after the global type maps are defined.
+SqlNone.INTEGER = SqlNone("INTEGER")
+SqlNone.VARCHAR = SqlNone("VARCHAR")
+SqlNone.STRING = SqlNone("STRING")
+SqlNone.BOOLEAN = SqlNone("BOOLEAN")
+SqlNone.DECIMAL = SqlNone("DECIMAL")
+SqlNone.FLOAT = SqlNone("FLOAT")
+SqlNone.DATE = SqlNone("DATE")
+SqlNone.TIME = SqlNone("TIME")
+SqlNone.TIMESTAMP = SqlNone("TIMESTAMP")
+
 
 def convert_statement_parameters(
     parameters: tuple | list,
@@ -698,18 +710,3 @@ def convert_statement_parameters(
         converted_params.append(param_as_flink_string)
 
     return tuple(converted_params)
-
-
-# Initialize static SqlNone members for common types.
-for attr, flink_type in {
-    "INTEGER": "INTEGER",
-    "VARCHAR": "VARCHAR",
-    "STRING": "STRING",
-    "BOOLEAN": "BOOLEAN",
-    "DECIMAL": "DECIMAL",
-    "FLOAT": "FLOAT",
-    "DATE": "DATE",
-    "TIME": "TIME",
-    "TIMESTAMP": "TIMESTAMP",
-}.items():
-    setattr(SqlNone, attr, SqlNone(flink_type))
