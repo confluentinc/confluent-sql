@@ -9,13 +9,14 @@ import pytest
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import ColumnTypeDefinition
 from confluent_sql.types import (
-    AnnotatedNull,
     BooleanConverter,
     DateConverter,
     DecimalConverter,
     FloatConverter,
     IntegerConverter,
     NullResultConverter,
+    SqlNone,
+    SqlNoneConverter,
     StringConverter,
     TimeConverter,
     TimestampConverter,
@@ -23,7 +24,6 @@ from confluent_sql.types import (
     _flink_type_name_to_converter_map,
     convert_statement_parameters,
     get_api_type_converter,
-    get_typed_null,
 )
 
 
@@ -48,6 +48,28 @@ class TestNullConverter:
             InterfaceError, match="cannot convert Python None to statement string directly"
         ):
             NullResultConverter.to_statement_string("anything")  # type: ignore
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestSqlNoneConverter:
+    """Unit tests over SqlNoneConverter."""
+
+    def test_to_python_value_always_throws(self):
+        converter = SqlNoneConverter(ColumnTypeDefinition(type="INTEGER", nullable=True))
+        with pytest.raises(InterfaceError, match="cannot convert from response values to Python"):
+            converter.to_python_value("12")
+
+    def test_to_statement_string_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected SqlNone value for SqlNoneConverter but got <class 'int'>",
+        ):
+            SqlNoneConverter.to_statement_string(123)  # type: ignore
+
+    def test_to_statement_string(self):
+        result = SqlNoneConverter.to_statement_string(SqlNone.INTEGER)
+        assert result == "cast (null as INTEGER)"
 
 
 @pytest.mark.unit
@@ -663,8 +685,8 @@ class TestConvertStatementParameters:
     expected type converters are registered and used."""
 
     value_expected_string_pairs = [
-        (get_typed_null("INTEGER"), "cast (null as INTEGER)"),
-        (get_typed_null(int), "cast (null as INTEGER)"),
+        (SqlNone.INTEGER, "cast (null as INTEGER)"),
+        (SqlNone(int), "cast (null as INTEGER)"),
         (True, "TRUE"),
         (False, "FALSE"),
         (123, "123"),
@@ -723,8 +745,8 @@ def test_converter_wiring(converter_cls):
 
 
 @pytest.mark.unit
-class TestGetTypedNull:
-    """Unit tests over get_typed_null function."""
+class TestSqlNone:
+    """Unit tests over SqlNone functionality."""
 
     @pytest.mark.parametrize(
         "flink_type_name",
@@ -747,11 +769,10 @@ class TestGetTypedNull:
             "TIMESTAMP_WITH_LOCAL_TIME_ZONE",
         ],
     )
-    def test_get_typed_null_from_flink_type_name(self, flink_type_name):
+    def test_from_flink_type_name(self, flink_type_name):
         # test with both upper and lower case type names ...
         for type_name in (flink_type_name, flink_type_name.lower()):
-            annotated_null = get_typed_null(type_name)
-            assert isinstance(annotated_null, AnnotatedNull)
+            annotated_null = SqlNone(type_name)
             assert annotated_null._flink_type_name == flink_type_name
             assert str(annotated_null) == f"cast (null as {type_name.upper()})"
 
@@ -769,20 +790,20 @@ class TestGetTypedNull:
             (datetime, "TIMESTAMP"),
         ],
     )
-    def test_get_typed_null_from_python_type(self, python_type, flink_type_name):
-        annotated_null = get_typed_null(python_type)
-        assert isinstance(annotated_null, AnnotatedNull)
+    def test_from_python_type(self, python_type, flink_type_name):
+        annotated_null = SqlNone(python_type)
+        assert isinstance(annotated_null, SqlNone)
         assert annotated_null._flink_type_name == flink_type_name
         assert str(annotated_null) == f"cast (null as {flink_type_name})"
 
-    def test_get_typed_null_invalid_flink_type(self):
+    def test_invalid_flink_type(self):
         with pytest.raises(
             InterfaceError,
             match="Unknown Flink type name",
         ):
-            get_typed_null("UNSUPPORTED_TYPE")
+            SqlNone("UNSUPPORTED_TYPE")
 
-    def test_get_typed_null_invalid_python_type(self):
+    def test_invalid_python_type(self):
         class UnsupportedType:
             pass
 
@@ -790,4 +811,17 @@ class TestGetTypedNull:
             InterfaceError,
             match="Cannot determine Flink SQL type name",
         ):
-            get_typed_null(UnsupportedType)
+            SqlNone(UnsupportedType)
+
+    def test_constants(self):
+        """Test that the predefined SqlNone constants have the expected
+        string representations."""
+        assert str(SqlNone.INTEGER) == "cast (null as INTEGER)"
+        assert str(SqlNone.DECIMAL) == "cast (null as DECIMAL)"
+        assert str(SqlNone.FLOAT) == "cast (null as FLOAT)"
+        assert str(SqlNone.BOOLEAN) == "cast (null as BOOLEAN)"
+        assert str(SqlNone.STRING) == "cast (null as STRING)"
+        assert str(SqlNone.VARCHAR) == "cast (null as VARCHAR)"
+        assert str(SqlNone.DATE) == "cast (null as DATE)"
+        assert str(SqlNone.TIME) == "cast (null as TIME)"
+        assert str(SqlNone.TIMESTAMP) == "cast (null as TIMESTAMP)"
