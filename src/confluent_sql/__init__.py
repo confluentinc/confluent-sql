@@ -19,6 +19,7 @@ from .exceptions import (
     ProgrammingError,
     Warning,
 )
+from .types import SqlNone
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -42,4 +43,5 @@ __all__ = [
     "apilevel",
     "threadsafety",
     "paramstyle",
+    "SqlNone",
 ]
