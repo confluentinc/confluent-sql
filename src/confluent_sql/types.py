@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cmath import isnan
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isinf
 from types import NoneType
@@ -624,6 +624,115 @@ class TimestampConverter(TypeConverter[datetime]):
 
         return dt
 
+XXX TODO make separate class for INTERVAL YEAR TO MONTH, atop a new dataclass holding years and months.
+
+class IntervalConverter(TypeConverter[timedelta]):
+    """Handles Flink INTERVAL types as strings.
+
+    INTERVAL DAY TO SECOND is mapped to Python timedelta. Its string representation
+    is of the form '+-D HH:MM:SS.MMMMMM', and the Flink schema type will be
+    INTERVAL_DAY_TIME.
+    """
+
+    PRIMARY_FLINK_TYPE_NAME = "INTERVAL_DAY_TIME"
+
+    def __init__(self, column_type: ColumnTypeDefinition):
+        if column_type.type_name not in ("INTERVAL_DAY_TIME", "INTERVAL_YEAR_MONTH"):
+            raise ValueError(
+                f"IntervalConverter can only be used with INTERVAL_DAY_TIME or "
+                f"INTERVAL_YEAR_MONTH types, got {column_type.type_name}"
+            )
+        super().__init__(column_type)
+
+    def to_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
+        """Dispatch to appropriate interval conversion based on column type."""
+        if self._column_type.type_name == "INTERVAL_DAY_TIME":
+            return self.to_day_time_python_value(response_value)
+        else:
+            return self.to_year_month_python_value(response_value)
+
+    def to_year_month_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
+        """Expect string-encoded interval or None from the response value,
+        return as str or raise ValueError."""
+
+        # Example: '+1-06' for interval of 1 year, 6 months.
+        if response_value is None:
+            return None
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected interval to be encoded as JSON string but got {type(response_value)}"
+            )
+
+        # Parse the interval string into a timedelta
+        try:
+            sign, rest = response_value[0], response_value[1:]
+            years_str, months_str = rest.split("-", 1)
+            years = int(years_str)
+            months = int(months_str)
+            total_months = years * 12 + months
+            if sign == "-":
+                total_months = -total_months
+            return timedelta(days=total_months * 30)  # Approximate as 30 days per month
+        except Exception as e:
+            raise ValueError(
+                f"Invalid interval string for IntervalConverter: {response_value}"
+            ) from e
+
+    def to_day_time_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
+        """Expect string-encoded interval or None from the response value,
+        return as str or raise ValueError."""
+
+        # Example: '+0 04:00:00.000' for interval of 0 days, 4 hours.
+
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, str):
+            raise ValueError(
+                f"Expected interval to be encoded as JSON string but got {type(response_value)}"
+            )
+
+        # Parse the interval string into a timedelta
+        try:
+            sign, rest = response_value[0], response_value[1:]
+            days_str, time_str = rest.split(" ", 1)
+            days = int(days_str)
+            hours_str, minutes_str, seconds_str = time_str.split(":")
+            hours = int(hours_str)
+            minutes = int(minutes_str)
+            # Handle fractional seconds
+            if "." in seconds_str:
+                sec_int, sec_frac = str(seconds_str).split(".", 1)
+                seconds = int(sec_int)
+                microseconds = int(sec_frac.ljust(6, "0")[:6])  # Pad/truncate to microseconds
+
+            else:
+                seconds = int(seconds_str)
+                microseconds = 0
+            total_seconds = days * 86400 + hours * 3600 + minutes * 60 + seconds
+            if sign == "-":
+                # -0 23:00:00.123
+                total_seconds = -total_seconds
+            return timedelta(seconds=total_seconds, microseconds=microseconds)
+        except Exception as e:
+            raise ValueError(
+                f"Invalid interval string for IntervalConverter: {response_value}"
+            ) from e
+
+        return response_value
+
+    @classmethod
+    def to_statement_string(cls, python_value: timedelta) -> str:
+        """Convert a Python str value representing an interval to its
+        for-statement-string-interpolation representation."""
+        if not isinstance(python_value, str):
+            raise ValueError(
+                f"Expected Python str value for IntervalConverter but got {type(python_value)}"
+            )
+
+        # Wrap in single quotes for Flink SQL literal
+        return f"'{python_value}'"
+
 
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
@@ -653,6 +762,9 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "TIMESTAMP_WITHOUT_TIME_ZONE": TimestampConverter,
     "TIMESTAMP_LTZ": TimestampConverter,
     "TIMESTAMP_WITH_LOCAL_TIME_ZONE": TimestampConverter,
+    # Interval types
+    "INTERVAL_DAY_TIME": IntervalConverter,
+    "INTERVAL_YEAR_MONTH": IntervalConverter,
     # String types
     "CHAR": StringConverter,
     "VARCHAR": StringConverter,

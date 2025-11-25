@@ -167,6 +167,44 @@ class TestCursorFetch:
 
     @pytest.mark.slow
     @pytest.mark.typeconv
+    def test_encoding_decoding_intervals_round_tripping(
+        self,
+        connection: Connection,
+    ):
+        """Test round-tripping values for intervals, a whole big thing on their own."""
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    INTERVAL '4' HOUR AS interval_hour,
+                    INTERVAL '2 04:15:20' DAY TO SECOND AS interval_day_time,
+                    INTERVAL '1 22:22:22.123456' DAY TO SECOND(6) AS interval_day_time_micros,
+                    INTERVAL '-23' HOUR AS interval_neg_hour,
+                    -- An iota longer negative interval with fractional seconds.
+                    INTERVAL '-23:00:00.123' HOUR TO SECOND AS interval_neg_hour_to_second,
+                    -- And now some months, years intervals.
+                    INTERVAL '1' YEAR AS interval_year
+                """
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "interval_hour": timedelta(hours=4),
+                "interval_day_time": timedelta(days=2, hours=4, minutes=15, seconds=20),
+                # Sigh, the microseconds get truncated to milliseconds in the round trip,
+                # Flink-side, even though we specified DAY TO SECOND(6).
+                # (Expect this so that we can reevauate later if it improves in Flink.)
+                "interval_day_time_micros": timedelta(
+                    days=1, hours=22, minutes=22, seconds=22, microseconds=123000
+                ),
+                "interval_neg_hour": timedelta(hours=-23),
+                "interval_neg_hour_to_second": timedelta(seconds=-23 * 3600, microseconds=123000),
+                "interval_year": timedelta(days=365),  # Approximation of 1 year as 365 days.
+            }
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
     def test_rich_result_decoding(
         self,
         connection: Connection,
