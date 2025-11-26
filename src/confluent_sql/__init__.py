@@ -19,7 +19,7 @@ from .exceptions import (
     ProgrammingError,
     Warning,
 )
-from .types import SqlNone
+from .types import SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -44,4 +44,5 @@ __all__ = [
     "threadsafety",
     "paramstyle",
     "SqlNone",
+    "YearMonthInterval",
 ]

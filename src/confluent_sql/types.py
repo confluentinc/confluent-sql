@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from cmath import isnan
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isinf
@@ -25,6 +26,7 @@ __all__ = [
     "TypeConverter",
     "convert_statement_parameters",
     "SqlNone",
+    "YearMonthInterval",
 ]
 
 """
@@ -379,6 +381,9 @@ class SqlNone:
     DATE: SqlNone
     TIME: SqlNone
     TIMESTAMP: SqlNone
+    VARBINARY: SqlNone
+    YEAR_MONTH_INTERVAL: SqlNone
+    DAY_SECOND_INTERVAL: SqlNone
 
     def __init__(self, python_or_flink_type: str | type):
         if isinstance(python_or_flink_type, str):
@@ -624,36 +629,92 @@ class TimestampConverter(TypeConverter[datetime]):
 
         return dt
 
-XXX TODO make separate class for INTERVAL YEAR TO MONTH, atop a new dataclass holding years and months.
 
-class IntervalConverter(TypeConverter[timedelta]):
-    """Handles Flink INTERVAL types as strings.
+@dataclass
+class YearMonthInterval:
+    """Class representing a YEAR TO MONTH interval with separate year and month components.
 
-    INTERVAL DAY TO SECOND is mapped to Python timedelta. Its string representation
-    is of the form '+-D HH:MM:SS.MMMMMM', and the Flink schema type will be
-    INTERVAL_DAY_TIME.
+    Negative intervals have negative years and/or months. When the years is negative,
+    the months should also be negative, and vice versa (so as to avoid ambiguity and to
+    represent negative months-only intervals).
     """
 
-    PRIMARY_FLINK_TYPE_NAME = "INTERVAL_DAY_TIME"
+    years: int
+    months: int
+
+    def __post_init__(self):
+        if not isinstance(self.years, int) or not isinstance(self.months, int):
+            raise TypeError("YearMonthInterval years and months must be integers.")
+
+        if (self.years < 0 and self.months > 0) or (self.years > 0 and self.months < 0):
+            raise ValueError("YearMonthInterval years and months must have the same sign.")
+
+        if abs(self.months) >= 12:  # noqa: PLR2004
+            raise ValueError("YearMonthInterval months must be in the range -11 to 11.")
+
+        if abs(self.years) > 9999:  # noqa: PLR2004
+            raise ValueError("YearMonthInterval years must be in the range -9999 to 9999")
+
+    def __str__(self) -> str:
+        sign = "-" if (self.years < 0 or self.months < 0) else "+"
+        return f"{sign}{abs(self.years)}-{abs(self.months):02d}"
+
+    # Rich comparison methods for vague parity with timedelta
+    def __lt__(self, other: Any) -> bool:
+        if not isinstance(other, YearMonthInterval):
+            return NotImplemented
+        return (self.years, self.months) < (other.years, other.months)
+
+    def __le__(self, other: Any) -> bool:
+        if not isinstance(other, YearMonthInterval):
+            return NotImplemented
+        return (self.years, self.months) <= (other.years, other.months)
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, YearMonthInterval):
+            return NotImplemented
+        return self.years == other.years and self.months == other.months
+
+    def __gt__(self, other: Any) -> bool:
+        if not isinstance(other, YearMonthInterval):
+            return NotImplemented
+        return (self.years, self.months) > (other.years, other.months)
+
+    def __ge__(self, other: Any) -> bool:
+        if not isinstance(other, YearMonthInterval):
+            return NotImplemented
+        return (self.years, self.months) >= (other.years, other.months)
+
+    def __ne__(self, other: Any) -> bool:
+        if not isinstance(other, YearMonthInterval):
+            return NotImplemented
+        return self.years != other.years or self.months != other.months
+
+    def __hash__(self) -> int:
+        """Hash based on years and months, since overriding __eq__."""
+        return hash((self.years, self.months))
+
+
+class YearMonthIntervalConverter(TypeConverter[YearMonthInterval]):
+    """Handles Flink YEAR TO MONTH variant INTERVAL types as strings.
+
+    INTERVAL YEAR TO MONTH is mapped to Python YearMonthInterval dataclass. Its string
+    representation is of the form '+-Y-M', and the Flink schema type will be INTERVAL_YEAR_MONTH.
+    """
+
+    PRIMARY_FLINK_TYPE_NAME = "INTERVAL_YEAR_MONTH"
 
     def __init__(self, column_type: ColumnTypeDefinition):
-        if column_type.type_name not in ("INTERVAL_DAY_TIME", "INTERVAL_YEAR_MONTH"):
+        if column_type.type_name != "INTERVAL_YEAR_MONTH":
             raise ValueError(
-                f"IntervalConverter can only be used with INTERVAL_DAY_TIME or "
-                f"INTERVAL_YEAR_MONTH types, got {column_type.type_name}"
+                f"YearMonthIntervalConverter can only be used with INTERVAL_YEAR_MONTH types, "
+                f"got {column_type.type_name}"
             )
         super().__init__(column_type)
 
-    def to_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
-        """Dispatch to appropriate interval conversion based on column type."""
-        if self._column_type.type_name == "INTERVAL_DAY_TIME":
-            return self.to_day_time_python_value(response_value)
-        else:
-            return self.to_year_month_python_value(response_value)
-
-    def to_year_month_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
+    def to_python_value(self, response_value: FromResponseTypes) -> YearMonthInterval | None:
         """Expect string-encoded interval or None from the response value,
-        return as str or raise ValueError."""
+        return as YearMonthInterval or raise ValueError."""
 
         # Example: '+1-06' for interval of 1 year, 6 months.
         if response_value is None:
@@ -663,22 +724,50 @@ class IntervalConverter(TypeConverter[timedelta]):
                 f"Expected interval to be encoded as JSON string but got {type(response_value)}"
             )
 
-        # Parse the interval string into a timedelta
+        # Parse the interval string into a YearMonthInterval
         try:
             sign, rest = response_value[0], response_value[1:]
             years_str, months_str = rest.split("-", 1)
             years = int(years_str)
             months = int(months_str)
-            total_months = years * 12 + months
             if sign == "-":
-                total_months = -total_months
-            return timedelta(days=total_months * 30)  # Approximate as 30 days per month
+                years = -years
+                months = -months
+            return YearMonthInterval(years=years, months=months)
         except Exception as e:
             raise ValueError(
-                f"Invalid interval string for IntervalConverter: {response_value}"
+                f"Invalid interval string for YearMonthIntervalConverter: {response_value}"
             ) from e
 
-    def to_day_time_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
+    @classmethod
+    def to_statement_string(cls, python_value: YearMonthInterval) -> str:
+        """Convert a Python YearMonthInterval value representing an interval to its
+        for-statement-string-interpolation representation."""
+        if not isinstance(python_value, YearMonthInterval):
+            raise ValueError(
+                f"Expected Python YearMonthInterval value for YearMonthIntervalConverter "
+                f"but got {type(python_value)}"
+            )
+
+        interval_str = str(python_value)
+        return f"INTERVAL '{interval_str}' YEAR TO MONTH"
+
+
+class DaysIntervalConverter(TypeConverter[timedelta]):
+    """Handles Flink DAYS TO SECOND variant INTERVAL types as strings.
+
+    INTERVAL DAY TO SECOND is mapped to Python timedelta. Its string representation
+    is of the form '+-D HH:MM:SS.MMMMMM', and the Flink schema type will be
+    INTERVAL_DAY_TIME.
+
+    We have to take care when converting negative intervals carrying fractional
+    seconds, since Python's timedelta normalizes negative timedeltas in a surprising way,
+    expressing them with negative days and positive seconds/microseconds.
+    """
+
+    PRIMARY_FLINK_TYPE_NAME = "INTERVAL_DAY_TIME"
+
+    def to_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
         """Expect string-encoded interval or None from the response value,
         return as str or raise ValueError."""
 
@@ -713,25 +802,48 @@ class IntervalConverter(TypeConverter[timedelta]):
             if sign == "-":
                 # -0 23:00:00.123
                 total_seconds = -total_seconds
+                if microseconds > 0:
+                    # Adjust microseconds and seconds for negative intervals, negative timedelta
+                    # are surprising.
+                    microseconds = 1_000_000 - microseconds
+                    total_seconds -= 1
             return timedelta(seconds=total_seconds, microseconds=microseconds)
         except Exception as e:
             raise ValueError(
                 f"Invalid interval string for IntervalConverter: {response_value}"
             ) from e
 
-        return response_value
-
     @classmethod
     def to_statement_string(cls, python_value: timedelta) -> str:
-        """Convert a Python str value representing an interval to its
+        """Convert a Python timedelta value representing an interval to its
         for-statement-string-interpolation representation."""
-        if not isinstance(python_value, str):
+        if not isinstance(python_value, timedelta):
             raise ValueError(
-                f"Expected Python str value for IntervalConverter but got {type(python_value)}"
+                f"Expected Python timedelta for IntervalConverter but got {type(python_value)}"
             )
 
-        # Wrap in single quotes for Flink SQL literal
-        return f"'{python_value}'"
+        total_seconds = int(python_value.total_seconds())
+        microseconds = python_value.microseconds
+        days, remainder = divmod(abs(total_seconds), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        sign = "-" if total_seconds < 0 else "+"
+
+        interval_str = f"{sign}{days} {hours:02}:{minutes:02}:{seconds:02}"
+        if microseconds > 0:
+            # Undo normalization if the total_seconds was negative, because
+            # of surprsing negative timedelta normalization behavior.
+            if total_seconds < 0:
+                microseconds = 1_000_000 - microseconds
+
+            interval_str += f".{microseconds:06}"
+            # Try for maximum precision if microseconds present, but at this time
+            # Flink will erode to millisecond precision internally.
+            precision = "(6)"
+        else:
+            precision = ""
+
+        return f"INTERVAL '{interval_str}' DAY TO SECOND{precision}"
 
 
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
@@ -763,8 +875,10 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "TIMESTAMP_LTZ": TimestampConverter,
     "TIMESTAMP_WITH_LOCAL_TIME_ZONE": TimestampConverter,
     # Interval types
-    "INTERVAL_DAY_TIME": IntervalConverter,
-    "INTERVAL_YEAR_MONTH": IntervalConverter,
+    "INTERVAL_DAY_TIME": DaysIntervalConverter,
+    "INTERVAL DAYS TO SECOND": DaysIntervalConverter,
+    "INTERVAL_YEAR_MONTH": YearMonthIntervalConverter,
+    "INTERVAL YEAR TO MONTH": YearMonthIntervalConverter,
     # String types
     "CHAR": StringConverter,
     "VARCHAR": StringConverter,
@@ -778,6 +892,7 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
 
 _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     None.__class__: NullResultConverter,
+    SqlNone: SqlNoneConverter,
     bool: BooleanConverter,
     int: IntegerConverter,
     Decimal: DecimalConverter,
@@ -787,7 +902,8 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     str: StringConverter,
     bytes: VarBinaryConverter,
     datetime: TimestampConverter,
-    SqlNone: SqlNoneConverter,
+    YearMonthInterval: YearMonthIntervalConverter,
+    timedelta: DaysIntervalConverter,
 }
 
 # Initialize static SqlNone members for common types, must be done after class definition
@@ -795,12 +911,15 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
 SqlNone.INTEGER = SqlNone("INTEGER")
 SqlNone.VARCHAR = SqlNone("VARCHAR")
 SqlNone.STRING = SqlNone("STRING")
+SqlNone.VARBINARY = SqlNone("VARBINARY")
 SqlNone.BOOLEAN = SqlNone("BOOLEAN")
 SqlNone.DECIMAL = SqlNone("DECIMAL")
 SqlNone.FLOAT = SqlNone("FLOAT")
 SqlNone.DATE = SqlNone("DATE")
 SqlNone.TIME = SqlNone("TIME")
 SqlNone.TIMESTAMP = SqlNone("TIMESTAMP")
+SqlNone.YEAR_MONTH_INTERVAL = SqlNone("INTERVAL YEAR TO MONTH")
+SqlNone.DAY_SECOND_INTERVAL = SqlNone("INTERVAL DAYS TO SECOND")
 
 
 def convert_statement_parameters(

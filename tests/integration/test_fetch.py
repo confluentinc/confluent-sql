@@ -3,8 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from confluent_sql.connection import Connection
-from confluent_sql.types import SqlNone
+from confluent_sql import Connection, SqlNone, YearMonthInterval
 
 
 @pytest.mark.integration
@@ -82,11 +81,11 @@ class TestCursorFetch:
 
     @pytest.mark.slow
     @pytest.mark.typeconv
-    def test_encoding_decoding_round_tripping(
+    def test_encoding_decoding_scalars_round_tripping(
         self,
         connection: Connection,
     ):
-        """Test round-tripping values of all supported types."""
+        """Test round-tripping values the simple scalar supported types."""
         with connection.closing_cursor(as_dict=True) as cursor:
             cursor.execute(
                 """
@@ -111,6 +110,15 @@ class TestCursorFetch:
                     %s AS timestamp_value,
                     %s AS timestamp_value_micros,
                     %s AS timestamp_ltz_value,
+
+                    %s as simple_day_second_interval,
+                    %s as microseconds_day_second_interval,
+                    %s as negative_day_second_interval,
+
+                    %s as positive_year_month_interval,
+                    %s as negative_year_month_interval,
+                    %s as zero_year_month_interval,
+
                     %s AS string_value,
                     %s as varbinary_value
                 """,
@@ -127,11 +135,21 @@ class TestCursorFetch:
                     date(2024, 6, 15),  # DATE
                     time(12, 34, 56),  # TIME
                     time(12, 34, 56, 789000),  # TIME with microseconds
+                    # datetimes
                     datetime(2025, 6, 15, 12, 34, 56),  # TIMESTAMP no microseconds
                     datetime(2024, 6, 15, 12, 34, 56, 123456),  # TIMESTAMP with microseconds
                     datetime(
                         2023, 6, 15, 12, 34, 56, tzinfo=timezone(timedelta(hours=2))
                     ),  # TIMESTAMP_LTZ
+                    # DAY TO SECOND Intervals
+                    timedelta(days=2, hours=3, minutes=4, seconds=5),  # INTERVAL DAY TO SECOND
+                    timedelta(days=1, hours=2, minutes=3, seconds=4, microseconds=567890),
+                    timedelta(days=-1, hours=-2, minutes=-3, seconds=-4),
+                    # YEAR TO MONTH Intervals
+                    YearMonthInterval(years=3, months=4),  # Positive interval
+                    YearMonthInterval(years=-2, months=-5),  # Negative interval
+                    YearMonthInterval(years=0, months=9),  # Zero year interval
+                    # Strings
                     "test-string",  # STRING
                     b"\x01\x02\x03",  # BINARY
                 ),
@@ -161,17 +179,28 @@ class TestCursorFetch:
                 "timestamp_ltz_value": datetime(
                     2023, 6, 15, 10, 34, 56, tzinfo=timezone(timedelta(hours=0))
                 ),
+                "simple_day_second_interval": timedelta(days=2, hours=3, minutes=4, seconds=5),
+                # Alas, microseconds get truncated to milliseconds precision Flink-side.
+                "microseconds_day_second_interval": timedelta(
+                    days=1, hours=2, minutes=3, seconds=4, microseconds=567000
+                ),
+                "negative_day_second_interval": timedelta(
+                    days=-1, hours=-2, minutes=-3, seconds=-4
+                ),
+                "positive_year_month_interval": YearMonthInterval(years=3, months=4),
+                "negative_year_month_interval": YearMonthInterval(years=-2, months=-5),
+                "zero_year_month_interval": YearMonthInterval(years=0, months=9),
                 "string_value": "test-string",
                 "varbinary_value": b"\x01\x02\x03",
             }
 
     @pytest.mark.slow
     @pytest.mark.typeconv
-    def test_encoding_decoding_intervals_round_tripping(
+    def test_decoding_intervals(
         self,
         connection: Connection,
     ):
-        """Test round-tripping values for intervals, a whole big thing on their own."""
+        """Test decoding for intervals, a whole big thing on their own."""
         with connection.closing_cursor(as_dict=True) as cursor:
             cursor.execute(
                 """
@@ -183,7 +212,11 @@ class TestCursorFetch:
                     -- An iota longer negative interval with fractional seconds.
                     INTERVAL '-23:00:00.123' HOUR TO SECOND AS interval_neg_hour_to_second,
                     -- And now some months, years intervals.
-                    INTERVAL '1' YEAR AS interval_year
+                    INTERVAL '1' YEAR AS interval_year,
+                    INTERVAL '0' MONTH AS interval_zero_month,
+                    INTERVAL '7-11' YEAR TO MONTH AS interval_year_month,
+                    INTERVAL '-0-4' YEAR TO MONTH AS interval_neg_zero_year_month,
+                    INTERVAL '-2-11' YEAR TO MONTH AS interval_neg_overflow_year_month
                 """
             )
 
@@ -199,8 +232,12 @@ class TestCursorFetch:
                     days=1, hours=22, minutes=22, seconds=22, microseconds=123000
                 ),
                 "interval_neg_hour": timedelta(hours=-23),
-                "interval_neg_hour_to_second": timedelta(seconds=-23 * 3600, microseconds=123000),
-                "interval_year": timedelta(days=365),  # Approximation of 1 year as 365 days.
+                "interval_neg_hour_to_second": (-1 * timedelta(hours=23, microseconds=123000)),
+                "interval_year": YearMonthInterval(years=1, months=0),
+                "interval_zero_month": YearMonthInterval(years=0, months=0),
+                "interval_year_month": YearMonthInterval(years=7, months=11),
+                "interval_neg_zero_year_month": YearMonthInterval(years=0, months=-4),
+                "interval_neg_overflow_year_month": YearMonthInterval(years=-2, months=-11),
             }
 
     @pytest.mark.slow
@@ -308,4 +345,61 @@ class TestCursorFetch:
                 "null_int_value": None,
                 "null_bool_value": None,
                 "null_string_value": None,
+            }
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_sqlnone_constants(
+        self,
+        connection: Connection,
+    ):
+        """Test that the None -> typed NULL constants work as expected."""
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    %s AS null_int,
+                    %s as null_varchar,
+                    %s as null_string,
+                    %s as null_varbinary,
+                    %s as null_bool,
+                    %s as null_decimal,
+                    %s as null_float,
+                    %s as null_date,
+                    %s as null_time,
+                    %s as null_timestamp,
+                    %s as null_year_month_interval,
+                    %s as null_day_second_interval
+                """,
+                (
+                    SqlNone.INTEGER,
+                    SqlNone.VARCHAR,
+                    SqlNone.STRING,
+                    SqlNone.VARBINARY,
+                    SqlNone.BOOLEAN,
+                    SqlNone.DECIMAL,
+                    SqlNone.FLOAT,
+                    SqlNone.DATE,
+                    SqlNone.TIME,
+                    SqlNone.TIMESTAMP,
+                    SqlNone.YEAR_MONTH_INTERVAL,
+                    SqlNone.DAY_SECOND_INTERVAL,
+                ),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "null_int": None,
+                "null_varchar": None,
+                "null_string": None,
+                "null_bool": None,
+                "null_varbinary": None,
+                "null_decimal": None,
+                "null_float": None,
+                "null_date": None,
+                "null_time": None,
+                "null_timestamp": None,
+                "null_year_month_interval": None,
+                "null_day_second_interval": None,
             }
