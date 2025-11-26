@@ -156,7 +156,7 @@ class TestYearMonthInterval:
 
     def test_hashability(self):
         interval1 = YearMonthInterval(years=2, months=3)
-        interval2 = YearMonthInterval(years=2, months=3)  # equvalent to interval1
+        interval2 = YearMonthInterval(years=2, months=3)  # equivalent to interval1
         interval3 = YearMonthInterval(years=-1, months=0)
 
         assert interval1 == interval2 and interval1 is not interval2

@@ -227,7 +227,7 @@ class TestCursorFetch:
                 "interval_day_time": timedelta(days=2, hours=4, minutes=15, seconds=20),
                 # Sigh, the microseconds get truncated to milliseconds in the round trip,
                 # Flink-side, even though we specified DAY TO SECOND(6).
-                # (Expect this so that we can reevauate later if it improves in Flink.)
+                # (Expect this so that we can reëvaluate later if it improves in Flink.)
                 "interval_day_time_micros": timedelta(
                     days=1, hours=22, minutes=22, seconds=22, microseconds=123000
                 ),
