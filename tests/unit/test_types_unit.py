@@ -897,12 +897,12 @@ class TestDaysIntervalConverter:
             ),
             (
                 # negative interval without fractional seconds
-                timedelta(days=-5),
+                -1 * timedelta(days=5),
                 "INTERVAL '-5 00:00:00' DAY TO SECOND",
             ),
             (
                 # negative interval with fractional seconds
-                timedelta(days=-5, hours=-1, minutes=-2, seconds=-3, microseconds=-456000),
+                -1 * timedelta(days=5, hours=1, minutes=2, seconds=3, microseconds=456000),
                 "INTERVAL '-5 01:02:03.456000' DAY TO SECOND(6)",
             ),
         ],

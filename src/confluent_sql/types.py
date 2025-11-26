@@ -789,29 +789,34 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
             hours_str, minutes_str, seconds_str = time_str.split(":")
             hours = int(hours_str)
             minutes = int(minutes_str)
+
             # Handle fractional seconds
             if "." in seconds_str:
                 sec_int, sec_frac = str(seconds_str).split(".", 1)
                 seconds = int(sec_int)
                 microseconds = int(sec_frac.ljust(6, "0")[:6])  # Pad/truncate to microseconds
-
             else:
                 seconds = int(seconds_str)
                 microseconds = 0
-            total_seconds = days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+            # Build a positive timedelta first
+            td = timedelta(
+                days=days, hours=hours, minutes=minutes, seconds=seconds, microseconds=microseconds
+            )
+
+            # Interpret sign at the end for clarity. Otherwise, constructing negative timedeltas
+            # with fractional seconds is tricky and surprising due to how python timedeltas
+            # normalizes negatives to have negative days and positive seconds/microseconds.
             if sign == "-":
-                # -0 23:00:00.123
-                total_seconds = -total_seconds
-                if microseconds > 0:
-                    # Adjust microseconds and seconds for negative intervals, negative timedelta
-                    # are surprising.
-                    microseconds = 1_000_000 - microseconds
-                    total_seconds -= 1
-            return timedelta(seconds=total_seconds, microseconds=microseconds)
+                td = -td
+
+            return td
         except Exception as e:
             raise ValueError(
                 f"Invalid interval string for IntervalConverter: {response_value}"
             ) from e
+
+    ZERO_TIMEDELTA = timedelta(0)
 
     @classmethod
     def to_statement_string(cls, python_value: timedelta) -> str:
@@ -822,23 +827,27 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
                 f"Expected Python timedelta for IntervalConverter but got {type(python_value)}"
             )
 
+        # If negative, convert to positive and remember sign to avoid negative timedelta
+        # normalization quirks (python normalizes to negative days, positive seconds/microseconds
+        # which end up representing the right point in timeline when all added together).
+        if python_value < cls.ZERO_TIMEDELTA:
+            # Make positive for field extraction.
+            python_value = -python_value
+            sign = "-"
+        else:
+            sign = "+"
+
+        # Collect integral days, hours, minutes, seconds, microseconds for Flink string
+        # representation.
         total_seconds = int(python_value.total_seconds())
-        microseconds = python_value.microseconds
-        days, remainder = divmod(abs(total_seconds), 86400)
+        days, remainder = divmod(total_seconds, 86400)
         hours, remainder = divmod(remainder, 3600)
         minutes, seconds = divmod(remainder, 60)
-        sign = "-" if total_seconds < 0 else "+"
+        microseconds = python_value.microseconds
 
         interval_str = f"{sign}{days} {hours:02}:{minutes:02}:{seconds:02}"
         if microseconds > 0:
-            # Undo normalization if the total_seconds was negative, because
-            # of surprsing negative timedelta normalization behavior.
-            if total_seconds < 0:
-                microseconds = 1_000_000 - microseconds
-
             interval_str += f".{microseconds:06}"
-            # Try for maximum precision if microseconds present, but at this time
-            # Flink will erode to millisecond precision internally.
             precision = "(6)"
         else:
             precision = ""
