@@ -849,7 +849,7 @@ class TestDaysIntervalConverter:
                 -1 * timedelta(hours=12, minutes=30, seconds=15, milliseconds=500),
             ),
             (
-                # negative inteval, days only.
+                # negative interval, days only.
                 "-5 00:00:00",
                 timedelta(days=-5),
             ),
