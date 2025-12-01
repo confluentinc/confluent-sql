@@ -766,6 +766,10 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
 
     PRIMARY_FLINK_TYPE_NAME = "INTERVAL_DAY_TIME"
 
+    _HOURS_TO_SECONDS_RE = re.compile(
+        r"^(?P<sign>[+-])(?P<days>\d+)\s(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})(?:\.(?P<micro>\d{1,6}))?$"
+    )
+
     def to_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
         """Expect string-encoded interval or None from the response value,
         return as str or raise ValueError."""
@@ -785,10 +789,7 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
         #   * '+1 12:30:45.123456' (positive days through to microseconds),
         #   * '-0 00:15:00' (negative 15 minutes, no fractional seconds)
         try:
-            m = re.match(
-                r"^(?P<sign>[+-])(?P<days>\d+)\s(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})(?:\.(?P<micro>\d{1,6}))?$",
-                response_value,
-            )
+            m = self._HOURS_TO_SECONDS_RE.match(response_value)
             if not m:
                 raise ValueError(f"Invalid interval format: {response_value}")
 
