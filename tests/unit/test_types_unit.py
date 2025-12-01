@@ -839,17 +839,27 @@ class TestDaysIntervalConverter:
                 timedelta(days=0, hours=0, minutes=0, seconds=0),
             ),
             (
+                # negative interval, less than one day, no microseconds
+                "-0 01:15:30",
+                -1 * timedelta(hours=1, minutes=15, seconds=30),
+            ),
+            (
+                # negative interval, less than one day, fractional seconds at low precision.
+                "-0 12:30:15.5",
+                -1 * timedelta(hours=12, minutes=30, seconds=15, milliseconds=500),
+            ),
+            (
                 # negative inteval, days only.
                 "-5 00:00:00",
                 timedelta(days=-5),
             ),
             (
-                # negative interval without fractional seconds
+                # negative interval beyond one day without fractional seconds
                 "-5 01:02:03",
                 timedelta(days=-5, hours=-1, minutes=-2, seconds=-3),
             ),
             (
-                # negative interval with fractional seconds
+                # negative interval beyond one day with fractional seconds
                 "-5 01:02:03.456",
                 -1 * timedelta(days=5, hours=1, minutes=2, seconds=3, microseconds=456000),
             ),
