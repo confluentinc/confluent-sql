@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import re
-from cmath import isnan
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from math import isinf
+from math import isinf, isnan
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 

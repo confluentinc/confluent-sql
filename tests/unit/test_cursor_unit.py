@@ -136,7 +136,7 @@ class TestExecute:
 
         with pytest.raises(
             OperationalError,
-            match="Statement completion timed out",
+            match="Statement submission timed out",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
