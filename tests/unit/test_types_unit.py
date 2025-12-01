@@ -1,5 +1,6 @@
 """Unit tests over type conversion between Flink and Python types."""
 
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isnan
@@ -11,6 +12,7 @@ from confluent_sql.statement import ColumnTypeDefinition
 from confluent_sql.types import (
     BooleanConverter,
     DateConverter,
+    DaysIntervalConverter,
     DecimalConverter,
     FloatConverter,
     IntegerConverter,
@@ -21,10 +23,153 @@ from confluent_sql.types import (
     TimeConverter,
     TimestampConverter,
     VarBinaryConverter,
+    YearMonthInterval,
+    YearMonthIntervalConverter,
     _flink_type_name_to_converter_map,
     convert_statement_parameters,
     get_api_type_converter,
 )
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestYearMonthInterval:
+    """Unit tests over YearMonthInterval type, new python type to represent
+    Flink YEAR TO MONTH intervals."""
+
+    @pytest.mark.parametrize(
+        "years, months",
+        [
+            (2.5, 6),
+            (3, "4"),
+        ],
+    )
+    def test_hates_non_integer_init_args(self, years, months):
+        with pytest.raises(
+            TypeError,
+            match="years and months must be integers",
+        ):
+            YearMonthInterval(years=years, months=months)  # type: ignore
+
+    @pytest.mark.parametrize(
+        "years, months",
+        [
+            (2, -3),
+            (-1, 4),
+        ],
+    )
+    def test_hates_mismatched_signs(self, years: int, months: int):
+        with pytest.raises(
+            ValueError,
+            match="years and months must have the same sign",
+        ):
+            YearMonthInterval(years=years, months=months)
+
+    @pytest.mark.parametrize(
+        "months",
+        [12, -15],
+    )
+    def test_hates_months_out_of_range(self, months: int):
+        with pytest.raises(
+            ValueError,
+            match="months must be in the range -11 to 11",
+        ):
+            YearMonthInterval(years=0, months=months)
+
+    @pytest.mark.parametrize(
+        "years",
+        [10000, -10000],
+    )
+    def test_hates_years_out_of_range(self, years: int):
+        with pytest.raises(
+            ValueError,
+            match="years must be in the range -9999 to 9999",
+        ):
+            YearMonthInterval(years=years, months=0)
+
+    @pytest.mark.parametrize(
+        "years, months, expected_str",
+        [
+            (2, 6, "+2-06"),  # 2y 6m
+            (0, 0, "+0-00"),  # zero interval
+            (-1, -3, "-1-03"),  # -1y -3m
+            (0, -3, "-0-03"),  # -3m
+            (5, 0, "+5-00"),  # 5y
+            (0, 10, "+0-10"),  # 10m
+        ],
+    )
+    def test_str_representation(self, years: int, months: int, expected_str: str):
+        interval = YearMonthInterval(years=years, months=months)
+        assert str(interval) == expected_str
+
+    LEAST_Y_M = YearMonthInterval(years=-9999, months=-11)
+    LEAST_Y = YearMonthInterval(years=-9999, months=0)
+    MIDDLE = YearMonthInterval(years=0, months=0)
+    GREATEST_Y = YearMonthInterval(years=9999, months=0)
+    GREATEST_Y_M = YearMonthInterval(years=9999, months=11)
+
+    @pytest.mark.parametrize(
+        "left, right, expected",
+        [
+            (MIDDLE, MIDDLE, 0),
+            (LEAST_Y_M, LEAST_Y, -1),
+            (LEAST_Y, LEAST_Y_M, 1),
+            (LEAST_Y, MIDDLE, -1),
+            (MIDDLE, LEAST_Y, 1),
+            (GREATEST_Y, MIDDLE, 1),
+            (MIDDLE, GREATEST_Y, -1),
+            (GREATEST_Y, GREATEST_Y_M, -1),
+            (GREATEST_Y_M, GREATEST_Y, 1),
+        ],
+    )
+    def test_comparisons(self, left: YearMonthInterval, right: YearMonthInterval, expected: int):
+        if expected < 0:
+            assert left < right
+            assert left <= right
+            assert not left > right
+            assert left != right
+        elif expected > 0:
+            assert left > right
+            assert left >= right
+            assert not left < right
+            assert left != right
+        else:
+            assert left == right
+            assert not left < right
+            assert not left > right
+
+    @pytest.mark.parametrize(
+        "bound_comparator",
+        [
+            MIDDLE.__lt__,
+            MIDDLE.__le__,
+            MIDDLE.__gt__,
+            MIDDLE.__ge__,
+            MIDDLE.__eq__,
+            MIDDLE.__ne__,
+        ],
+    )
+    def test_comparison_with_non_interval_is_not_implemented(
+        self, bound_comparator: Callable[[YearMonthInterval], bool]
+    ):
+        assert bound_comparator(42) is NotImplemented  # type: ignore
+
+    def test_hashability(self):
+        interval1 = YearMonthInterval(years=2, months=3)
+        interval2 = YearMonthInterval(years=2, months=3)  # equivalent to interval1
+        interval3 = YearMonthInterval(years=-1, months=0)
+
+        assert interval1 == interval2 and interval1 is not interval2
+        assert hash(interval1) == hash(interval2)
+        assert hash(interval1) != hash(interval3)
+
+        # Make a dict with YearMonthInterval keys for fun and profit
+        interval_dict = {
+            interval1: "interval one or two",
+            interval3: "interval three",
+        }
+        assert interval_dict[interval2] == "interval one or two"
+        assert interval_dict[interval3] == "interval three"
 
 
 @pytest.mark.unit
@@ -610,6 +755,172 @@ class TestTimestampConverter:
 
 @pytest.mark.unit
 @pytest.mark.typeconv
+class TestYearMonthIntervalConverter:
+    """Unit tests over YearMonthIntervalConverter."""
+
+    converter = YearMonthIntervalConverter(
+        ColumnTypeDefinition(type="INTERVAL_YEAR_MONTH", nullable=True)
+    )
+
+    def test_constructor_hates_alternative_type_name(self):
+        with pytest.raises(
+            ValueError,
+            match="YearMonthIntervalConverter can only be used",
+        ):
+            YearMonthIntervalConverter(ColumnTypeDefinition(type="INTERVAL_YM", nullable=True))
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("+2-06", YearMonthInterval(years=2, months=6)),
+            ("-1-03", YearMonthInterval(years=-1, months=-3)),
+            (None, None),
+        ],
+    )
+    def test_to_python_value(self, value, expected):
+        assert self.converter.to_python_value(value) == expected
+
+    def test_to_python_value_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected interval to be encoded as JSON string",
+        ):
+            self.converter.to_python_value(123)  # type: ignore
+
+    def test_to_python_value_invalid_format(self):
+        with pytest.raises(
+            ValueError,
+            match="Invalid interval string",
+        ):
+            self.converter.to_python_value("2:06")  # Wrong format
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (YearMonthInterval(years=2, months=6), "INTERVAL '+2-06' YEAR TO MONTH"),
+            (YearMonthInterval(years=-1, months=-3), "INTERVAL '-1-03' YEAR TO MONTH"),
+        ],
+    )
+    def test_to_statement_string(self, value, expected):
+        result = YearMonthIntervalConverter.to_statement_string(value)
+        assert result == expected
+
+    def test_to_statement_string_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected Python YearMonthInterval",
+        ):
+            YearMonthIntervalConverter.to_statement_string("2-06")  # type: ignore
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestDaysIntervalConverter:
+    """Unit tests over DaysIntervalConverter."""
+
+    converter = DaysIntervalConverter(ColumnTypeDefinition(type="INTERVAL_DAY_TIME", nullable=True))
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (
+                # positive interval without fractional seconds
+                "+10 12:30:45",
+                timedelta(days=10, hours=12, minutes=30, seconds=45),
+            ),
+            (
+                # positive interval with fractional seconds
+                "+10 12:30:45.123",
+                timedelta(days=10, hours=12, minutes=30, seconds=45, milliseconds=123),
+            ),
+            (
+                # zero interval
+                "+0 00:00:00",
+                timedelta(days=0, hours=0, minutes=0, seconds=0),
+            ),
+            (
+                # negative inteval, days only.
+                "-5 00:00:00",
+                timedelta(days=-5),
+            ),
+            (
+                # negative interval without fractional seconds
+                "-5 01:02:03",
+                timedelta(days=-5, hours=-1, minutes=-2, seconds=-3),
+            ),
+            (
+                # negative interval with fractional seconds
+                "-5 01:02:03.456",
+                -1 * timedelta(days=5, hours=1, minutes=2, seconds=3, microseconds=456000),
+            ),
+            (
+                # null value
+                None,
+                None,
+            ),
+        ],
+    )
+    def test_to_python_value(self, value, expected):
+        assert self.converter.to_python_value(value) == expected
+
+    def test_to_python_value_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected interval to be encoded as JSON string",
+        ):
+            self.converter.to_python_value(123)  # type: ignore
+
+    def test_to_python_value_invalid_format(self):
+        with pytest.raises(
+            ValueError,
+            match="Invalid interval string",
+        ):
+            self.converter.to_python_value("10:12:30")  # Wrong format
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (
+                # positive interval without fractional seconds
+                timedelta(days=10, hours=12, minutes=30, seconds=45),
+                "INTERVAL '+10 12:30:45' DAY TO SECOND",
+            ),
+            (
+                # positive interval with fractional seconds
+                timedelta(days=10, hours=12, minutes=30, seconds=45, milliseconds=123),
+                "INTERVAL '+10 12:30:45.123000' DAY TO SECOND(6)",
+            ),
+            (
+                # zero interval
+                timedelta(days=0, hours=0, minutes=0, seconds=0),
+                "INTERVAL '+0 00:00:00' DAY TO SECOND",
+            ),
+            (
+                # negative interval without fractional seconds
+                -1 * timedelta(days=5),
+                "INTERVAL '-5 00:00:00' DAY TO SECOND",
+            ),
+            (
+                # negative interval with fractional seconds
+                -1 * timedelta(days=5, hours=1, minutes=2, seconds=3, microseconds=456000),
+                "INTERVAL '-5 01:02:03.456000' DAY TO SECOND(6)",
+            ),
+        ],
+    )
+    def test_to_statement_string(self, value, expected):
+        result = DaysIntervalConverter.to_statement_string(value)
+        assert result == expected
+
+    def test_to_statement_string_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected Python timedelta",
+        ):
+            DaysIntervalConverter.to_statement_string("10 12:30:45.123")  # type: ignore
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
 class TestGetDataTypeConverter:
     """Unit tests over get_data_type_converter function."""
 
@@ -767,6 +1078,8 @@ class TestSqlNone:
             "TIME",
             "TIMESTAMP_WITHOUT_TIME_ZONE",
             "TIMESTAMP_WITH_LOCAL_TIME_ZONE",
+            "INTERVAL_DAY_TIME",
+            "INTERVAL_YEAR_MONTH",
         ],
     )
     def test_from_flink_type_name(self, flink_type_name):
@@ -788,6 +1101,8 @@ class TestSqlNone:
             (date, "DATE"),
             (time, "TIME"),
             (datetime, "TIMESTAMP"),
+            (YearMonthInterval, "INTERVAL_YEAR_MONTH"),
+            (timedelta, "INTERVAL_DAY_TIME"),
         ],
     )
     def test_from_python_type(self, python_type, flink_type_name):
@@ -813,15 +1128,23 @@ class TestSqlNone:
         ):
             SqlNone(UnsupportedType)
 
-    def test_constants(self):
-        """Test that the predefined SqlNone constants have the expected
-        string representations."""
-        assert str(SqlNone.INTEGER) == "cast (null as INTEGER)"
-        assert str(SqlNone.DECIMAL) == "cast (null as DECIMAL)"
-        assert str(SqlNone.FLOAT) == "cast (null as FLOAT)"
-        assert str(SqlNone.BOOLEAN) == "cast (null as BOOLEAN)"
-        assert str(SqlNone.STRING) == "cast (null as STRING)"
-        assert str(SqlNone.VARCHAR) == "cast (null as VARCHAR)"
-        assert str(SqlNone.DATE) == "cast (null as DATE)"
-        assert str(SqlNone.TIME) == "cast (null as TIME)"
-        assert str(SqlNone.TIMESTAMP) == "cast (null as TIMESTAMP)"
+    @pytest.mark.parametrize(
+        "const, expected",
+        [
+            (SqlNone.INTEGER, "cast (null as INTEGER)"),
+            (SqlNone.DECIMAL, "cast (null as DECIMAL)"),
+            (SqlNone.FLOAT, "cast (null as FLOAT)"),
+            (SqlNone.BOOLEAN, "cast (null as BOOLEAN)"),
+            (SqlNone.STRING, "cast (null as STRING)"),
+            (SqlNone.VARCHAR, "cast (null as VARCHAR)"),
+            (SqlNone.DATE, "cast (null as DATE)"),
+            (SqlNone.TIME, "cast (null as TIME)"),
+            (SqlNone.TIMESTAMP, "cast (null as TIMESTAMP)"),
+            (SqlNone.VARBINARY, "cast (null as VARBINARY)"),
+            (SqlNone.YEAR_MONTH_INTERVAL, "cast (null as INTERVAL YEAR TO MONTH)"),
+            (SqlNone.DAY_SECOND_INTERVAL, "cast (null as INTERVAL DAYS TO SECOND)"),
+        ],
+    )
+    def test_constants(self, const, expected):
+        """Test that the predefined SqlNone constants have the expected string representations."""
+        assert str(const) == expected
