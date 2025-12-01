@@ -42,7 +42,8 @@ class TestConnectionDeleteStatementErrors:
         connection._delete_statement("non-existent-statement")
 
     def test_delete_statement_other_error(self, connection_factory: ConnectionFactory, mocker):
-        """Test that deleting a statement that raises an error other than 404 raises OperationalError."""
+        """Test that deleting a statement that raises an error other than 404
+        raises OperationalError."""
         connection = connection_factory()
         request_mock = mocker.patch.object(connection._client, "request")
         response_mock = Mock()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from cmath import isnan
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -19,7 +20,6 @@ a TypeConverter subclass."""
 
 if TYPE_CHECKING:
     from .statement import ColumnTypeDefinition, Schema
-import re
 
 __all__ = [
     "StatementTypeConverter",
