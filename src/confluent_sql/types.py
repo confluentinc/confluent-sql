@@ -885,7 +885,8 @@ class ArrayConverter(TypeConverter[list]):
         element_converter_cls = _flink_type_name_to_converter_map.get(element_type_def.type_name)
         if not element_converter_cls:
             raise InterfaceError(
-                f"Conversion for array element of type {element_type_def.type_name} is not implemented."
+                f"Conversion for array element of type {element_type_def.type_name} is not"
+                " implemented."
             )
 
         element_converter = element_converter_cls(element_type_def)
