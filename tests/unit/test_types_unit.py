@@ -10,6 +10,7 @@ import pytest
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import ColumnTypeDefinition
 from confluent_sql.types import (
+    ArrayConverter,
     BooleanConverter,
     DateConverter,
     DaysIntervalConverter,
@@ -1052,6 +1053,126 @@ class TestConvertStatementParameters:
 
 
 @pytest.mark.unit
+@pytest.mark.typeconv
+class TestArrayConverter:
+    """Unit tests over ArrayConverter."""
+
+    def test_constructor_hates_non_array_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="ArrayConverter can only be used with ARRAY types, got INTEGER",
+        ):
+            ArrayConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+
+    def test_constructor_hates_missing_element_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="ArrayConverter cannot determine element type from column type definition",
+        ):
+            ArrayConverter(ColumnTypeDefinition(type="ARRAY", nullable=False))
+
+    def test_constructor_hates_unsupported_element_type(self):
+        with pytest.raises(
+            TypeError,
+            match="Conversion for array element of type STRUCT is not implemented.",
+        ):
+            ArrayConverter(
+                ColumnTypeDefinition(
+                    type="ARRAY",
+                    nullable=False,
+                    element_type=ColumnTypeDefinition(type="STRUCT", nullable=False),
+                )
+            )
+
+    int_array_converter = ArrayConverter(
+        ColumnTypeDefinition(
+            type="ARRAY",
+            nullable=True,
+            element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+        )
+    )
+
+    def test_to_python_value_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected list value for ArrayConverter but got <class 'str'>",
+        ):
+            self.int_array_converter.to_python_value("not an array")  # type: ignore
+
+    def test_to_python_value_invalid_element(self):
+        with pytest.raises(
+            ValueError,
+            match="invalid literal for int",
+        ):
+            self.int_array_converter.to_python_value(["10", "not an int", "30"])
+
+    @pytest.mark.parametrize(
+        "from_json_payload, expected",
+        [
+            (["10", "20", "30"], [10, 20, 30]),
+            ([], []),  # We can go from statement result empty array to Python empty list.
+            (None, None),
+        ],
+    )
+    def test_to_python_value(self, from_json_payload, expected):
+        result = self.int_array_converter.to_python_value(from_json_payload)
+        assert result == expected
+
+    def test_to_statement_string_invalid_type(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected list value for ArrayConverter but got <class 'str'>",
+        ):
+            self.int_array_converter.to_statement_string("not an array")  # type: ignore
+
+    def test_to_statement_string_hates_empty_array(self):
+        with pytest.raises(
+            ValueError,
+            match="Cannot convert empty list to Flink ARRAY literal",
+        ):
+            self.int_array_converter.to_statement_string([])
+
+    def test_to_statement_string_unsupported_first_element(self):
+        class UserObject:
+            pass
+
+        with pytest.raises(
+            TypeError,
+            match="Conversion for array element of type .* is not implemented.",
+        ):
+            self.int_array_converter.to_statement_string([UserObject(), UserObject()])
+
+    def test_to_statement_string_hates_mixed_type_elements(self):
+        with pytest.raises(
+            ValueError,
+            match="Expected Python integer value for IntegerConverter but got <class 'str'>",
+        ):
+            self.int_array_converter.to_statement_string([1, "two", 3])
+
+    def test_to_statement_string_hates_all_none_elements(self):
+        with pytest.raises(
+            ValueError,
+            match="Cannot determine element type for list: all elements are None.",
+        ):
+            self.int_array_converter.to_statement_string([None, None, None])
+
+    @pytest.mark.parametrize(
+        "python_value, expected_statement_string",
+        [
+            ([10, 20, 30], "ARRAY[10, 20, 30]"),
+            # Some members may be None
+            ([12, None, 34], "ARRAY[12, cast (null as INTEGER), 34]"),
+            # Even the leading members may be None as long as not all are None
+            ([None, None, 34], "ARRAY[cast (null as INTEGER), cast (null as INTEGER), 34]"),
+        ],
+    )
+    def test_to_statement_string(self, python_value, expected_statement_string):
+        result = self.int_array_converter.to_statement_string(python_value)
+        assert result == expected_statement_string
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
 @pytest.mark.parametrize("converter_cls", set(_flink_type_name_to_converter_map.values()))
 def test_converter_wiring(converter_cls):
     """Ensure that the PRIMARY_FLINK_TYPE_NAME class attribute for the converter
@@ -1066,6 +1187,7 @@ def test_converter_wiring(converter_cls):
 
 
 @pytest.mark.unit
+@pytest.mark.typeconv
 class TestSqlNone:
     """Unit tests over SqlNone functionality."""
 
