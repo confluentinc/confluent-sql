@@ -196,7 +196,7 @@ class Cursor:
         This method is a no-op for this implementation, as input sizes
         are not explicitly handled.
         """
-        pass  # noqa
+        pass  # pragma: no cover
 
     def setoutputsize(self, size, column: int | None = None) -> None:
         """
@@ -205,7 +205,7 @@ class Cursor:
         This method is a no-op for this implementation, as output sizes
         are not explicitly handled.
         """
-        pass  # noqa
+        pass  # pragma: no cover
 
     def delete_statement(self) -> None:
         """
@@ -294,7 +294,9 @@ class Cursor:
     def _remaining(self):
         remaining = len(self._results) - self._index
         if remaining < 0:
-            raise InterfaceError("Internal index bigger than results list. This is probably a bug.")
+            raise InterfaceError(
+                "Internal index bigger than results list. This is probably a bug."
+            )  # pragma: no cover
         return remaining
 
     def __next__(self) -> tuple[Any] | dict[str, Any]:
@@ -353,6 +355,8 @@ class Cursor:
         while time.time() - start_time < timeout:
             logger.info(f"Checking statement '{self._statement.name}' status...")
             response = self._connection._get_statement(self._statement.name)
+
+            # Will raise if the phase is FAILED
             self._statement = Statement.from_response(response)
 
             # We only support append-only statements for now. Our changelog
@@ -363,19 +367,24 @@ class Cursor:
             if not self._statement.is_append_only:
                 raise NotImplementedError("Only append-only statements are supported for now.")
 
-            # Statement is ready when it's not in PENDING status.
-            # We first check if it failed, and return early if so:
-            if self._statement.is_failed or self._statement.is_degraded:
-                # TODO: Do something here
-                return
+            # Determine if we can exit the wait loop (and can start fetching results)
 
-            # Any kind of query in the completed phase is ready
+            # If completed (for bounded or unbounded), we are done.
             if self._statement.is_completed:
                 return
 
-            # For unbounded queries, RUNNING is enough though
+            # For unbounded queries, RUNNING is enough. Results can be fetched while the statement
+            # is running.
             if not self._statement.is_bounded and self._statement.is_running:
                 return
+
+            # If the statement is degraded (unbounded and in a bad state), hmm.
+            # For now, treat it as an error.
+            if self._statement.is_degraded:
+                raise OperationalError(
+                    f"Statement '{self._statement.name}' is in DEGRADED state: "
+                    f"{self._statement.status['detail']}"
+                )
 
             # Exponential backoff with jitter to prevent thundering herd
             jitter = random.uniform(0.75, 1.25)  # ±25% randomness

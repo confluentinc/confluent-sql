@@ -27,6 +27,42 @@ def test_connection_error(connection_factory: ConnectionFactory, mocker):
 
 
 @pytest.mark.unit
+class TestConnectionDeleteStatementErrors:
+    """Tests for delete_statement error handling."""
+
+    def test_delete_statement_not_found(self, connection_factory: ConnectionFactory, mocker):
+        """Test that deleting a non-existent statement raises the appropriate error."""
+        connection = connection_factory()
+        request_mock = mocker.patch.object(connection._client, "request")
+        response_mock = Mock()
+        response_mock.raise_for_status = raise_not_found
+        request_mock.return_value = response_mock
+
+        # Will not raise since we ignore 404s in delete_statement
+        connection._delete_statement("non-existent-statement")
+
+    def test_delete_statement_other_error(self, connection_factory: ConnectionFactory, mocker):
+        """Test that deleting a statement that raises an error other than 404
+        raises OperationalError."""
+        connection = connection_factory()
+        request_mock = mocker.patch.object(connection._client, "request")
+        response_mock = Mock()
+
+        def raise_internal_server_error():
+            mock_response = Mock()
+            mock_response.status_code = 500
+            raise httpx.HTTPStatusError(
+                "Internal Server Error", request=Mock(), response=mock_response
+            )
+
+        response_mock.raise_for_status = raise_internal_server_error
+        request_mock.return_value = response_mock
+
+        with pytest.raises(OperationalError, match="Error deleting statement"):
+            connection._delete_statement("statement-with-error")
+
+
+@pytest.mark.unit
 class TestConnectionClosedThrows:
     """Tests for operations on a closed connection."""
 

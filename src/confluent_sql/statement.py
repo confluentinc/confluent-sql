@@ -33,7 +33,9 @@ class Op(Enum):
         elif self is self.DELETE:
             return "-D"
         else:
-            raise ValueError(f"Unknown value for Op: '{self.value}'. This is probably a bug")
+            raise ValueError(
+                f"Unknown value for Op: '{self.value}'. This is probably a bug"
+            )  # pragma: no cover
 
 
 class Phase(Enum):
@@ -196,7 +198,7 @@ class Statement:
             # If it's failed, we won't get 'traits', and it's probably good to raise an error.
             # TODO: Should we instead set the phase and avoid erroring out here?
             if phase is Phase.FAILED:
-                raise DatabaseError(status["detail"])
+                raise DatabaseError(f"Statement execution failed: {status['detail']}")
 
             # Parse traits, which includes the statement schema.
             traits = Traits.from_response(status["traits"])

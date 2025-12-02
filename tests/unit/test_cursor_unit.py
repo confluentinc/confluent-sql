@@ -1,7 +1,7 @@
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.exceptions import ProgrammingError
+from confluent_sql.exceptions import DatabaseError, OperationalError, ProgrammingError
 from confluent_sql.statement import Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
@@ -77,6 +77,70 @@ class TestExecute:
             match="Only append-only statements are supported for now.",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
+
+    def test_execute_failed_statement_raises(
+        self, mock_connection_cursor: Cursor, statement_response_factory: StatementResponseFactory
+    ):
+        """Prove that executing a statement that ends in FAILED phase raises."""
+        # Mock the connection's _get_statement to return a FAILED statement.
+        failed_statement_dict = statement_response_factory(phase="FAILED", status_detail="Boom!")
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            failed_statement_dict
+        )
+
+        with pytest.raises(
+            DatabaseError,
+            match="Statement execution failed: Boom!",
+        ):
+            mock_connection_cursor.execute("SELECT 1 AS col")
+
+    def test_degraded_statement_raises(
+        self, mock_connection_cursor: Cursor, statement_response_factory: StatementResponseFactory
+    ):
+        """Prove that executing a statement that ends in DEGRADED phase raises (at this time)."""
+        # Mock the connection's _get_statement to return a DEGRADED statement.
+        degraded_statement_dict = statement_response_factory(
+            phase="DEGRADED", status_detail="Statement is ill"
+        )
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            degraded_statement_dict
+        )
+
+        with pytest.raises(
+            OperationalError,
+            match="Statement .* is in DEGRADED state: Statement is ill",
+        ):
+            mock_connection_cursor.execute("SELECT 1 AS col")
+
+    def test_execute_statement_times_out(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Prove that if a statement does not become ready in time, we raise."""
+        # Mock the connection's _get_statement to always return a PENDING statement.
+        pending_statement = statement_response_factory(phase="PENDING")
+
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            pending_statement
+        )
+
+        # Mock out time.sleep to avoid actually waiting.
+        sleep_mock = mocker.patch("time.sleep", return_value=None)
+
+        # But must also mock out time.time to simulate passage of time, say
+        # each call to time.time() returns +1 second
+        start_time = 1000000.0
+        time_mock = mocker.patch("time.time", side_effect=lambda: start_time + time_mock.call_count)
+
+        with pytest.raises(
+            OperationalError,
+            match="Statement submission timed out",
+        ):
+            mock_connection_cursor.execute("SELECT 1 AS col")
+
+        assert sleep_mock.called, "Expected time.sleep to have been called during wait loop."
 
 
 @pytest.mark.unit

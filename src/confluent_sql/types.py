@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from cmath import isnan
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from math import isinf
+from math import isinf, isnan
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
@@ -19,7 +19,6 @@ a TypeConverter subclass."""
 
 if TYPE_CHECKING:
     from .statement import ColumnTypeDefinition, Schema
-
 
 __all__ = [
     "StatementTypeConverter",
@@ -767,6 +766,10 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
 
     PRIMARY_FLINK_TYPE_NAME = "INTERVAL_DAY_TIME"
 
+    _HOURS_TO_SECONDS_RE = re.compile(
+        r"^(?P<sign>[+-])(?P<days>\d+)\s(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})(?:\.(?P<micro>\d{1,6}))?$"
+    )
+
     def to_python_value(self, response_value: FromResponseTypes) -> timedelta | None:
         """Expect string-encoded interval or None from the response value,
         return as str or raise ValueError."""
@@ -782,32 +785,29 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
             )
 
         # Parse the interval string into a timedelta
+        # Examples:
+        #   * '+1 12:30:45.123456' (positive days through to microseconds),
+        #   * '-0 00:15:00' (negative 15 minutes, no fractional seconds)
         try:
-            sign, rest = response_value[0], response_value[1:]
-            days_str, time_str = rest.split(" ", 1)
-            days = int(days_str)
-            hours_str, minutes_str, seconds_str = time_str.split(":")
-            hours = int(hours_str)
-            minutes = int(minutes_str)
+            m = self._HOURS_TO_SECONDS_RE.match(response_value)
+            if not m:
+                raise ValueError(f"Invalid interval format: {response_value}")
 
-            # Handle fractional seconds
-            if "." in seconds_str:
-                sec_int, sec_frac = str(seconds_str).split(".", 1)
-                seconds = int(sec_int)
-                microseconds = int(sec_frac.ljust(6, "0")[:6])  # Pad/truncate to microseconds
-            else:
-                seconds = int(seconds_str)
-                microseconds = 0
+            days = int(m.group("days"))
+            hours = int(m.group("hours"))
+            minutes = int(m.group("minutes"))
+            seconds = int(m.group("seconds"))
+
+            micro_group = m.group("micro")
+            microseconds = int(micro_group.ljust(6, "0")) if micro_group else 0
 
             # Build a positive timedelta first
             td = timedelta(
                 days=days, hours=hours, minutes=minutes, seconds=seconds, microseconds=microseconds
             )
 
-            # Interpret sign at the end for clarity. Otherwise, constructing negative timedeltas
-            # with fractional seconds is tricky and surprising due to how python timedeltas
-            # normalizes negatives to have negative days and positive seconds/microseconds.
-            if sign == "-":
+            # Negate if needed.
+            if m.group("sign") == "-":
                 td = -td
 
             return td

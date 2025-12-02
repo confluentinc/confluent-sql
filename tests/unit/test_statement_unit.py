@@ -5,7 +5,7 @@ import pytest
 
 from confluent_sql import DatabaseError, OperationalError
 from confluent_sql.exceptions import InterfaceError
-from confluent_sql.statement import Phase, Schema, Statement
+from confluent_sql.statement import Op, Phase, Schema, Statement
 from confluent_sql.types import StatementTypeConverter
 from tests.unit.conftest import StatementResponseFactory
 
@@ -13,6 +13,16 @@ from tests.unit.conftest import StatementResponseFactory
 
 # Stop complaining about inlined constants. These are test cases!
 # ruff: noqa: PLR2004
+
+
+@pytest.mark.unit
+class TestOp:
+    @pytest.mark.parametrize(
+        "op,expected_str",
+        [(Op.INSERT, "+I"), (Op.UPDATE_BEFORE, "-U"), (Op.UPDATE_AFTER, "+U"), (Op.DELETE, "-D")],
+    )
+    def test_str(self, op: Op, expected_str: str):
+        assert str(op) == expected_str
 
 
 @pytest.mark.unit
@@ -63,6 +73,36 @@ class TestStatementIsReady:
         )
         statement = Statement.from_response(statement_json)
         assert not statement.is_ready
+
+
+@pytest.mark.unit
+class TestStatementDescriptionProperty:
+    """Tests for Statement.description property."""
+
+    def test_description_present(self, statement_response_factory: StatementResponseFactory):
+        """Test that description property returns correct value when present."""
+        statement_json = statement_response_factory(
+            schema_columns=[
+                {"name": "str_col", "type": {"type": "VARCHAR", "nullable": False}},
+                {
+                    "name": "dec_col",
+                    "type": {"type": "DEC", "nullable": True, "precision": 10, "scale": 2},
+                },
+            ]
+        )
+        statement = Statement.from_response(statement_json)
+
+        # (name, type_code, display_size, internal_size, precision, scale, null_ok)
+        assert statement.description == [
+            ("str_col", "VARCHAR", None, None, None, None, False),
+            ("dec_col", "DEC", None, None, 10, 2, True),
+        ]
+
+    def test_description_absent(self, statement_response_factory: StatementResponseFactory):
+        """Test that description property returns None when no schema(yet)."""
+        statement_json = statement_response_factory(null_schema=True)
+        statement = Statement.from_response(statement_json)
+        assert statement.description is None
 
 
 @pytest.mark.unit
