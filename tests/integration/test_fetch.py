@@ -403,3 +403,42 @@ class TestCursorFetch:
                 "null_year_month_interval": None,
                 "null_day_second_interval": None,
             }
+
+
+@pytest.mark.integration
+class TestArrayStatements:
+    """Tests over ARRAY type encoding/decoding."""
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_encoding_decoding_array_round_tripping(
+        self,
+        connection: Connection,
+    ):
+        """Test round-tripping values for ARRAY type."""
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    %s AS int_array_value,
+                    %s AS string_array_value,
+                    %s as nested_string_array,
+                    %s AS null_array_value
+                """,
+                (
+                    [1, 2, 3, 4, 5],  # ARRAY of INT
+                    ["one", "two", "three"],  # ARRAY of STRING
+                    [["one", "two"], ["three", "four"]],  # NESTED ARRAY of STRING
+                    SqlNone("Array<int>"),  # NULL ARRAY
+                ),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "int_array_value": [1, 2, 3, 4, 5],
+                "string_array_value": ["one", "two", "three"],
+                "nested_string_array": [["one", "two"], ["three", "four"]],
+                # "empty_array_value": [],
+                "null_array_value": None,
+            }

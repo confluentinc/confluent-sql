@@ -383,6 +383,7 @@ class SqlNone:
     VARBINARY: SqlNone
     YEAR_MONTH_INTERVAL: SqlNone
     DAY_SECOND_INTERVAL: SqlNone
+    ARRAY: SqlNone
 
     def __init__(self, python_or_flink_type: str | type):
         if isinstance(python_or_flink_type, str):
@@ -390,7 +391,10 @@ class SqlNone:
             # Ensure is a known type from _flink_type_name_to_converter_map keys (or lowercase
             # thereof)
             python_or_flink_type = python_or_flink_type.upper()
-            if python_or_flink_type not in _flink_type_name_to_converter_map:
+            if (
+                python_or_flink_type not in _flink_type_name_to_converter_map
+                and not python_or_flink_type.startswith("ARRAY")
+            ):
                 raise InterfaceError(f"Unknown Flink type name {python_or_flink_type}")
             # Found in the map, roll with it as is.
             flink_type_name = python_or_flink_type
@@ -855,6 +859,77 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
         return f"INTERVAL '{interval_str}' DAY TO SECOND{precision}"
 
 
+class ArrayConverter(TypeConverter[list]):
+    """Handles Flink ARRAY type to/from Python list."""
+
+    PRIMARY_FLINK_TYPE_NAME = "ARRAY"
+
+    def to_python_value(self, response_value: FromResponseTypes) -> list | None:
+        """Expect list or None from the response value, return as list or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, list):
+            raise ValueError(
+                f"Expected list value for ArrayConverter but got {type(response_value)}"
+            )
+
+        # Must determine what decoder to use for each element based on our column type's
+        # element type.
+        element_type_def = self._column_type.element_type
+        if not element_type_def:
+            raise InterfaceError(
+                "ArrayConverter cannot determine element type from column type definition."
+            )
+
+        element_converter_cls = _flink_type_name_to_converter_map.get(element_type_def.type_name)
+        if not element_converter_cls:
+            raise InterfaceError(
+                f"Conversion for array element of type {element_type_def.type_name} is not implemented."
+            )
+
+        element_converter = element_converter_cls(element_type_def)
+
+        response_value_converted = []
+        for element in response_value:
+            converted_element = element_converter.to_python_value(element)
+            response_value_converted.append(converted_element)
+
+        return response_value_converted
+
+    @classmethod
+    def to_statement_string(cls, python_value: list) -> str:
+        """Convert a Python list value to its for-statement-string-interpolation
+        representation."""
+        if not isinstance(python_value, list):
+            raise ValueError(
+                f"Expected Python list value for ArrayConverter but got {type(python_value)}"
+            )
+
+        if len(python_value) == 0:
+            # Empty array, it seems that Flink does not support literal empty arrays?
+            raise InterfaceError("Cannot convert empty list to Flink ARRAY literal.")
+
+        # Convert each element to its string representation
+        element_strings = []
+        # Each element should be of the same type. so we can use the first element to determine
+        # the converter.
+        element_type = type(python_value[0])
+        converter_cls = _python_type_to_type_converter.get(element_type)
+        if not converter_cls:
+            raise InterfaceError(
+                f"Conversion for array element of type {element_type} is not implemented."
+            )
+
+        for element in python_value:
+            element_str = converter_cls.to_statement_string(element)
+            element_strings.append(element_str)
+
+        # Join elements with commas and wrap in ARRAY [...]
+        joined_elements = ", ".join(element_strings)
+        return f"ARRAY [{joined_elements}]"
+
+
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
     "NULL": NullResultConverter,
@@ -896,6 +971,8 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "VARBINARY": VarBinaryConverter,
     "BINARY": VarBinaryConverter,
     "BYTES": VarBinaryConverter,
+    # Array type
+    "ARRAY": ArrayConverter,
 }
 
 
@@ -913,6 +990,7 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     datetime: TimestampConverter,
     YearMonthInterval: YearMonthIntervalConverter,
     timedelta: DaysIntervalConverter,
+    list: ArrayConverter,
 }
 
 # Initialize static SqlNone members for common types, must be done after class definition
@@ -929,6 +1007,7 @@ SqlNone.TIME = SqlNone("TIME")
 SqlNone.TIMESTAMP = SqlNone("TIMESTAMP")
 SqlNone.YEAR_MONTH_INTERVAL = SqlNone("INTERVAL YEAR TO MONTH")
 SqlNone.DAY_SECOND_INTERVAL = SqlNone("INTERVAL DAYS TO SECOND")
+SqlNone.ARRAY = SqlNone("ARRAY")
 
 
 def convert_statement_parameters(
