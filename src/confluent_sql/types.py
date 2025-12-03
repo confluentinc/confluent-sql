@@ -396,7 +396,8 @@ class SqlNone:
                 and not python_or_flink_type.startswith("ARRAY")
             ):
                 raise InterfaceError(f"Unknown Flink type name {python_or_flink_type}")
-            # Found in the map, roll with it as is.
+
+            # Found in the map or is an annotated array type, roll with it as is.
             flink_type_name = python_or_flink_type
         else:
             # Map from Python type to Flink SQL type name

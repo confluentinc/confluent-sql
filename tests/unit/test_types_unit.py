@@ -1289,6 +1289,20 @@ class TestSqlNone:
         assert annotated_null._flink_type_name == flink_type_name
         assert str(annotated_null) == f"cast (null as {flink_type_name})"
 
+    @pytest.mark.parametrize(
+        "flink_type_name, element_type_name",
+        [
+            ("ARRAY<INTEGER>", "INTEGER"),
+            ("ARRAY<VARCHAR>", "VARCHAR"),
+            ("ARRAY<DECIMAL>", "DECIMAL"),
+            ("ARRAY<ARRAY<BOOLEAN>>", "ARRAY<BOOLEAN>"),
+        ],
+    )
+    def test_construct_annotated_array(self, flink_type_name, element_type_name):
+        """Explicit construction given ARRAY<element_type> Flink type name."""
+        array_null = SqlNone(flink_type_name)
+        assert str(array_null) == f"cast (null as ARRAY<{element_type_name}>)"
+
     def test_invalid_flink_type(self):
         with pytest.raises(
             InterfaceError,
