@@ -383,7 +383,6 @@ class SqlNone:
     VARBINARY: SqlNone
     YEAR_MONTH_INTERVAL: SqlNone
     DAY_SECOND_INTERVAL: SqlNone
-    ARRAY: SqlNone
 
     def __init__(self, python_or_flink_type: str | type):
         if isinstance(python_or_flink_type, str):
@@ -1053,7 +1052,6 @@ SqlNone.TIME = SqlNone("TIME")
 SqlNone.TIMESTAMP = SqlNone("TIMESTAMP")
 SqlNone.YEAR_MONTH_INTERVAL = SqlNone("INTERVAL YEAR TO MONTH")
 SqlNone.DAY_SECOND_INTERVAL = SqlNone("INTERVAL DAYS TO SECOND")
-SqlNone.ARRAY = SqlNone("ARRAY")
 
 
 def convert_statement_parameters(
