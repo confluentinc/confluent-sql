@@ -1110,6 +1110,7 @@ class TestArrayConverter:
         "from_json_payload, expected",
         [
             (["10", "20", "30"], [10, 20, 30]),
+            (["12", None, "34"], [12, None, 34]),  # Some members may be null
             ([], []),  # We can go from statement result empty array to Python empty list.
             (None, None),
         ],
@@ -1170,6 +1171,49 @@ class TestArrayConverter:
         result = self.int_array_converter.to_statement_string(python_value)
         assert result == expected_statement_string
 
+    @pytest.mark.parametrize(
+        "python_value, expected_statement_string",
+        [
+            ([[1, 2], [3, 4]], "ARRAY[ARRAY[1, 2], ARRAY[3, 4]]"),
+            (
+                [[None, 2], [3, None]],
+                "ARRAY[ARRAY[cast (null as INTEGER), 2], ARRAY[3, cast (null as INTEGER)]]",
+            ),
+            (
+                [None, [3, 4]],  # Outer array has a null element array
+                "ARRAY[cast (null as ARRAY), ARRAY[3, 4]]",
+            ),
+        ],
+    )
+    def test_to_statement_string_nested_arrays(self, python_value, expected_statement_string):
+        result = ArrayConverter.to_statement_string(python_value)
+        assert result == expected_statement_string
+
+    nested_array_converter = ArrayConverter(
+        ColumnTypeDefinition(
+            type="ARRAY",
+            nullable=True,
+            element_type=ColumnTypeDefinition(
+                type="ARRAY",
+                nullable=True,
+                element_type=ColumnTypeDefinition(type="INTEGER", nullable=True),
+            ),
+        )
+    )
+
+    @pytest.mark.parametrize(
+        "from_json_payload, expected",
+        [
+            ([["1", "2"], ["3", "4"]], [[1, 2], [3, 4]]),
+            ([[None, "2"], ["3", None]], [[None, 2], [3, None]]),
+            ([None, ["3", "4"]], [None, [3, 4]]),  # first outer array element is null, second not
+            (None, None),  # Null outer array
+        ],
+    )
+    def test_nested_array_converter_to_python_value(self, from_json_payload, expected):
+        result = self.nested_array_converter.to_python_value(from_json_payload)
+        assert result == expected
+
 
 @pytest.mark.unit
 @pytest.mark.typeconv
@@ -1212,6 +1256,7 @@ class TestSqlNone:
             "TIMESTAMP_WITH_LOCAL_TIME_ZONE",
             "INTERVAL_DAY_TIME",
             "INTERVAL_YEAR_MONTH",
+            "ARRAY",
         ],
     )
     def test_from_flink_type_name(self, flink_type_name):
@@ -1235,6 +1280,7 @@ class TestSqlNone:
             (datetime, "TIMESTAMP"),
             (YearMonthInterval, "INTERVAL_YEAR_MONTH"),
             (timedelta, "INTERVAL_DAY_TIME"),
+            (list, "ARRAY"),
         ],
     )
     def test_from_python_type(self, python_type, flink_type_name):
