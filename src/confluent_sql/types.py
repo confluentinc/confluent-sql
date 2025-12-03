@@ -875,7 +875,7 @@ class ArrayConverter(TypeConverter[list]):
     """Type converter for array element type."""
 
     def __init__(self, column_type: ColumnTypeDefinition):
-        if not column_type.type_name.startswith("ARRAY"):
+        if not column_type.type_name == "ARRAY":
             raise InterfaceError(
                 f"ArrayConverter can only be used with ARRAY types, got {column_type.type_name}"
             )
