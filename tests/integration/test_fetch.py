@@ -439,6 +439,5 @@ class TestArrayStatements:
                 "int_array_value": [1, 2, 3, 4, 5],
                 "string_array_value": ["one", "two", "three"],
                 "nested_string_array": [["one", "two"], ["three", "four"]],
-                # "empty_array_value": [],
                 "null_array_value": None,
             }
