@@ -225,7 +225,7 @@ class ColumnTypeDefinition:
     resolution: str | None = None  # if an interval type
     key_type: str | None = None  # if type == "MAP"
     value_type: str | None = None  # if type == "MAP"
-    element_type: str | None = None  # if type == "ARRAY"
+    element_type: ColumnTypeDefinition | None = None  # if type == "ARRAY"
 
     fields: list[RowColumn] | None = None
     """The interior fields of a ROW type, if applicable."""
@@ -241,6 +241,12 @@ class ColumnTypeDefinition:
     @classmethod
     def from_response(cls, data: StrAnyDict) -> ColumnTypeDefinition:
         """Create a ColumnTypeDefinition from JSON response data within from-API statement traits"""
+        element_type = data.get("element_type")
+        if element_type is not None:
+            # Describes the element type of an ARRAY.
+            # Promote from element type dict to a ColumnTypeDefinition
+            element_type = cls.from_response(data["element_type"])
+
         return cls(
             type=data["type"],
             nullable=data["nullable"],
@@ -251,7 +257,7 @@ class ColumnTypeDefinition:
             resolution=data.get("resolution"),
             key_type=data.get("key_type"),
             value_type=data.get("value_type"),
-            element_type=data.get("element_type"),
+            element_type=element_type,
             fields=[RowColumn.from_response(field) for field in data.get("fields", [])]
             if "fields" in data
             else None,
