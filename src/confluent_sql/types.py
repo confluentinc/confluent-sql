@@ -643,7 +643,7 @@ class YearMonthInterval:
     Negative intervals have negative years and/or months. When the years is negative,
     the months should also be negative, and vice versa (so as to avoid ambiguity and to
     represent negative months-only intervals). The smallest magnitude negative interval is
-    therefore 0 years and -1 month. When either years or months is nonpositive, both will be,
+    therefore 0 years and -1 month. When either years or months is non-positive, both will be,
     and vice versa for positive intervals. Property `is_negative` can be used to check the sign.
 
     (This differs from Python's timedelta, which represents less than one negative day
@@ -1215,7 +1215,7 @@ def determine_element_converter_cls(python_value: Iterable) -> type[TypeConverte
             break
 
     if element is None:
-        raise ValueError("Cannot determine element type for list: all elements are None.")
+        raise ValueError("Cannot determine element type: all elements are None.")
 
     converter_cls = _python_type_to_type_converter.get(type(element))
     if not converter_cls:
