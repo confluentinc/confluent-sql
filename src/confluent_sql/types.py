@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -31,6 +32,7 @@ __all__ = [
 """
     Type conversion between the SQL results API and Python values, driven by the schema information
 """
+
 
 FromResponseScalarTypes: TypeAlias = str | bool | None
 """Describes all possible scalar encoding types returned from from-response API calls."""
@@ -228,7 +230,7 @@ class IntegerConverter(TypeConverter[int]):
     @classmethod
     def to_statement_string(cls, python_value: int) -> str:
         """Convert a Python integer value to its for-statement-string-interpolation
-        representation."""
+        representation -- just bare integer, no quotes."""
         if not isinstance(python_value, int):
             raise ValueError(
                 f"Expected Python integer value for IntegerConverter but got {type(python_value)}"
@@ -393,6 +395,7 @@ class SqlNone:
             if (
                 python_or_flink_type not in _flink_type_name_to_converter_map
                 and not python_or_flink_type.startswith("ARRAY")
+                and not python_or_flink_type.startswith("MAP")
             ):
                 raise InterfaceError(f"Unknown Flink type name {python_or_flink_type}")
 
@@ -929,7 +932,7 @@ class ArrayConverter(TypeConverter[list]):
             raise ValueError("Cannot convert empty list to Flink ARRAY literal.")
 
         # Convert each element to its string representation
-        element_converter_cls = cls._determine_element_converter_cls(python_value)
+        element_converter_cls = determine_element_converter_cls(python_value)
         none_element_str = SqlNone(element_converter_cls.PRIMARY_FLINK_TYPE_NAME).__str__()
 
         element_strings = []
@@ -946,33 +949,122 @@ class ArrayConverter(TypeConverter[list]):
         # Join elements with commas and wrap in ARRAY[...]
         return f"ARRAY[{', '.join(element_strings)}]"
 
-    @classmethod
-    def _determine_element_converter_cls(cls, python_value: list) -> type[TypeConverter]:
-        """Determine the TypeConverter class for the elements of the given Python list.
 
-        Assumes the list is non-empty and that all elements are of the same type, or
-        contains None elements. Cannot be all None. The list will already have
-        been proven to be non-empty by the caller.
+class MapConverter(TypeConverter[dict]):
+    """Handles Flink MAP type to/from Python dict."""
 
-        Returns: The TypeConverter class for the type of the first non-None element.
+    PRIMARY_FLINK_TYPE_NAME = "MAP"
 
-        Raises: ValueError if the element type is not supported.
-        """
-        element = None
-        for element in python_value:
-            if element is not None:
-                break
+    key_converter: TypeConverter
+    """Type converter for map key type."""
+    value_converter: TypeConverter
+    """Type converter for map value type."""
 
-        if element is None:
-            raise ValueError("Cannot determine element type for list: all elements are None.")
-
-        converter_cls = _python_type_to_type_converter.get(type(element))
-        if not converter_cls:
-            raise TypeError(
-                f"Conversion for array element of type {type(element)} is not implemented."
+    def __init__(self, column_type: ColumnTypeDefinition):
+        if not column_type.type_name == "MAP":
+            raise InterfaceError(
+                f"MapConverter can only be used with MAP types, got {column_type.type_name}"
             )
 
-        return converter_cls
+        # Determine the key and value type's converters from the column_type's key and value
+        # type parameters.
+        key_type_def = column_type.key_type
+        value_type_def = column_type.value_type
+        if not key_type_def:
+            raise InterfaceError(
+                "MapConverter cannot determine key type from column type definition."
+            )
+        if not value_type_def:
+            raise InterfaceError(
+                "MapConverter cannot determine value type from column type definition."
+            )
+
+        key_converter_cls = _flink_type_name_to_converter_map.get(key_type_def.type_name)
+        if not key_converter_cls:
+            raise TypeError(
+                f"Conversion for map key of type {key_type_def.type_name} is not implemented."
+            )
+
+        self.key_converter = key_converter_cls(key_type_def)
+
+        value_converter_cls = _flink_type_name_to_converter_map.get(value_type_def.type_name)
+        if not value_converter_cls:
+            raise TypeError(
+                f"Conversion for map value of type {value_type_def.type_name} is not implemented."
+            )
+        self.value_converter = value_converter_cls(value_type_def)
+
+        super().__init__(column_type)
+
+    def to_python_value(self, response_value: FromResponseTypes) -> dict | None:
+        """Expect dict or None from the response value, return as dict or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, list):
+            raise TypeError(f"Expected list value for MapConverter but got {type(response_value)}")
+
+        # Will be a list of pair lists: [[enc-key1, enc-value1], [enc-key2, enc-value2], ...]
+        # where keys and values will be the from-response encodings for their
+        # types. Use the decoders for the key and value types for each pair.
+
+        result_dict = {}
+        for pair in response_value:
+            if not isinstance(pair, list) or len(pair) != 2:  # noqa: PLR2004
+                raise ValueError(
+                    f"Expected key-value pair list of length 2 for MapConverter but got: {pair}"
+                )
+
+            # Promote this key/value pair from from-response encodings to Python values.
+            key = self.key_converter.to_python_value(pair[0])
+            value = self.value_converter.to_python_value(pair[1])
+
+            result_dict[key] = value
+
+        return result_dict
+
+    @classmethod
+    def to_statement_string(cls, python_value: dict) -> str:
+        """Convert a Python dict value to its for-statement-string-interpolation
+        representation."""
+
+        # Example: MAP['key1', 12, 'key2', 22] for a map with string keys and integer values.
+        if not isinstance(python_value, dict):
+            raise TypeError(f"Expected dict value for MapConverter but got {type(python_value)}")
+
+        if len(python_value) == 0:
+            # Empty map, it seems that Flink does not support literal empty maps grr boo hoo.
+            raise ValueError("Cannot convert empty dict to Flink MAP literal.")
+
+        # Find the converter classes for keys and values
+        key_converter_cls = determine_element_converter_cls(python_value.keys())
+        value_converter_cls = determine_element_converter_cls(python_value.values())
+
+        none_key_str = SqlNone(key_converter_cls.PRIMARY_FLINK_TYPE_NAME).__str__()
+        none_value_str = SqlNone(value_converter_cls.PRIMARY_FLINK_TYPE_NAME).__str__()
+
+        # Convert each key-value pair to its string representation, append each
+        # to list to join later.
+        keys_and_values: list[str] = []
+
+        for key, value in python_value.items():
+            # May raise ValueError if individual key or value is of wrong type.
+            if key is not None:
+                key_str = key_converter_cls.to_statement_string(key)
+            else:
+                key_str = none_key_str
+
+            keys_and_values.append(key_str)
+
+            if value is not None:
+                value_str = value_converter_cls.to_statement_string(value)
+            else:
+                value_str = none_value_str
+
+            keys_and_values.append(value_str)
+
+        # Join key-value pairs with commas and wrap in MAP[...]
+        return f"MAP[{', '.join(keys_and_values)}]"
 
 
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
@@ -1018,6 +1110,8 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "BYTES": VarBinaryConverter,
     # Array type
     "ARRAY": ArrayConverter,
+    # Map type
+    "MAP": MapConverter,
 }
 
 
@@ -1036,6 +1130,7 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     YearMonthInterval: YearMonthIntervalConverter,
     timedelta: DaysIntervalConverter,
     list: ArrayConverter,
+    dict: MapConverter,
 }
 
 # Initialize static SqlNone members for common types, must be done after class definition
@@ -1073,3 +1168,29 @@ def convert_statement_parameters(
         converted_params.append(param_as_flink_string)
 
     return tuple(converted_params)
+
+
+def determine_element_converter_cls(python_value: Iterable) -> type[TypeConverter]:
+    """Determine the TypeConverter class for the elements of the given Python sequence.
+
+    Assumes the list is non-empty and that all elements are of the same type, or
+    contains None elements. Cannot be all None. The list will already have
+    been proven to be non-empty by the caller.
+
+    Returns: The TypeConverter class for the type of the first non-None element.
+
+    Raises: ValueError if the element type is not supported.
+    """
+    element = None
+    for element in python_value:
+        if element is not None:
+            break
+
+    if element is None:
+        raise ValueError("Cannot determine element type for list: all elements are None.")
+
+    converter_cls = _python_type_to_type_converter.get(type(element))
+    if not converter_cls:
+        raise TypeError(f"Conversion for array element of type {type(element)} is not implemented.")
+
+    return converter_cls

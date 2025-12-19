@@ -17,6 +17,7 @@ from confluent_sql.types import (
     DecimalConverter,
     FloatConverter,
     IntegerConverter,
+    MapConverter,
     NullResultConverter,
     SqlNone,
     SqlNoneConverter,
@@ -1074,13 +1075,13 @@ class TestArrayConverter:
     def test_constructor_hates_unsupported_element_type(self):
         with pytest.raises(
             TypeError,
-            match="Conversion for array element of type STRUCT is not implemented.",
+            match="Conversion for array element of type UNKNOWN is not implemented.",
         ):
             ArrayConverter(
                 ColumnTypeDefinition(
                     type="ARRAY",
                     nullable=False,
-                    element_type=ColumnTypeDefinition(type="STRUCT", nullable=False),
+                    element_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
                 )
             )
 
@@ -1213,6 +1214,229 @@ class TestArrayConverter:
     def test_nested_array_converter_to_python_value(self, from_json_payload, expected):
         result = self.nested_array_converter.to_python_value(from_json_payload)
         assert result == expected
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestMapConverter:
+    """Unit tests over MapConverter."""
+
+    def test_constructor_hates_non_map_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="MapConverter can only be used with MAP types, got INTEGER",
+        ):
+            MapConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+
+    def test_constructor_hates_missing_key_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="MapConverter cannot determine key type from column type definition",
+        ):
+            MapConverter(
+                ColumnTypeDefinition(
+                    type="MAP",
+                    nullable=False,
+                    value_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                )
+            )
+
+    def test_constructor_hates_missing_value_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="MapConverter cannot determine value type from column type definition",
+        ):
+            MapConverter(
+                ColumnTypeDefinition(
+                    type="MAP",
+                    nullable=False,
+                    key_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                )
+            )
+
+    def test_constructor_hates_unsupported_key_type(self):
+        with pytest.raises(
+            TypeError,
+            match="Conversion for map key of type UNKNOWN is not implemented.",
+        ):
+            MapConverter(
+                ColumnTypeDefinition(
+                    type="MAP",
+                    nullable=False,
+                    key_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
+                    value_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                )
+            )
+
+    def test_constructor_hates_unsupported_value_type(self):
+        with pytest.raises(
+            TypeError,
+            match="Conversion for map value of type UNKNOWN is not implemented.",
+        ):
+            MapConverter(
+                ColumnTypeDefinition(
+                    type="MAP",
+                    nullable=False,
+                    key_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                    value_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
+                )
+            )
+
+    str_int_converter = MapConverter(
+        ColumnTypeDefinition(
+            type="MAP",
+            nullable=False,
+            key_type=ColumnTypeDefinition(type="STRING", nullable=False),
+            value_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+        )
+    )
+
+    def test_to_python_value_expects_list_response_value(self):
+        with pytest.raises(TypeError, match="Expected list value for MapConverter"):
+            self.str_int_converter.to_python_value("sdf")
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            ["sdf"],  # is a list, but not containing interior pair lists.
+            [["one", "two", "three"]],  # interior lists expected to be exactly pairs
+        ],
+    )
+    def test_to_python_value_expects_interior_pair_lists(self, bad_value: list):
+        with pytest.raises(ValueError, match="Expected key-value pair list of length 2"):
+            self.str_int_converter.to_python_value(bad_value)
+
+    @pytest.mark.parametrize(
+        "key_type_name, value_type_name, from_json_payload, expected",
+        [
+            (
+                # String -> int map
+                "STRING",
+                "INTEGER",
+                [["one", "1"], ["two", "2"]],
+                {"one": 1, "two": 2},
+            ),
+            (
+                # Int -> string map
+                "INTEGER",
+                "STRING",
+                [["1", "one"], ["2", "two"]],
+                {1: "one", 2: "two"},
+            ),
+            (
+                # string to nullable int
+                "STRING",
+                "INTEGER",
+                [["one", "1"], ["two", "2"], ["null", None]],
+                {"one": 1, "two": 2, "null": None},
+            ),
+        ],
+    )
+    def test_to_python_value_simple(
+        self,
+        key_type_name,
+        value_type_name,
+        from_json_payload,
+        expected,
+    ):
+        """Test decoding maps with simple value types"""
+        converter = MapConverter(
+            ColumnTypeDefinition(
+                type="MAP",
+                nullable=True,
+                key_type=ColumnTypeDefinition(type=key_type_name, nullable=False),
+                value_type=ColumnTypeDefinition(type=value_type_name, nullable=False),
+            )
+        )
+        result = converter.to_python_value(from_json_payload)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        "key_type_name, value_column_type_definition, from_json_payload, expected",
+        [
+            (
+                # String to array of boolean map
+                "STRING",
+                ColumnTypeDefinition(
+                    type="ARRAY",
+                    nullable=False,
+                    element_type=ColumnTypeDefinition(type="BOOLEAN", nullable=False),
+                ),
+                [["trues", ["TRUE", "TRUE"]], ["falses", ["FALSE", "FALSE", "FALSE"]]],
+                {"trues": [True, True], "falses": [False, False, False]},
+            ),
+            (
+                # string to dict of string -> nullable boolean
+                "STRING",
+                ColumnTypeDefinition(
+                    type="MAP",
+                    nullable=False,
+                    key_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                    value_type=ColumnTypeDefinition(type="BOOLEAN", nullable=True),
+                ),
+                [["people", [["joe", "TRUE"], ["mary", "FALSE"], ["jane", None]]]],
+                {"people": {"joe": True, "mary": False, "jane": None}},
+            ),
+        ],
+    )
+    def test_python_value_nested_value(
+        self,
+        key_type_name,
+        value_column_type_definition,
+        from_json_payload,
+        expected,
+    ):
+        """Test decoding maps with complex value types"""
+        converter = MapConverter(
+            ColumnTypeDefinition(
+                type="MAP",
+                nullable=True,
+                key_type=ColumnTypeDefinition(type=key_type_name, nullable=False),
+                value_type=value_column_type_definition,
+            )
+        )
+        result = converter.to_python_value(from_json_payload)
+        assert result == expected
+
+    def test_to_statement_string_hates_non_dict(self):
+        with pytest.raises(TypeError, match="Expected dict value"):
+            MapConverter.to_statement_string("sdf")  # type: ignore
+
+    def test_to_statement_string_hates_empty_dict(self):
+        with pytest.raises(ValueError, match="Cannot convert empty dict"):
+            MapConverter.to_statement_string({})  # type: ignore
+
+    def test_to_statement_string_hates_inconsistent_key_types(self):
+        with pytest.raises(ValueError, match="Expected Python integer value"):
+            # mixes integer and string keys
+            MapConverter.to_statement_string({1: "sdf", "fgh": "ert"})
+
+    def test_to_statement_string_hates_inconsistent_value_types(self):
+        with pytest.raises(ValueError, match="Expected Python integer value"):
+            # mixes integer and string values
+            MapConverter.to_statement_string({1: 1, 2: "two"})
+
+    @pytest.mark.parametrize(
+        "python_value,expected_string",
+        [
+            # int -> int mapping.
+            ({1: 10, 2: 20}, "MAP[1, 10, 2, 20]"),
+            # nullable int -> int mapping
+            ({1: 10, None: -1}, "MAP[1, 10, cast (null as INTEGER), -1]"),
+            # str -> nullable bool mapping
+            (
+                {"a": False, "b": True, "c": None},
+                "MAP['a', FALSE, 'b', TRUE, 'c', cast (null as BOOLEAN)]",
+            ),
+            # str -> array of maps of string to int
+            (
+                {"a": [{"b": 12, "c": 33}, {"d": 99}]},
+                "MAP['a', ARRAY[MAP['b', 12, 'c', 33], MAP['d', 99]]]",
+            ),
+        ],
+    )
+    def test_to_statement_string(self, python_value, expected_string):
+        assert MapConverter.to_statement_string(python_value) == expected_string
 
 
 @pytest.mark.unit
