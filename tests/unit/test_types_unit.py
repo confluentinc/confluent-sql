@@ -90,6 +90,19 @@ class TestYearMonthInterval:
             YearMonthInterval(years=years, months=0)
 
     @pytest.mark.parametrize(
+        "yminterval, expected_is_negative",
+        [
+            (YearMonthInterval(years=2, months=6), False),
+            (YearMonthInterval(years=0, months=5), False),
+            (YearMonthInterval(years=0, months=0), False),
+            (YearMonthInterval(years=0, months=-5), True),
+            (YearMonthInterval(years=-1, months=-3), True),
+        ],
+    )
+    def test_is_negative_property(self, yminterval: YearMonthInterval, expected_is_negative: bool):
+        assert yminterval.is_negative == expected_is_negative
+
+    @pytest.mark.parametrize(
         "years, months, expected_str",
         [
             (2, 6, "+2-06"),  # 2y 6m
@@ -1355,7 +1368,7 @@ class TestMapConverter:
         "key_type_name, value_column_type_definition, from_json_payload, expected",
         [
             (
-                # String to array of boolean map
+                # Map of String to array of boolean
                 "STRING",
                 ColumnTypeDefinition(
                     type="ARRAY",
@@ -1366,7 +1379,8 @@ class TestMapConverter:
                 {"trues": [True, True], "falses": [False, False, False]},
             ),
             (
-                # string to dict of string -> nullable boolean
+                # Map of string to map of string -> nullable boolean. Second interior map (horses)
+                # is empty.
                 "STRING",
                 ColumnTypeDefinition(
                     type="MAP",
@@ -1374,8 +1388,27 @@ class TestMapConverter:
                     key_type=ColumnTypeDefinition(type="STRING", nullable=False),
                     value_type=ColumnTypeDefinition(type="BOOLEAN", nullable=True),
                 ),
-                [["people", [["joe", "TRUE"], ["mary", "FALSE"], ["jane", None]]]],
-                {"people": {"joe": True, "mary": False, "jane": None}},
+                [["people", [["joe", "TRUE"], ["mary", "FALSE"], ["jane", None]]], ["horses", []]],
+                {"people": {"joe": True, "mary": False, "jane": None}, "horses": {}},
+            ),
+            (
+                # Map of int to array of maps of string to int
+                "INTEGER",
+                ColumnTypeDefinition(
+                    type="ARRAY",
+                    nullable=False,
+                    element_type=ColumnTypeDefinition(
+                        type="MAP",
+                        nullable=False,
+                        key_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                        value_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+                    ),
+                ),
+                [
+                    ["1", [[["a", "10"], ["b", "20"]], [["c", "30"]]]],
+                    ["2", [[["d", "40"]]]],
+                ],
+                {1: [{"a": 10, "b": 20}, {"c": 30}], 2: [{"d": 40}]},
             ),
         ],
     )

@@ -638,11 +638,22 @@ class TimestampConverter(TypeConverter[datetime]):
 
 @dataclass
 class YearMonthInterval:
-    """Class representing a YEAR TO MONTH interval with separate year and month components.
+    """Class representing a Flink YEAR TO MONTH interval with separate year and month components.
 
     Negative intervals have negative years and/or months. When the years is negative,
     the months should also be negative, and vice versa (so as to avoid ambiguity and to
-    represent negative months-only intervals).
+    represent negative months-only intervals). The smallest magnitude negative interval is
+    therefore 0 years and -1 month. When either years or months is nonpositive, both will be,
+    and vice versa for positive intervals. Property `is_negative` can be used to check the sign.
+
+    (This differs from Python's timedelta, which represents less than one negative day
+    intervals by having negative days and positive seconds/microseconds, which, when
+    added together, end up at the right negative point in time (that is, not having
+    a zero days component when the total interval is negative but less than one day).)
+
+    The string representation is of the form '+-Y-M', with a leading '+' or '-' sign,
+    followed by the absolute value of years, a hyphen, and the absolute value of months
+    zero-padded to two digits.
     """
 
     years: int
@@ -660,6 +671,11 @@ class YearMonthInterval:
 
         if abs(self.years) > 9999:  # noqa: PLR2004
             raise ValueError("YearMonthInterval years must be in the range -9999 to 9999")
+
+    @property
+    def is_negative(self) -> bool:
+        """Return True if the interval is negative, False otherwise."""
+        return self.years < 0 or self.months < 0
 
     def __str__(self) -> str:
         sign = "-" if (self.years < 0 or self.months < 0) else "+"
@@ -864,10 +880,11 @@ class DaysIntervalConverter(TypeConverter[timedelta]):
 
 class ArrayConverter(TypeConverter[list]):
     """Handles Flink ARRAY type to/from Python list.
-    Nested lists / arrays are supported, but empty arrays are not (empty array literals
-    are not supported by Flink at this time).
 
-    Nones in the list are supported, and will be converted to SQL NULLs of the
+    Caveats:
+      * Nested lists / arrays are supported, but empty arrays are not (empty array literals
+    are not supported by Flink at this time).
+      * Nones in the list are supported, and will be converted to SQL NULLs of the
     appropriate element type, however a list of all Nones is not supported since
     the element type cannot be determined in that case.
     """
@@ -951,7 +968,18 @@ class ArrayConverter(TypeConverter[list]):
 
 
 class MapConverter(TypeConverter[dict]):
-    """Handles Flink MAP type to/from Python dict."""
+    """Handles Flink MAP type to/from Python dict.
+
+    Caveats:
+    * Empty python dicts are not supported since Flink does not support literal empty maps at this
+      time.
+    * Flink Map keys must be of a type that is hashable in Python.
+    * Python dict keys and values may be None, which will be converted to SQL NULLs of the
+      appropriate types, however a map with all keys or all values as None is not supported since
+      the key/value types cannot be determined in that case.
+    * Python dict keys and values must be of uniform type (or None), since Flink MAP types
+      require uniform key and value types.
+    """
 
     PRIMARY_FLINK_TYPE_NAME = "MAP"
 
