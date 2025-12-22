@@ -20,13 +20,21 @@ global_job_config:
     commands:
       - checkout
       - . vault-setup
-      - make init-ci
 
 blocks:
+  - name: "Lint"
+    dependencies: []
+    task:
+      jobs:
+        - name: "Ruff Lint"
+          commands:
+            - uv run ruff check src tests
+        - name: "Pyright Type Checking"
+          commands:
+            - uv run pyright
   - name: "Test"
-    run:
-      # don't run the build or unit tests on non-functional changes...
-      when: "change_in('/', {exclude: ['/.deployed-versions/', '.github/'], branch_range: '$SEMAPHORE_GIT_COMMIT_RANGE', default_branch: 'master'})"
+    dependencies:
+      - "Lint"
     task:
       prologue:
         commands:
