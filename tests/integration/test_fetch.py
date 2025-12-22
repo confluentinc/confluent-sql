@@ -441,3 +441,59 @@ class TestArrayStatements:
                 "nested_string_array": [["one", "two"], ["three", "four"]],
                 "null_array_value": None,
             }
+
+
+@pytest.mark.integration
+class TestMapStatements:
+    """Tests over MAP type encoding/decoding."""
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_encoding_decoding_map_round_tripping(
+        self,
+        connection: Connection,
+    ):
+        """Test round-tripping values for MAP type."""
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    %s AS string_int_map,
+                    %s as int_string_map,
+                    %s as string_null_int_map,
+                    %s AS string_array_of_string_map,
+                    %s AS nested_map,
+                    %s AS null_map
+                """,
+                (
+                    {"key1": 10, "key2": 20, "key3": 30},  # MAP of string -> INT values
+                    {10: "ten", 20: "twenty"},  # MAP of INT -> STRING values
+                    {"key1": 10, "null_key": None},  # MAP string -> NULLABLE INT value
+                    {
+                        "fruits": ["apple", "banana"],
+                        "vegetables": ["carrot", "broccoli"],
+                    },  # MAP of string -> ARRAY of string
+                    {  # NESTED MAP
+                        "outer_key1": {"inner_key1": 1, "inner_key2": 2},
+                        "outer_key2": {"inner_key3": 3, "inner_key4": 4},
+                    },
+                    SqlNone("Map<string, int>"),  # NULL MAP
+                ),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "string_int_map": {"key1": 10, "key2": 20, "key3": 30},
+                "int_string_map": {10: "ten", 20: "twenty"},
+                "string_null_int_map": {"key1": 10, "null_key": None},
+                "string_array_of_string_map": {
+                    "fruits": ["apple", "banana"],
+                    "vegetables": ["carrot", "broccoli"],
+                },
+                "nested_map": {
+                    "outer_key1": {"inner_key1": 1, "inner_key2": 2},
+                    "outer_key2": {"inner_key3": 3, "inner_key4": 4},
+                },
+                "null_map": None,
+            }
