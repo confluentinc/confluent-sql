@@ -26,7 +26,7 @@ blocks:
   - name: "Test"
     run:
       # don't run the build or unit tests on non-functional changes...
-      when: "change_in('/', {exclude: ['/.deployed-versions/', '.github/'], default_branch: 'master'})"
+      when: "change_in('/', {exclude: ['/.deployed-versions/', '.github/'], branch_range: '$SEMAPHORE_GIT_COMMIT_RANGE', default_branch: 'master'})"
     task:
       prologue:
         commands:
