@@ -1209,12 +1209,10 @@ def determine_element_converter_cls(python_value: Iterable) -> type[TypeConverte
 
     Raises: ValueError if the element type is not supported.
     """
-    element = None
     for element in python_value:
         if element is not None:
             break
-
-    if element is None:
+    else:
         raise ValueError("Cannot determine element type: all elements are None.")
 
     converter_cls = _python_type_to_type_converter.get(type(element))
