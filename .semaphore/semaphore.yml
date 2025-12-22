@@ -43,6 +43,7 @@ blocks:
       jobs:
         - name: "Run Tests"
           commands:
+            # Only unit tests until vault secrets are handled for integration tests
             - uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
