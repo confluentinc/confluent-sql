@@ -41,10 +41,6 @@ blocks:
         - name: "Run Unit Tests"
           commands:
             - uv run pytest -m unit
-      epilogue:
-        always:
-          commands:
-            - make testbreak-after
 
 after_pipeline:
   task:
