@@ -1167,7 +1167,7 @@ class TestArrayConverter:
     def test_to_statement_string_hates_all_none_elements(self):
         with pytest.raises(
             ValueError,
-            match="Cannot determine element type for list: all elements are None.",
+            match="Cannot determine element type: all elements are None.",
         ):
             self.int_array_converter.to_statement_string([None, None, None])
 
