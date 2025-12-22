@@ -19,13 +19,8 @@ global_job_config:
   prologue:
     commands:
       - checkout
-      # - make show-args
       - . vault-setup
       - make init-ci
-  epilogue:
-    always:
-      commands:
-        - make epilogue-ci
 
 blocks:
   - name: "Test"
