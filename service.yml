@@ -11,5 +11,6 @@ renovatebot:
     enable: true
 semaphore:
   enable: true
+  pipeline_enable: false
 make:
-  enable: true
+  enable: false
