@@ -36,6 +36,9 @@ blocks:
         - name: "Run Unit Tests"
           commands:
             - uv run pytest -m unit
+        - name: "Run Integration Tests"
+          commands:
+            - uv run pytest -m integration
 
 after_pipeline:
   task:
