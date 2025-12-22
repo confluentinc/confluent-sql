@@ -11,3 +11,5 @@ renovatebot:
     enable: true
 semaphore:
   enable: true
+make:
+  enable: true
