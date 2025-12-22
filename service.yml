@@ -9,3 +9,5 @@ renovatebot:
   enable: true
   automerge:
     enable: true
+semaphore:
+  enable: true
