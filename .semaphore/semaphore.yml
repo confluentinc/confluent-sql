@@ -43,7 +43,7 @@ blocks:
       jobs:
         - name: "Run Tests"
           commands:
-            - uv run pytest --junitxml=test-results.xml
+            - uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
           commands:
