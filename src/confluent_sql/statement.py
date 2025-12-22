@@ -223,8 +223,8 @@ class ColumnTypeDefinition:
     scale: int | None = None
     fractional_precision: int | None = None  # if an interval type
     resolution: str | None = None  # if an interval type
-    key_type: str | None = None  # if type == "MAP"
-    value_type: str | None = None  # if type == "MAP"
+    key_type: ColumnTypeDefinition | None = None  # if type == "MAP"
+    value_type: ColumnTypeDefinition | None = None  # if type == "MAP"
     element_type: ColumnTypeDefinition | None = None  # if type == "ARRAY"
 
     fields: list[RowColumn] | None = None
@@ -241,22 +241,33 @@ class ColumnTypeDefinition:
     @classmethod
     def from_response(cls, data: StrAnyDict) -> ColumnTypeDefinition:
         """Create a ColumnTypeDefinition from JSON response data within from-API statement traits"""
-        element_type = data.get("element_type")
-        if element_type is not None:
-            # Describes the element type of an ARRAY.
-            # Promote from element type dict to a ColumnTypeDefinition
-            element_type = cls.from_response(data["element_type"])
+
+        element_type = key_type = value_type = None
+
+        column_type = data["type"]
+
+        if column_type == "ARRAY":
+            element_type = data.get("element_type")
+            if element_type is not None:
+                # Describes the element type of an ARRAY.
+                # Promote from element type dict to a ColumnTypeDefinition
+                element_type = cls.from_response(data["element_type"])
+
+        elif column_type == "MAP":
+            # For MAP types, we need to parse key_type and value_type specially.
+            key_type = cls.from_response(data["key_type"])
+            value_type = cls.from_response(data["value_type"])
 
         return cls(
-            type=data["type"],
+            type=column_type,
             nullable=data["nullable"],
             length=data.get("length"),
             precision=data.get("precision"),
             scale=data.get("scale"),
             fractional_precision=data.get("fractional_precision"),
             resolution=data.get("resolution"),
-            key_type=data.get("key_type"),
-            value_type=data.get("value_type"),
+            key_type=key_type,
+            value_type=value_type,
             element_type=element_type,
             fields=[RowColumn.from_response(field) for field in data.get("fields", [])]
             if "fields" in data
