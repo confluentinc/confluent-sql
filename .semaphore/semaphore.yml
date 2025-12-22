@@ -19,7 +19,7 @@ global_job_config:
   prologue:
     commands:
       - checkout
-      - make show-args
+      # - make show-args
       - . vault-setup
       - make init-ci
   epilogue:
