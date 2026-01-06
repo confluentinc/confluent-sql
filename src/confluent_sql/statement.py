@@ -4,15 +4,12 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TypeAlias
 
-from confluent_sql.types import StatementTypeConverter
+from confluent_sql.types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
 
 from .exceptions import DatabaseError, InterfaceError, OperationalError
 
 logger = logging.getLogger(__name__)
-
-StrAnyDict: TypeAlias = dict[str, Any]
 
 
 class Op(Enum):
@@ -209,74 +206,6 @@ class Statement:
 
 
 @dataclass(kw_only=True)
-class ColumnTypeDefinition:
-    """Fields corresponding to statement.traits.schema.columns[].type members.
-
-    Describes the Flink-side type definition of a projected column.
-    """
-
-    type: str
-    """Flink name of the type, e.g., "INT", "STRING", "ROW", etc."""
-    nullable: bool
-    length: int | None = None
-    precision: int | None = None
-    scale: int | None = None
-    fractional_precision: int | None = None  # if an interval type
-    resolution: str | None = None  # if an interval type
-    key_type: ColumnTypeDefinition | None = None  # if type == "MAP"
-    value_type: ColumnTypeDefinition | None = None  # if type == "MAP"
-    element_type: ColumnTypeDefinition | None = None  # if type == "ARRAY"
-
-    fields: list[RowColumn] | None = None
-    """The interior fields of a ROW type, if applicable."""
-
-    class_name: str | None = None
-    """The Flink-side class name of the structured data type (if applicable)."""
-
-    @property
-    def type_name(self) -> str:
-        """Return the Flink type name. Aliasing for clarity."""
-        return self.type
-
-    @classmethod
-    def from_response(cls, data: StrAnyDict) -> ColumnTypeDefinition:
-        """Create a ColumnTypeDefinition from JSON response data within from-API statement traits"""
-
-        element_type = key_type = value_type = None
-
-        column_type = data["type"]
-
-        if column_type == "ARRAY":
-            element_type = data.get("element_type")
-            if element_type is not None:
-                # Describes the element type of an ARRAY.
-                # Promote from element type dict to a ColumnTypeDefinition
-                element_type = cls.from_response(data["element_type"])
-
-        elif column_type == "MAP":
-            # For MAP types, we need to parse key_type and value_type specially.
-            key_type = cls.from_response(data["key_type"])
-            value_type = cls.from_response(data["value_type"])
-
-        return cls(
-            type=column_type,
-            nullable=data["nullable"],
-            length=data.get("length"),
-            precision=data.get("precision"),
-            scale=data.get("scale"),
-            fractional_precision=data.get("fractional_precision"),
-            resolution=data.get("resolution"),
-            key_type=key_type,
-            value_type=value_type,
-            element_type=element_type,
-            fields=[RowColumn.from_response(field) for field in data.get("fields", [])]
-            if "fields" in data
-            else None,
-            class_name=data.get("class_name"),
-        )
-
-
-@dataclass(kw_only=True)
 class Column:
     """Fields correspond to statement.traits.schema.columns[] members
     Describes a projected column in the statement's result set: name, type definition,
@@ -291,28 +220,6 @@ class Column:
     def from_response(cls, data: StrAnyDict) -> Column:
         column_type = ColumnTypeDefinition.from_response(data["type"])
         return cls(name=data["name"], type=column_type, description=data.get("description"))
-
-
-@dataclass
-class RowColumn:
-    """Fields corresponding to statement.traits.schema.columns[].type.fields members.
-    Used when the column type is a ROW.
-    Would be identical to Column, but the field carrying the type information is named differently.
-    """
-
-    name: str
-    field_type: ColumnTypeDefinition
-    description: str | None = None
-
-    @property
-    def type(self) -> ColumnTypeDefinition:
-        """Alias for field_type to match Column. The API design is inconsistent here."""
-        return self.field_type
-
-    @classmethod
-    def from_response(cls, data: StrAnyDict) -> RowColumn:
-        column_type = ColumnTypeDefinition.from_response(data["type"])
-        return cls(name=data["name"], field_type=column_type, description=data.get("description"))
 
 
 @dataclass(kw_only=True)
