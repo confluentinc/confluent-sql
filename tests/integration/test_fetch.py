@@ -1,10 +1,10 @@
-from collections import Counter
+from collections import Counter, namedtuple
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
-from confluent_sql import Connection, SqlNone, YearMonthInterval
+from confluent_sql import Connection, SqlNone, YearMonthInterval, register_row_type
 
 
 @pytest.mark.integration
@@ -254,7 +254,7 @@ class TestCursorFetch:
 
         # The multiset is mapped to a Python-side collections.Counter.
         with connection.closing_cursor(as_dict=True) as cursor:
-            # Three apples, two bananas, one orange.
+            # Two apples, two bananas, one orange.
             cursor.execute(
                 """
                 WITH fruits AS (
@@ -311,6 +311,29 @@ class TestCursorFetch:
 
             assert results == {
                 "fruit_multiset": Counter(),
+            }
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_null_multiset(
+        self,
+        connection: Connection,
+    ):
+        """Test SQLNone(MULTISET<type>) + decoding a NULL multiset."""
+
+        null_ms = SqlNone("MULTISET<STRING>")
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT %s AS null_string_multiset
+                """,
+                (null_ms,),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "null_string_multiset": None,
             }
 
     @pytest.mark.slow
@@ -569,4 +592,112 @@ class TestMapStatements:
                     "outer_key2": {"inner_key3": 3, "inner_key4": 4},
                 },
                 "null_map": None,
+            }
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.typeconv
+class TestRowConversion:
+    """Tests over ROW type encoding/decoding."""
+
+    def test_encoding_decoding_rows(
+        self,
+        row_table_connection: Connection,
+        test_row_table_name: str,
+    ):
+        """Test inserting and selecting ROW type values, including arrays and nested ROW types."""
+
+        # See fixture `row_table_connection` for the table structure with ROW columns
+        # matching these types.
+        NameAndAge = namedtuple("NameAndAge", ["name", "age"])
+        Address = namedtuple("Address", ["street", "city", "zip_code"])
+        ContactInfo = namedtuple("ContactInfo", ["email", "phone"])
+        EmbeddedRow = namedtuple("EmbeddedRow", ["id", "contact_info"])
+
+        # Register the types so that they'll get used when deserializing. Otherwise
+        # will be using auto-generated namedtuples with same field names, but won't
+        # be the same exact class. The user may care and hence will do this explicitly.
+
+        # We choose NOT to register the EmbeddedRow here, to verify that nested
+        # namedtuples get auto-generated properly.
+        for nt in [NameAndAge, Address, ContactInfo]:
+            register_row_type(nt)
+
+        nameAndAge = NameAndAge(name="John Doe", age=28)
+        addressArray = [
+            # Don't model ZIP codes as integers in real life, but for test purposes here it's fine.
+            # (This is why people in Maine hate Excel auto-guessing ZIP codes as numbers, eating
+            #  their leading zeros.)
+            Address(street="123 Main St", city="Anytown", zip_code=12345),
+            Address(street="456 Oak Ave", city="Othertown", zip_code=67890),
+        ]
+        embeddedRow = EmbeddedRow(
+            id=1,
+            contact_info=ContactInfo(email="joe@joetown.com", phone="555-1234"),
+        )
+
+        # Insert a full row value.
+        with row_table_connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                f"""
+                INSERT into {test_row_table_name} (name_and_age, address_array, embedded_row)
+                VALUES (%s, %s, %s)
+                """,
+                (nameAndAge, addressArray, embeddedRow),
+            )
+
+        # Now select it back out and verify we get the same values.
+        with row_table_connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                f"""
+                SELECT name_and_age, address_array, embedded_row
+                FROM {test_row_table_name}
+                WHERE name_and_age.name = %s
+                """,
+                (nameAndAge.name,),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "name_and_age": nameAndAge,
+                "address_array": addressArray,
+                "embedded_row": embeddedRow,
+            }
+
+            # Ensure the types are as expected since we registered them.
+            # (The above assert only checks value equality, not type identity, and even
+            #  bare tuples can compare equal to namedtuples with same values.)
+            assert isinstance(results["name_and_age"], NameAndAge)  # type: ignore
+            assert isinstance(results["address_array"][0], Address)  # type: ignore
+            assert isinstance(results["address_array"][1], Address)  # type: ignore
+
+            # EmbeddedRow was not registered, so will be an auto-generated namedtuple.
+            # It will have the right field names, but not be the same class.
+            assert results["embedded_row"].__class__.__name__ == "Row"  # type: ignore
+            # However, its nested ContactInfo was registered, so will be of that type.
+            assert isinstance(results["embedded_row"].contact_info, ContactInfo)  # type: ignore
+
+    def test_encoding_decoding_null_row(
+        self,
+        connection: Connection,
+    ):
+        """Test encoding and decoding NULLs of ROW type."""
+
+        # Sigh, a NULL ROW type has no way to specify its complete structure.
+        arbitrary_row_null = SqlNone("ROW<name STRING, age INT, `foo_bar_BLAT` BOOLEAN>")
+
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT %s AS null_row_value
+                """,
+                (arbitrary_row_null,),
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "null_row_value": None,
             }

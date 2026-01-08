@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from collections import Counter
+from collections import Counter, namedtuple
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -13,6 +14,9 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
 from confluent_sql.exceptions import InterfaceError
+
+logger = logging.getLogger(__name__)
+
 
 PyType = TypeVar("PyType")
 """The data type of the Python value being converted to/from Flink SQL representation by
@@ -30,6 +34,7 @@ __all__ = [
     "convert_statement_parameters",
     "SqlNone",
     "YearMonthInterval",
+    "register_row_type",
 ]
 
 """
@@ -68,7 +73,7 @@ class RowColumn:
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> RowColumn:
-        column_type = ColumnTypeDefinition.from_response(data["type"])
+        column_type = ColumnTypeDefinition.from_response(data["field_type"])
         return cls(name=data["name"], field_type=column_type, description=data.get("description"))
 
 
@@ -481,16 +486,31 @@ class SqlNone:
     YEAR_MONTH_INTERVAL: SqlNone
     DAY_SECOND_INTERVAL: SqlNone
 
+    _known_types_regex: re.Pattern | None = None
+    """Compiled regex pattern for known Flink type names, for validation."""
+    # (Initialized on first use based on _flink_type_name_to_converter_map keys.)
+
+    _parameterized_type_regex = re.compile(r"^(?:ARRAY|MAP|MULTISET|ROW)\b", re.IGNORECASE)
+    """Compiled regex pattern for parameterized Flink type names."""
+
     def __init__(self, python_or_flink_type: str | type):
         if isinstance(python_or_flink_type, str):
             # The caller provided a Flink type name directly.
-            # Ensure is a known type from _flink_type_name_to_converter_map keys (or lowercase
-            # thereof)
-            python_or_flink_type = python_or_flink_type.upper()
-            if (
-                python_or_flink_type not in _flink_type_name_to_converter_map
-                and not python_or_flink_type.startswith("ARRAY")
-                and not python_or_flink_type.startswith("MAP")
+            # Validate the provided Flink type name using case-insensitive regexes.
+
+            if SqlNone._known_types_regex is None:
+                # Initialize the known types pattern on first use based on
+                # the registered type converter keys.
+                SqlNone._known_types_regex = re.compile(
+                    r"^(?:"
+                    + "|".join(re.escape(t) for t in _flink_type_name_to_converter_map)
+                    + r")$",
+                    re.IGNORECASE,
+                )
+
+            if not (
+                SqlNone._known_types_regex.match(python_or_flink_type)
+                or SqlNone._parameterized_type_regex.match(python_or_flink_type)
             ):
                 raise InterfaceError(f"Unknown Flink type name {python_or_flink_type}")
 
@@ -1277,6 +1297,202 @@ class MultisetConverter(TypeConverter[Counter]):
         raise InterfaceError("Flink does not currently support MULTISET literals.")
 
 
+class RowTypeRegistry:
+    def __init__(self):
+        # Key: tuple of field names (strings)
+        # Value: The specific class object (type)
+        self._cache = {}
+
+    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type:
+        """
+        Returns a cached namedtuple class or creates a new one.
+        field_names: A sequence of strings (e.g., ['name', 'age'])
+        """
+
+        if not isinstance(field_names, (list, tuple)):
+            raise TypeError(
+                f"field_names must be a list or tuple of strings, got {type(field_names)}"
+            )
+
+        for field in field_names:
+            if not isinstance(field, str):
+                raise TypeError(f"All field names must be strings, got a {type(field)}")
+
+        # Create a hashable key from the field names
+        key = tuple(field_names)
+
+        if key not in self._cache:
+            # Create a default class name, e.g., 'Row'
+            # rename=True handles Flink columns with chars invalid in Python
+            new_class = namedtuple("Row", field_names, rename=True)
+            logger.debug(
+                f"Created new namedtuple class for ROW with fields: {field_names}, "
+                f"resulting namedtuple fields: {new_class._fields}"
+            )  # pyright: ignore[reportAttributeAccessIssue]
+            self._cache[key] = new_class
+
+        return self._cache[key]
+
+    def register_namedtuple(self, user_namedtuple: type[tuple]) -> None:
+        """
+        Registers a user-provided namedtuple class against its field structure.
+
+        Raises TypeError if the provided object is not a namedtuple.
+        """
+
+        if not isinstance(user_namedtuple, type):
+            raise TypeError(
+                f"Expected a namedtuple subclass type, got an instance of {type(user_namedtuple)} instead"  # noqa: E501
+            )
+
+        # Check for duck-typed namedtuple: subclass of tuple + has _fields
+        if issubclass(user_namedtuple, tuple) and hasattr(user_namedtuple, "_fields"):
+            key = tuple(user_namedtuple._fields)  # pyright: ignore[reportAttributeAccessIssue]
+            # Update the cache to prefer the user's class for this structure
+            self._cache[key] = user_namedtuple
+        else:
+            raise TypeError("user_namedtuple is not a namedtuple subclass")
+
+
+_global_row_type_registry = RowTypeRegistry()
+
+
+def register_row_type(user_namedtuple: type[tuple]) -> None:
+    """
+    Register a user-provided namedtuple class by its field structure globally.
+    Ensures that when a ROW is returned from a query with matching field names
+    in the order as defined by the given namedtuple, the provided namedtuple class
+    will be used to return a query projected ROW payload instead of an
+    auto-generated namedtuple.
+
+    This is purely an optional operation offered to users who wish to have
+    specific namedtuple classes used for particular ROW types in query results.
+
+    Raises TypeError if the provided object is not a namedtuple.
+    """
+    _global_row_type_registry.register_namedtuple(user_namedtuple)
+
+
+class RowConverter(TypeConverter[tuple]):
+    """Convert Flink ROW type to/from Python tuple or namedtuple instances.
+
+    When converting from Flink ROW type, a namedtuple instance is returned,
+    with field names corresponding to the ROW's field names. The namedtuple
+    class is cached globally based on the field names, so that multiple
+    ROWs with the same field names share the same namedtuple class (even across
+    multiple RowConverter instances / separate queries or cursors).
+
+    When interpolating python tuples or namedtuples into statements strings,
+    the values are converted positionally field by field, and the resulting string is
+    of the form "ROW(field1_value, field2_value, ...)".
+    """
+
+    PRIMARY_FLINK_TYPE_NAME = "ROW"
+
+    _field_converters: list[TypeConverter]
+    """List of TypeConverter instances for each field in the row, in order."""
+    _field_names: list[str]
+    """List of field names in the row, in order."""
+    _namedtuple_class: type
+    """The namedtuple class corresponding to this row type's field names."""
+
+    def __init__(self, column_type: ColumnTypeDefinition):
+        if column_type.type_name != "ROW":
+            raise InterfaceError(
+                f"RowConverter can only be used with ROW types, got {column_type.type_name}"
+            )
+
+        if not column_type.fields:
+            raise InterfaceError("RowConverter requires column type definition with fields")
+
+        self._field_converters = []
+        self._field_names = []
+
+        for field_def in column_type.fields:
+            field_name = field_def.name
+            self._field_names.append(field_name)
+
+            field_type_def = field_def.type
+            if not field_type_def:
+                raise InterfaceError(
+                    f"RowConverter cannot determine type for field '{field_name}'."
+                )
+
+            field_converter_cls = _flink_type_name_to_converter_map.get(field_type_def.type_name)
+            if not field_converter_cls:
+                raise TypeError(
+                    f"Conversion for row field '{field_name}' of type "
+                    f"{field_type_def.type_name} is not implemented."
+                )
+
+            field_converter = field_converter_cls(field_type_def)
+            self._field_converters.append(field_converter)
+
+        # Get or create the namedtuple class for this row type's field names.
+        self._namedtuple_class = _global_row_type_registry.get_row_class(self._field_names)
+
+        super().__init__(column_type)
+
+    def to_python_value(self, response_value: FromResponseTypes) -> tuple | None:
+        """Expect list or None from the response value, return as namedtuple instance or raise
+        InterfaceError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, list):
+            raise InterfaceError(
+                f"Expected list value for RowConverter but got {type(response_value)}"
+            )
+
+        if len(response_value) != len(self._field_converters):
+            raise InterfaceError(
+                f"Expected {len(self._field_converters)} fields for RowConverter but got "
+                f"{len(response_value)}"
+            )
+
+        field_values = []
+        for field_name, converter, field_value in zip(
+            self._field_names, self._field_converters, response_value, strict=True
+        ):
+            # Each converter may raise if field value is unexpected type, range, etc.
+            try:
+                converted_field_value = converter.to_python_value(field_value)
+            except Exception as e:
+                raise InterfaceError(
+                    f"Error converting field '{field_name}' value in RowConverter: {e}"
+                ) from e
+
+            field_values.append(converted_field_value)
+
+        # Return an instance of the namedtuple class corresponding to the
+        # ROW's field names with the converted field values.
+        return self._namedtuple_class(*field_values)
+
+    @classmethod
+    def to_statement_string(cls, python_value: tuple) -> str:
+        """Convert a Python namedtuple instance to its for-statement-string-interpolation
+        representation, "(ROW(field1_value, field2_value, ...))".
+
+        (The whole expression must be wrapped in parentheses when used in a larger expression,
+        e.g., in an INSERT statement VALUES clause, otherwise strange parsing errors will occur.)
+        """
+
+        if not isinstance(python_value, tuple):
+            raise TypeError(
+                f"Expected a tuple instance for RowConverter but got {type(python_value)}"
+            )  # noqa: E501
+
+        field_strings: list[str] = []
+        for field_value in python_value:
+            # May raise InterfaceError if individual field is not of a handled type.
+            field_converter_cls = get_converter_for_python_value(field_value)
+
+            field_str = field_converter_cls.to_statement_string(field_value)
+            field_strings.append(field_str)
+
+        return f"(ROW({', '.join(field_strings)}))"
+
+
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
     "NULL": NullResultConverter,
@@ -1324,6 +1540,8 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "MAP": MapConverter,
     # Multiset type
     "MULTISET": MultisetConverter,
+    # Row type
+    "ROW": RowConverter,
 }
 
 
@@ -1344,7 +1562,29 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     list: ArrayConverter,
     dict: MapConverter,
     Counter: MultisetConverter,
+    tuple: RowConverter,  # well, namedtuple is a duck-typed subclass of tuple
 }
+
+SupportedPythonTypes: TypeAlias = (
+    None.__class__
+    | SqlNone
+    | bool
+    | int
+    | Decimal
+    | float
+    | date
+    | time
+    | str
+    | bytes
+    | datetime
+    | YearMonthInterval
+    | timedelta
+    | list
+    | dict
+    | Counter
+    | tuple
+)
+
 
 # Initialize static SqlNone members for common types, must be done after class definition
 # and after the global type maps are defined.
@@ -1362,6 +1602,29 @@ SqlNone.YEAR_MONTH_INTERVAL = SqlNone("INTERVAL YEAR TO MONTH")
 SqlNone.DAY_SECOND_INTERVAL = SqlNone("INTERVAL DAYS TO SECOND")
 
 
+def get_converter_for_python_value(python_value: SupportedPythonTypes) -> type[TypeConverter]:
+    """Get the TypeConverter class for the given Python value. Used prior to calling
+    converter_class.to_statement_string().
+
+    Raises InterfaceError if the type is not supported.
+    """
+    # Most converters can be found directly from the type of the value, other than
+    # namedtuples which are duck-typed subclasses of tuple.
+    value_type = type(python_value)
+
+    # Will find for most types, including if user has provided a plain tuple to be converted
+    # to a ROW.
+    converter_class = _python_type_to_type_converter.get(value_type)
+    if not converter_class and isinstance(python_value, tuple) and hasattr(python_value, "_fields"):
+        # namedtuples handled by RowConverter
+        converter_class = RowConverter
+
+    if not converter_class:
+        raise InterfaceError(f"Conversion for parameter of type {value_type} is not implemented.")
+
+    return converter_class
+
+
 def convert_statement_parameters(
     parameters: tuple | list,
 ) -> tuple:
@@ -1370,17 +1633,12 @@ def convert_statement_parameters(
 
     Returns: A tuple of string representations of the parameters.
     """
-    converted_params = []
-    for param in parameters:
-        converter_cls = _python_type_to_type_converter.get(type(param))
-        if not converter_cls:
-            raise InterfaceError(
-                f"Conversion for parameter of type {type(param)} is not implemented."
-            )
-        param_as_flink_string = converter_cls.to_statement_string(param)
-        converted_params.append(param_as_flink_string)
 
-    return tuple(converted_params)
+    # get_converter_for_python_value() may raise InterfaceError if any parameter's type is
+    # not supported.
+    return tuple(
+        get_converter_for_python_value(param).to_statement_string(param) for param in parameters
+    )
 
 
 def determine_element_converter_cls(python_value: Iterable) -> type[TypeConverter]:
@@ -1400,8 +1658,10 @@ def determine_element_converter_cls(python_value: Iterable) -> type[TypeConverte
     else:
         raise ValueError("Cannot determine element type: all elements are None.")
 
-    converter_cls = _python_type_to_type_converter.get(type(element))
-    if not converter_cls:
-        raise TypeError(f"Conversion for array element of type {type(element)} is not implemented.")
-
-    return converter_cls
+    # Will raise InterfaceError if type not supported.
+    try:
+        return get_converter_for_python_value(element)
+    except InterfaceError as e:
+        raise InterfaceError(
+            f"Conversion for array element of type {type(element)} is not implemented."
+        ) from e
