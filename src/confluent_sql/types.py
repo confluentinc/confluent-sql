@@ -1242,22 +1242,30 @@ class MultisetConverter(TypeConverter[Counter]):
             return None
 
         if not isinstance(response_value, list):
-            raise TypeError(
+            raise InterfaceError(
                 f"Expected list value for MultisetConverter but got {type(response_value)}"
             )
 
-        result_counter = Counter()
+        result_counter: Counter = Counter()
         for pair in response_value:
-            if not isinstance(pair, list) or len(pair) != 2:  # noqa: PLR2004
-                raise ValueError(
-                    f"Expected element + count pair list for MultisetConverter but got: {pair}"
+            if not isinstance(pair, list):
+                raise InterfaceError(
+                    f"Expected to receive value+count list for MultisetConverter, but got {type(pair)} instead."  # noqa: E501
                 )
+            try:
+                left, right = pair
+            except Exception as e:
+                raise InterfaceError(
+                    f"Expected element + count pair list for MultisetConverter but got: {pair}"
+                ) from e
 
-            element = self.element_converter.to_python_value(pair[0])
+            element = self.element_converter.to_python_value(left)
+            if element is None:
+                raise InterfaceError("Expected element for MultisetConverter but got None")
 
-            count = self.int_converter.to_python_value(pair[1])
-            if not isinstance(count, int):
-                raise ValueError(f"Expected integer count for MultisetConverter but got: {count}")
+            count = self.int_converter.to_python_value(right)
+            if count is None:
+                raise InterfaceError("Expected integer count for MultisetConverter but got None")
 
             result_counter[element] = count
 

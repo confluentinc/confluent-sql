@@ -1522,55 +1522,55 @@ class TestMultisetConverter:
             )
         )
 
-    def test_to_python_value_invalid_type(self):
-        multiset_converter = MultisetConverter(
-            ColumnTypeDefinition(
-                type="MULTISET",
-                nullable=True,
-                element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
-            )
+    integer_multiset_converter = MultisetConverter(
+        ColumnTypeDefinition(
+            type="MULTISET",
+            nullable=True,
+            element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
         )
+    )
+
+    def test_to_python_value_invalid_type(self):
         with pytest.raises(
-            TypeError,
+            InterfaceError,
             match="Expected list value for MultisetConverter but got <class 'str'>",
         ):
-            multiset_converter.to_python_value("not a multiset")  # type: ignore
+            self.integer_multiset_converter.to_python_value("not a multiset")  # type: ignore
+
+    def test_to_python_value_hates_inner_nonlist(self):
+        with pytest.raises(
+            InterfaceError,
+            match="Expected to receive value\\+count list",
+        ):
+            self.integer_multiset_converter.to_python_value(["not an inner pair list"])
 
     @pytest.mark.parametrize(
         "from_json_payload",
         [
             [["10", "2", "20"]],  # inner list not of length 2
             [["10", "2"], ["30"]],  # second inner list not of length 2
-            ["10", "2"],  # not a list of lists
         ],
     )
     def test_to_python_value_hates_nonpair_elements(self, from_json_payload: list):
-        multiset_converter = MultisetConverter(
-            ColumnTypeDefinition(
-                type="MULTISET",
-                nullable=True,
-                element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
-            )
-        )
         with pytest.raises(
-            ValueError,
+            InterfaceError,
             match="Expected element \\+ count pair list",
         ):
-            multiset_converter.to_python_value(from_json_payload)
+            self.integer_multiset_converter.to_python_value(from_json_payload)
 
     def test_to_python_value_hates_null_count(self):
-        multiset_converter = MultisetConverter(
-            ColumnTypeDefinition(
-                type="MULTISET",
-                nullable=True,
-                element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
-            )
-        )
         with pytest.raises(
-            ValueError,
+            InterfaceError,
             match="Expected integer count",
         ):
-            multiset_converter.to_python_value([["10", None]])
+            self.integer_multiset_converter.to_python_value([["10", None]])
+
+    def test_to_python_value_hates_null_value(self):
+        with pytest.raises(
+            InterfaceError,
+            match="Expected element.*but got None",
+        ):
+            self.integer_multiset_converter.to_python_value([[None, "10"]])
 
     @pytest.mark.parametrize(
         "key_flink_type,from_json_payload, expected",
@@ -1600,18 +1600,11 @@ class TestMultisetConverter:
         assert result == expected
 
     def test_to_statement_string_raises(self):
-        multiset_converter = MultisetConverter(
-            ColumnTypeDefinition(
-                type="MULTISET",
-                nullable=True,
-                element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
-            )
-        )
         with pytest.raises(
             InterfaceError,
             match="Flink does not currently support MULTISET literals",
         ):
-            multiset_converter.to_statement_string(Counter({10: 2, 20: 3}))
+            self.integer_multiset_converter.to_statement_string(Counter({10: 2, 20: 3}))
 
 
 @pytest.mark.unit
