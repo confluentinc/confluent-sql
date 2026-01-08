@@ -1326,7 +1326,7 @@ class RowTypeRegistry:
             # rename=True handles Flink columns with chars invalid in Python
             new_class = namedtuple("Row", field_names, rename=True)
             logger.debug(
-                f"Created new namedtuple class for ROW with fields: {field_names},"
+                f"Created new namedtuple class for ROW with fields: {field_names}, "
                 f"resulting namedtuple fields: {new_class._fields}"
             )  # pyright: ignore[reportAttributeAccessIssue]
             self._cache[key] = new_class
@@ -1361,8 +1361,9 @@ def register_row_type(user_namedtuple: type[tuple]) -> None:
     """
     Register a user-provided namedtuple class by its field structure globally.
     Ensures that when a ROW is returned from a query with matching field names
-    in the order as defined by the given namedtuple, the user's namedtuple class
-    will be used to return the ROW payload instead of an auto-generated namedtuple.
+    in the order as defined by the given namedtuple, the provided namedtuple class
+    will be used to return a query projected ROW payload instead of an
+    auto-generated namedtuple.
 
     This is purely an optional operation offered to users who wish to have
     specific namedtuple classes used for particular ROW types in query results.
@@ -1434,7 +1435,7 @@ class RowConverter(TypeConverter[tuple]):
 
     def to_python_value(self, response_value: FromResponseTypes) -> tuple | None:
         """Expect list or None from the response value, return as namedtuple instance or raise
-        ValueError."""
+        InterfaceError."""
         if response_value is None:
             return None
 
@@ -1483,7 +1484,7 @@ class RowConverter(TypeConverter[tuple]):
 
         field_strings: list[str] = []
         for field_value in python_value:
-            # May raise ValueError if individual field is not of a handled type.
+            # May raise InterfaceError if individual field is not of a handled type.
             field_converter_cls = get_converter_for_python_value(field_value)
 
             field_str = field_converter_cls.to_statement_string(field_value)
@@ -1605,7 +1606,7 @@ def get_converter_for_python_value(python_value: SupportedPythonTypes) -> type[T
     """Get the TypeConverter class for the given Python value. Used prior to calling
     converter_class.to_statement_string().
 
-    Raises TypeError if the type is not supported.
+    Raises InterfaceError if the type is not supported.
     """
     # Most converters can be found directly from the type of the value, other than
     # namedtuples which are duck-typed subclasses of tuple.
