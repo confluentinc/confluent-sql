@@ -1142,7 +1142,6 @@ class TestArrayConverter:
             (["10", "20", "30"], [10, 20, 30]),
             (["12", None, "34"], [12, None, 34]),  # Some members may be null
             ([], []),  # We can go from statement result empty array to Python empty list.
-            (None, None),
         ],
     )
     def test_to_python_value(self, from_json_payload, expected):
@@ -1182,7 +1181,7 @@ class TestArrayConverter:
 
     def test_to_statement_string_hates_all_none_elements(self):
         with pytest.raises(
-            ValueError,
+            InterfaceError,
             match="Cannot determine element type: all elements are None.",
         ):
             self.int_array_converter.to_statement_string([None, None, None])

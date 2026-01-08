@@ -1650,13 +1650,13 @@ def determine_element_converter_cls(python_value: Iterable) -> type[TypeConverte
 
     Returns: The TypeConverter class for the type of the first non-None element.
 
-    Raises: ValueError if the element type is not supported.
+    Raises: InterfaceError if the element type is not supported.
     """
     for element in python_value:
         if element is not None:
             break
     else:
-        raise ValueError("Cannot determine element type: all elements are None.")
+        raise InterfaceError("Cannot determine element type: all elements are None.")
 
     # Will raise InterfaceError if type not supported.
     try:
