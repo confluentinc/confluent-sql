@@ -19,7 +19,7 @@ from .exceptions import (
     ProgrammingError,
     Warning,
 )
-from .types import SqlNone, YearMonthInterval
+from .types import SqlNone, YearMonthInterval, register_row_type
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -45,4 +45,5 @@ __all__ = [
     "paramstyle",
     "SqlNone",
     "YearMonthInterval",
+    "register_row_type",
 ]
