@@ -1,6 +1,6 @@
 """Unit tests over type conversion between Flink and Python types."""
 
-from collections import Counter
+from collections import Counter, namedtuple
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -21,6 +21,9 @@ from confluent_sql.types import (
     MapConverter,
     MultisetConverter,
     NullResultConverter,
+    RowColumn,
+    RowConverter,
+    RowTypeRegistry,
     SqlNone,
     SqlNoneConverter,
     StringConverter,
@@ -1022,6 +1025,16 @@ class TestConvertStatementParameters:
     """Unit tests over convert_statement_parameters(), proving that the
     expected type converters are registered and used."""
 
+    def test_cannot_find_converter_for_unsupported_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="Conversion for parameter of type <class 'object'> is not implemented",
+        ):
+            # Won't be able to find a converter for object()
+            convert_statement_parameters(
+                [SqlNone.INTEGER, "test", 123.45, object()]  # type: ignore
+            )
+
     value_expected_string_pairs = [
         (SqlNone.INTEGER, "cast (null as INTEGER)"),
         (SqlNone(int), "cast (null as INTEGER)"),
@@ -1125,10 +1138,10 @@ class TestArrayConverter:
     @pytest.mark.parametrize(
         "from_json_payload, expected",
         [
+            (None, None),
             (["10", "20", "30"], [10, 20, 30]),
             (["12", None, "34"], [12, None, 34]),  # Some members may be null
             ([], []),  # We can go from statement result empty array to Python empty list.
-            (None, None),
         ],
     )
     def test_to_python_value(self, from_json_payload, expected):
@@ -1154,7 +1167,7 @@ class TestArrayConverter:
             pass
 
         with pytest.raises(
-            TypeError,
+            InterfaceError,
             match="Conversion for array element of type .* is not implemented.",
         ):
             self.int_array_converter.to_statement_string([UserObject(), UserObject()])
@@ -1168,7 +1181,7 @@ class TestArrayConverter:
 
     def test_to_statement_string_hates_all_none_elements(self):
         with pytest.raises(
-            ValueError,
+            InterfaceError,
             match="Cannot determine element type: all elements are None.",
         ):
             self.int_array_converter.to_statement_string([None, None, None])
@@ -1609,6 +1622,253 @@ class TestMultisetConverter:
 
 @pytest.mark.unit
 @pytest.mark.typeconv
+class TestRowTypeRegistry:
+    """Unit tests over RowTypeRegistry functionality."""
+
+    def test_get_row_class_bad_field_names_type(self):
+        registry = RowTypeRegistry()
+        with pytest.raises(
+            TypeError,
+            match="field_names must be a list or tuple of strings",
+        ):
+            registry.get_row_class(field_names="not a list")  # type: ignore
+
+    def test_get_row_class_bad_field_name_element(self):
+        registry = RowTypeRegistry()
+        with pytest.raises(
+            TypeError,
+            match="All field names must be strings",
+        ):
+            registry.get_row_class(field_names=["valid", 123])  # type: ignore
+
+    def test_get_row_class_caches_classes(self):
+        registry = RowTypeRegistry()
+        field_names = ["field1", "field2", "field3"]
+        row_class_1 = registry.get_row_class(field_names=field_names)
+        assert issubclass(row_class_1, tuple), "Expected row class to be subclass of tuple"
+        assert row_class_1._fields == tuple(field_names), "Field names do not match"  # pyright: ignore[reportAttributeAccessIssue]
+        row_class_2 = registry.get_row_class(field_names=field_names)
+        assert row_class_1 is row_class_2, "Expected same class instance from cache"
+
+    def test_register_user_types_hates_instances(self):
+        registry = RowTypeRegistry()
+
+        with pytest.raises(
+            TypeError,
+            match="Expected a namedtuple subclass type, got an instance of <class 'list'> instead",
+        ):
+            registry.register_namedtuple(["not", "a", "namedtuple", "class"])  # type: ignore
+
+    class NotATuple:
+        pass
+
+    @pytest.mark.parametrize(
+        "not_a_namedtuple_class",
+        [
+            int,
+            dict,
+            NotATuple,
+        ],
+    )
+    def test_register_user_type_hates_non_namedtuple_subclasses(self, not_a_namedtuple_class):
+        registry = RowTypeRegistry()
+
+        with pytest.raises(
+            TypeError,
+            match="is not a namedtuple subclass",
+        ):
+            registry.register_namedtuple(not_a_namedtuple_class)  # type: ignore
+
+    def test_register_user_type_caches_class(self):
+        registry = RowTypeRegistry()
+
+        MyRowType = namedtuple("MyRowType", ["a", "b", "c"])
+
+        registry.register_namedtuple(MyRowType)
+        retrieved_class = registry.get_row_class(field_names=["a", "b", "c"])
+        assert retrieved_class is MyRowType, "Expected to retrieve the registered namedtuple class"
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestRowConverter:
+    """Unit tests over RowConverter."""
+
+    def test_constructor_hates_non_row_type(self):
+        with pytest.raises(
+            InterfaceError,
+            match="RowConverter can only be used with ROW types, got INTEGER",
+        ):
+            RowConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+
+    def test_constructor_hates_missing_field_types(self):
+        with pytest.raises(
+            InterfaceError,
+            match="RowConverter requires column type definition with fields",
+        ):
+            RowConverter(ColumnTypeDefinition(type="ROW", nullable=False))
+
+    def test_constructor_hates_empty_field_types(self):
+        with pytest.raises(
+            InterfaceError,
+            match="RowConverter cannot determine type for field 'empty_type'",
+        ):
+            RowConverter(
+                ColumnTypeDefinition(
+                    type="ROW",
+                    nullable=False,
+                    fields=[
+                        RowColumn(name="empty_type", field_type=None)  # type: ignore
+                    ],
+                )
+            )
+
+    def test_constructor_hates_unknown_field_types(self):
+        with pytest.raises(
+            TypeError,
+            match="Conversion for row field 'unknown_type' of type UNKNOWN is not implemented.",
+        ):
+            RowConverter(
+                ColumnTypeDefinition(
+                    type="ROW",
+                    nullable=False,
+                    fields=[
+                        RowColumn(
+                            name="unknown_type",
+                            field_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
+                        )  # type: ignore
+                    ],
+                )
+            )
+
+    @pytest.fixture
+    def str_int_row_converter(self) -> RowConverter:
+        return RowConverter(
+            ColumnTypeDefinition(
+                type="ROW",
+                nullable=False,
+                fields=[
+                    RowColumn(
+                        name="str_field",
+                        field_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                    ),
+                    RowColumn(
+                        name="int_field",
+                        field_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+                    ),
+                ],
+            )
+        )
+
+    def test_constructor_accepts_supported_field_types(self, str_int_row_converter):
+        assert isinstance(str_int_row_converter, RowConverter)
+
+    def test_to_python_value_invalid_type(self, str_int_row_converter):
+        with pytest.raises(
+            InterfaceError,
+            match="Expected list value for RowConverter but got <class 'str'>",
+        ):
+            str_int_row_converter.to_python_value("not a list")  # type: ignore
+
+    def test_to_python_value_invalid_field_count(self, str_int_row_converter):
+        with pytest.raises(
+            InterfaceError,
+            match="Expected 2 fields for RowConverter but got 3",
+        ):
+            str_int_row_converter.to_python_value(["one", "2", "extra"])  # type: ignore
+
+    def test_to_python_value_invalid_field_type(self, str_int_row_converter):
+        with pytest.raises(
+            InterfaceError,
+            match="Error converting field 'int_field'.*invalid literal for int",
+        ):
+            # Gets an error when deferring to the fieldwise converter for the integer field.
+            str_int_row_converter.to_python_value(["valid string", "not an int"])  # type: ignore
+
+    def test_to_python_value_returns_none_for_null_input(self, str_int_row_converter):
+        result = str_int_row_converter.to_python_value(None)
+        assert result is None
+
+    def test_to_python_value_success(self, str_int_row_converter):
+        from_json_payload = ["hello", "123"]
+        expected = ("hello", 123)
+        result = str_int_row_converter.to_python_value(from_json_payload)
+        assert result == expected
+        # And also is a namedtuple with correct field names ...
+        assert result.str_field == "hello"  # pyright: ignore[reportAttributeAccessIssue]
+        assert result.int_field == 123  # pyright: ignore[reportAttributeAccessIssue]  # noqa: PLR2004
+
+        # And decoding multiple rows (such as multiple rows in same result set, or across queries)
+        # will reuse the same namedtuple class ...
+        another_payload = ["world", "456"]
+        another_result = str_int_row_converter.to_python_value(another_payload)
+        assert another_result.__class__ is result.__class__
+
+    @pytest.mark.parametrize(
+        "bad_python_value",
+        [
+            "not a tuple",
+            12,
+            ["list", "instead", "of", "tuple"],
+            {"a": 1, "b": 2},
+        ],
+    )
+    def test_to_statement_string_invalid_type(self, bad_python_value):
+        with pytest.raises(
+            TypeError,
+            match="Expected a tuple instance for RowConverter but got",
+        ):
+            RowConverter.to_statement_string(bad_python_value)  # type: ignore
+
+    ComplexRow = namedtuple(
+        "ComplexRow",
+        [
+            "id",
+            "name",
+            "scores",
+            "attributes",
+        ],
+    )
+
+    NestedRow = namedtuple(
+        "NestedRow",
+        [
+            "user",
+            "details",
+        ],
+    )
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (
+                # a simple tuple-based row
+                (1, "test"),
+                "(ROW(1, 'test'))",
+            ),
+            (
+                # A namedtuple-based row with various field types
+                ComplexRow(1, "Alice", [95, 88, 92], {"height": 165, "weight": 60}),
+                "(ROW(1, 'Alice', ARRAY[95, 88, 92], MAP['height', 165, 'weight', 60]))",
+            ),
+            (
+                # A nested-namedtuple-based row
+                NestedRow(
+                    user=ComplexRow(2, "Bob", [78, 85], {"age": 30}),
+                    details=ComplexRow(3, "Charlie", [90, 91, 92], {"city": "New York"}),
+                ),
+                "(ROW((ROW(2, 'Bob', ARRAY[78, 85], MAP['age', 30])), (ROW(3, 'Charlie',"
+                " ARRAY[90, 91, 92], MAP['city', 'New York']))))",
+            ),
+        ],
+    )
+    def test_to_statement_string_success(self, value, expected):
+        result = RowConverter.to_statement_string(value)
+        assert result == expected
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
 @pytest.mark.parametrize("converter_cls", set(_flink_type_name_to_converter_map.values()))
 def test_converter_wiring(converter_cls):
     """Ensure that the PRIMARY_FLINK_TYPE_NAME class attribute for the converter
@@ -1648,15 +1908,22 @@ class TestSqlNone:
             "TIMESTAMP_WITH_LOCAL_TIME_ZONE",
             "INTERVAL_DAY_TIME",
             "INTERVAL_YEAR_MONTH",
-            "ARRAY",
+            "ARRAY[INTEGER]",
+            "MAP<STRING, INTEGER>",
+            "MULTISET<STRING>",
+            "ROW<field1 INTEGER, field2 STRING>",
+            # Prove that we don't mangle the case of the field names within ROW types, esp.
+            # within backticks.
+            "ROW<name STRING, age INT, `foo_bar_BLAT` BOOLEAN>",
         ],
     )
     def test_from_flink_type_name(self, flink_type_name):
         # test with both upper and lower case type names ...
+
         for type_name in (flink_type_name, flink_type_name.lower()):
             annotated_null = SqlNone(type_name)
-            assert annotated_null._flink_type_name == flink_type_name
-            assert str(annotated_null) == f"cast (null as {type_name.upper()})"
+            assert annotated_null._flink_type_name == type_name
+            assert str(annotated_null) == f"cast (null as {type_name})"
 
     @pytest.mark.parametrize(
         "python_type, flink_type_name",
