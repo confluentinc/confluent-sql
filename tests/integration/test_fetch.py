@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
@@ -238,6 +239,78 @@ class TestCursorFetch:
                 "interval_year_month": YearMonthInterval(years=7, months=11),
                 "interval_neg_zero_year_month": YearMonthInterval(years=0, months=-4),
                 "interval_neg_overflow_year_month": YearMonthInterval(years=-2, months=-11),
+            }
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_decoding_multiset(
+        self,
+        connection: Connection,
+    ):
+        """Test decoding for multiset type."""
+        # There is no supported way to construct multiset literals in Flink SQL
+        # at this time, but we can construct one via COLLECT aggregation over
+        # a set of rows.
+
+        # The multiset is mapped to a Python-side collections.Counter.
+        with connection.closing_cursor(as_dict=True) as cursor:
+            # Three apples, two bananas, one orange.
+            cursor.execute(
+                """
+                WITH fruits AS (
+                    SELECT *
+                    FROM (VALUES
+                        ('apple'),
+                        ('banana'),
+                        ('apple'),
+                        ('orange'),
+                        ('banana')
+                    ) AS t(fruit)
+                )
+
+                SELECT COLLECT (fruit) AS fruit_multiset
+                FROM fruits
+                """
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "fruit_multiset": Counter({"apple": 2, "banana": 2, "orange": 1}),
+            }
+
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_decoding_empty_multiset(
+        self,
+        connection: Connection,
+    ):
+        """Test decoding an empty multiset."""
+        # There is no supported way to construct multiset literals in Flink SQL
+        # at this time, but we can construct one via COLLECT aggregation over
+        # a set of rows.
+
+        # The multiset is mapped to an empty Python-side collections.Counter.
+        with connection.closing_cursor(as_dict=True) as cursor:
+            # The single NULL value will be ignored by COLLECT, resulting in an empty multiset.
+            cursor.execute(
+                """
+                WITH fruits AS (
+                    SELECT *
+                    FROM (VALUES
+                        (cast(NULL AS STRING))
+                    ) AS t(fruit)
+                )
+
+                SELECT COLLECT (fruit) AS fruit_multiset
+                FROM fruits
+                """
+            )
+
+            results = cursor.fetchone()
+
+            assert results == {
+                "fruit_multiset": Counter(),
             }
 
     @pytest.mark.slow

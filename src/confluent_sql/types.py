@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -19,9 +20,11 @@ a TypeConverter subclass."""
 
 
 if TYPE_CHECKING:
-    from .statement import ColumnTypeDefinition, Schema
+    from .statement import Schema
 
 __all__ = [
+    "ColumnTypeDefinition",
+    "StrAnyDict",
     "StatementTypeConverter",
     "TypeConverter",
     "convert_statement_parameters",
@@ -43,6 +46,98 @@ FromResponseTypes: TypeAlias = FromResponseScalarTypes | list["FromResponseTypes
 Describes all possible encoding types returned from from-response API calls, including
 nested row types.
 """
+
+StrAnyDict: TypeAlias = dict[str, Any]
+
+
+@dataclass
+class RowColumn:
+    """Fields corresponding to statement.traits.schema.columns[].type.fields members.
+    Used when the column type is a ROW.
+    Would be identical to Column, but the field carrying the type information is named differently.
+    """
+
+    name: str
+    field_type: ColumnTypeDefinition
+    description: str | None = None
+
+    @property
+    def type(self) -> ColumnTypeDefinition:
+        """Alias for field_type to match Column. The API design is inconsistent here."""
+        return self.field_type
+
+    @classmethod
+    def from_response(cls, data: StrAnyDict) -> RowColumn:
+        column_type = ColumnTypeDefinition.from_response(data["type"])
+        return cls(name=data["name"], field_type=column_type, description=data.get("description"))
+
+
+@dataclass(kw_only=True)
+class ColumnTypeDefinition:
+    """Fields corresponding to statement.traits.schema.columns[].type members.
+
+    Describes the Flink-side type definition of a projected column.
+    """
+
+    type: str
+    """Flink name of the type, e.g., "INT", "STRING", "ROW", etc."""
+    nullable: bool
+    length: int | None = None
+    precision: int | None = None
+    scale: int | None = None
+    fractional_precision: int | None = None  # if an interval type
+    resolution: str | None = None  # if an interval type
+    key_type: ColumnTypeDefinition | None = None  # if type == "MAP"
+    value_type: ColumnTypeDefinition | None = None  # if type == "MAP"
+    element_type: ColumnTypeDefinition | None = None  # if type == "ARRAY" or "MULTISET"
+
+    fields: list[RowColumn] | None = None
+    """The interior fields of a ROW type, if applicable."""
+
+    class_name: str | None = None
+    """The Flink-side class name of the structured data type (if applicable)."""
+
+    @property
+    def type_name(self) -> str:
+        """Return the Flink type name. Aliasing for clarity."""
+        return self.type
+
+    @classmethod
+    def from_response(cls, data: StrAnyDict) -> ColumnTypeDefinition:
+        """Create a ColumnTypeDefinition from JSON response data within from-API statement traits"""
+
+        element_type = key_type = value_type = None
+
+        column_type = data["type"]
+
+        if column_type in {"ARRAY", "MULTISET"}:
+            element_type = data.get("element_type")
+            if element_type is not None:
+                # Describes the element type of an ARRAY or a MULTISET.
+                # Promote from element type dict to a ColumnTypeDefinition
+                element_type = cls.from_response(data["element_type"])
+
+        elif column_type == "MAP":
+            # For MAP types, we need to parse key_type and value_type specially.
+            key_type = cls.from_response(data["key_type"])
+            value_type = cls.from_response(data["value_type"])
+
+        return cls(
+            type=column_type,
+            nullable=data["nullable"],
+            length=data.get("length"),
+            precision=data.get("precision"),
+            scale=data.get("scale"),
+            fractional_precision=data.get("fractional_precision"),
+            resolution=data.get("resolution"),
+            key_type=key_type,
+            value_type=value_type,
+            element_type=element_type,
+            fields=[RowColumn.from_response(field) for field in data.get("fields", [])]
+            if "fields" in data
+            else None,
+            class_name=data.get("class_name"),
+        )
 
 
 class StatementTypeConverter:
@@ -895,7 +990,7 @@ class ArrayConverter(TypeConverter[list]):
     """Type converter for array element type."""
 
     def __init__(self, column_type: ColumnTypeDefinition):
-        if not column_type.type_name == "ARRAY":
+        if column_type.type_name != "ARRAY":
             raise InterfaceError(
                 f"ArrayConverter can only be used with ARRAY types, got {column_type.type_name}"
             )
@@ -989,7 +1084,7 @@ class MapConverter(TypeConverter[dict]):
     """Type converter for map value type."""
 
     def __init__(self, column_type: ColumnTypeDefinition):
-        if not column_type.type_name == "MAP":
+        if column_type.type_name != "MAP":
             raise InterfaceError(
                 f"MapConverter can only be used with MAP types, got {column_type.type_name}"
             )
@@ -1095,6 +1190,93 @@ class MapConverter(TypeConverter[dict]):
         return f"MAP[{', '.join(keys_and_values)}]"
 
 
+class MultisetConverter(TypeConverter[Counter]):
+    """Handles Flink MULTISET type to/from Python collections.Counter.
+
+    A MULTISET is like a MAP from element to count, where the count is an integer
+    representing the number of occurrences of the element in the multiset.
+    This is mapped to Python's collections.Counter class.
+
+    The Counter must not be empty, since we need at least one non-None key element
+    to determine the key type for conversion.
+    """
+
+    PRIMARY_FLINK_TYPE_NAME = "MULTISET"
+
+    element_converter: TypeConverter
+    """Type converter for the multiset's element / key type."""
+
+    int_converter: IntegerConverter
+    """Integer converter for the counts portion of the multiset."""
+
+    def __init__(self, column_type: ColumnTypeDefinition):
+        if column_type.type_name != "MULTISET":
+            raise InterfaceError(
+                f"MultisetConverter can only be used with MULTISET types, got {column_type.type_name}"  # noqa: E501
+            )
+
+        # Determine the element type's converter from the column_type's type parameters.
+        element_type_def = column_type.element_type
+        if not element_type_def:
+            raise InterfaceError(
+                "MultisetConverter cannot determine element type from column type definition."
+            )
+
+        element_converter_cls = _flink_type_name_to_converter_map.get(element_type_def.type_name)
+        if not element_converter_cls:
+            raise TypeError(
+                f"Conversion for multiset element of type {element_type_def.type_name} is not implemented."  # noqa: E501
+            )
+
+        self.element_converter = element_converter_cls(element_type_def)
+
+        # Always use IntegerConverter for the corresponding counts.
+        self.int_converter = IntegerConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+
+        super().__init__(column_type)
+
+    def to_python_value(self, response_value: FromResponseTypes) -> Counter | None:
+        """Expect list of [element, count] pairs or None from the response value,
+        return as Counter or raise ValueError."""
+        if response_value is None:
+            return None
+
+        if not isinstance(response_value, list):
+            raise InterfaceError(
+                f"Expected list value for MultisetConverter but got {type(response_value)}"
+            )
+
+        result_counter: Counter = Counter()
+        for pair in response_value:
+            if not isinstance(pair, list):
+                raise InterfaceError(
+                    f"Expected to receive value+count list for MultisetConverter, but got {type(pair)} instead."  # noqa: E501
+                )
+            try:
+                left, right = pair
+            except Exception as e:
+                raise InterfaceError(
+                    f"Expected element + count pair list for MultisetConverter but got: {pair}"
+                ) from e
+
+            element = self.element_converter.to_python_value(left)
+            if element is None:
+                raise InterfaceError("Expected element for MultisetConverter but got None")
+
+            count = self.int_converter.to_python_value(right)
+            if count is None:
+                raise InterfaceError("Expected integer count for MultisetConverter but got None")
+
+            result_counter[element] = count
+
+        return result_counter
+
+    @classmethod
+    def to_statement_string(cls, python_value: Counter) -> str:
+        """Flink does not currently support any literal MULTISET syntax."""
+        raise InterfaceError("Flink does not currently support MULTISET literals.")
+
+
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
     "NULL": NullResultConverter,
@@ -1140,6 +1322,8 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "ARRAY": ArrayConverter,
     # Map type
     "MAP": MapConverter,
+    # Multiset type
+    "MULTISET": MultisetConverter,
 }
 
 
@@ -1159,6 +1343,7 @@ _python_type_to_type_converter: dict[type, type[TypeConverter]] = {
     timedelta: DaysIntervalConverter,
     list: ArrayConverter,
     dict: MapConverter,
+    Counter: MultisetConverter,
 }
 
 # Initialize static SqlNone members for common types, must be done after class definition
