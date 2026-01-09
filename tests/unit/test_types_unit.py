@@ -217,9 +217,7 @@ class TestNullConverter:
         assert self.converter.to_python_value(None) is None
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError, match="Expected None value for NullConverter but got <class 'int'>"
-        ):
+        with ensure_raises_typemismatch("NoneType"):
             self.converter.to_python_value(123)  # type: ignore
 
     def test_to_statement_string_always_throws(self):
@@ -240,10 +238,7 @@ class TestSqlNoneConverter:
             converter.to_python_value("12")
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected SqlNone value for SqlNoneConverter but got <class 'int'>",
-        ):
+        with ensure_raises_typemismatch("SqlNone"):
             SqlNoneConverter.to_statement_string(123)  # type: ignore
 
     def test_to_statement_string(self):
@@ -323,9 +318,7 @@ class TestVarBinaryConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError, match="Expected string value for VarBinaryConverter but got <class 'int'>"
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123)  # type: ignore
 
     def test_to_python_value_invalid_format(self):
@@ -356,10 +349,7 @@ class TestVarBinaryConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected bytes value for VarBinaryConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("bytes"):
             VarBinaryConverter.to_statement_string("hello")  # type: ignore
 
 
@@ -375,10 +365,7 @@ class TestIntegerConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected integers to be encoded as JSON strings but got <class 'int'>",
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
@@ -394,10 +381,7 @@ class TestIntegerConverter:
         assert result == expected
 
     def test_to_statement_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python integer value for IntegerConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("int"):
             IntegerConverter.to_statement_string("123")  # type: ignore
 
 
@@ -413,10 +397,7 @@ class TestDecimalConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected decimal to be encoded as JSON strings but got <class 'int'>",
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
@@ -432,10 +413,7 @@ class TestDecimalConverter:
         assert result == expected
 
     def test_to_statement_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python Decimal value for DecimalConverter but got <class 'int'>",
-        ):
+        with ensure_raises_typemismatch("Decimal"):
             DecimalConverter.to_statement_string(123)  # type: ignore
 
     def test_to_statement_guard_against_malicious_subclass(self):
@@ -485,10 +463,7 @@ class TestFloatConverter:
             assert result == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected float to be encoded as JSON string but got <class 'int'>",
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
@@ -514,10 +489,7 @@ class TestFloatConverter:
             FloatConverter.to_statement_string(bad_value)
 
     def test_to_statement_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python float value for FloatConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("float"):
             FloatConverter.to_statement_string("sdf")  # type: ignore
 
 
@@ -536,9 +508,7 @@ class TestBooleanConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError, match="Expected string value for BooleanConverter but got <class 'int'>"
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(1)  # type: ignore
 
     @pytest.mark.parametrize(
@@ -553,10 +523,7 @@ class TestBooleanConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python boolean value for BooleanConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("bool"):
             BooleanConverter.to_statement_string("TRUE")  # type: ignore
 
 
@@ -575,9 +542,7 @@ class TestDateConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError, match="Expected date to be encoded as JSON string but got <class 'int'>"
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(20240615)  # type: ignore
 
     def test_to_python_value_invalid_format(self):
@@ -599,10 +564,7 @@ class TestDateConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python datetime.date value for DateConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("date"):
             DateConverter.to_statement_string("2024-06-15")  # type: ignore
 
 
@@ -621,9 +583,7 @@ class TestTimeConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError, match="Expected time to be encoded as JSON string but got <class 'int'>"
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123456)  # type: ignore
 
     def test_to_python_value_invalid_format(self):
@@ -646,10 +606,7 @@ class TestTimeConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python datetime.time value for TimeConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("time"):
             TimeConverter.to_statement_string("12:34:56.789")  # type: ignore
 
 
@@ -710,11 +667,8 @@ class TestTimestampConverter:
         assert converter.to_python_value(str_value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected timestamp to be encoded as JSON string but got <class 'bool'>",
-        ):
-            self.ts_converter.to_python_value(False)
+        with ensure_raises_typemismatch("str"):
+            self.ts_converter.to_python_value(False)  # type: ignore
 
     def test_to_python_value_hates_timezone_in_timestamp(self):
         """Ensure that if Flink serialization ever changes, we will notice, because
@@ -775,10 +729,7 @@ class TestTimestampConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python datetime.datetime value",
-        ):
+        with ensure_raises_typemismatch("datetime"):
             self.ts_converter.to_statement_string("2024-06-15 12:34:56")  # type: ignore
 
 
@@ -810,10 +761,7 @@ class TestYearMonthIntervalConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected interval to be encoded as JSON string",
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123)  # type: ignore
 
     def test_to_python_value_invalid_format(self):
@@ -835,10 +783,7 @@ class TestYearMonthIntervalConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python YearMonthInterval",
-        ):
+        with ensure_raises_typemismatch("YearMonthInterval"):
             YearMonthIntervalConverter.to_statement_string("2-06")  # type: ignore
 
 
@@ -903,10 +848,7 @@ class TestDaysIntervalConverter:
         assert self.converter.to_python_value(value) == expected
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected interval to be encoded as JSON string",
-        ):
+        with ensure_raises_typemismatch("str"):
             self.converter.to_python_value(123)  # type: ignore
 
     def test_to_python_value_invalid_format(self):
@@ -951,10 +893,7 @@ class TestDaysIntervalConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python timedelta",
-        ):
+        with ensure_raises_typemismatch("timedelta"):
             DaysIntervalConverter.to_statement_string("10 12:30:45.123")  # type: ignore
 
 
@@ -1131,10 +1070,7 @@ class TestArrayConverter:
     )
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected list value for ArrayConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("list"):
             self.int_array_converter.to_python_value("not an array")  # type: ignore
 
     def test_to_python_value_invalid_element(self):
@@ -1158,10 +1094,7 @@ class TestArrayConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected list value for ArrayConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("list"):
             self.int_array_converter.to_statement_string("not an array")  # type: ignore
 
     def test_to_statement_string_hates_empty_array(self):
@@ -1182,10 +1115,7 @@ class TestArrayConverter:
             self.int_array_converter.to_statement_string([UserObject(), UserObject()])
 
     def test_to_statement_string_hates_mixed_type_elements(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python integer value for IntegerConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("int"):
             self.int_array_converter.to_statement_string([1, "two", 3])
 
     def test_to_statement_string_hates_all_none_elements(self):
@@ -1329,8 +1259,8 @@ class TestMapConverter:
     )
 
     def test_to_python_value_expects_list_response_value(self):
-        with pytest.raises(TypeError, match="Expected list value for MapConverter"):
-            self.str_int_converter.to_python_value("sdf")
+        with ensure_raises_typemismatch("list"):
+            self.str_int_converter.to_python_value("sdf")  # type: ignore
 
     @pytest.mark.parametrize(
         "bad_value",
@@ -1456,7 +1386,7 @@ class TestMapConverter:
         assert result == expected
 
     def test_to_statement_string_hates_non_dict(self):
-        with pytest.raises(TypeError, match="Expected dict value"):
+        with ensure_raises_typemismatch("dict"):
             MapConverter.to_statement_string("sdf")  # type: ignore
 
     def test_to_statement_string_hates_empty_dict(self):
@@ -1464,12 +1394,12 @@ class TestMapConverter:
             MapConverter.to_statement_string({})  # type: ignore
 
     def test_to_statement_string_hates_inconsistent_key_types(self):
-        with pytest.raises(ValueError, match="Expected Python integer value"):
+        with ensure_raises_typemismatch("int"):
             # mixes integer and string keys
             MapConverter.to_statement_string({1: "sdf", "fgh": "ert"})
 
     def test_to_statement_string_hates_inconsistent_value_types(self):
-        with pytest.raises(ValueError, match="Expected Python integer value"):
+        with ensure_raises_typemismatch("int"):
             # mixes integer and string values
             MapConverter.to_statement_string({1: 1, 2: "two"})
 
@@ -1553,10 +1483,7 @@ class TestMultisetConverter:
     )
 
     def test_to_python_value_invalid_type(self):
-        with pytest.raises(
-            InterfaceError,
-            match="Expected list value for MultisetConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("list"):
             self.integer_multiset_converter.to_python_value("not a multiset")  # type: ignore
 
     def test_to_python_value_hates_inner_nonlist(self):
@@ -1773,10 +1700,7 @@ class TestRowConverter:
         assert isinstance(str_int_row_converter, RowConverter)
 
     def test_to_python_value_invalid_type(self, str_int_row_converter):
-        with pytest.raises(
-            InterfaceError,
-            match="Expected list value for RowConverter but got <class 'str'>",
-        ):
+        with ensure_raises_typemismatch("list"):
             str_int_row_converter.to_python_value("not a list")  # type: ignore
 
     def test_to_python_value_invalid_field_count(self, str_int_row_converter):
@@ -1823,10 +1747,7 @@ class TestRowConverter:
         ],
     )
     def test_to_statement_string_invalid_type(self, bad_python_value):
-        with pytest.raises(
-            TypeError,
-            match="Expected a tuple instance for RowConverter but got",
-        ):
+        with ensure_raises_typemismatch("tuple"):
             RowConverter.to_statement_string(bad_python_value)  # type: ignore
 
     ComplexRow = namedtuple(

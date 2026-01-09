@@ -46,6 +46,8 @@ class TypeMismatchError(InterfaceError):
     converting parameter values to SQL literals or when processing Flink statement
     results.
 
+    Subclass of InterfaceError.
+
     Generally indicates a programming error in the driver."""
 
     def __init__(self, converter_name: str, method_name: str, expected_type: str, bad_value: Any):
