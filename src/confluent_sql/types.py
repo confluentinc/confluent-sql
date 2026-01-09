@@ -264,7 +264,8 @@ class StringConverter(TypeConverter[str, str]):
     PRIMARY_FLINK_TYPE_NAME = "STRING"
 
     def to_python_value(self, response_value: str | None) -> str | None:
-        """Expect string or None from the response value, return as-is or raise TypeMismatchError."""
+        """Expect string or None from the response value, return as-is or
+        raise TypeMismatchError."""
         if response_value is None:
             return None
 
