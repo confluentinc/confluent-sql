@@ -233,8 +233,7 @@ class TypeConverter(Generic[PyType, ResponseType]):
         expected_type: type,
         value: Any,
     ) -> None:
-        """Default implementation of parameter type checking for to_statement_string().
-        Returns value typed as PyType if the check succeeds."""
+        """Raises TypeMismatchError if the value is not of the expected Python type."""
         if not isinstance(value, expected_type):
             raise TypeMismatchError(
                 converter_name=cls.__name__,
