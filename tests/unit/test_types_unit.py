@@ -2,13 +2,14 @@
 
 from collections import Counter, namedtuple
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isnan
 
 import pytest
 
-from confluent_sql.exceptions import InterfaceError
+from confluent_sql.exceptions import InterfaceError, TypeMismatchError
 from confluent_sql.statement import ColumnTypeDefinition
 from confluent_sql.types import (
     ArrayConverter,
@@ -36,6 +37,19 @@ from confluent_sql.types import (
     convert_statement_parameters,
     get_api_type_converter,
 )
+
+
+@contextmanager
+def ensure_raises_typemismatch(
+    expected_type: str,
+):
+    """Context manager to ensure that a TypeMismatchError is raised with
+    the expected message."""
+    with pytest.raises(
+        TypeMismatchError,
+        match=(f"Expected {expected_type} value"),
+    ):
+        yield
 
 
 @pytest.mark.unit
@@ -249,9 +263,7 @@ class TestStringConverter:
 
     def test_to_python_value_invalid_type(self):
         converter = StringConverter(ColumnTypeDefinition(type="STRING", nullable=False))
-        with pytest.raises(
-            ValueError, match="Expected string value for StringConverter but got <class 'int'>"
-        ):
+        with ensure_raises_typemismatch("str"):
             converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
@@ -272,10 +284,7 @@ class TestStringConverter:
         assert result == expected
 
     def test_to_statement_string_invalid_type(self):
-        with pytest.raises(
-            ValueError,
-            match="Expected Python string value for StringConverter but got <class 'int'>",
-        ):
+        with ensure_raises_typemismatch("str"):
             StringConverter.to_statement_string(123)  # type: ignore
 
     def test_to_statement_guard_against_malicious_subclass(self):

@@ -13,7 +13,7 @@ from math import isinf, isnan
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
-from confluent_sql.exceptions import InterfaceError
+from confluent_sql.exceptions import InterfaceError, TypeMismatchError
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ __all__ = [
     "SqlNone",
     "YearMonthInterval",
     "register_row_type",
+    "TypeMismatchError",
 ]
 
 """
@@ -201,6 +202,44 @@ class TypeConverter(Generic[PyType]):
         """Convert from Python value to its for-statement-string-interpolation representation."""
         raise NotImplementedError("Subclasses should implement this method.")  # pragma: no cover
 
+    def _check_to_python_param_type(
+        self,
+        expected_type: type[PyType],
+        value: Any,
+    ) -> PyType:
+        """Default implementation of parameter type checking for to_python_value().
+        Returns value typed as PyType if the check succeeds."""
+        if not isinstance(value, expected_type):
+            raise TypeMismatchError(
+                converter_name=self.__class__.__name__,
+                method_name="to_python_value",
+                expected_type=expected_type.__name__,
+                bad_value=value,
+            )
+
+        # Return the proven-to-be-correct type value, because caller's signature
+        #
+        return value
+
+    @classmethod
+    def _check_to_statement_string_param_type(
+        cls,
+        expected_type: type,
+        value: Any,
+    ) -> None:
+        """Default implementation of parameter type checking for to_statement_string().
+        Returns value typed as PyType if the check succeeds."""
+        if not isinstance(value, expected_type):
+            raise TypeMismatchError(
+                converter_name=cls.__name__,
+                method_name="to_statement_string",
+                expected_type=expected_type.__name__,
+                bad_value=value,
+            )
+
+        # No need to return the value, because the caller's signature already
+        # types it appropriately.
+
 
 def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
     """Return the appropriate TypeConverter for a given from-Statement-JSON type description."""
@@ -223,12 +262,7 @@ class StringConverter(TypeConverter[str]):
         if response_value is None:
             return None
 
-        if not isinstance(response_value, str):
-            raise ValueError(
-                f"Expected string value for StringConverter but got {type(response_value)}"
-            )
-
-        return response_value
+        return self._check_to_python_param_type(str, response_value)
 
     @classmethod
     def to_statement_string(cls, python_value: str) -> str:
@@ -247,10 +281,7 @@ class StringConverter(TypeConverter[str]):
         ## do not need to be internally escaped in string literals.
         ##
 
-        if not isinstance(python_value, str):
-            raise ValueError(
-                f"Expected Python string value for StringConverter but got {type(python_value)}"
-            )
+        cls._check_to_statement_string_param_type(str, python_value)
 
         # Ensure we're dealing with a standard str here, and not a subclass
         # that might do something "creative" when we do string operations on it.

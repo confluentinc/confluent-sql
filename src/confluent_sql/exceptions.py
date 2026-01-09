@@ -5,6 +5,8 @@ This module defines the standard DB-API v2 exception hierarchy for the
 Confluent SQL driver.
 """
 
+from typing import Any
+
 
 class Warning(Exception):
     """
@@ -37,6 +39,20 @@ class InterfaceError(Error):
     """
 
     pass
+
+
+class TypeMismatchError(InterfaceError):
+    """Raised when a TypeConverter is being driven with the wrong type, either when
+    converting parameter values to SQL literals or when processing Flink statement
+    results.
+
+    Generally indicates a programming error in the driver."""
+
+    def __init__(self, converter_name: str, method_name: str, expected_type: str, bad_value: Any):
+        super().__init__(
+            f"Expected {expected_type} value for {converter_name}::{method_name}"
+            f" but got {type(bad_value).__name__}"
+        )
 
 
 class DatabaseError(Error):
