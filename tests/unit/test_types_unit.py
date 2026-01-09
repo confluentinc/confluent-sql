@@ -235,7 +235,7 @@ class TestSqlNoneConverter:
     def test_to_python_value_always_throws(self):
         converter = SqlNoneConverter(ColumnTypeDefinition(type="INTEGER", nullable=True))
         with pytest.raises(InterfaceError, match="cannot convert from response values to Python"):
-            converter.to_python_value("12")
+            converter.to_python_value("12")  # type: ignore
 
     def test_to_statement_string_invalid_type(self):
         with ensure_raises_typemismatch("SqlNone"):
