@@ -41,6 +41,7 @@ __all__ = [
     "InternalError",
     "ProgrammingError",
     "NotSupportedError",
+    "TypeMismatchError",
     "apilevel",
     "threadsafety",
     "paramstyle",
