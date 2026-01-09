@@ -17,6 +17,7 @@ from .exceptions import (
     NotSupportedError,
     OperationalError,
     ProgrammingError,
+    TypeMismatchError,
     Warning,
 )
 from .types import SqlNone, YearMonthInterval, register_row_type
@@ -40,6 +41,7 @@ __all__ = [
     "InternalError",
     "ProgrammingError",
     "NotSupportedError",
+    "TypeMismatchError",
     "apilevel",
     "threadsafety",
     "paramstyle",
