@@ -258,3 +258,44 @@ def expected_nonstreaming_results_factory() -> Callable[
             ]
 
     return _get_expected_results
+
+
+@pytest.fixture(scope="session")
+def test_row_table_name():
+    """Returns a table name to use for the ROW-column table to populate for testing."""
+    # Returns a fixed name for the test table, but if we have to adopt
+    # pytest-xdist, we could include the worker id in the name to avoid collisions.
+    return "pytest_row_table"
+
+
+@pytest.fixture(scope="session")
+def row_table_connection(connection: Connection, test_row_table_name: str):
+    """
+    This fixture takes the shared connection, and adds a table with some ROW columns to it.
+
+    This is scoped for the whole session, so the table will be created
+    only once when this fixture is used for the first time.
+    Drops the table at the end, but also before creating it in case
+    it wasn't dropped in a previous run for any reason.
+    """
+    cursor = connection.cursor()
+
+    # First delete the table if it was left here for any reason
+    cursor.execute(f"DROP TABLE IF EXISTS {test_row_table_name}")
+
+    # Then create it from scratch. Some trivial to nontrivial ROW and ARRAY<ROW> columns.
+    cursor.execute(
+        f"""CREATE TABLE {test_row_table_name} (
+            `name_and_age` ROW<name STRING, age INT>,
+            `address_array` ARRAY<ROW<street STRING, city STRING, zip_code INT>>,
+            `embedded_row` ROW<id INT, contact_info ROW<email STRING, phone STRING>>
+        )"""
+    )
+    cursor.close()
+
+    yield connection
+
+    # Drop the table at the end of the session if all went well
+    cursor = connection.cursor()
+    cursor.execute(f"DROP TABLE IF EXISTS {test_row_table_name}")
+    cursor.close()

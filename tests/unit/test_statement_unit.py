@@ -208,6 +208,48 @@ class TestStatementFromResponse:
         ):
             Statement.from_response(incomplete_json)
 
+    def test_parses_row_result_schema(self, statement_response_factory: StatementResponseFactory):
+        """Test that from_response correctly parses a statement response with
+        a schema that includes a two-member ROW type column."""
+        statement_json = statement_response_factory(
+            schema_columns=[
+                {
+                    "name": "simple_row",
+                    "type": {
+                        "fields": [
+                            {
+                                "field_type": {"length": 5, "nullable": False, "type": "CHAR"},
+                                "name": "EXPR$0",
+                            },
+                            {
+                                "field_type": {"nullable": False, "type": "INTEGER"},
+                                "name": "EXPR$1",
+                            },
+                        ],
+                        "nullable": False,
+                        "type": "ROW",
+                    },
+                }
+            ]
+        )
+        statement = Statement.from_response(statement_json)
+        assert statement.schema is not None
+        assert len(statement.schema.columns) == 1
+        row_column = statement.schema.columns[0]
+        assert row_column.name == "simple_row"
+        assert row_column.type.type == "ROW"
+        assert row_column.type.fields is not None
+        assert len(row_column.type.fields) == 2
+        field0 = row_column.type.fields[0]
+        assert field0.name == "EXPR$0"
+        assert field0.field_type.type == "CHAR"
+        assert field0.field_type.length == 5
+        assert field0.field_type.nullable is False
+        field1 = row_column.type.fields[1]
+        assert field1.name == "EXPR$1"
+        assert field1.field_type.type == "INTEGER"
+        assert field1.field_type.nullable is False
+
 
 @pytest.mark.unit
 class TestSchemaParsing:
@@ -306,12 +348,12 @@ class TestSchemaParsing:
                         "fields": [
                             {
                                 "name": "age",
-                                "type": {"type": "INT", "nullable": True},
+                                "field_type": {"type": "INT", "nullable": True},
                                 "description": "Age in years",
                             },
                             {
                                 "name": "address",
-                                "type": {"type": "STRING", "length": 100, "nullable": True},
+                                "field_type": {"type": "STRING", "length": 100, "nullable": True},
                                 "description": "Residential address",
                             },
                         ],
