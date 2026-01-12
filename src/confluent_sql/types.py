@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import Counter, namedtuple
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -14,6 +14,9 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
 from confluent_sql.exceptions import InterfaceError, TypeMismatchError
+
+if TYPE_CHECKING:
+    from .connection import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +40,6 @@ __all__ = [
     "convert_statement_parameters",
     "SqlNone",
     "YearMonthInterval",
-    "register_row_type",
     "TypeMismatchError",
 ]
 
@@ -158,9 +160,11 @@ class StatementTypeConverter:
     _schema: Schema
     _type_converters: list[TypeConverter]
 
-    def __init__(self, schema: Schema):
+    def __init__(self, connection: Connection, schema: Schema):
         self._schema = schema
-        self._type_converters = [get_api_type_converter(col.type) for col in schema.columns]
+        self._type_converters = [
+            get_api_type_converter(connection, col.type) for col in schema.columns
+        ]
 
     def to_python_row(self, sql_row: list[FromResponseTypes]) -> tuple[Any]:
         """Convert a SQL row (list of from-results-API encoded values) to a Python row
@@ -198,7 +202,8 @@ class TypeConverter(Generic[PyType, ResponseType]):
 
     _column_type: ColumnTypeDefinition
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
+        self._connection = connection
         self._column_type = column_type
 
     def to_python_value(self, response_value: ResponseType | None) -> PyType | None:
@@ -246,7 +251,9 @@ class TypeConverter(Generic[PyType, ResponseType]):
         # types it appropriately.
 
 
-def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
+def get_api_type_converter(
+    connection: Connection, column_type: ColumnTypeDefinition
+) -> TypeConverter:
     """Return the appropriate TypeConverter for a given from-Statement-JSON type description."""
     # Find the appropriate converter class mapped from the Flink type name
     cls = _flink_type_name_to_converter_map.get(column_type.type_name)
@@ -254,7 +261,7 @@ def get_api_type_converter(column_type: ColumnTypeDefinition) -> TypeConverter:
         # Another type mapping needed!
         raise NotImplementedError(f"TypeConverter for {column_type.type_name} is not implemented.")
 
-    return cls(column_type)
+    return cls(connection, column_type)
 
 
 class StringConverter(TypeConverter[str, str]):
@@ -668,7 +675,7 @@ class TimestampConverter(TypeConverter[datetime, str]):
 
     PRIMARY_FLINK_TYPE_NAME = "TIMESTAMP"
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         # Prevent confusion from possible aliases (test suite). Statement schema
         # JSON spells these out canonically.
         if column_type.type_name not in (
@@ -679,7 +686,7 @@ class TimestampConverter(TypeConverter[datetime, str]):
                 f"TimestampConverter can only be used with TIMESTAMP_WITHOUT_TIME_ZONE or"
                 f" TIMESTAMP_WITH_LOCAL_TIME_ZONE types, got {column_type.type_name}"
             )
-        super().__init__(column_type)
+        super().__init__(connection, column_type)
 
     @classmethod
     def to_statement_string(cls, python_value: datetime) -> str:
@@ -825,13 +832,13 @@ class YearMonthIntervalConverter(TypeConverter[YearMonthInterval, str]):
 
     PRIMARY_FLINK_TYPE_NAME = "INTERVAL_YEAR_MONTH"
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "INTERVAL_YEAR_MONTH":
             raise ValueError(
                 f"YearMonthIntervalConverter can only be used with INTERVAL_YEAR_MONTH types, "
                 f"got {column_type.type_name}"
             )
-        super().__init__(column_type)
+        super().__init__(connection, column_type)
 
     def to_python_value(self, response_value: str | None) -> YearMonthInterval | None:
         """Expect string-encoded interval or None from the response value,
@@ -981,7 +988,7 @@ class ArrayConverter(TypeConverter[list, list]):
     _element_converter: TypeConverter
     """Type converter for array element type."""
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "ARRAY":
             raise InterfaceError(
                 f"ArrayConverter can only be used with ARRAY types, got {column_type.type_name}"
@@ -1001,9 +1008,9 @@ class ArrayConverter(TypeConverter[list, list]):
                 " implemented."
             )
 
-        self._element_converter = element_converter_cls(element_type_def)
+        self._element_converter = element_converter_cls(connection, element_type_def)
 
-        super().__init__(column_type)
+        super().__init__(connection, column_type)
 
     def to_python_value(self, response_value: list | None) -> list | None:
         """Expect list or None from the response value, return as list or raise ValueError."""
@@ -1071,7 +1078,7 @@ class MapConverter(TypeConverter[dict, list]):
     value_converter: TypeConverter
     """Type converter for map value type."""
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "MAP":
             raise InterfaceError(
                 f"MapConverter can only be used with MAP types, got {column_type.type_name}"
@@ -1096,16 +1103,16 @@ class MapConverter(TypeConverter[dict, list]):
                 f"Conversion for map key of type {key_type_def.type_name} is not implemented."
             )
 
-        self.key_converter = key_converter_cls(key_type_def)
+        self.key_converter = key_converter_cls(connection, key_type_def)
 
         value_converter_cls = _flink_type_name_to_converter_map.get(value_type_def.type_name)
         if not value_converter_cls:
             raise TypeError(
                 f"Conversion for map value of type {value_type_def.type_name} is not implemented."
             )
-        self.value_converter = value_converter_cls(value_type_def)
+        self.value_converter = value_converter_cls(connection, value_type_def)
 
-        super().__init__(column_type)
+        super().__init__(connection, column_type)
 
     def to_python_value(self, response_value: list | None) -> dict | None:
         """Expect dict or None from the response value, return as dict or raise ValueError."""
@@ -1196,7 +1203,7 @@ class MultisetConverter(TypeConverter[Counter, list]):
     int_converter: IntegerConverter
     """Integer converter for the counts portion of the multiset."""
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "MULTISET":
             raise InterfaceError(
                 f"MultisetConverter can only be used with MULTISET types, got {column_type.type_name}"  # noqa: E501
@@ -1215,12 +1222,14 @@ class MultisetConverter(TypeConverter[Counter, list]):
                 f"Conversion for multiset element of type {element_type_def.type_name} is not implemented."  # noqa: E501
             )
 
-        self.element_converter = element_converter_cls(element_type_def)
+        self.element_converter = element_converter_cls(connection, element_type_def)
 
         # Always use IntegerConverter for the corresponding counts.
-        self.int_converter = IntegerConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+        self.int_converter = IntegerConverter(
+            connection, ColumnTypeDefinition(type="INTEGER", nullable=False)
+        )
 
-        super().__init__(column_type)
+        super().__init__(connection, column_type)
 
     def to_python_value(self, response_value: list | None) -> Counter | None:
         """Expect list of [element, count] pairs or None from the response value,
@@ -1261,82 +1270,6 @@ class MultisetConverter(TypeConverter[Counter, list]):
         raise InterfaceError("Flink does not currently support MULTISET literals.")
 
 
-class RowTypeRegistry:
-    def __init__(self):
-        # Key: tuple of field names (strings)
-        # Value: The specific class object (type)
-        self._cache = {}
-
-    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type:
-        """
-        Returns a cached namedtuple class or creates a new one.
-        field_names: A sequence of strings (e.g., ['name', 'age'])
-        """
-
-        if not isinstance(field_names, (list, tuple)):
-            raise TypeError(
-                f"field_names must be a list or tuple of strings, got {type(field_names)}"
-            )
-
-        for field in field_names:
-            if not isinstance(field, str):
-                raise TypeError(f"All field names must be strings, got a {type(field)}")
-
-        # Create a hashable key from the field names
-        key = tuple(field_names)
-
-        if key not in self._cache:
-            # Create a default class name, e.g., 'Row'
-            # rename=True handles Flink columns with chars invalid in Python
-            new_class = namedtuple("Row", field_names, rename=True)
-            logger.debug(
-                f"Created new namedtuple class for ROW with fields: {field_names}, "
-                f"resulting namedtuple fields: {new_class._fields}"
-            )  # pyright: ignore[reportAttributeAccessIssue]
-            self._cache[key] = new_class
-
-        return self._cache[key]
-
-    def register_namedtuple(self, user_namedtuple: type[tuple]) -> None:
-        """
-        Registers a user-provided namedtuple class against its field structure.
-
-        Raises TypeError if the provided object is not a namedtuple.
-        """
-
-        if not isinstance(user_namedtuple, type):
-            raise TypeError(
-                f"Expected a namedtuple subclass type, got an instance of {type(user_namedtuple)} instead"  # noqa: E501
-            )
-
-        # Check for duck-typed namedtuple: subclass of tuple + has _fields
-        if issubclass(user_namedtuple, tuple) and hasattr(user_namedtuple, "_fields"):
-            key = tuple(user_namedtuple._fields)  # pyright: ignore[reportAttributeAccessIssue]
-            # Update the cache to prefer the user's class for this structure
-            self._cache[key] = user_namedtuple
-        else:
-            raise TypeError("user_namedtuple is not a namedtuple subclass")
-
-
-_global_row_type_registry = RowTypeRegistry()
-
-
-def register_row_type(user_namedtuple: type[tuple]) -> None:
-    """
-    Register a user-provided namedtuple class by its field structure globally.
-    Ensures that when a ROW is returned from a query with matching field names
-    in the order as defined by the given namedtuple, the provided namedtuple class
-    will be used to return a query projected ROW payload instead of an
-    auto-generated namedtuple.
-
-    This is purely an optional operation offered to users who wish to have
-    specific namedtuple classes used for particular ROW types in query results.
-
-    Raises TypeError if the provided object is not a namedtuple.
-    """
-    _global_row_type_registry.register_namedtuple(user_namedtuple)
-
-
 class RowConverter(TypeConverter[tuple, list]):
     """Convert Flink ROW type to/from Python tuple or namedtuple instances.
 
@@ -1360,7 +1293,7 @@ class RowConverter(TypeConverter[tuple, list]):
     _namedtuple_class: type
     """The namedtuple class corresponding to this row type's field names."""
 
-    def __init__(self, column_type: ColumnTypeDefinition):
+    def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "ROW":
             raise InterfaceError(
                 f"RowConverter can only be used with ROW types, got {column_type.type_name}"
@@ -1389,13 +1322,13 @@ class RowConverter(TypeConverter[tuple, list]):
                     f"{field_type_def.type_name} is not implemented."
                 )
 
-            field_converter = field_converter_cls(field_type_def)
+            field_converter = field_converter_cls(connection, field_type_def)
             self._field_converters.append(field_converter)
 
         # Get or create the namedtuple class for this row type's field names.
-        self._namedtuple_class = _global_row_type_registry.get_row_class(self._field_names)
+        self._namedtuple_class = connection._row_type_registry.get_row_class(self._field_names)
 
-        super().__init__(column_type)
+        super().__init__(connection, column_type)
 
     def to_python_value(self, response_value: list | None) -> tuple | None:
         """Expect list or None from the response value, return as namedtuple instance or raise
