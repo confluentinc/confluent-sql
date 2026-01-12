@@ -9,6 +9,7 @@ from typing import Any, TypeAlias
 import pytest
 
 from confluent_sql import Connection
+from confluent_sql.connection import RowTypeRegistry
 from confluent_sql.statement import Op
 
 
@@ -179,6 +180,18 @@ def mock_connection_factory(mocker, statement_response_factory) -> MockConnectio
         # Likewise for closing_cursor
         mock_conn.closing_cursor = types.MethodType(Connection.closing_cursor, mock_conn)
 
+        mock_conn._row_type_registry = RowTypeRegistry()
+
         return mock_conn
 
     return _factory
+
+
+@pytest.fixture
+def mock_connection(mock_connection_factory: MockConnectionFactory) -> Connection:
+    """A fixture that returns a mock connection for testing type conversion.
+
+    The connection has no statement response or results by default, but will
+    be sufficient for testing type conversion logic (will have a row type registry).
+    """
+    return mock_connection_factory(None, None)

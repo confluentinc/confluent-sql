@@ -5,8 +5,11 @@ This module provides the connect function and Connection class for establishing
 connections to Confluent SQL services.
 """
 
+from __future__ import annotations
+
 import logging
 import uuid
+from collections import namedtuple
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -30,7 +33,7 @@ def connect(  # noqa: PLR0913
     api_key: str | None = None,
     api_secret: str | None = None,
     dbname: str | None = None,
-) -> "Connection":
+) -> Connection:
     """
     Create a connection to a Confluent SQL service.
 
@@ -104,6 +107,9 @@ class Connection:
     _dbname: str | None
     _client: httpx.Client
 
+    _row_type_registry: RowTypeRegistry
+    """Registry for user-defined row types, see register_row_type()."""
+
     def __init__(  # noqa: PLR0913
         self,
         flink_api_key: str,
@@ -158,6 +164,8 @@ class Connection:
             headers={"Content-Type": "application/json"},
         )
 
+        self._row_type_registry = RowTypeRegistry()
+
     def close(self) -> None:
         """
         Close the connection.
@@ -168,7 +176,7 @@ class Connection:
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
-    def cursor(self, *, as_dict: bool = False) -> "Cursor":
+    def cursor(self, *, as_dict: bool = False) -> Cursor:
         """
         Create and return a new cursor object. The cursor will need
         to be manually closed by the caller.
@@ -215,6 +223,12 @@ class Connection:
             True if the connection is closed, False otherwise
         """
         return self._closed
+
+    def register_row_type(self, user_namedtuple: type[tuple]) -> None:
+        """Register a user-defined namedtuple class to be used to contain deserialized ROW values
+        with matching field names."""
+
+        self._row_type_registry.register_namedtuple(user_namedtuple)
 
     def _execute_statement(
         self,
@@ -341,3 +355,71 @@ class Connection:
             return response
         except httpx.HTTPStatusError as e:
             raise OperationalError(f"Error sending request {e.response.status_code}") from e
+
+
+class RowTypeRegistry:
+    """Registry for namedtuple classes used to deserialize ROW values into.
+
+    Users can register their own namedtuple classes to be used for specific
+    field structures via `connection.register_row_type()`. Then any query results
+    returning ROW values with matching field names will be deserialized
+    into instances of the user-registered namedtuple class.
+
+    Otherwise, if no user-registered class matches the field names, a new
+    namedtuple class will be created and cached for future use.
+    """
+
+    def __init__(self):
+        # Key: tuple of field names (strings)
+        # Value: The specific class object (type)
+        self._cache = {}
+
+    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type:
+        """
+        Returns a cached namedtuple class or creates a new one.
+        field_names: A sequence of strings (e.g., ['name', 'age'])
+        """
+
+        if not isinstance(field_names, (list, tuple)):
+            raise TypeError(
+                f"field_names must be a list or tuple of strings, got {type(field_names)}"
+            )
+
+        for field in field_names:
+            if not isinstance(field, str):
+                raise TypeError(f"All field names must be strings, got a {type(field)}")
+
+        # Create a hashable key from the field names
+        key = tuple(field_names)
+
+        if key not in self._cache:
+            # Create a default class name, e.g., 'Row'
+            # rename=True handles Flink columns with chars invalid in Python
+            new_class = namedtuple("Row", field_names, rename=True)
+            logger.debug(
+                f"Created new namedtuple class for ROW with fields: {field_names}, "
+                f"resulting namedtuple fields: {new_class._fields}"
+            )  # pyright: ignore[reportAttributeAccessIssue]
+            self._cache[key] = new_class
+
+        return self._cache[key]
+
+    def register_namedtuple(self, user_namedtuple: type[tuple]) -> None:
+        """
+        Registers a user-provided namedtuple class against its field structure.
+
+        Raises TypeError if the provided object is not a namedtuple.
+        """
+
+        if not isinstance(user_namedtuple, type):
+            raise TypeError(
+                f"Expected a namedtuple subclass type, got an instance of {type(user_namedtuple)} instead"  # noqa: E501
+            )
+
+        # Check for duck-typed namedtuple: subclass of tuple + has _fields
+        if issubclass(user_namedtuple, tuple) and hasattr(user_namedtuple, "_fields"):
+            key = tuple(user_namedtuple._fields)  # pyright: ignore[reportAttributeAccessIssue]
+            # Update the cache to prefer the user's class for this structure
+            self._cache[key] = user_namedtuple
+        else:
+            raise TypeError("user_namedtuple is not a namedtuple subclass")
