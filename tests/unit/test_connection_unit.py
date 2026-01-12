@@ -1,10 +1,11 @@
+from collections import namedtuple
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError
-from confluent_sql.connection import Connection, connect
+from confluent_sql.connection import Connection, RowTypeRegistry, connect
 from tests.conftest import ConnectionFactory
 
 
@@ -159,3 +160,72 @@ class TestConnectChecks:
                 flink_api_key="valid-key",
                 flink_api_secret="",
             )
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestRowTypeRegistry:
+    """Unit tests over RowTypeRegistry functionality."""
+
+    def test_get_row_class_bad_field_names_type(self):
+        registry = RowTypeRegistry()
+        with pytest.raises(
+            TypeError,
+            match="field_names must be a list or tuple of strings",
+        ):
+            registry.get_row_class(field_names="not a list")  # type: ignore
+
+    def test_get_row_class_bad_field_name_element(self):
+        registry = RowTypeRegistry()
+        with pytest.raises(
+            TypeError,
+            match="All field names must be strings",
+        ):
+            registry.get_row_class(field_names=["valid", 123])  # type: ignore
+
+    def test_get_row_class_caches_classes(self):
+        registry = RowTypeRegistry()
+        field_names = ["field1", "field2", "field3"]
+        row_class_1 = registry.get_row_class(field_names=field_names)
+        assert issubclass(row_class_1, tuple), "Expected row class to be subclass of tuple"
+        assert row_class_1._fields == tuple(field_names), "Field names do not match"  # pyright: ignore[reportAttributeAccessIssue]
+        row_class_2 = registry.get_row_class(field_names=field_names)
+        assert row_class_1 is row_class_2, "Expected same class instance from cache"
+
+    def test_register_user_types_hates_instances(self):
+        registry = RowTypeRegistry()
+
+        with pytest.raises(
+            TypeError,
+            match="Expected a namedtuple subclass type, got an instance of <class 'list'> instead",
+        ):
+            registry.register_namedtuple(["not", "a", "namedtuple", "class"])  # type: ignore
+
+    class NotATuple:
+        pass
+
+    @pytest.mark.parametrize(
+        "not_a_namedtuple_class",
+        [
+            int,
+            dict,
+            NotATuple,
+        ],
+    )
+    def test_register_user_type_hates_non_namedtuple_subclasses(self, not_a_namedtuple_class):
+        registry = RowTypeRegistry()
+
+        with pytest.raises(
+            TypeError,
+            match="is not a namedtuple subclass",
+        ):
+            registry.register_namedtuple(not_a_namedtuple_class)  # type: ignore
+
+    def test_register_user_type_caches_class(self):
+        registry = RowTypeRegistry()
+
+        MyRowType = namedtuple("MyRowType", ["a", "b", "c"])
+
+        registry.register_namedtuple(MyRowType)
+        retrieved_class = registry.get_row_class(field_names=["a", "b", "c"])
+        assert retrieved_class is MyRowType, "Expected to retrieve the registered namedtuple class"
