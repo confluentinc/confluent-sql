@@ -225,8 +225,9 @@ class Connection:
         return self._closed
 
     def register_row_type(self, user_namedtuple: type[tuple]) -> None:
-        """Register a user-defined namedtuple class to be used to contain deserialized ROW values
-        with matching field names."""
+        """Register a user-defined namedtuple class to be used to return deserialized ROW values.
+        The user-provided namedtuple class is matched by the sequence of field names
+        vs those found in in the ROW being returned by a statement."""
 
         self._row_type_registry.register_namedtuple(user_namedtuple)
 
