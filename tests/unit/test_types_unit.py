@@ -457,7 +457,7 @@ class TestDecimalConverter:
         malicious_value = MaliciousDecimal(42)
         result = DecimalConverter.to_statement_string(malicious_value)
 
-        # The result should be the stringified integer value -- they
+        # The result should be the stringified Decimal value -- they
         # should not be able to inject code by overriding __str__.
 
         assert result == "cast('42' as decimal(2,0))"
