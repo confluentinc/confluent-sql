@@ -422,10 +422,10 @@ class TestDecimalConverter:
         )
 
     @pytest.mark.parametrize("value, expected", [("123.45", Decimal("123.45")), (None, None)])
-    def test_to_python_value(self, converter: IntegerConverter, value, expected):
+    def test_to_python_value(self, converter: DecimalConverter, value, expected):
         assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self, converter: IntegerConverter):
+    def test_to_python_value_invalid_type(self, converter: DecimalConverter):
         with ensure_raises_typemismatch("str"):
             converter.to_python_value(123)  # type: ignore
 
@@ -448,19 +448,19 @@ class TestDecimalConverter:
     def test_to_statement_guard_against_malicious_subclass(self):
         """Test that to_statement_string guards against malicious subclasses of int."""
 
-        class MaliciousInt(int):
-            """An integer subclass that attempts to inject SQL code via overridden __str__."""
+        class MaliciousDecimal(Decimal):
+            """A Decimal subclass that attempts to inject SQL code via overridden __str__."""
 
             def __str__(self):
                 return "0'; DROP TABLE users;--"
 
-        malicious_value = MaliciousInt(42)
-        result = IntegerConverter.to_statement_string(malicious_value)
+        malicious_value = MaliciousDecimal(42)
+        result = DecimalConverter.to_statement_string(malicious_value)
 
         # The result should be the stringified integer value -- they
         # should not be able to inject code by overriding __str__.
 
-        assert result == "42"
+        assert result == "cast('42' as decimal(2,0))"
 
 
 @pytest.mark.unit
