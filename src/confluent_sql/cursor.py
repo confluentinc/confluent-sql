@@ -5,6 +5,8 @@ This module provides the Cursor class for executing SQL statements and
 retrieving results from Confluent SQL services.
 """
 
+from __future__ import annotations
+
 import logging
 import random
 import time
