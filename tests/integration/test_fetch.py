@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from confluent_sql import Connection, SqlNone, YearMonthInterval, register_row_type
+from confluent_sql import Connection, SqlNone, YearMonthInterval
 
 
 @pytest.mark.integration
@@ -622,7 +622,7 @@ class TestRowConversion:
         # We choose NOT to register the EmbeddedRow here, to verify that nested
         # namedtuples get auto-generated properly.
         for nt in [NameAndAge, Address, ContactInfo]:
-            register_row_type(nt)
+            row_table_connection.register_row_type(nt)
 
         nameAndAge = NameAndAge(name="John Doe", age=28)
         addressArray = [

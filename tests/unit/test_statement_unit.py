@@ -4,6 +4,7 @@ from typing import Any, TypeAlias
 import pytest
 
 from confluent_sql import DatabaseError, OperationalError
+from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import Op, Phase, Schema, Statement
 from confluent_sql.types import StatementTypeConverter
@@ -30,29 +31,39 @@ class TestStatementIsReady:
     """Tests for Statement.is_ready property."""
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED"])
-    def test_bounded_is_ready(self, statement_response_factory: StatementResponseFactory, phase):
+    def test_bounded_is_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase,
+    ):
         """Test that a bounded statement in COMPLETED or
         STOPPED phase is ready."""
         statement_json = statement_response_factory(
             phase=phase,
             is_bounded=True,
         )
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_ready
 
-    def test_bounded_not_ready(self, statement_response_factory: StatementResponseFactory):
+    def test_bounded_not_ready(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that a bounded statement not in COMPLETED or
         STOPPED phase is not ready."""
         statement_json = statement_response_factory(
             phase="RUNNING",
             is_bounded=True,
         )
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert not statement.is_ready
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "RUNNING"])
     def test_unbounded_is_ready(
-        self, statement_response_factory: StatementResponseFactory, phase: str
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
     ):
         """Test that an unbounded statement in COMPLETED, STOPPED,
         or RUNNING phase is ready."""
@@ -60,18 +71,18 @@ class TestStatementIsReady:
             phase=phase,
             is_bounded=False,
         )
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_ready
 
     def test_unbounded_pending_not_ready(
-        self, statement_response_factory: StatementResponseFactory
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that an unbounded statement not in PENDING phase is not ready."""
         statement_json = statement_response_factory(
             phase="PENDING",
             is_bounded=False,
         )
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert not statement.is_ready
 
 
@@ -79,7 +90,9 @@ class TestStatementIsReady:
 class TestStatementDescriptionProperty:
     """Tests for Statement.description property."""
 
-    def test_description_present(self, statement_response_factory: StatementResponseFactory):
+    def test_description_present(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that description property returns correct value when present."""
         statement_json = statement_response_factory(
             schema_columns=[
@@ -90,7 +103,7 @@ class TestStatementDescriptionProperty:
                 },
             ]
         )
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
 
         # (name, type_code, display_size, internal_size, precision, scale, null_ok)
         assert statement.description == [
@@ -98,10 +111,12 @@ class TestStatementDescriptionProperty:
             ("dec_col", "DEC", None, None, 10, 2, True),
         ]
 
-    def test_description_absent(self, statement_response_factory: StatementResponseFactory):
+    def test_description_absent(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that description property returns None when no schema(yet)."""
         statement_json = statement_response_factory(null_schema=True)
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.description is None
 
 
@@ -109,28 +124,36 @@ class TestStatementDescriptionProperty:
 class TestStatementProperties:
     """Tests for various Statement properties."""
 
-    def test_compute_pool_id(self, statement_response_factory: StatementResponseFactory):
+    def test_compute_pool_id(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that compute_pool_id property returns correct value."""
         statement_json = statement_response_factory(compute_pool_id="test-pool-id")
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.compute_pool_id == "test-pool-id"
 
-    def test_principal(self, statement_response_factory: StatementResponseFactory):
+    def test_principal(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that principal property returns correct value."""
         statement_json = statement_response_factory(principal="test-principal")
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.principal == "test-principal"
 
-    def test_phase_property(self, statement_response_factory: StatementResponseFactory):
+    def test_phase_property(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that phase property returns correct Phase enum."""
         statement_json = statement_response_factory(phase="RUNNING")
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.phase == Phase.RUNNING
 
-    def test_phase_when_deleted(self, statement_response_factory: StatementResponseFactory):
+    def test_phase_when_deleted(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that phase property returns DELETED when statement is deleted."""
         statement_json = statement_response_factory()
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         # Simulate deletion
         statement.set_deleted()
         assert statement.phase == Phase.DELETED
@@ -144,20 +167,24 @@ class TestStatementProperties:
         ],
     )
     def test_is_running(
-        self, statement_response_factory: StatementResponseFactory, phase: str, expected: bool
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+        expected: bool,
     ):
         """Test that is_running property returns correct boolean."""
         statement_json = statement_response_factory(phase=phase)
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_running == expected
 
     def test_type_converter_raises_if_no_schema(
-        self, statement_response_factory: StatementResponseFactory
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that type_converter property raises if statement has no schema."""
         # Create a statement response with no schema.
         statement_json = statement_response_factory(null_schema=True)
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
 
         with pytest.raises(
             InterfaceError,
@@ -167,12 +194,13 @@ class TestStatementProperties:
 
     def test_type_converter_returns_converter(
         self,
+        mock_connection: Connection,
         statement_response_factory: StatementResponseFactory,
     ):
         """Test that type_converter property returns a StatementTypeConverter
         when schema is present."""
         statement_json = statement_response_factory()
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
 
         type_converter = statement.type_converter
         assert isinstance(type_converter, StatementTypeConverter)
@@ -182,13 +210,15 @@ class TestStatementProperties:
 class TestStatementFromResponse:
     """Tests for Statement.from_response class method error paths."""
 
-    def test_hates_unknown_status_phase(self, statement_response_factory: StatementResponseFactory):
+    def test_hates_unknown_status_phase(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that from_response raises on unknown status.phase."""
         with pytest.raises(OperationalError, match="Received an unknown phase for statement"):
-            Statement.from_response(statement_response_factory(phase="UNKNOWN"))
+            Statement.from_response(mock_connection, statement_response_factory(phase="UNKNOWN"))
 
     def test_raises_databaseerror_if_failed(
-        self, statement_response_factory: StatementResponseFactory
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that a failed statement raises DatabaseError with details when if the
         statement failed."""
@@ -196,9 +226,11 @@ class TestStatementFromResponse:
             phase="FAILED", status_detail="Some error"
         )
         with pytest.raises(DatabaseError, match="Some error"):
-            Statement.from_response(failed_statement_json)
+            Statement.from_response(mock_connection, failed_statement_json)
 
-    def test_hates_missing_keys(self, statement_response_factory: StatementResponseFactory):
+    def test_hates_missing_keys(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that from_response raises if required keys are missing."""
         incomplete_json = statement_response_factory()
         del incomplete_json["spec"]
@@ -206,9 +238,11 @@ class TestStatementFromResponse:
         with pytest.raises(
             OperationalError, match="Error parsing statement response, missing 'spec'"
         ):
-            Statement.from_response(incomplete_json)
+            Statement.from_response(mock_connection, incomplete_json)
 
-    def test_parses_row_result_schema(self, statement_response_factory: StatementResponseFactory):
+    def test_parses_row_result_schema(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
         """Test that from_response correctly parses a statement response with
         a schema that includes a two-member ROW type column."""
         statement_json = statement_response_factory(
@@ -232,7 +266,7 @@ class TestStatementFromResponse:
                 }
             ]
         )
-        statement = Statement.from_response(statement_json)
+        statement = Statement.from_response(mock_connection, statement_json)
         assert statement.schema is not None
         assert len(statement.schema.columns) == 1
         row_column = statement.schema.columns[0]
@@ -260,14 +294,16 @@ class TestSchemaParsing:
     SchemaFactory: TypeAlias = Callable[[list[dict[str, Any]]], Schema]
 
     @pytest.fixture()
-    def schema_factory(self, statement_response_factory: StatementResponseFactory) -> SchemaFactory:
+    def schema_factory(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ) -> SchemaFactory:
         def _schema_maker(
             schema_columns: list[dict[str, Any]],
         ) -> Schema:
             statement_dict = statement_response_factory(
                 schema_columns=schema_columns,
             )
-            statement = Statement.from_response(statement_dict)
+            statement = Statement.from_response(mock_connection, statement_dict)
             assert statement.schema is not None
             return statement.schema
 
