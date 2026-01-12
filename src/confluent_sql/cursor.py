@@ -37,7 +37,7 @@ class Cursor:
     results from a Confluent SQL service connection.
     """
 
-    def __init__(self, connection: "Connection", as_dict: bool = False):
+    def __init__(self, connection: Connection, as_dict: bool = False):
         """
         Initialize a new cursor.
 
@@ -357,7 +357,7 @@ class Cursor:
             response = self._connection._get_statement(self._statement.name)
 
             # Will raise if the phase is FAILED
-            self._statement = Statement.from_response(response)
+            self._statement = Statement.from_response(self._connection, response)
 
             # We only support append-only statements for now. Our changelog
             # parsing is not smart enough to handle updates/deletes from streaming statements.
@@ -422,7 +422,7 @@ class Cursor:
         response = self._connection._execute_statement(
             interpolated_statement, statement_name, bounded
         )
-        self._statement = Statement.from_response(response)
+        self._statement = Statement.from_response(self._connection, response)
 
     def _interpolate_parameters(
         self,
