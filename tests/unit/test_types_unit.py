@@ -9,6 +9,7 @@ from math import isnan
 
 import pytest
 
+from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError, TypeMismatchError
 from confluent_sql.statement import ColumnTypeDefinition
 from confluent_sql.types import (
@@ -24,7 +25,6 @@ from confluent_sql.types import (
     NullResultConverter,
     RowColumn,
     RowConverter,
-    RowTypeRegistry,
     SqlNone,
     SqlNoneConverter,
     StringConverter,
@@ -211,14 +211,19 @@ class TestYearMonthInterval:
 class TestNullConverter:
     """Unit tests over NullConverter."""
 
-    converter = NullResultConverter(ColumnTypeDefinition(type="NULL", nullable=True))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> NullResultConverter:
+        """A fixture that returns a NullResultConverter for testing."""
+        return NullResultConverter(
+            mock_connection, ColumnTypeDefinition(type="NULL", nullable=True)
+        )
 
-    def test_to_python_value(self):
-        assert self.converter.to_python_value(None) is None
+    def test_to_python_value(self, converter):
+        assert converter.to_python_value(None) is None
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter):
         with ensure_raises_typemismatch("NoneType"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
     def test_to_statement_string_always_throws(self):
         with pytest.raises(
@@ -232,8 +237,10 @@ class TestNullConverter:
 class TestSqlNoneConverter:
     """Unit tests over SqlNoneConverter."""
 
-    def test_to_python_value_always_throws(self):
-        converter = SqlNoneConverter(ColumnTypeDefinition(type="INTEGER", nullable=True))
+    def test_to_python_value_always_throws(self, mock_connection: Connection):
+        converter = SqlNoneConverter(
+            mock_connection, ColumnTypeDefinition(type="INTEGER", nullable=True)
+        )
         with pytest.raises(InterfaceError, match="cannot convert from response values to Python"):
             converter.to_python_value("12")  # type: ignore
 
@@ -252,12 +259,19 @@ class TestStringConverter:
     """Unit tests over StringConverter."""
 
     @pytest.mark.parametrize("value, expected", [("hello", "hello"), (None, None)])
-    def test_to_python_value(self, value, expected):
-        converter = StringConverter(ColumnTypeDefinition(type="STRING", nullable=False))
+    def test_to_python_value(self, mock_connection: Connection, value, expected):
+        converter = StringConverter(
+            mock_connection, ColumnTypeDefinition(type="STRING", nullable=False)
+        )
         assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
-        converter = StringConverter(ColumnTypeDefinition(type="STRING", nullable=False))
+    def test_to_python_value_invalid_type(
+        self,
+        mock_connection: Connection,
+    ):
+        converter = StringConverter(
+            mock_connection, ColumnTypeDefinition(type="STRING", nullable=False)
+        )
         with ensure_raises_typemismatch("str"):
             converter.to_python_value(123)  # type: ignore
 
@@ -311,29 +325,34 @@ class TestStringConverter:
 class TestVarBinaryConverter:
     """Unit tests over VarBinaryConverter."""
 
-    converter = VarBinaryConverter(ColumnTypeDefinition(type="VARBINARY", nullable=True))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> VarBinaryConverter:
+        """A fixture that returns a VarBinaryConverter for testing."""
+        return VarBinaryConverter(
+            mock_connection, ColumnTypeDefinition(type="VARBINARY", nullable=True)
+        )
 
     @pytest.mark.parametrize("value, expected", [("x'7f0203'", b"\x7f\x02\x03"), (None, None)])
-    def test_to_python_value(self, value: str, expected: bytes):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: VarBinaryConverter, value: str, expected: bytes):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: VarBinaryConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
-    def test_to_python_value_invalid_format(self):
+    def test_to_python_value_invalid_format(self, converter: VarBinaryConverter):
         with pytest.raises(
             ValueError,
             match="Expected hex-pair encoded string",
         ):
-            self.converter.to_python_value("7f0203'")  # Missing x' prefix
+            converter.to_python_value("7f0203'")  # Missing x' prefix
 
-    def test_to_python_value_invalid_hex(self):
+    def test_to_python_value_invalid_hex(self, converter: VarBinaryConverter):
         with pytest.raises(
             ValueError,
             match="Invalid hex string",
         ):
-            self.converter.to_python_value("x'7g0203'")  # 'g' is not a valid hex digit
+            converter.to_python_value("x'7g0203'")  # 'g' is not a valid hex digit
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -358,15 +377,20 @@ class TestVarBinaryConverter:
 class TestIntegerConverter:
     """Unit tests over IntegerConverter."""
 
-    converter = IntegerConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> IntegerConverter:
+        """A fixture that returns an IntegerConverter for testing."""
+        return IntegerConverter(
+            mock_connection, ColumnTypeDefinition(type="INTEGER", nullable=False)
+        )
 
     @pytest.mark.parametrize("value, expected", [("123", 123), (None, None)])
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: IntegerConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: IntegerConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -390,15 +414,20 @@ class TestIntegerConverter:
 class TestDecimalConverter:
     """Unit tests over DecimalConverter."""
 
-    converter = DecimalConverter(ColumnTypeDefinition(type="DECIMAL", nullable=True))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> DecimalConverter:
+        """A fixture that returns a DecimalConverter for testing."""
+        return DecimalConverter(
+            mock_connection, ColumnTypeDefinition(type="DECIMAL", nullable=True)
+        )
 
     @pytest.mark.parametrize("value, expected", [("123.45", Decimal("123.45")), (None, None)])
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: DecimalConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: DecimalConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -419,19 +448,19 @@ class TestDecimalConverter:
     def test_to_statement_guard_against_malicious_subclass(self):
         """Test that to_statement_string guards against malicious subclasses of int."""
 
-        class MaliciousInt(int):
-            """An integer subclass that attempts to inject SQL code via overridden __str__."""
+        class MaliciousDecimal(Decimal):
+            """A Decimal subclass that attempts to inject SQL code via overridden __str__."""
 
             def __str__(self):
                 return "0'; DROP TABLE users;--"
 
-        malicious_value = MaliciousInt(42)
-        result = IntegerConverter.to_statement_string(malicious_value)
+        malicious_value = MaliciousDecimal(42)
+        result = DecimalConverter.to_statement_string(malicious_value)
 
-        # The result should be the stringified integer value -- they
+        # The result should be the stringified Decimal value -- they
         # should not be able to inject code by overriding __str__.
 
-        assert result == "42"
+        assert result == "cast('42' as decimal(2,0))"
 
 
 @pytest.mark.unit
@@ -439,7 +468,10 @@ class TestDecimalConverter:
 class TestFloatConverter:
     """Unit tests over FloatConverter."""
 
-    converter = FloatConverter(ColumnTypeDefinition(type="FLOAT", nullable=True))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> FloatConverter:
+        """A fixture that returns a FloatConverter for testing."""
+        return FloatConverter(mock_connection, ColumnTypeDefinition(type="FLOAT", nullable=True))
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -452,8 +484,8 @@ class TestFloatConverter:
             (None, None),
         ],
     )
-    def test_to_python_value(self, value, expected):
-        result = self.converter.to_python_value(value)
+    def test_to_python_value(self, converter: FloatConverter, value, expected):
+        result = converter.to_python_value(value)
         # Special handling for NaN comparison
         if value == "NaN":
             # nan is never equal to itself.
@@ -462,9 +494,9 @@ class TestFloatConverter:
             # Regular comparison works for regular and Infinity values.
             assert result == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: FloatConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -498,18 +530,23 @@ class TestFloatConverter:
 class TestBooleanConverter:
     """Unit tests over BooleanConverter."""
 
-    converter = BooleanConverter(ColumnTypeDefinition(type="BOOLEAN", nullable=False))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> BooleanConverter:
+        """A fixture that returns a BooleanConverter for testing."""
+        return BooleanConverter(
+            mock_connection, ColumnTypeDefinition(type="BOOLEAN", nullable=False)
+        )
 
     @pytest.mark.parametrize(
         "value, expected",
         [("TRUE", True), ("FALSE", False), (None, None)],
     )
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: BooleanConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: BooleanConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(1)  # type: ignore
+            converter.to_python_value(1)  # type: ignore
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -532,25 +569,28 @@ class TestBooleanConverter:
 class TestDateConverter:
     """Unit tests over DateConverter."""
 
-    converter = DateConverter(ColumnTypeDefinition(type="DATE", nullable=False))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> DateConverter:
+        """A fixture that returns a DateConverter for testing."""
+        return DateConverter(mock_connection, ColumnTypeDefinition(type="DATE", nullable=False))
 
     @pytest.mark.parametrize(
         "value, expected",
         [("2024-06-15", date(2024, 6, 15)), (None, None)],
     )
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: DateConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: DateConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(20240615)  # type: ignore
+            converter.to_python_value(20240615)  # type: ignore
 
-    def test_to_python_value_invalid_format(self):
+    def test_to_python_value_invalid_format(self, converter: DateConverter):
         with pytest.raises(
             ValueError,
             match="Invalid date string",
         ):
-            self.converter.to_python_value("15-06-2024")  # Wrong format
+            converter.to_python_value("15-06-2024")  # Wrong format
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -573,25 +613,28 @@ class TestDateConverter:
 class TestTimeConverter:
     """Unit tests over TimeConverter."""
 
-    converter = TimeConverter(ColumnTypeDefinition(type="TIME", nullable=False))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> TimeConverter:
+        """A fixture that returns a TimeConverter for testing."""
+        return TimeConverter(mock_connection, ColumnTypeDefinition(type="TIME", nullable=False))
 
     @pytest.mark.parametrize(
         "value, expected",
         [("12:34:56", time(12, 34, 56)), ("12:34:56.789", time(12, 34, 56, 789000)), (None, None)],
     )
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: TimeConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: TimeConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123456)  # type: ignore
+            converter.to_python_value(123456)  # type: ignore
 
-    def test_to_python_value_invalid_format(self):
+    def test_to_python_value_invalid_format(self, converter: TimeConverter):
         with pytest.raises(
             ValueError,
             match="Invalid time string",
         ):
-            self.converter.to_python_value("12.34.56")  # Wrong format for time.fromisoformat().
+            converter.to_python_value("12.34.56")  # Wrong format for time.fromisoformat().
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -615,13 +658,21 @@ class TestTimeConverter:
 class TestTimestampConverter:
     """Unit tests over TimestampConverter."""
 
-    # Separate converters for TIMESTAMP and TIMESTAMP_LTZ to test both variants
-    ts_converter = TimestampConverter(
-        ColumnTypeDefinition(type="TIMESTAMP_WITHOUT_TIME_ZONE", nullable=False)
-    )
-    lts_converter = TimestampConverter(
-        ColumnTypeDefinition(type="TIMESTAMP_WITH_LOCAL_TIME_ZONE", nullable=False)
-    )
+    @pytest.fixture
+    def ts_converter(self, mock_connection: Connection) -> TimestampConverter:
+        """A fixture that returns a timezone-ignorant TimestampConverter for testing."""
+        return TimestampConverter(
+            mock_connection,
+            ColumnTypeDefinition(type="TIMESTAMP_WITHOUT_TIME_ZONE", nullable=False),
+        )
+
+    @pytest.fixture
+    def lts_converter(self, mock_connection: Connection) -> TimestampConverter:
+        """A fixture that returns a timezone-aware TimestampConverter for testing."""
+        return TimestampConverter(
+            mock_connection,
+            ColumnTypeDefinition(type="TIMESTAMP_WITH_LOCAL_TIME_ZONE", nullable=False),
+        )
 
     @pytest.mark.parametrize(
         "bad_name",
@@ -630,22 +681,35 @@ class TestTimestampConverter:
             "TIMESTAMP_LTZ",
         ],
     )
-    def test_constructor_hates_alternative_type_names(self, bad_name: str):
+    def test_constructor_hates_alternative_type_names(
+        self, mock_connection: Connection, bad_name: str
+    ):
         with pytest.raises(
             ValueError,
             match="TimestampConverter can only be used",
         ):
-            TimestampConverter(ColumnTypeDefinition(type=bad_name, nullable=False))
+            TimestampConverter(mock_connection, ColumnTypeDefinition(type=bad_name, nullable=False))
 
     @pytest.mark.parametrize(
-        "converter, str_value, expected",
+        "str_value, expected",
         [
-            # ts without timezone
-            (ts_converter, "2024-06-15 12:34:56", datetime(2024, 6, 15, 12, 34, 56)),
-            (ts_converter, "2024-06-15 12:34:56.789", datetime(2024, 6, 15, 12, 34, 56, 789000)),
+            # ts without timezones
+            ("2024-06-15 12:34:56", datetime(2024, 6, 15, 12, 34, 56)),
+            ("2024-06-15 12:34:56.789", datetime(2024, 6, 15, 12, 34, 56, 789000)),
+            # null value
+            (None, None),
+        ],
+    )
+    def test_ts_converter_to_python_value(
+        self, ts_converter: TimestampConverter, str_value: str, expected: datetime | None
+    ):
+        assert ts_converter.to_python_value(str_value) == expected
+
+    @pytest.mark.parametrize(
+        "str_value, expected",
+        [
             # ts with timezone
             (
-                lts_converter,
                 "2023-06-15 12:34:56",
                 datetime(
                     2023,
@@ -658,33 +722,33 @@ class TestTimestampConverter:
                 ),
             ),
             # null value
-            (ts_converter, None, None),
+            (None, None),
         ],
     )
-    def test_to_python_value(
-        self, converter: TimestampConverter, str_value: str, expected: datetime | None
+    def test_lts_converter_to_python_value(
+        self, lts_converter: TimestampConverter, str_value: str, expected: datetime | None
     ):
-        assert converter.to_python_value(str_value) == expected
+        assert lts_converter.to_python_value(str_value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, ts_converter: TimestampConverter):
         with ensure_raises_typemismatch("str"):
-            self.ts_converter.to_python_value(False)  # type: ignore
+            ts_converter.to_python_value(False)  # type: ignore
 
-    def test_to_python_value_hates_timezone_in_timestamp(self):
+    def test_to_python_value_hates_timezone_in_timestamp(self, ts_converter: TimestampConverter):
         """Ensure that if Flink serialization ever changes, we will notice, because
         other assumptions may be invalid"""
         with pytest.raises(
             ValueError,
             match="Expected timezone-naive timestamp string from Flink but got",
         ):
-            self.ts_converter.to_python_value("2024-06-15 12:34:56+02:00")  # Has timezone
+            ts_converter.to_python_value("2024-06-15 12:34:56+02:00")  # Has timezone
 
-    def test_to_python_value_invalid_format(self):
+    def test_to_python_value_invalid_format(self, ts_converter: TimestampConverter):
         with pytest.raises(
             ValueError,
             match="Invalid timestamp string",
         ):
-            self.ts_converter.to_python_value("2024/06/15 12:34:56")  # Wrong date spelling format
+            ts_converter.to_python_value("2024/06/15 12:34:56")  # Wrong date spelling format
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -724,13 +788,13 @@ class TestTimestampConverter:
             ),
         ],
     )
-    def test_to_statement_string(self, value, expected):
-        result = self.ts_converter.to_statement_string(value)
+    def test_to_statement_string(self, ts_converter: TimestampConverter, value, expected):
+        result = ts_converter.to_statement_string(value)
         assert result == expected
 
-    def test_to_statement_string_invalid_type(self):
+    def test_to_statement_string_invalid_type(self, ts_converter: TimestampConverter):
         with ensure_raises_typemismatch("datetime"):
-            self.ts_converter.to_statement_string("2024-06-15 12:34:56")  # type: ignore
+            ts_converter.to_statement_string("2024-06-15 12:34:56")  # type: ignore
 
 
 @pytest.mark.unit
@@ -738,16 +802,21 @@ class TestTimestampConverter:
 class TestYearMonthIntervalConverter:
     """Unit tests over YearMonthIntervalConverter."""
 
-    converter = YearMonthIntervalConverter(
-        ColumnTypeDefinition(type="INTERVAL_YEAR_MONTH", nullable=True)
-    )
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> YearMonthIntervalConverter:
+        """A fixture that returns a YearMonthIntervalConverter for testing."""
+        return YearMonthIntervalConverter(
+            mock_connection, ColumnTypeDefinition(type="INTERVAL_YEAR_MONTH", nullable=True)
+        )
 
-    def test_constructor_hates_alternative_type_name(self):
+    def test_constructor_hates_alternative_type_name(self, mock_connection: Connection):
         with pytest.raises(
             ValueError,
             match="YearMonthIntervalConverter can only be used",
         ):
-            YearMonthIntervalConverter(ColumnTypeDefinition(type="INTERVAL_YM", nullable=True))
+            YearMonthIntervalConverter(
+                mock_connection, ColumnTypeDefinition(type="INTERVAL_YM", nullable=True)
+            )
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -757,19 +826,19 @@ class TestYearMonthIntervalConverter:
             (None, None),
         ],
     )
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: YearMonthIntervalConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: YearMonthIntervalConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
-    def test_to_python_value_invalid_format(self):
+    def test_to_python_value_invalid_format(self, converter: YearMonthIntervalConverter):
         with pytest.raises(
             ValueError,
             match="Invalid interval string",
         ):
-            self.converter.to_python_value("2:06")  # Wrong format
+            converter.to_python_value("2:06")  # Wrong format
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -792,7 +861,12 @@ class TestYearMonthIntervalConverter:
 class TestDaysIntervalConverter:
     """Unit tests over DaysIntervalConverter."""
 
-    converter = DaysIntervalConverter(ColumnTypeDefinition(type="INTERVAL_DAY_TIME", nullable=True))
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> DaysIntervalConverter:
+        """A fixture that returns a DaysIntervalConverter for testing."""
+        return DaysIntervalConverter(
+            mock_connection, ColumnTypeDefinition(type="INTERVAL_DAY_TIME", nullable=True)
+        )
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -844,19 +918,19 @@ class TestDaysIntervalConverter:
             ),
         ],
     )
-    def test_to_python_value(self, value, expected):
-        assert self.converter.to_python_value(value) == expected
+    def test_to_python_value(self, converter: DaysIntervalConverter, value, expected):
+        assert converter.to_python_value(value) == expected
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, converter: DaysIntervalConverter):
         with ensure_raises_typemismatch("str"):
-            self.converter.to_python_value(123)  # type: ignore
+            converter.to_python_value(123)  # type: ignore
 
-    def test_to_python_value_invalid_format(self):
+    def test_to_python_value_invalid_format(self, converter: DaysIntervalConverter):
         with pytest.raises(
             ValueError,
             match="Invalid interval string",
         ):
-            self.converter.to_python_value("10:12:30")  # Wrong format
+            converter.to_python_value("10:12:30")  # Wrong format
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -936,7 +1010,9 @@ class TestGetDataTypeConverter:
             ("BYTES", VarBinaryConverter),
         ],
     )
-    def test_get_data_type_converter(self, column_type_name, expected_converter_cls):
+    def test_get_data_type_converter(
+        self, mock_connection: Connection, column_type_name, expected_converter_cls
+    ):
         """Test that the correct TypeConverter is returned for given type descriptions."""
 
         # As if fragment from REST response ...
@@ -946,12 +1022,12 @@ class TestGetDataTypeConverter:
         }
 
         column_type_definition = ColumnTypeDefinition.from_response(column_type_dict)
-        converter = get_api_type_converter(column_type_definition)
+        converter = get_api_type_converter(mock_connection, column_type_definition)
         assert isinstance(converter, expected_converter_cls), (
             f"Expected {expected_converter_cls} given but got {type(converter)}"
         )
 
-    def test_get_data_type_converter_unsupported_type(self):
+    def test_get_data_type_converter_unsupported_type(self, mock_connection: Connection):
         """Test that NotImplementedError is raised for unsupported types."""
 
         column_type_dict = {
@@ -964,7 +1040,7 @@ class TestGetDataTypeConverter:
         with pytest.raises(
             NotImplementedError, match="TypeConverter for UNSUPPORTED_TYPE is not implemented."
         ):
-            get_api_type_converter(column_type_definition)
+            get_api_type_converter(mock_connection, column_type_definition)
 
 
 @pytest.mark.unit
@@ -1034,51 +1110,56 @@ class TestConvertStatementParameters:
 class TestArrayConverter:
     """Unit tests over ArrayConverter."""
 
-    def test_constructor_hates_non_array_type(self):
+    def test_constructor_hates_non_array_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="ArrayConverter can only be used with ARRAY types, got INTEGER",
         ):
-            ArrayConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+            ArrayConverter(mock_connection, ColumnTypeDefinition(type="INTEGER", nullable=False))
 
-    def test_constructor_hates_missing_element_type(self):
+    def test_constructor_hates_missing_element_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="ArrayConverter cannot determine element type from column type definition",
         ):
-            ArrayConverter(ColumnTypeDefinition(type="ARRAY", nullable=False))
+            ArrayConverter(mock_connection, ColumnTypeDefinition(type="ARRAY", nullable=False))
 
-    def test_constructor_hates_unsupported_element_type(self):
+    def test_constructor_hates_unsupported_element_type(self, mock_connection: Connection):
         with pytest.raises(
             TypeError,
             match="Conversion for array element of type UNKNOWN is not implemented.",
         ):
             ArrayConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="ARRAY",
                     nullable=False,
                     element_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
-                )
+                ),
             )
 
-    int_array_converter = ArrayConverter(
-        ColumnTypeDefinition(
-            type="ARRAY",
-            nullable=True,
-            element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+    @pytest.fixture
+    def int_array_converter(self, mock_connection: Connection) -> ArrayConverter:
+        """A fixture that returns an ArrayConverter for INTEGER arrays."""
+        return ArrayConverter(
+            mock_connection,
+            ColumnTypeDefinition(
+                type="ARRAY",
+                nullable=True,
+                element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+            ),
         )
-    )
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, int_array_converter: ArrayConverter):
         with ensure_raises_typemismatch("list"):
-            self.int_array_converter.to_python_value("not an array")  # type: ignore
+            int_array_converter.to_python_value("not an array")  # type: ignore
 
-    def test_to_python_value_invalid_element(self):
+    def test_to_python_value_invalid_element(self, int_array_converter: ArrayConverter):
         with pytest.raises(
             ValueError,
             match="invalid literal for int",
         ):
-            self.int_array_converter.to_python_value(["10", "not an int", "30"])
+            int_array_converter.to_python_value(["10", "not an int", "30"])
 
     @pytest.mark.parametrize(
         "from_json_payload, expected",
@@ -1089,20 +1170,22 @@ class TestArrayConverter:
             ([], []),  # We can go from statement result empty array to Python empty list.
         ],
     )
-    def test_to_python_value(self, from_json_payload, expected):
-        result = self.int_array_converter.to_python_value(from_json_payload)
+    def test_to_python_value(
+        self, int_array_converter: ArrayConverter, from_json_payload, expected
+    ):
+        result = int_array_converter.to_python_value(from_json_payload)
         assert result == expected
 
-    def test_to_statement_string_invalid_type(self):
+    def test_to_statement_string_invalid_type(self, int_array_converter: ArrayConverter):
         with ensure_raises_typemismatch("list"):
-            self.int_array_converter.to_statement_string("not an array")  # type: ignore
+            int_array_converter.to_statement_string("not an array")  # type: ignore
 
-    def test_to_statement_string_hates_empty_array(self):
+    def test_to_statement_string_hates_empty_array(self, int_array_converter: ArrayConverter):
         with pytest.raises(
             ValueError,
             match="Cannot convert empty list to Flink ARRAY literal",
         ):
-            self.int_array_converter.to_statement_string([])
+            int_array_converter.to_statement_string([])
 
     def test_to_statement_string_unsupported_first_element(self):
         class UserObject:
@@ -1112,18 +1195,18 @@ class TestArrayConverter:
             InterfaceError,
             match="Conversion for array element of type .* is not implemented.",
         ):
-            self.int_array_converter.to_statement_string([UserObject(), UserObject()])
+            ArrayConverter.to_statement_string([UserObject(), UserObject()])
 
     def test_to_statement_string_hates_mixed_type_elements(self):
         with ensure_raises_typemismatch("int"):
-            self.int_array_converter.to_statement_string([1, "two", 3])
+            ArrayConverter.to_statement_string([1, "two", 3])
 
     def test_to_statement_string_hates_all_none_elements(self):
         with pytest.raises(
             InterfaceError,
             match="Cannot determine element type: all elements are None.",
         ):
-            self.int_array_converter.to_statement_string([None, None, None])
+            ArrayConverter.to_statement_string([None, None, None])
 
     @pytest.mark.parametrize(
         "python_value, expected_statement_string",
@@ -1136,7 +1219,7 @@ class TestArrayConverter:
         ],
     )
     def test_to_statement_string(self, python_value, expected_statement_string):
-        result = self.int_array_converter.to_statement_string(python_value)
+        result = ArrayConverter.to_statement_string(python_value)
         assert result == expected_statement_string
 
     @pytest.mark.parametrize(
@@ -1157,18 +1240,6 @@ class TestArrayConverter:
         result = ArrayConverter.to_statement_string(python_value)
         assert result == expected_statement_string
 
-    nested_array_converter = ArrayConverter(
-        ColumnTypeDefinition(
-            type="ARRAY",
-            nullable=True,
-            element_type=ColumnTypeDefinition(
-                type="ARRAY",
-                nullable=True,
-                element_type=ColumnTypeDefinition(type="INTEGER", nullable=True),
-            ),
-        )
-    )
-
     @pytest.mark.parametrize(
         "from_json_payload, expected",
         [
@@ -1178,8 +1249,22 @@ class TestArrayConverter:
             (None, None),  # Null outer array
         ],
     )
-    def test_nested_array_converter_to_python_value(self, from_json_payload, expected):
-        result = self.nested_array_converter.to_python_value(from_json_payload)
+    def test_nested_array_converter_to_python_value(
+        self, mock_connection: Connection, from_json_payload, expected
+    ):
+        nested_array_converter = ArrayConverter(
+            mock_connection,
+            ColumnTypeDefinition(
+                type="ARRAY",
+                nullable=True,
+                element_type=ColumnTypeDefinition(
+                    type="ARRAY",
+                    nullable=True,
+                    element_type=ColumnTypeDefinition(type="INTEGER", nullable=True),
+                ),
+            ),
+        )
+        result = nested_array_converter.to_python_value(from_json_payload)
         assert result == expected
 
 
@@ -1188,79 +1273,87 @@ class TestArrayConverter:
 class TestMapConverter:
     """Unit tests over MapConverter."""
 
-    def test_constructor_hates_non_map_type(self):
+    def test_constructor_hates_non_map_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="MapConverter can only be used with MAP types, got INTEGER",
         ):
-            MapConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+            MapConverter(mock_connection, ColumnTypeDefinition(type="INTEGER", nullable=False))
 
-    def test_constructor_hates_missing_key_type(self):
+    def test_constructor_hates_missing_key_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="MapConverter cannot determine key type from column type definition",
         ):
             MapConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="MAP",
                     nullable=False,
                     value_type=ColumnTypeDefinition(type="STRING", nullable=False),
-                )
+                ),
             )
 
-    def test_constructor_hates_missing_value_type(self):
+    def test_constructor_hates_missing_value_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="MapConverter cannot determine value type from column type definition",
         ):
             MapConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="MAP",
                     nullable=False,
                     key_type=ColumnTypeDefinition(type="STRING", nullable=False),
-                )
+                ),
             )
 
-    def test_constructor_hates_unsupported_key_type(self):
+    def test_constructor_hates_unsupported_key_type(self, mock_connection: Connection):
         with pytest.raises(
             TypeError,
             match="Conversion for map key of type UNKNOWN is not implemented.",
         ):
             MapConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="MAP",
                     nullable=False,
                     key_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
                     value_type=ColumnTypeDefinition(type="STRING", nullable=False),
-                )
+                ),
             )
 
-    def test_constructor_hates_unsupported_value_type(self):
+    def test_constructor_hates_unsupported_value_type(self, mock_connection: Connection):
         with pytest.raises(
             TypeError,
             match="Conversion for map value of type UNKNOWN is not implemented.",
         ):
             MapConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="MAP",
                     nullable=False,
                     key_type=ColumnTypeDefinition(type="STRING", nullable=False),
                     value_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
-                )
+                ),
             )
 
-    str_int_converter = MapConverter(
-        ColumnTypeDefinition(
-            type="MAP",
-            nullable=False,
-            key_type=ColumnTypeDefinition(type="STRING", nullable=False),
-            value_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+    @pytest.fixture
+    def str_int_converter(self, mock_connection: Connection) -> MapConverter:
+        """A fixture that returns a MapConverter for STRING -> INTEGER maps."""
+        return MapConverter(
+            mock_connection,
+            ColumnTypeDefinition(
+                type="MAP",
+                nullable=False,
+                key_type=ColumnTypeDefinition(type="STRING", nullable=False),
+                value_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+            ),
         )
-    )
 
-    def test_to_python_value_expects_list_response_value(self):
+    def test_to_python_value_expects_list_response_value(self, str_int_converter: MapConverter):
         with ensure_raises_typemismatch("list"):
-            self.str_int_converter.to_python_value("sdf")  # type: ignore
+            str_int_converter.to_python_value("sdf")  # type: ignore
 
     @pytest.mark.parametrize(
         "bad_value",
@@ -1269,9 +1362,11 @@ class TestMapConverter:
             [["one", "two", "three"]],  # interior lists expected to be exactly pairs
         ],
     )
-    def test_to_python_value_expects_interior_pair_lists(self, bad_value: list):
+    def test_to_python_value_expects_interior_pair_lists(
+        self, str_int_converter: MapConverter, bad_value: list
+    ):
         with pytest.raises(ValueError, match="Expected key-value pair list of length 2"):
-            self.str_int_converter.to_python_value(bad_value)
+            str_int_converter.to_python_value(bad_value)
 
     @pytest.mark.parametrize(
         "key_type_name, value_type_name, from_json_payload, expected",
@@ -1301,6 +1396,7 @@ class TestMapConverter:
     )
     def test_to_python_value_simple(
         self,
+        mock_connection: Connection,
         key_type_name,
         value_type_name,
         from_json_payload,
@@ -1308,12 +1404,13 @@ class TestMapConverter:
     ):
         """Test decoding maps with simple value types"""
         converter = MapConverter(
+            mock_connection,
             ColumnTypeDefinition(
                 type="MAP",
                 nullable=True,
                 key_type=ColumnTypeDefinition(type=key_type_name, nullable=False),
                 value_type=ColumnTypeDefinition(type=value_type_name, nullable=False),
-            )
+            ),
         )
         result = converter.to_python_value(from_json_payload)
         assert result == expected
@@ -1368,6 +1465,7 @@ class TestMapConverter:
     )
     def test_python_value_nested_value(
         self,
+        mock_connection: Connection,
         key_type_name,
         value_column_type_definition,
         from_json_payload,
@@ -1375,12 +1473,13 @@ class TestMapConverter:
     ):
         """Test decoding maps with complex value types"""
         converter = MapConverter(
+            mock_connection,
             ColumnTypeDefinition(
                 type="MAP",
                 nullable=True,
                 key_type=ColumnTypeDefinition(type=key_type_name, nullable=False),
                 value_type=value_column_type_definition,
-            )
+            ),
         )
         result = converter.to_python_value(from_json_payload)
         assert result == expected
@@ -1431,31 +1530,34 @@ class TestMapConverter:
 class TestMultisetConverter:
     """Unit tests over MultisetConverter."""
 
-    def test_constructor_hates_non_multiset_type(self):
+    def test_constructor_hates_non_multiset_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="MultisetConverter can only be used with MULTISET types, got INTEGER",
         ):
-            MultisetConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+            MultisetConverter(mock_connection, ColumnTypeDefinition(type="INTEGER", nullable=False))
 
-    def test_constructor_hates_missing_element_type(self):
+    def test_constructor_hates_missing_element_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="MultisetConverter cannot determine element type from column type definition",
         ):
-            MultisetConverter(ColumnTypeDefinition(type="MULTISET", nullable=False))
+            MultisetConverter(
+                mock_connection, ColumnTypeDefinition(type="MULTISET", nullable=False)
+            )
 
-    def test_constructor_hates_unsupported_element_type(self):
+    def test_constructor_hates_unsupported_element_type(self, mock_connection: Connection):
         with pytest.raises(
             TypeError,
             match="Conversion for multiset element of type UNKNOWN is not implemented.",
         ):
             MultisetConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="MULTISET",
                     nullable=False,
                     element_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
-                )
+                ),
             )
 
     @pytest.mark.parametrize(
@@ -1465,33 +1567,42 @@ class TestMultisetConverter:
             ColumnTypeDefinition(type="STRING", nullable=False),
         ],
     )
-    def test_constructor_accepts_supported_element_type(self, element_type: ColumnTypeDefinition):
+    def test_constructor_accepts_supported_element_type(
+        self, mock_connection: Connection, element_type: ColumnTypeDefinition
+    ):
         MultisetConverter(
+            mock_connection,
             ColumnTypeDefinition(
                 type="MULTISET",
                 nullable=False,
                 element_type=element_type,
-            )
+            ),
         )
 
-    integer_multiset_converter = MultisetConverter(
-        ColumnTypeDefinition(
-            type="MULTISET",
-            nullable=True,
-            element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+    @pytest.fixture
+    def integer_multiset_converter(self, mock_connection: Connection) -> MultisetConverter:
+        """A fixture that returns a MultisetConverter for INTEGER multisets."""
+        return MultisetConverter(
+            mock_connection,
+            ColumnTypeDefinition(
+                type="MULTISET",
+                nullable=True,
+                element_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
+            ),
         )
-    )
 
-    def test_to_python_value_invalid_type(self):
+    def test_to_python_value_invalid_type(self, integer_multiset_converter: MultisetConverter):
         with ensure_raises_typemismatch("list"):
-            self.integer_multiset_converter.to_python_value("not a multiset")  # type: ignore
+            integer_multiset_converter.to_python_value("not a multiset")  # type: ignore
 
-    def test_to_python_value_hates_inner_nonlist(self):
+    def test_to_python_value_hates_inner_nonlist(
+        self, integer_multiset_converter: MultisetConverter
+    ):
         with pytest.raises(
             InterfaceError,
             match="Expected to receive value\\+count list",
         ):
-            self.integer_multiset_converter.to_python_value(["not an inner pair list"])
+            integer_multiset_converter.to_python_value(["not an inner pair list"])
 
     @pytest.mark.parametrize(
         "from_json_payload",
@@ -1500,26 +1611,28 @@ class TestMultisetConverter:
             [["10", "2"], ["30"]],  # second inner list not of length 2
         ],
     )
-    def test_to_python_value_hates_nonpair_elements(self, from_json_payload: list):
+    def test_to_python_value_hates_nonpair_elements(
+        self, integer_multiset_converter: MultisetConverter, from_json_payload: list
+    ):
         with pytest.raises(
             InterfaceError,
             match="Expected element \\+ count pair list",
         ):
-            self.integer_multiset_converter.to_python_value(from_json_payload)
+            integer_multiset_converter.to_python_value(from_json_payload)
 
-    def test_to_python_value_hates_null_count(self):
+    def test_to_python_value_hates_null_count(self, integer_multiset_converter: MultisetConverter):
         with pytest.raises(
             InterfaceError,
             match="Expected integer count",
         ):
-            self.integer_multiset_converter.to_python_value([["10", None]])
+            integer_multiset_converter.to_python_value([["10", None]])
 
-    def test_to_python_value_hates_null_value(self):
+    def test_to_python_value_hates_null_value(self, integer_multiset_converter: MultisetConverter):
         with pytest.raises(
             InterfaceError,
             match="Expected element.*but got None",
         ):
-            self.integer_multiset_converter.to_python_value([[None, "10"]])
+            integer_multiset_converter.to_python_value([[None, "10"]])
 
     @pytest.mark.parametrize(
         "key_flink_type,from_json_payload, expected",
@@ -1534,95 +1647,28 @@ class TestMultisetConverter:
     )
     def test_to_python_value(
         self,
+        mock_connection: Connection,
         key_flink_type: str,
         from_json_payload: list,
         expected: Counter,
     ):
         multiset_converter = MultisetConverter(
+            mock_connection,
             ColumnTypeDefinition(
                 type="MULTISET",
                 nullable=True,
                 element_type=ColumnTypeDefinition(type=key_flink_type, nullable=False),
-            )
+            ),
         )
         result = multiset_converter.to_python_value(from_json_payload)
         assert result == expected
 
-    def test_to_statement_string_raises(self):
+    def test_to_statement_string_raises(self, integer_multiset_converter: MultisetConverter):
         with pytest.raises(
             InterfaceError,
             match="Flink does not currently support MULTISET literals",
         ):
-            self.integer_multiset_converter.to_statement_string(Counter({10: 2, 20: 3}))
-
-
-@pytest.mark.unit
-@pytest.mark.typeconv
-class TestRowTypeRegistry:
-    """Unit tests over RowTypeRegistry functionality."""
-
-    def test_get_row_class_bad_field_names_type(self):
-        registry = RowTypeRegistry()
-        with pytest.raises(
-            TypeError,
-            match="field_names must be a list or tuple of strings",
-        ):
-            registry.get_row_class(field_names="not a list")  # type: ignore
-
-    def test_get_row_class_bad_field_name_element(self):
-        registry = RowTypeRegistry()
-        with pytest.raises(
-            TypeError,
-            match="All field names must be strings",
-        ):
-            registry.get_row_class(field_names=["valid", 123])  # type: ignore
-
-    def test_get_row_class_caches_classes(self):
-        registry = RowTypeRegistry()
-        field_names = ["field1", "field2", "field3"]
-        row_class_1 = registry.get_row_class(field_names=field_names)
-        assert issubclass(row_class_1, tuple), "Expected row class to be subclass of tuple"
-        assert row_class_1._fields == tuple(field_names), "Field names do not match"  # pyright: ignore[reportAttributeAccessIssue]
-        row_class_2 = registry.get_row_class(field_names=field_names)
-        assert row_class_1 is row_class_2, "Expected same class instance from cache"
-
-    def test_register_user_types_hates_instances(self):
-        registry = RowTypeRegistry()
-
-        with pytest.raises(
-            TypeError,
-            match="Expected a namedtuple subclass type, got an instance of <class 'list'> instead",
-        ):
-            registry.register_namedtuple(["not", "a", "namedtuple", "class"])  # type: ignore
-
-    class NotATuple:
-        pass
-
-    @pytest.mark.parametrize(
-        "not_a_namedtuple_class",
-        [
-            int,
-            dict,
-            NotATuple,
-        ],
-    )
-    def test_register_user_type_hates_non_namedtuple_subclasses(self, not_a_namedtuple_class):
-        registry = RowTypeRegistry()
-
-        with pytest.raises(
-            TypeError,
-            match="is not a namedtuple subclass",
-        ):
-            registry.register_namedtuple(not_a_namedtuple_class)  # type: ignore
-
-    def test_register_user_type_caches_class(self):
-        registry = RowTypeRegistry()
-
-        MyRowType = namedtuple("MyRowType", ["a", "b", "c"])
-
-        registry.register_namedtuple(MyRowType)
-        retrieved_class = registry.get_row_class(field_names=["a", "b", "c"])
-        assert retrieved_class is MyRowType, "Expected to retrieve the registered namedtuple class"
+            integer_multiset_converter.to_statement_string(Counter({10: 2, 20: 3}))
 
 
 @pytest.mark.unit
@@ -1630,41 +1676,43 @@ class TestRowTypeRegistry:
 class TestRowConverter:
     """Unit tests over RowConverter."""
 
-    def test_constructor_hates_non_row_type(self):
+    def test_constructor_hates_non_row_type(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="RowConverter can only be used with ROW types, got INTEGER",
         ):
-            RowConverter(ColumnTypeDefinition(type="INTEGER", nullable=False))
+            RowConverter(mock_connection, ColumnTypeDefinition(type="INTEGER", nullable=False))
 
-    def test_constructor_hates_missing_field_types(self):
+    def test_constructor_hates_missing_field_types(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="RowConverter requires column type definition with fields",
         ):
-            RowConverter(ColumnTypeDefinition(type="ROW", nullable=False))
+            RowConverter(mock_connection, ColumnTypeDefinition(type="ROW", nullable=False))
 
-    def test_constructor_hates_empty_field_types(self):
+    def test_constructor_hates_empty_field_types(self, mock_connection: Connection):
         with pytest.raises(
             InterfaceError,
             match="RowConverter cannot determine type for field 'empty_type'",
         ):
             RowConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="ROW",
                     nullable=False,
                     fields=[
                         RowColumn(name="empty_type", field_type=None)  # type: ignore
                     ],
-                )
+                ),
             )
 
-    def test_constructor_hates_unknown_field_types(self):
+    def test_constructor_hates_unknown_field_types(self, mock_connection: Connection):
         with pytest.raises(
             TypeError,
             match="Conversion for row field 'unknown_type' of type UNKNOWN is not implemented.",
         ):
             RowConverter(
+                mock_connection,
                 ColumnTypeDefinition(
                     type="ROW",
                     nullable=False,
@@ -1674,12 +1722,13 @@ class TestRowConverter:
                             field_type=ColumnTypeDefinition(type="UNKNOWN", nullable=False),
                         )  # type: ignore
                     ],
-                )
+                ),
             )
 
     @pytest.fixture
-    def str_int_row_converter(self) -> RowConverter:
+    def str_int_row_converter(self, mock_connection: Connection) -> RowConverter:
         return RowConverter(
+            mock_connection,
             ColumnTypeDefinition(
                 type="ROW",
                 nullable=False,
@@ -1693,7 +1742,7 @@ class TestRowConverter:
                         field_type=ColumnTypeDefinition(type="INTEGER", nullable=False),
                     ),
                 ],
-            )
+            ),
         )
 
     def test_constructor_accepts_supported_field_types(self, str_int_row_converter):
