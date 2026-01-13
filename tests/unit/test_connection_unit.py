@@ -222,7 +222,7 @@ class TestRowTypeRegistry:
 
         with pytest.raises(
             TypeError,
-            match="Expected a namedtuple, NamedTuple, or @datataclass type",
+            match="Expected a namedtuple, NamedTuple, or @dataclass type",
         ):
             registry.register_row_type(not_a_class)  # type: ignore
 
@@ -243,7 +243,7 @@ class TestRowTypeRegistry:
 
         with pytest.raises(
             TypeError,
-            match="Expected a namedtuple, NamedTuple, or @datataclass type",
+            match="Expected a namedtuple, NamedTuple, or @dataclass type",
         ):
             registry.register_row_type(not_a_supported_class)  # type: ignore
 

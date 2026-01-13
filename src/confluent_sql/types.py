@@ -1400,7 +1400,7 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
         e.g., in an INSERT statement VALUES clause, otherwise strange parsing errors will occur.)
         """
 
-        value_as_tuple: tuple[str, ...]
+        value_as_tuple: tuple
 
         if isinstance(python_value, tuple):
             value_as_tuple = python_value
