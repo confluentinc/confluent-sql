@@ -389,7 +389,9 @@ class RowTypeRegistry:
 
     def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type[RowPythonTypes]:
         """
-        Returns a cached namedtuple class or creates a new one.
+        Returns the cached user-provided class for handling ROWs with the given field names.
+        If none found, creates a namedtuple class (and caches it).
+
         field_names: A sequence of strings (e.g., ['name', 'age'])
         """
 
@@ -419,8 +421,8 @@ class RowTypeRegistry:
 
     def register_row_type(self, user_type_for_row: type[RowPythonTypes]) -> None:
         """
-        Registers a user-provided namedtuple, typing.NamedTuple, or @dataclass class against
-        its field structure for use when deserializing ROW values.
+        Registers a user-provided namedtuple, typing.NamedTuple, or @dataclass class by
+        the sequence of its field names for future use when deserializing ROW values.
 
         Raises TypeError if the provided type is not a supported class type.
         """
