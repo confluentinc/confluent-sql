@@ -380,14 +380,14 @@ class RowTypeRegistry:
     namedtuple class will be created and cached for future use.
     """
 
-    _cache: dict[tuple[str, ...], type]
+    _cache: dict[tuple[str, ...], type[RowPythonTypes]]
 
     def __init__(self):
         # Key: tuple of field names (strings)
         # Value: The specific class object (type)
         self._cache = {}
 
-    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type:
+    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type[RowPythonTypes]:
         """
         Returns a cached namedtuple class or creates a new one.
         field_names: A sequence of strings (e.g., ['name', 'age'])
@@ -419,7 +419,7 @@ class RowTypeRegistry:
 
     def register_row_type(self, user_type_for_row: type[RowPythonTypes]) -> None:
         """
-        Registers a user-provided namedtuple, NamedTuple, or @dataclass class against
+        Registers a user-provided namedtuple, typing.NamedTuple, or @dataclass class against
         its field structure for use when deserializing ROW values.
 
         Raises TypeError if the provided type is not a supported class type.
@@ -428,19 +428,19 @@ class RowTypeRegistry:
         key: tuple[str, ...] | None = None
 
         if isinstance(user_type_for_row, type):
-            # Check for duck-typed namedtuple: subclass of tuple + has _fields
+            # Check for duck-typed namedtuple or typing.NamedTuple: subclass of tuple + has _fields
             if issubclass(user_type_for_row, tuple) and hasattr(user_type_for_row, "_fields"):
                 key = tuple(user_type_for_row._fields)  # pyright: ignore[reportAttributeAccessIssue]
 
+            # Only other supported type is an @dataclass
             elif is_dataclass(user_type_for_row):
                 key = tuple(field.name for field in fields(user_type_for_row))
 
-            if key is not None:
-                # Update the cache to prefer the user's class for this structure
-                self._cache[key] = user_type_for_row
-                return
+        if key is None:
+            # User passed a non-supported type or an instance of something.
+            raise TypeError(
+                f"Expected a namedtuple, NamedTuple, or @datataclass type, got {user_type_for_row} instead"  # noqa: E501
+            )
 
-        # User passed a non-supported type or an instance of something.
-        raise TypeError(
-            f"Expected a namedtuple, NamedTuple, or @datataclass type, got {user_type_for_row} instead"  # noqa: E501
-        )
+        # Update the cache to prefer the user's class for this structure
+        self._cache[key] = user_type_for_row

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -1372,20 +1372,41 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
         return self._python_value_class(*field_values)
 
     @classmethod
+    def handles_python_value(cls, python_value: Any) -> bool:
+        """Return True if the given python_value is a tuple, namedtuple, typing.NamedTuple,
+        or @dataclass instance, False otherwise.
+
+        Assists `get_converter_for_python_value()` in determining the proper converter class
+        for a given python value.
+        """
+
+        # collections.namedtuple and typing.NamedTuple will be instances of tuple, otherwise
+        # we check for dataclass *instances*.
+        return isinstance(python_value, tuple) or (
+            is_dataclass(python_value) and not isinstance(python_value, type)
+        )
+
+    @classmethod
     def to_statement_string(cls, python_value: RowPythonTypes) -> str:
-        """Convert a Python tuple, namedtuple instance to its for-statement-string-interpolation
+        """Convert a Python tuple, collections.namedtuple, typing.NamedTuple, or @dataclass
+        instance to its for-statement-string-interpolation
         representation, "(ROW(field1_value, field2_value, ...))".
+
+        When providing a tuple or namedtuple, the values are taken positionally.
+        When providing a dataclass instance, the field values are taken in the order
+        of their declaration in the dataclass.
 
         (The whole expression must be wrapped in parentheses when used in a larger expression,
         e.g., in an INSERT statement VALUES clause, otherwise strange parsing errors will occur.)
         """
 
-        value_as_sequence: Sequence[Any]
+        value_as_tuple: tuple[str, ...]
 
         if isinstance(python_value, tuple):
-            value_as_sequence = python_value
+            value_as_tuple = python_value
         elif is_dataclass(python_value):
-            value_as_sequence = tuple(getattr(python_value, f.name) for f in fields(python_value))
+            # Decompose dataclass to tuple of its field values based on declared field order.
+            value_as_tuple = tuple(getattr(python_value, f.name) for f in fields(python_value))
         else:
             raise TypeMismatchError(
                 converter_name=cls.__name__,
@@ -1395,7 +1416,7 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
             )
 
         field_strings: list[str] = []
-        for field_value in value_as_sequence:
+        for field_value in value_as_tuple:
             # May raise InterfaceError if individual field is not of a handled type.
             field_converter_cls = get_converter_for_python_value(field_value)
 
@@ -1527,8 +1548,9 @@ def get_converter_for_python_value(python_value: SupportedPythonTypes) -> type[T
     # Will find for most types, including if user has provided a plain tuple to be converted
     # to a ROW.
     converter_class = _python_type_to_type_converter.get(value_type)
-    if not converter_class and isinstance(python_value, tuple) and hasattr(python_value, "_fields"):
-        # namedtuples handled by RowConverter
+
+    # Otherwise check to see if RowConverter can handle it (namedtuple, NamedTuple, dataclass).
+    if not converter_class and RowConverter.handles_python_value(python_value):
         converter_class = RowConverter
 
     if not converter_class:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isnan
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -1868,6 +1868,22 @@ class TestRowConverter:
     )
     def test_to_statement_string_success(self, value, expected):
         result = RowConverter.to_statement_string(value)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ((1, "test"), True),
+            (ComplexRow(1, "Alice", [95, 88, 92], {"height": 165}), True),
+            (NestedRow(user=1, details=2), True),
+            (MyRow(1, "test"), True),
+            (DataClassRow(1, "test"), True),
+            (DataClassRow, False),  # the dataclass subclass itself, not an instance.
+            (["not", "a", "tuple"], False),  # Not a tuple or namedtuple or dataclass.
+        ],
+    )
+    def test_handles_python_value(self, value: Any, expected: bool):
+        result = RowConverter.handles_python_value(value)
         assert result == expected
 
 
