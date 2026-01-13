@@ -4,10 +4,13 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
-
-from confluent_sql.types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
+from typing import TYPE_CHECKING
 
 from .exceptions import DatabaseError, InterfaceError, OperationalError
+from .types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
+
+if TYPE_CHECKING:
+    from .connection import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,11 @@ class Phase(Enum):
 
 @dataclass
 class Statement:
+    """Represents a Confluent SQL statement, including its metadata, spec, status,
+    and parsed traits such as schema, sql kind, etc."""
+
+    connection: Connection
+
     # From the API response fields ...
     statement_id: str
     name: str
@@ -169,12 +177,12 @@ class Statement:
             raise InterfaceError("Cannot get type converter for statement with no schema.")
 
         if self._type_converter is None:
-            self._type_converter = StatementTypeConverter(self.schema)
+            self._type_converter = StatementTypeConverter(self.connection, self.schema)
 
         return self._type_converter
 
     @classmethod
-    def from_response(cls, response: StrAnyDict) -> Statement:
+    def from_response(cls, connection: Connection, response: StrAnyDict) -> Statement:
         """Create a Statement object from the JSON response returned by the statements API."""
         try:
             # Mandatory fields
@@ -202,7 +210,7 @@ class Statement:
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
-        return cls(statement_id, name, spec, status, traits, phase)
+        return cls(connection, statement_id, name, spec, status, traits, phase)
 
 
 @dataclass(kw_only=True)
