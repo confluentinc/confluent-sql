@@ -6,12 +6,12 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isinf, isnan
 from types import NoneType
-from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
 from confluent_sql.exceptions import InterfaceError, TypeMismatchError
 
@@ -246,9 +246,6 @@ class TypeConverter(Generic[PyType, ResponseType]):
                 expected_type=expected_type.__name__,
                 bad_value=value,
             )
-
-        # No need to return the value, because the caller's signature already
-        # types it appropriately.
 
 
 def get_api_type_converter(
@@ -1270,16 +1267,31 @@ class MultisetConverter(TypeConverter[Counter, list]):
         raise InterfaceError("Flink does not currently support MULTISET literals.")
 
 
-class RowConverter(TypeConverter[tuple, list]):
-    """Convert Flink ROW type to/from Python tuple or namedtuple instances.
+class IsDataclass(Protocol):
+    """Protocol describing @dataclass instances, surprisingly enough there is no built-in one."""
 
-    When converting from Flink ROW type, a namedtuple instance is returned,
-    with field names corresponding to the ROW's field names. The namedtuple
-    class is cached globally based on the field names, so that multiple
-    ROWs with the same field names share the same namedtuple class (even across
+    __dataclass_fields__: ClassVar[dict[str, Any]]
+
+
+RowPythonTypes = tuple | IsDataclass
+"""The types that can be used to represent Flink ROW column values in Python:
+either tuple (including namedtuple() and typing.NamedTuple) or @dataclass instances."""
+
+
+class RowConverter(TypeConverter[RowPythonTypes, list]):
+    """Convert Flink ROW type to/from Python tuple, namedtuple, or @dataclass instances.
+
+    When converting from Flink ROW type, a namedtuple or @dataclass instance is returned,
+    with field names corresponding to the ROW's field names. The class to use
+    is cached globally based on the field names, so that multiple
+    ROWs with the same field names share the same registered class (even across
     multiple RowConverter instances / separate queries or cursors).
 
-    When interpolating python tuples or namedtuples into statements strings,
+    The class to use for a given set of field names is obtained from the connection's
+    row class registry, which will create a new namedtuple or @dataclass class
+    as needed.
+
+    When interpolating python tuples, namedtuples, or dataclasses into statements strings,
     the values are converted positionally field by field, and the resulting string is
     of the form "ROW(field1_value, field2_value, ...)".
     """
@@ -1290,8 +1302,9 @@ class RowConverter(TypeConverter[tuple, list]):
     """List of TypeConverter instances for each field in the row, in order."""
     _field_names: list[str]
     """List of field names in the row, in order."""
-    _namedtuple_class: type
-    """The namedtuple class corresponding to this row type's field names."""
+    _python_value_class: type[RowPythonTypes]
+    """The namedtuple or @dataclass class from the connection's row class registy
+       corresponding to this row type's field names."""
 
     def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "ROW":
@@ -1325,14 +1338,14 @@ class RowConverter(TypeConverter[tuple, list]):
             field_converter = field_converter_cls(connection, field_type_def)
             self._field_converters.append(field_converter)
 
-        # Get or create the namedtuple class for this row type's field names.
-        self._namedtuple_class = connection._row_type_registry.get_row_class(self._field_names)
+        # Get or create the class for this row type's field names.
+        self._python_value_class = connection._row_type_registry.get_row_class(self._field_names)
 
         super().__init__(connection, column_type)
 
-    def to_python_value(self, response_value: list | None) -> tuple | None:
-        """Expect list or None from the response value, return as namedtuple instance or raise
-        InterfaceError."""
+    def to_python_value(self, response_value: list | None) -> RowPythonTypes | None:
+        """Expect list or None from the response value, return as registered class (or namedtuple)
+        or raise InterfaceError."""
         if response_value is None:
             return None
 
@@ -1358,23 +1371,56 @@ class RowConverter(TypeConverter[tuple, list]):
 
             field_values.append(converted_field_value)
 
-        # Return an instance of the namedtuple class corresponding to the
+        # Return an instance of the registered class corresponding to the
         # ROW's field names with the converted field values.
-        return self._namedtuple_class(*field_values)
+        return self._python_value_class(*field_values)
 
     @classmethod
-    def to_statement_string(cls, python_value: tuple) -> str:
-        """Convert a Python namedtuple instance to its for-statement-string-interpolation
+    def handles_python_value(cls, python_value: Any) -> bool:
+        """Return True if the given python_value is a tuple, namedtuple, typing.NamedTuple,
+        or @dataclass instance, False otherwise.
+
+        Assists `get_converter_for_python_value()` in determining the proper converter class
+        for a given python value.
+        """
+
+        # collections.namedtuple and typing.NamedTuple will be instances of tuple, otherwise
+        # we check for dataclass *instances*.
+        return isinstance(python_value, tuple) or (
+            is_dataclass(python_value) and not isinstance(python_value, type)
+        )
+
+    @classmethod
+    def to_statement_string(cls, python_value: RowPythonTypes) -> str:
+        """Convert a Python tuple, collections.namedtuple, typing.NamedTuple, or @dataclass
+        instance to its for-statement-string-interpolation
         representation, "(ROW(field1_value, field2_value, ...))".
+
+        When providing a tuple or namedtuple, the values are taken positionally.
+        When providing a dataclass instance, the field values are taken in the order
+        of their declaration in the dataclass.
 
         (The whole expression must be wrapped in parentheses when used in a larger expression,
         e.g., in an INSERT statement VALUES clause, otherwise strange parsing errors will occur.)
         """
 
-        cls._check_to_statement_string_param_type(tuple, python_value)
+        value_as_tuple: tuple
+
+        if isinstance(python_value, tuple):
+            value_as_tuple = python_value
+        elif is_dataclass(python_value):
+            # Decompose dataclass to tuple of its field values based on declared field order.
+            value_as_tuple = tuple(getattr(python_value, f.name) for f in fields(python_value))
+        else:
+            raise TypeMismatchError(
+                converter_name=cls.__name__,
+                method_name="to_statement_string",
+                expected_type="tuple, namedtuple, NamedTuple, or dataclass",
+                bad_value=python_value,
+            )
 
         field_strings: list[str] = []
-        for field_value in python_value:
+        for field_value in value_as_tuple:
             # May raise InterfaceError if individual field is not of a handled type.
             field_converter_cls = get_converter_for_python_value(field_value)
 
@@ -1506,8 +1552,9 @@ def get_converter_for_python_value(python_value: SupportedPythonTypes) -> type[T
     # Will find for most types, including if user has provided a plain tuple to be converted
     # to a ROW.
     converter_class = _python_type_to_type_converter.get(value_type)
-    if not converter_class and isinstance(python_value, tuple) and hasattr(python_value, "_fields"):
-        # namedtuples handled by RowConverter
+
+    # Otherwise check to see if RowConverter can handle it (namedtuple, NamedTuple, dataclass).
+    if not converter_class and RowConverter.handles_python_value(python_value):
         converter_class = RowConverter
 
     if not converter_class:
