@@ -1,6 +1,8 @@
 from collections import Counter, namedtuple
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from typing import NamedTuple
 
 import pytest
 
@@ -611,16 +613,31 @@ class TestRowConversion:
         # See fixture `row_table_connection` for the table structure with ROW columns
         # matching these types.
         NameAndAge = namedtuple("NameAndAge", ["name", "age"])
-        Address = namedtuple("Address", ["street", "city", "zip_code"])
-        ContactInfo = namedtuple("ContactInfo", ["email", "phone"])
+        """Example of using collections.namedtuple for ROW type."""
+
+        class Address(NamedTuple):
+            """Example of using a typing.NamedTuple for ROW type."""
+
+            street: str
+            city: str
+            zip_code: int
+
+        @dataclass
+        class ContactInfo:
+            """Example of using a dataclass for ROW type."""
+
+            email: str
+            phone: str
+
         EmbeddedRow = namedtuple("EmbeddedRow", ["id", "contact_info"])
 
         # Register the types so that they'll get used when deserializing. Otherwise
         # will be using auto-generated namedtuples with same field names, but won't
         # be the same exact class. The user may care and hence will do this explicitly.
 
-        # We choose NOT to register the EmbeddedRow here, to verify that nested
-        # namedtuples get auto-generated properly.
+        # We choose NOT to register the EmbeddedRow here, to verify that
+        # namedtuples get auto-generated properly when processing statement
+        # result sets.
         for nt in [NameAndAge, Address, ContactInfo]:
             row_table_connection.register_row_type(nt)
 
