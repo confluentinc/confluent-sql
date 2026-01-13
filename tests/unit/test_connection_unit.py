@@ -248,16 +248,16 @@ class TestRowTypeRegistry:
             registry.register_row_type(not_a_supported_class)  # type: ignore
 
     @pytest.mark.parametrize(
-        "rowType,field_names",
+        "row_type,field_names",
         [
             (MySimpleNamedTuple, ["x", "y"]),
             (MyTypingNamedTuple, ["a", "b"]),
             (MyDataClass, ["p", "q"]),
         ],
     )
-    def test_register_user_type_success(self, rowType, field_names):
+    def test_register_user_type_success(self, row_type, field_names):
         registry = RowTypeRegistry()
 
-        registry.register_row_type(rowType)
+        registry.register_row_type(row_type)
         retrieved_class = registry.get_row_class(field_names)
-        assert retrieved_class is rowType, "Expected to retrieve the registered class"
+        assert retrieved_class is row_type, "Expected to retrieve the registered class"
