@@ -441,7 +441,7 @@ class RowTypeRegistry:
         if key is None:
             # User passed a non-supported type or an instance of something.
             raise TypeError(
-                f"Expected a namedtuple, NamedTuple, or @datataclass type, got {user_type_for_row} instead"  # noqa: E501
+                f"Expected a namedtuple, NamedTuple, or @dataclass type, got {user_type_for_row} instead"  # noqa: E501
             )
 
         # Update the cache to prefer the user's class for this structure
