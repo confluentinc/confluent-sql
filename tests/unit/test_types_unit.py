@@ -3,9 +3,11 @@
 from collections import Counter, namedtuple
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isnan
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -1796,7 +1798,7 @@ class TestRowConverter:
         ],
     )
     def test_to_statement_string_invalid_type(self, bad_python_value):
-        with ensure_raises_typemismatch("tuple"):
+        with ensure_raises_typemismatch("tuple, namedtuple, NamedTuple, or dataclass"):
             RowConverter.to_statement_string(bad_python_value)  # type: ignore
 
     ComplexRow = namedtuple(
@@ -1816,6 +1818,19 @@ class TestRowConverter:
             "details",
         ],
     )
+
+    class MyRow(NamedTuple):
+        """For proving that newer typing.NamedTuple works too."""
+
+        id: int
+        name: str
+
+    @dataclass
+    class DataClassRow:
+        """For proving that dataclasses work too."""
+
+        id: int
+        name: str
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -1839,10 +1854,36 @@ class TestRowConverter:
                 "(ROW((ROW(2, 'Bob', ARRAY[78, 85], MAP['age', 30])), (ROW(3, 'Charlie',"
                 " ARRAY[90, 91, 92], MAP['city', 'New York']))))",
             ),
+            (
+                # A typing.NamedTuple-based row
+                MyRow(1, "test"),
+                "(ROW(1, 'test'))",
+            ),
+            (
+                # A dataclass-based row
+                DataClassRow(1, "test"),
+                "(ROW(1, 'test'))",
+            ),
         ],
     )
     def test_to_statement_string_success(self, value, expected):
         result = RowConverter.to_statement_string(value)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ((1, "test"), True),
+            (ComplexRow(1, "Alice", [95, 88, 92], {"height": 165}), True),
+            (NestedRow(user=1, details=2), True),
+            (MyRow(1, "test"), True),
+            (DataClassRow(1, "test"), True),
+            (DataClassRow, False),  # the dataclass subclass itself, not an instance.
+            (["not", "a", "tuple"], False),  # Not a tuple or namedtuple or dataclass.
+        ],
+    )
+    def test_handles_python_value(self, value: Any, expected: bool):
+        result = RowConverter.handles_python_value(value)
         assert result == expected
 
 
