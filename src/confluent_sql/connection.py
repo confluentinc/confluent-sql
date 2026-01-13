@@ -12,12 +12,14 @@ import uuid
 from collections import namedtuple
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import fields, is_dataclass
 from typing import Any
 
 import httpx
 
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
+from .types import RowPythonTypes
 
 logger = logging.getLogger(__name__)
 
@@ -224,12 +226,19 @@ class Connection:
         """
         return self._closed
 
-    def register_row_type(self, user_namedtuple: type[tuple]) -> None:
-        """Register a user-defined namedtuple class to be used to return deserialized ROW values.
-        The user-provided namedtuple class is matched by the sequence of field names
-        vs those found in the ROW being returned by a statement."""
+    def register_row_type(self, class_for_flink_row: type[RowPythonTypes]) -> None:
+        """Register a user-defined namedtuple, NamedTuple, or @dataclass class to be used
+        to return deserialized ROW values.
 
-        self._row_type_registry.register_namedtuple(user_namedtuple)
+        The user-provided class to use when deserializing a ROW in any particular resultset is
+        determined by matching the sequence of ROW field names to the ordered sequence of declared
+        field names in the user-provided namedtuple, NamedTuple or @dataclass class.
+
+        If no user-registered class matches the field names of a ROW type in a resultset,
+        a new namedtuple class will be created and cached for future use.
+        """
+
+        self._row_type_registry.register_row_type(class_for_flink_row)
 
     def _execute_statement(
         self,
@@ -359,25 +368,30 @@ class Connection:
 
 
 class RowTypeRegistry:
-    """Registry for namedtuple classes used to deserialize ROW values into.
+    """Registry for namedtuple, NamedTuple or @dataclass classes used for deserializing
+    ROW values from query results.
 
-    Users can register their own namedtuple classes to be used for specific
+    Users can register their own classes to be used for specific
     field structures via `connection.register_row_type()`. Then any query results
     returning ROW values with matching field names will be deserialized
-    into instances of the user-registered namedtuple class.
+    into instances of the user-registered class.
 
     Otherwise, if no user-registered class matches the field names, a new
     namedtuple class will be created and cached for future use.
     """
+
+    _cache: dict[tuple[str, ...], type[RowPythonTypes]]
 
     def __init__(self):
         # Key: tuple of field names (strings)
         # Value: The specific class object (type)
         self._cache = {}
 
-    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type:
+    def get_row_class(self, field_names: list[str] | tuple[str, ...]) -> type[RowPythonTypes]:
         """
-        Returns a cached namedtuple class or creates a new one.
+        Returns the cached user-provided class for handling ROWs with the given field names.
+        If none found, creates a namedtuple class (and caches it).
+
         field_names: A sequence of strings (e.g., ['name', 'age'])
         """
 
@@ -405,22 +419,30 @@ class RowTypeRegistry:
 
         return self._cache[key]
 
-    def register_namedtuple(self, user_namedtuple: type[tuple]) -> None:
+    def register_row_type(self, user_type_for_row: type[RowPythonTypes]) -> None:
         """
-        Registers a user-provided namedtuple class against its field structure.
+        Registers a user-provided namedtuple, typing.NamedTuple, or @dataclass class by
+        the sequence of its field names for future use when deserializing ROW values.
 
-        Raises TypeError if the provided object is not a namedtuple.
+        Raises TypeError if the provided type is not a supported class type.
         """
 
-        if not isinstance(user_namedtuple, type):
+        key: tuple[str, ...] | None = None
+
+        if isinstance(user_type_for_row, type):
+            # Check for duck-typed namedtuple or typing.NamedTuple: subclass of tuple + has _fields
+            if issubclass(user_type_for_row, tuple) and hasattr(user_type_for_row, "_fields"):
+                key = tuple(user_type_for_row._fields)  # pyright: ignore[reportAttributeAccessIssue]
+
+            # Only other supported type is an @dataclass
+            elif is_dataclass(user_type_for_row):
+                key = tuple(field.name for field in fields(user_type_for_row))
+
+        if key is None:
+            # User passed a non-supported type or an instance of something.
             raise TypeError(
-                f"Expected a namedtuple subclass type, got an instance of {type(user_namedtuple)} instead"  # noqa: E501
+                f"Expected a namedtuple, NamedTuple, or @datataclass type, got {user_type_for_row} instead"  # noqa: E501
             )
 
-        # Check for duck-typed namedtuple: subclass of tuple + has _fields
-        if issubclass(user_namedtuple, tuple) and hasattr(user_namedtuple, "_fields"):
-            key = tuple(user_namedtuple._fields)  # pyright: ignore[reportAttributeAccessIssue]
-            # Update the cache to prefer the user's class for this structure
-            self._cache[key] = user_namedtuple
-        else:
-            raise TypeError("user_namedtuple is not a namedtuple subclass")
+        # Update the cache to prefer the user's class for this structure
+        self._cache[key] = user_type_for_row
