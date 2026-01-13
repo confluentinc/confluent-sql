@@ -1279,15 +1279,19 @@ either tuple (including namedtuple() and typing.NamedTuple) or @dataclass instan
 
 
 class RowConverter(TypeConverter[RowPythonTypes, list]):
-    """Convert Flink ROW type to/from Python tuple or namedtuple instances.
+    """Convert Flink ROW type to/from Python tuple, namedtuple, or @dataclass instances.
 
-    When converting from Flink ROW type, a namedtuple instance is returned,
-    with field names corresponding to the ROW's field names. The namedtuple
-    class is cached globally based on the field names, so that multiple
-    ROWs with the same field names share the same namedtuple class (even across
+    When converting from Flink ROW type, a namedtuple or @dataclass instance is returned,
+    with field names corresponding to the ROW's field names. The class to use
+    is cached globally based on the field names, so that multiple
+    ROWs with the same field names share the same registered class (even across
     multiple RowConverter instances / separate queries or cursors).
 
-    When interpolating python tuples or namedtuples into statements strings,
+    The class to use for a given set of field names is obtained from the connection's
+    row class registry, which will create a new namedtuple or @dataclass class
+    as needed.
+
+    When interpolating python tuples, namedtuples, or dataclasses into statements strings,
     the values are converted positionally field by field, and the resulting string is
     of the form "ROW(field1_value, field2_value, ...)".
     """
