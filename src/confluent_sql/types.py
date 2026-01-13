@@ -1288,7 +1288,7 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
     multiple RowConverter instances / separate queries or cursors).
 
     The class to use for a given set of field names is obtained from the connection's
-    row class registry, which will create a new namedtuple or @dataclass class
+    row class registry, which will create a new collections.namedtuple class
     as needed.
 
     When interpolating python tuples, namedtuples, or dataclasses into statements strings,
@@ -1303,7 +1303,7 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
     _field_names: list[str]
     """List of field names in the row, in order."""
     _python_value_class: type[RowPythonTypes]
-    """The namedtuple or @dataclass class from the connection's row class registy
+    """The namedtuple or @dataclass class from the connection's row class registry
        corresponding to this row type's field names."""
 
     def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
@@ -1407,9 +1407,10 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
         value_as_tuple: tuple
 
         if isinstance(python_value, tuple):
+            # User provided a plain tuple, namedtuple, or NamedTuple subclass: use as-is.
             value_as_tuple = python_value
-        elif is_dataclass(python_value):
-            # Decompose dataclass to tuple of its field values based on declared field order.
+        elif is_dataclass(python_value) and not isinstance(python_value, type):
+            # Decompose dataclass instance to tuple of its field values.
             value_as_tuple = tuple(getattr(python_value, f.name) for f in fields(python_value))
         else:
             raise TypeMismatchError(
