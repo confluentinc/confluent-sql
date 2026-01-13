@@ -197,35 +197,36 @@ class TestRowTypeRegistry:
 
         with pytest.raises(
             TypeError,
-            match="Expected a namedtuple subclass type, got an instance of <class 'list'> instead",
+            match="Expected a namedtuple, NamedTuple, or @datataclass type",
         ):
-            registry.register_namedtuple(["not", "a", "namedtuple", "class"])  # type: ignore
+            registry.register_row_type(["not", "a", "namedtuple", "class"])  # type: ignore
 
     class NotATuple:
         pass
 
     @pytest.mark.parametrize(
-        "not_a_namedtuple_class",
+        "not_a_supported_class",
         [
             int,
             dict,
             NotATuple,
+            list,
         ],
     )
-    def test_register_user_type_hates_non_namedtuple_subclasses(self, not_a_namedtuple_class):
+    def test_register_row_type_hates_unsupported_classes(self, not_a_supported_class):
         registry = RowTypeRegistry()
 
         with pytest.raises(
             TypeError,
-            match="is not a namedtuple subclass",
+            match="Expected a namedtuple, NamedTuple, or @datataclass type",
         ):
-            registry.register_namedtuple(not_a_namedtuple_class)  # type: ignore
+            registry.register_row_type(not_a_supported_class)  # type: ignore
 
     def test_register_user_type_caches_class(self):
         registry = RowTypeRegistry()
 
         MyRowType = namedtuple("MyRowType", ["a", "b", "c"])
 
-        registry.register_namedtuple(MyRowType)
+        registry.register_row_type(MyRowType)
         retrieved_class = registry.get_row_class(field_names=["a", "b", "c"])
         assert retrieved_class is MyRowType, "Expected to retrieve the registered namedtuple class"
