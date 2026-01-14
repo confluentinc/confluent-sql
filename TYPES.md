@@ -20,9 +20,9 @@ At time of writing, Flink is not able to infer the type of a SQL literal based o
 | `TIMESTAMP_LTZ`, `TIMESTAMP_WITH_LOCAL_TIME_ZONE` | `datetime.datetime` (tz-aware)                           | `cast('2024-01-14 12:34:56.123456' as timestamp_ltz)` | Only tz-aware datetimes allowed on input; driver normalizes to UTC and returns UTC-aware datetimes, so original timezone cannot be recovered (asymmetry). Flink lacks a true `TIMESTAMP WITH TIME ZONE` type.                                                                                                                                                                                                                                                                        |
 | `INTERVAL YEAR TO MONTH` / `INTERVAL_YEAR_MONTH`  | `YearMonthInterval`                                      | `INTERVAL '+1-06' YEAR TO MONTH`                      | Must supply the driver’s `YearMonthInterval` dataclass; Python lacks native type for this Flink type.                                                                                                                                                                                                                                                                                                                                                                                |
 | `INTERVAL DAY TO SECOND` / `INTERVAL_DAY_TIME`    | `datetime.timedelta`                                     | `INTERVAL '+0 04:05:06.000100' DAY TO SECOND(6)`      | `timedelta` Python -> Flink precision capped at microseconds due to Flink parser limitation.                                                                                                                                                                                                                                                                                                                                                                                         |
-| `ARRAY`                                           | `list`                                                   | `ARRAY[1, 2, 3]`                                      | Python list must contain at least one non-`None` element so element type can be inferred; all-`None` or empty lists cannot be serialized (asymmetry vs. result decoding) as a parameter. Lists must contain a single uniform supported python type (corresponding to the ARRAY's scalar type) aside from `None` values, assuming the ARRAY scalar type is nullable.                                                                                                                  |
-| `MAP`                                             | `dict`                                                   | `MAP['k1', 1, 'k2', 2]`                               | Flink MAPs are strongly typed on both the key and value type, so heterogenous python dicts are disallowed (outside of `None` keys or values, if the MAP key or value type includes nullability). Provided `dict`s cannot contain only-`None` keys or values, due to the need to infer the type for the corresponding key or value `NULL`.                                                                                                                                            |
-| `MULTISET`                                        | `collections.Counter`                                    | _(n/a)_                                               | Driver can deserialize results into `Counter`, but Flink cannot accept MULTISET literals, so submitting `Counter` parameters is unsupported. Any supported python type corresponding to the MULTISET's key type is supported.                                                                                                                                                                                                                                                        |
+| `ARRAY`                                           | `list`                                                   | `ARRAY[1, 2, 3]`                                      | Python list must contain at least one non-`None` element so element type can be inferred; all-`None` or empty lists cannot be serialized (asymmetry vs. result decoding) as a parameter. Lists must contain a single uniform supported Python type (corresponding to the ARRAY's scalar type) aside from `None` values, assuming the ARRAY scalar type is nullable.                                                                                                                  |
+| `MAP`                                             | `dict`                                                   | `MAP['k1', 1, 'k2', 2]`                               | Flink MAPs are strongly typed on both the key and value type, so heterogeneous Python dicts are disallowed (outside of `None` keys or values, if the MAP key or value type includes nullability). Provided `dict`s cannot contain only-`None` keys or values, due to the need to infer the type for the corresponding key or value `NULL`.                                                                                                                                           |
+| `MULTISET`                                        | `collections.Counter`                                    | _(n/a)_                                               | Driver can deserialize results into `Counter`, but Flink cannot accept MULTISET literals, so submitting `Counter` parameters is unsupported. Any supported Python type corresponding to the MULTISET's key type is supported.                                                                                                                                                                                                                                                        |
 | `ROW`                                             | `tuple`, `namedtuple`, `typing.NamedTuple`, `@dataclass` | `ROW(1, 'foo')`                                       | Parameter `ROW` values require `tuple`, `namedtuple`, `NamedTuple` or `@dataclass` instances, and are transcribed to a literal `ROW` values positionally. Statement results containing `ROW` members will by default be mapped to auto-generated `collections.namedtuple` classes with named fields. Users may register their own `collections.namedtuple`, `typing.NamedTuple`, or `@dataclass` for use for `ROW` result mapping using the `connection.register_row_type()` method. |
 | `NULL`                                            | `None`                                                   | _(n/a)_                                               | Only produced by results; cannot be sent because Flink needs typed NULLs—use `SqlNone` instead.                                                                                                                                                                                                                                                                                                                                                                                      |
 | _(any typed NULL)_                                | `SqlNone`                                                | `cast(null as INTEGER)`                               | `SqlNone` enforces Flink type names; parameterized types must match regex (e.g., `ROW<...>`). Results never return `SqlNone`, so mapping is one-way.                                                                                                                                                                                                                                                                                                                                 |
@@ -33,7 +33,7 @@ Most of the following examples are lifted from [tests/integration/test_fetch.py]
 
 ### Decoding Most Scalar Types
 
-```
+```python
 with connection.closing_cursor(as_dict=True) as cursor:
     cursor.execute("""
         SELECT *
@@ -134,7 +134,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
 ### `ARRAY` <--> `list` parameter encoding and results decoding
 
-```
+```python
 with connection.closing_cursor(as_dict=True) as cursor:
     cursor.execute(
         """
@@ -164,7 +164,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
 ### `MAP` <--> `dict` Parameter Encoding and Results Decoding
 
-```
+```python
 with connection.closing_cursor(as_dict=True) as cursor:
     cursor.execute(
         """
@@ -214,7 +214,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
 This example makes use of the Flink `COLLECT` aggregate to produce the `MULTISET` value:
 
-```
+```python
 with connection.closing_cursor(as_dict=True) as cursor:
 
     cursor.execute(
@@ -247,7 +247,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
 These constants will expand to include the `cast` to the proper underlying scalar type and are most useful when needing to `INSERT` such typed values into a table, but here's a simple round-tripping example ...
 
-```
+```python
 with connection.closing_cursor(as_dict=True) as cursor:
     cursor.execute(
         """
@@ -301,7 +301,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
 To make a `NULL` for a nonscalar type, use the constructor, passing the Flink nonscalar type as a string:
 
-```
+```python
     null_int_array = SqlNone("Array<int>")
 
     with connection.closing_cursor(as_dict=True) as cursor:
@@ -312,15 +312,15 @@ To make a `NULL` for a nonscalar type, use the constructor, passing the Flink no
 
 Given the existing table structure:
 
-```
-create table table_with_rows(
+```python
+create table table_with_row (
     simple_row ROW(a INTEGER not null, b STRING not null)
 )
 ```
 
 Parameter values may be provided as any of `tuple`, `collections.namedtuple`, `typing.NamedTuple`, or `@dataclass` values. They will be expanded positionally based on their declared field order:
 
-```
+```python
 from collections import namedtuple
 from typing import NamedTuple
 from dataclasses import dataclass
@@ -336,7 +336,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
 In the above example, the `sr` value will expand positionally to Flink literal `ROW(12, 'foonly')`. The same exact expansion would have happened had `sr` been a two-valued `tuple`, or a `typing.NamedTuple` subclass, or an `@dataclass` subclass:
 
-```
+```python
 sr_tuple = (15, "from a tuple")
 
 class TypedNamedTuple(NamedTuple):
@@ -355,13 +355,11 @@ dcr = DataclassRow(a=21, b="from a dataclass instance")
 with connection.closing_cursor(as_dict=True) as cursor:
     # insert three more rows given the varying types, all going into the two field ROW column.
     cursor.execute("insert into table_with_row(simple_row) values (%s), (%s), (%s)", (sr_tuple, tnt, dcr))
-
-
 ```
 
 By default, ROW column results will be returned as an autogenerated `collections.namedtuple` with corresponding field names:
 
-```
+```python
 ...
 with connection.closing_cursor(as_dict=True) as cursor:
     cursor.execute('select * from table_with_row where simple_row.a = 12')
@@ -371,40 +369,37 @@ with connection.closing_cursor(as_dict=True) as cursor:
 
     assert row_value.a == row_value[0] == 12
     assert row_value.b == row_value[1] == 'foonly'
-
-
 ```
 
 By default, the auto-generated `collections.namedtuple` will be reused for all result rows whose field names are identical:
 
-```
-    ...
-    with connection.closing_cursor(as_dict=True) as cursor:
-        cursor.execute('select * from table_with_row where simple_row.a = 15')
+```python
+...
+with connection.closing_cursor(as_dict=True) as cursor:
+    cursor.execute('select * from table_with_row where simple_row.a = 15')
 
-        result_dict = cursor.fetchone()
-        second_row_value = result_dict['simple_row']
+    result_dict = cursor.fetchone()
+    second_row_value = result_dict['simple_row']
 
-        assert second_row_value.b == 'from a tuple'
+    assert second_row_value.b == 'from a tuple'
 
-        assert type(second_row_value) == type(row_value)
+    assert type(second_row_value) == type(row_value)
 ```
 
 But users can register what `namedtuple`, `NamedTuple`, or `@dataclass` to use for the results, matched by field names:
 
-```
-    ...
+```python
+...
 
-    # Registers to handle any subsequent ROW value decoding based on field names ('a', 'b')
-    connection.register_row_type(DataclassRow)
+# Registers to handle any subsequent ROW value decoding based on field names ('a', 'b')
+connection.register_row_type(DataclassRow)
 
-    with connection.closing_cursor(as_dict=True) as cursor:
-        cursor.execute('select * from table_with_row where simple_row.a = 15')
+with connection.closing_cursor(as_dict=True) as cursor:
+    cursor.execute('select * from table_with_row where simple_row.a = 15')
 
-        # Will now be expressed as a DataclassRow instance
-        second_row_value = result_dict['simple_row']
+    # Will now be expressed as a DataclassRow instance
+    second_row_value = result_dict['simple_row']
 
-        assert isinstance(second_row_value, DataclassRow)
-        assert second_row_value.b == 'from a tuple'
-
+    assert isinstance(second_row_value, DataclassRow)
+    assert second_row_value.b == 'from a tuple'
 ```
