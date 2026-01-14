@@ -72,7 +72,7 @@ Clean up:
 connection.close() # This will also close all the cursors
 ```
 
-## Paramaterized Statement and Flink to Python Value Support
+## Parameterized Statement and Flink to Python Value Support
 
 This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
 
