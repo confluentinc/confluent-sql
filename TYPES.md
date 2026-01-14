@@ -29,7 +29,7 @@ At time of writing, Flink is not able to infer the type of a SQL literal based o
 
 ## Code Samples Demonstating Parameter Interpolation and Result Typing
 
-Most of the following examples are lifted from `src/tests/integration/test_fetch.py`:
+Most of the following examples are lifted from [tests/integration/test_fetch.py](tests/integration/test_fetch.py):
 
 ### Decoding Most Scalar Types
 
