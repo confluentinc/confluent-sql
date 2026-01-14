@@ -210,7 +210,7 @@ with connection.closing_cursor(as_dict=True) as cursor:
     }
 ```
 
-### `MULTISET` Results -> `collection.Counter`
+### `MULTISET` Results -> `collections.Counter`
 
 This example makes use of the Flink `COLLECT` aggregate to produce the `MULTISET` value:
 
@@ -337,20 +337,20 @@ with connection.closing_cursor(as_dict=True) as cursor:
 In the above example, the `sr` value will expand positionally to Flink literal `ROW(12, 'foonly')`. The same exact expansion would have happened had `sr` been a two-valued `tuple`, or a `typing.NamedTuple` subclass, or an `@dataclass` subclass:
 
 ```
-sr_tuple = (15, 'from a tuple')
+sr_tuple = (15, "from a tuple")
 
 class TypedNamedTuple(NamedTuple):
     a: int
     b: str
 
-tnt = TypedNamedTuple(19, 'from a typing.NamedTuple`)
+tnt = TypedNamedTuple(19, "from a typing.NamedTuple")
 
 @dataclass
 class DataclassRow:
     a: int
     b: str
 
-dcr = DataclassRow(a=21, b="from a dataclass instance')
+dcr = DataclassRow(a=21, b="from a dataclass instance")
 
 with connection.closing_cursor(as_dict=True) as cursor:
     # insert three more rows given the varying types, all going into the two field ROW column.
