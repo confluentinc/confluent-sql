@@ -312,7 +312,7 @@ To make a `NULL` for a nonscalar type, use the constructor, passing the Flink no
 
 Given the existing table structure:
 
-```python
+```sql
 create table table_with_row (
     simple_row ROW(a INTEGER not null, b STRING not null)
 )
