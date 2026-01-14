@@ -2,7 +2,7 @@
 
 The `confluent_sql` dbapi driver supports all Flink types as statement results return types, and most types as parameterized query parameters, with gaps and caveats documented in the following table.
 
-This driver is a REST API client for the [Confluent Cloud Statements v1](<https://docs.confluent.io/cloud/current/api.html#tag/Statements-(sqlv1)>) and [Statement Results](<https://docs.confluent.io/cloud/current/api.html#tag/Statement-Results-(sqlv1)>) APIs. Given that those APIs do not at this time have the concept of a "parameterized statement", therefore parameter interpolation is done within the driver prior to statement submission, escaping when necessary.
+This driver is a REST API client for the [Confluent Cloud Statements v1](<https://docs.confluent.io/cloud/current/api.html#tag/Statements-(sqlv1)>) and [Statement Results](<https://docs.confluent.io/cloud/current/api.html#tag/Statement-Results-(sqlv1)>) APIs. Given that those APIs do not at this time have the concept of a "parameterized statement," parameter interpolation is done within the driver prior to statement submission, escaping when necessary.
 
 At time of writing, Flink is not able to infer the type of a SQL literal based on the context within the statement (such as "only an integer can be valid for this column"). This implies that bare `NULL` or other "untyped" SQL literals must be explicitly cast to the underlying type. The driver provides a `SqlNone` type to assist with this for `NULL` values.
 
