@@ -397,6 +397,8 @@ connection.register_row_type(DataclassRow)
 with connection.closing_cursor(as_dict=True) as cursor:
     cursor.execute('select * from table_with_row where simple_row.a = 15')
 
+    result_dict = cursor.fetchone()
+
     # Will now be expressed as a DataclassRow instance
     second_row_value = result_dict['simple_row']
 
