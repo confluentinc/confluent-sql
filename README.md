@@ -27,6 +27,7 @@ uv add confluent-sql
 ## Quick Start
 
 Setup the connection:
+
 ```python
 import confluent_sql
 
@@ -44,12 +45,14 @@ connection = confluent_sql.connect(
 ```
 
 Create a cursor and run a query:
+
 ```python
 cursor = connection.cursor()
 cursor.execute("SELECT customer_id, name FROM customers")
 ```
 
 Fetch results using fetchone, fetchmany and fetchall:
+
 ```python
 print(cursor.fetchone())
 print(cursor.fetchmany(2))
@@ -57,15 +60,21 @@ print(cursor.fetchall())
 ```
 
 Fetch results using the cursor as an iterator:
+
 ```python
 for row in cursor:
     print(row)
 ```
 
 Clean up:
+
 ```python
 connection.close() # This will also close all the cursors
 ```
+
+## Parameterized Statement and Flink to Python Value Support
+
+This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
 
 ## Development
 
@@ -103,6 +112,7 @@ export CONFLUENT_TEST_DBNAME="test-db"
 ```
 
 Run tests:
+
 ```bash
 uv run pytest
 ```
