@@ -2,7 +2,8 @@ from collections import Counter, namedtuple
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import NamedTuple
+from os import environ
+from typing import Callable, NamedTuple
 
 import pytest
 
@@ -501,6 +502,117 @@ class TestCursorFetch:
                 "null_year_month_interval": None,
                 "null_day_second_interval": None,
             }
+
+
+@pytest.fixture(scope="session")
+def auto_dropped_table_name_factory(connection):
+    """Fixture factory that returns a callable that returns table names to use in tests.
+    All the generated named tables will be dropped at the end of the test session.
+    """
+
+    tables_to_drop = []
+    today = date.today()
+    username = environ.get("USER", "unknown_user").lower()
+
+    def _table_name_generator() -> str:
+        """Generate a unique table name for testing."""
+        tname = f"confluentsql_pytest_{username}_test_auto_drop_table_{today.day}_{len(tables_to_drop) + 1}"
+        tables_to_drop.append(tname)
+        return tname
+
+    yield _table_name_generator
+
+    # Teardown: drop all created tables.
+    with connection.closing_cursor() as cursor:
+        for table_name in tables_to_drop:
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+            except Exception as e:
+                print(f"Error dropping table {table_name} during teardown: {e}")
+
+
+AutoDroppedTableNameFactory = Callable[[], str]
+
+
+@pytest.fixture()
+def auto_dropped_table_name(
+    auto_dropped_table_name_factory: AutoDroppedTableNameFactory,
+) -> str:
+    """Fixture that provides a single auto-dropped table name for a test."""
+    return auto_dropped_table_name_factory()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestExecuteDDL:
+    def test_execute_streaming_ddl_leaves_statement_running(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Prove that execute_streaming_ddl() leaves the statement in running state."""
+
+        statement = None
+        try:
+            # Make a CREATE TABLE AS SELECT statement that will run as a streaming DDL.
+            statement_text = f"""
+                CREATE TABLE `{auto_dropped_table_name}` as
+                    SELECT * from `sample_data_stock_trades` where quantity > 100
+            """
+
+            # execute_streaming_ddl() should ensure to return when the statement is running,
+            # and that it submits a streaming / not snapshot mode statement.
+            statement = connection.execute_streaming_ddl(statement_text)
+
+            # Returned statement be running, not snapshot, and not deleted.
+            assert statement.is_running
+            # Grr, Flink-side bug as of Jan 2026 means CTAS streaming DDLs are marked as bounded.
+            # Hopefully we get to uncomment this later.
+
+            # assert statement.is_unbounded
+
+            # for now though, just as an alert when the bug gets fixed, set up a line
+            # that will break the test if the statement ever becomes unbounded as expected.
+            assert statement.is_bounded, (
+                "Alert: Flink CTAS streaming DDL statements are now marked as unbounded;"
+                " please update the codebase accordingly."
+            )
+
+            assert not statement.is_deleted
+        finally:
+            if statement is not None:
+                # Satisfied. Now explicitly delete the statement to clean up the running job.
+                connection.delete_statement(statement)
+                assert statement.is_deleted
+
+        # The table will be dropped by the fixture teardown.
+
+    def test_execute_snapshot_ddl_submits_finite_statement(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Prove that execute_snapshot_ddl() submits a completable statement."""
+
+        # Make a CREATE TABLE AS SELECT statement that will run as snapshot DDL.
+        statement_text = f"""
+            CREATE TABLE `{auto_dropped_table_name}` as
+                SELECT * from `sample_data_stock_trades` where quantity > 100
+                limit 10
+        """
+
+        # execute_streaming_ddl() should ensure to return when the statement is running,
+        # and that it submits a streaming / not snapshot mode statement.
+        statement = connection.execute_snapshot_ddl(statement_text)
+
+        # Returned statement should be completed.
+        assert not statement.is_running
+        # And should have been a bounded statement
+        assert statement.is_bounded
+        # And have been deleted after completion.
+        assert statement.is_deleted
+
+        # For kicks, should have created the table and we can select from it.
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS row_count FROM `{auto_dropped_table_name}`")
+            results = cursor.fetchone()
+            assert results == {"row_count": 10}
 
 
 @pytest.mark.integration

@@ -59,7 +59,7 @@ class TestConnectionDeleteStatementErrors:
         request_mock.return_value = response_mock
 
         # Will not raise since we ignore 404s in delete_statement
-        invalid_credential_connection._delete_statement("non-existent-statement")
+        invalid_credential_connection.delete_statement("non-existent-statement")
 
     def test_delete_statement_other_error(self, invalid_credential_connection: Connection, mocker):
         """Test that deleting a statement that raises an error other than 404
@@ -78,7 +78,7 @@ class TestConnectionDeleteStatementErrors:
         request_mock.return_value = response_mock
 
         with pytest.raises(OperationalError, match="Error deleting statement"):
-            invalid_credential_connection._delete_statement("statement-with-error")
+            invalid_credential_connection.delete_statement("statement-with-error")
 
 
 @pytest.mark.unit

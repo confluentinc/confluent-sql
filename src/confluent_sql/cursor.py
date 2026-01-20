@@ -14,15 +14,14 @@ import warnings
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
-from confluent_sql.statement import Schema
-from confluent_sql.types import convert_statement_parameters
-
 from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
 )
-from .statement import Op, Statement
+from .execution_mode import ExecutionMode
+from .statement import Op, Schema, Statement
+from .types import convert_statement_parameters
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -39,7 +38,13 @@ class Cursor:
     results from a Confluent SQL service connection.
     """
 
-    def __init__(self, connection: Connection, as_dict: bool = False):
+    def __init__(
+        self,
+        connection: Connection,
+        *,
+        as_dict: bool = False,
+        execution_mode: ExecutionMode,
+    ):
         """
         Initialize a new cursor.
 
@@ -56,6 +61,8 @@ class Cursor:
         self._index = 0
         self._next_page = None
         self._results_as_dicts = as_dict
+        self._execution_mode = execution_mode
+        self._fetch_next_page_called = False
 
         # Statement execution state
         self._statement: Statement | None = None
@@ -74,14 +81,29 @@ class Cursor:
         else:
             return self._statement.description
 
+    @property
+    def statement(self) -> Statement:
+        """
+        Get the current statement associated with the cursor.
+
+        Returns:
+            The current Statement object.
+
+        Raises:
+            InterfaceError: If no statement has been executed yet.
+        """
+        if self._statement is None:
+            raise InterfaceError("No statement has been executed yet.")
+        return self._statement
+
     def execute(
         self,
-        statement: str,
+        statement_text: str,
         parameters: tuple | list | None = None,
+        *,
         timeout: int = 3000,
         statement_name: str | None = None,
-        bounded: bool = True,
-    ):
+    ) -> None:
         """
         Execute a SQL statement.
 
@@ -97,31 +119,34 @@ class Cursor:
             ProgrammingError: If the SQL statement is invalid
             OperationalError: If the statement cannot be executed
         """
-        # TODO: Handle parameters, see self._submit_statement
         self._raise_if_closed()
 
-        if not statement.strip():
+        if not statement_text.strip():
             raise ProgrammingError("SQL statement cannot be empty")
 
-        # Delete any previous statement if present and bounded
-        if self._statement is not None:
-            if self._statement.is_bounded:
+        # Delete any previous statement if present and in a deletable state
+        if self._statement is not None and not self._statement.is_deleted:
+            if self._statement.is_deletable:
                 self.delete_statement()
             else:
                 warnings.warn(
-                    "Executing a new statement on a cursor with an existing unbounded/streaming "
-                    "statement. The previous statement will not be deleted automatically.",
+                    "Executing a new statement on a cursor with an existing active"
+                    f" statement. The previous statement {self._statement.name} will not be deleted"
+                    " automatically.",
                     stacklevel=2,
                 )
 
         # Reset internal state
         self._statement = None
+        self._statement_handle = None
         self._results = []
         self._index = 0
         self.rowcount = -1
+        self._fetch_next_page_called = False
+        self._next_page = None
 
         # Now submit the statement and wait for it to be ready
-        self._submit_statement(statement, parameters, statement_name, bounded)
+        self._statement = self._submit_statement(statement_text, parameters, statement_name)
         self._wait_for_statement_ready(timeout)
 
     def executemany(self, operation: str, seq_of_parameters: list[tuple | list | dict]):
@@ -130,8 +155,17 @@ class Cursor:
         #      the logic currently implies each cursor handles a single statement at a time
         raise NotImplementedError("executemany not implemented")
 
+    def _raise_if_ddl_mode(self):
+        """Raise if cursor is in a DDL mode that doesn't support result fetching."""
+        if self._execution_mode.is_ddl:
+            raise InterfaceError(
+                f"Cannot fetch results in {self._execution_mode.value} mode. "
+                "DDL statements don't return result sets."
+            )
+
     def fetchone(self) -> dict | tuple | None:
         self._raise_if_closed()
+        self._raise_if_ddl_mode()
 
         res = self._get_next_results(1)
         assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
@@ -141,6 +175,7 @@ class Cursor:
 
     def fetchmany(self, size: int | None = None) -> list[dict | tuple]:
         self._raise_if_closed()
+        self._raise_if_ddl_mode()
 
         if size is None:
             size = self.arraysize
@@ -159,6 +194,7 @@ class Cursor:
         to fetch results one-by-one or in batches.
         """
         self._raise_if_closed()
+        self._raise_if_ddl_mode()
 
         return self._get_next_results()
 
@@ -169,22 +205,20 @@ class Cursor:
         This method marks the cursor as closed and releases any
         local resources associated with it.
 
-        If the statement is bounded (non-streaming), it will also attempt to
-        delete the statement from the server to free server-side resources. Streaming
-        statements will not be implicitly deleted.
+        If the statement is in a deletable state, it will also attempt to
+        delete the statement from the server to free server-side resources.
+
+        Active statements (e.g., running streaming queries) will not be deleted.
         """
         if not self._closed:
-            if self._statement is not None:
-                if self._statement.is_bounded:
-                    # Auto-deletion of bounded (non-streaming) statements is always safe.
-                    try:
-                        self.delete_statement()
-                    except Exception as e:
-                        logger.error(
-                            f"Error deleting statement {self._statement.name} during cursor"
-                            f"close: {e}"
-                        )
-                self._statement = None
+            if self._statement is not None and self._statement.is_deletable:
+                try:
+                    # Keep the statement around for posterity, but mark it as deleted.
+                    self.delete_statement()
+                except Exception as e:
+                    logger.error(
+                        f"Error deleting statement {self._statement.name} during cursorclose: {e}"
+                    )
 
             self.rowcount = -1
             self._closed = True
@@ -225,7 +259,7 @@ class Cursor:
         if self._statement is None or self._statement.is_deleted:
             return
 
-        self._connection._delete_statement(self._statement.name)
+        self._connection.delete_statement(self._statement.name)
         self._statement.set_deleted()
 
     @property
@@ -237,6 +271,25 @@ class Cursor:
             True if the cursor is closed, False otherwise
         """
         return self._closed
+
+    @property
+    def may_have_results(self) -> bool:
+        """
+        Return true if a statement has been submitted and may have results to fetch (or have
+        cached some results already).
+        """
+        return (
+            self._statement is not None
+            and self._statement.schema is not None
+            and (
+                # We haven't fetched any pages yet to know about results or next page token
+                (not self._fetch_next_page_called)
+                # Or we have some remaining results in the local cache
+                or self._remaining > 0
+                # Or we know there are more pages to fetch.
+                or self._next_page is not None
+            )
+        )
 
     def _raise_if_closed(self) -> None:
         """Raise InterfaceError if the cursor or connection is closed."""
@@ -256,6 +309,8 @@ class Cursor:
 
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
+
+        self._fetch_next_page_called = True
 
         if not self._results or self._next_page is not None:
             logger.info(f"Fetching next page of results for statement {self._statement.name}")
@@ -320,6 +375,8 @@ class Cursor:
         # By default, we return the raw row as a tuple.
         res: Any = self._results[self._index]["row"]
         self._index += 1
+
+        # If this is a dict cursor, map the tuple to a dict using the statement schema
         if self._results_as_dicts and self._statement.schema is not None:
             res = self._map_row_to_dict(res)
 
@@ -337,8 +394,10 @@ class Cursor:
 
     def _wait_for_statement_ready(self, timeout: int) -> None:
         """
-        Wait for statement to be ready (not in PENDING status).
+        Wait for self._statement to be ready (not in PENDING status).
         Uses exponential backoff with jitter to prevent thundering herd problems.
+
+        Reassigns to self._statement with updated status on each poll.
 
         Args:
             timeout: Maximum time to wait in seconds
@@ -346,9 +405,11 @@ class Cursor:
         Raises:
             OperationalError: If polling times out or fails
         """
-        assert self._statement is not None, (
-            "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
-        )
+        if self._statement is None:
+            raise InterfaceError(
+                "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
+            )
+
         start_time = time.time()
         base_delay = 1.0  # Start with 1 second
         max_delay = 30.0  # Maximum delay between polls
@@ -369,15 +430,13 @@ class Cursor:
             if not self._statement.is_append_only:
                 raise NotImplementedError("Only append-only statements are supported for now.")
 
-            # Determine if we can exit the wait loop (and can start fetching results)
-
-            # If completed (for bounded or unbounded), we are done.
-            if self._statement.is_completed:
-                return
-
-            # For unbounded queries, RUNNING is enough. Results can be fetched while the statement
-            # is running.
-            if not self._statement.is_bounded and self._statement.is_running:
+            if self._statement.is_ready or (
+                # Handle the current (Jan 2026) bug state where streaming DDL statements like CTAS
+                # are erroneously marked as being bounded, see
+                # https://confluent.slack.com/archives/C044A8FNSJ0/p1768575045244419
+                self._execution_mode == ExecutionMode.STREAMING_DDL and self._statement.is_running
+            ):
+                # Ready to possibly fetch results!
                 return
 
             # If the statement is degraded (unbounded and in a bad state), hmm.
@@ -400,8 +459,7 @@ class Cursor:
         statement_text: str,
         parameters: tuple | list | None = None,
         statement_name: str | None = None,
-        bounded: bool = True,
-    ) -> None:
+    ) -> Statement:
         """
         Submit a SQL statement for execution.
 
@@ -410,6 +468,9 @@ class Cursor:
             parameters: Parameters for the SQL statement (optional)
             statement_name: Optional name for the statement (defaults to DB-API UUID if
                             not provided)
+
+        Returns:
+            The submitted Statement object
 
         Raises:
             OperationalError: If statement submission fails
@@ -422,9 +483,9 @@ class Cursor:
         logger.debug(f"Interpolated statement: {interpolated_statement}")
 
         response = self._connection._execute_statement(
-            interpolated_statement, statement_name, bounded
+            interpolated_statement, statement_name, self._execution_mode
         )
-        self._statement = Statement.from_response(self._connection, response)
+        return Statement.from_response(self._connection, response)
 
     def _interpolate_parameters(
         self,

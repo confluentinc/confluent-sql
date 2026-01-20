@@ -1,6 +1,9 @@
+import time
+
 import pytest
 
 from confluent_sql import Connection, Cursor, InterfaceError
+from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Phase
 
 """A one column very fast to complete query."""
@@ -25,12 +28,13 @@ class TestCursor:
         assert len(cursor._statement.description) == 1
         assert cursor._statement.description[0][0] == "answer"
 
-    def test_unbounded_query_with_finite_statement(self, cursor):
-        # Even if we set `bounded` to False here, we still get
-        # a bounded statement since it ends and no sources are
-        # generating more input
-        cursor.execute(SINGLE_COLUMN_QUERY, bounded=False)
-        assert cursor._statement.is_bounded is True
+    def test_unbounded_query_with_finite_statement(self, cursor: Cursor):
+        # Cursor fixture factory provides snapshot (bounded) cursors by default.
+        assert cursor._execution_mode.is_snapshot is True
+
+        cursor.execute(SINGLE_COLUMN_QUERY)
+
+        assert cursor.statement.is_bounded is True
 
     @pytest.mark.slow
     def test_unbounded_query_with_data(
@@ -38,10 +42,30 @@ class TestCursor:
     ):
         # For an actual unbounded query, we need to use an actual table that comes from
         # a kafka topic.
-        cursor = populated_table_connection.cursor()
-        cursor.execute(f"SELECT * FROM {test_table_name}", bounded=False)
-        assert cursor._statement is not None
-        assert cursor._statement.is_bounded is False
+        cursor = populated_table_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        cursor.execute(f"SELECT * FROM {test_table_name}")
+        statement = cursor.statement
+        assert statement is not None
+        assert statement.is_bounded is False
+        assert statement.phase is Phase.RUNNING
+
+        rows = []
+        max_wait_iterations = 30  # Wait up to 30 seconds
+        wait_iterations = 0
+        while cursor.may_have_results and wait_iterations < max_wait_iterations:
+            rows = cursor.fetchmany(10)
+            if rows:
+                break
+            time.sleep(1)
+            wait_iterations += 1
+
+        assert len(rows) > 0, "Expected to fetch some rows from the streaming query."
+
+        # Deleting the statement will inherently stop it. TODO need more explicit way to
+        # differentiate between stopping and deleting a running statement, but that's for
+        # a different test.
+        cursor.delete_statement()
+        cursor.close()
 
     def test_cursor_description_connection_closed_raises(
         self,
@@ -86,11 +110,14 @@ class TestCursor:
     def test_delete_statement_succeeds(self, cursor, connection, mocker):
         cursor.execute(SINGLE_COLUMN_QUERY)
         statement_name = cursor._statement.name
-        connection_delete_statement_spy = mocker.spy(connection, "_delete_statement")
+        connection_delete_statement_spy = mocker.spy(connection, "delete_statement")
 
+        # Delete the statement via the cursor
         cursor.delete_statement()
 
+        # ... should cascade through to the connection
         connection_delete_statement_spy.assert_called_once_with(statement_name)
+
         # After deletion, the cursor's statement should remain, but smell deleted
         assert cursor._statement is not None
         assert cursor._statement.is_deleted

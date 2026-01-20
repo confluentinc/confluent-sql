@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from confluent_sql.execution_mode import ExecutionMode
+
 from .exceptions import DatabaseError, InterfaceError, OperationalError
 from .types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
 
@@ -60,6 +62,7 @@ class Statement:
     """Represents a Confluent SQL statement, including its metadata, spec, status,
     and parsed traits such as schema, sql kind, etc."""
 
+    # From the cursor that created this statement ...
     connection: Connection
 
     # From the API response fields ...
@@ -75,11 +78,39 @@ class Statement:
     _deleted: bool = False
 
     @property
+    def is_bounded(self) -> bool:
+        """A bounded statement has a finite result set. It may either come from a snapshot query
+        (those submitted in snapshot execution mode -- all such statements are bounded) or a
+        streaming query with a defined end (need to find a good example here, but perhaps
+        one selecting from a VALUES clause or whatnot).
+
+        As of time of writing, streaming mode CREATE TABLE AS SELECT (CTAS) statements are being
+        reported back wrongly as bounded, so this property should be used with caution unless
+        considering other factors such as the current phase (such statements should never reach
+        a terminal state on their own).
+        """
+        return self.traits.is_bounded
+
+    @property
+    def is_unbounded(self) -> bool:
+        """An unbounded statement has an infinite result set, and must have come from
+        a streaming / non-snapshot mode submission."""
+        return not self.traits.is_bounded
+
+    @property
     def is_ready(self) -> bool:
+        """Is the statement in a ready state for consumption/deletion?"""
         if self.is_bounded:
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED]
+            # Bounded statements are ready if completed, stopped, or failed.
+            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
         else:
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.RUNNING]
+            # Streaming statements are ready if running, completed, or stopped, failed
+            return self.phase in [
+                Phase.COMPLETED,
+                Phase.STOPPED,
+                Phase.RUNNING,
+                Phase.FAILED,
+            ]
 
     @property
     def is_running(self) -> bool:
@@ -88,6 +119,11 @@ class Statement:
     @property
     def is_completed(self) -> bool:
         return self.phase is Phase.COMPLETED
+
+    @property
+    def is_deletable(self) -> bool:
+        """Check if the statement can be deleted safely."""
+        return self.phase in {Phase.COMPLETED, Phase.FAILED, Phase.STOPPED}
 
     @property
     def is_failed(self) -> bool:
@@ -114,10 +150,6 @@ class Statement:
     @property
     def sql_kind(self) -> str:
         return self.traits.sql_kind
-
-    @property
-    def is_bounded(self) -> bool:
-        return self.traits.is_bounded
 
     @property
     def is_append_only(self) -> bool:
