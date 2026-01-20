@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from confluent_sql.execution_mode import ExecutionMode
-
 from .exceptions import DatabaseError, InterfaceError, OperationalError
 from .types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
 

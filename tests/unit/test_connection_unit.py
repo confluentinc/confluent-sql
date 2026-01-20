@@ -8,6 +8,7 @@ import pytest
 
 from confluent_sql import InterfaceError, OperationalError
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
+from confluent_sql.connection import logger as connection_module_logger
 from confluent_sql.statement import Statement
 from tests.conftest import ConnectionFactory
 from tests.unit.conftest import StatementResponseFactory
@@ -285,8 +286,6 @@ class TestConnectionDeleteStatement:
         statement._deleted = True
         assert statement.is_deleted
 
-        from confluent_sql.connection import logger as connection_module_logger
-
         logger_info_spy = mocker.spy(connection_module_logger, "info")
 
         invalid_credential_connection.delete_statement(statement)  # Should be a no-op
@@ -301,6 +300,6 @@ class TestConnectionDeleteStatement:
     ):
         with pytest.raises(
             TypeError,
-            match="statement must be a string or Statement object",
+            match="Statement to delete must be specified by name or Statement object",
         ):
             invalid_credential_connection.delete_statement(123)  # type: ignore

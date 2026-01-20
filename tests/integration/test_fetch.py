@@ -1,9 +1,10 @@
 from collections import Counter, namedtuple
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from os import environ
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 import pytest
 
@@ -516,7 +517,8 @@ def auto_dropped_table_name_factory(connection):
 
     def _table_name_generator() -> str:
         """Generate a unique table name for testing."""
-        tname = f"confluentsql_pytest_{username}_test_auto_drop_table_{today.day}_{len(tables_to_drop) + 1}"
+        extension = f"{today.day}_{len(tables_to_drop) + 1}"
+        tname = f"confluentsql_pytest_{username}_test_auto_drop_table_{extension}"
         tables_to_drop.append(tname)
         return tname
 

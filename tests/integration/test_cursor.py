@@ -3,7 +3,6 @@ import time
 import pytest
 
 from confluent_sql import Connection, Cursor, InterfaceError
-from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Phase
 
 """A one column very fast to complete query."""

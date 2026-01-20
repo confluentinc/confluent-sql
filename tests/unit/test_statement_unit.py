@@ -6,7 +6,6 @@ import pytest
 from confluent_sql import DatabaseError, OperationalError
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
-from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op, Phase, Schema, Statement
 from confluent_sql.types import StatementTypeConverter
 from tests.unit.conftest import StatementResponseFactory
