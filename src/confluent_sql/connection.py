@@ -285,15 +285,6 @@ class Connection:
             Statement for any further management of the statement lifecycle
         """
 
-        # Need to determine if CREATE TABLE ... AS SELECT resulting statement smells
-        # is_bounded == False. If it isn't, then closing_cursor() will actually delete
-        # the statement when the cursor is closed, which we don't want for streaming DDL.
-
-        # Perhaps just generally safer to code in a boolean parameter to closing_cursor()
-        # to prevent deletion of the statement on close.
-
-        # TODO up above!
-
         with self.closing_cursor(mode=ExecutionMode.STREAMING_DDL) as cur:
             cur.execute(statement_text, parameters, timeout=timeout, statement_name=statement_name)
 
