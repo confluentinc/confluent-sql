@@ -159,8 +159,8 @@ class Cursor:
         """Raise if cursor is in a DDL mode that doesn't support result fetching."""
         if self._execution_mode.is_ddl:
             raise InterfaceError(
-                f"Cannot fetch results in {self._execution_mode.value} mode. "
-                "DDL statements don't return result sets."
+                f"Cannot fetch results in {self._execution_mode}. "
+                "DDL statements do not produce result sets."
             )
 
     def fetchone(self) -> dict | tuple | None:

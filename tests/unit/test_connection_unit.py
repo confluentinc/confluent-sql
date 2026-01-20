@@ -8,7 +8,9 @@ import pytest
 
 from confluent_sql import InterfaceError, OperationalError
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
+from confluent_sql.statement import Statement
 from tests.conftest import ConnectionFactory
+from tests.unit.conftest import StatementResponseFactory
 
 
 @pytest.fixture()
@@ -261,3 +263,44 @@ class TestRowTypeRegistry:
         registry.register_row_type(row_type)
         retrieved_class = registry.get_row_class(field_names)
         assert retrieved_class is row_type, "Expected to retrieve the registered class"
+
+
+@pytest.mark.unit
+class TestConnectionDeleteStatement:
+    """Tests for connection.delete_statement method."""
+
+    def test_delete_already_deleted_statement_is_noop(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        # Make a mock statement
+        statement = Statement.from_response(
+            invalid_credential_connection,
+            statement_response_factory(),
+        )
+
+        # Make smell deleted already.
+        statement._deleted = True
+        assert statement.is_deleted
+
+        from confluent_sql.connection import logger as connection_module_logger
+
+        logger_info_spy = mocker.spy(connection_module_logger, "info")
+
+        invalid_credential_connection.delete_statement(statement)  # Should be a no-op
+
+        logger_info_spy.assert_called_with(
+            f"Statement {statement.name} is already deleted, ignoring"
+        )
+
+    def test_delete_statement_not_by_name_or_statement_raises(
+        self,
+        invalid_credential_connection: Connection,
+    ):
+        with pytest.raises(
+            TypeError,
+            match="statement must be a string or Statement object",
+        ):
+            invalid_credential_connection.delete_statement(123)  # type: ignore

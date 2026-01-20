@@ -37,12 +37,10 @@ class TestCursor:
         assert cursor.statement.is_bounded is True
 
     @pytest.mark.slow
-    def test_unbounded_query_with_data(
-        self, populated_table_connection: Connection, test_table_name: str
-    ):
+    def test_streaming_cursor(self, populated_table_connection: Connection, test_table_name: str):
         # For an actual unbounded query, we need to use an actual table that comes from
         # a kafka topic.
-        cursor = populated_table_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        cursor = populated_table_connection.streaming_cursor()
         cursor.execute(f"SELECT * FROM {test_table_name}")
         statement = cursor.statement
         assert statement is not None
