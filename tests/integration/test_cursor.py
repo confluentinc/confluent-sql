@@ -22,7 +22,6 @@ class TestCursor:
         assert cursor._statement.name is not None
         assert cursor._statement.sql_kind == "SELECT"
         assert cursor._statement.is_append_only is True
-        assert cursor._statement.connection_refs == []
         assert cursor._statement.description is not None
         assert len(cursor._statement.description) == 1
         assert cursor._statement.description[0][0] == "answer"

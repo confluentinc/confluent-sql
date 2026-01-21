@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from .exceptions import DatabaseError, InterfaceError, OperationalError
+from .exceptions import InterfaceError, OperationalError
 from .types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
 
 if TYPE_CHECKING:
@@ -69,14 +69,14 @@ class Statement:
     spec: StrAnyDict
     status: StrAnyDict
     # Parsed fields ...
-    traits: Traits
+    traits: Traits | None
 
     # Internal state
     _phase: Phase
     _deleted: bool = False
 
     @property
-    def is_bounded(self) -> bool:
+    def is_bounded(self) -> bool | None:
         """A bounded statement has a finite result set. It may either come from a snapshot query
         (those submitted in snapshot execution mode -- all such statements are bounded) or a
         streaming query with a defined end (need to find a good example here, but perhaps
@@ -87,13 +87,7 @@ class Statement:
         considering other factors such as the current phase (such statements should never reach
         a terminal state on their own).
         """
-        return self.traits.is_bounded
-
-    @property
-    def is_unbounded(self) -> bool:
-        """An unbounded statement has an infinite result set, and must have come from
-        a streaming / non-snapshot mode submission."""
-        return not self.traits.is_bounded
+        return self.traits and self.traits.is_bounded or None
 
     @property
     def is_ready(self) -> bool:
@@ -115,17 +109,9 @@ class Statement:
         return self.phase == Phase.RUNNING
 
     @property
-    def is_completed(self) -> bool:
-        return self.phase is Phase.COMPLETED
-
-    @property
     def is_deletable(self) -> bool:
         """Check if the statement can be deleted safely."""
         return self.phase in {Phase.COMPLETED, Phase.FAILED, Phase.STOPPED}
-
-    @property
-    def is_failed(self) -> bool:
-        return self.phase is Phase.FAILED
 
     @property
     def is_degraded(self) -> bool:
@@ -147,19 +133,17 @@ class Statement:
 
     @property
     def sql_kind(self) -> str:
-        return self.traits.sql_kind
+        return self._possible_traits().sql_kind
 
     @property
     def is_append_only(self) -> bool:
-        return self.traits.is_append_only
+        """Will this statement's results changelog only have insert/append rows?"""
+
+        return self._possible_traits().is_append_only
 
     @property
     def schema(self) -> Schema | None:
-        return self.traits.schema
-
-    @property
-    def connection_refs(self) -> list | None:
-        return self.traits.connection_refs
+        return self._possible_traits().schema
 
     @property
     def description(self) -> list[tuple] | None:
@@ -230,17 +214,19 @@ class Statement:
                     "This is probably a bug"
                 ) from err
 
-            # If it's failed, we won't get 'traits', and it's probably good to raise an error.
-            # TODO: Should we instead set the phase and avoid erroring out here?
-            if phase is Phase.FAILED:
-                raise DatabaseError(f"Statement execution failed: {status['detail']}")
-
             # Parse traits, which includes the statement schema.
-            traits = Traits.from_response(status["traits"])
+            traits = Traits.from_response(status["traits"]) if status["traits"] else None
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
         return cls(connection, statement_id, name, spec, status, traits, phase)
+
+    def _possible_traits(self) -> Traits:
+        """Raise InterfaceError if traits are not available, else return them."""
+        traits = self.traits
+        if traits is None:
+            raise InterfaceError("Statement traits are not available -- failed statement?")
+        return traits
 
 
 @dataclass(kw_only=True)
@@ -291,7 +277,7 @@ class Traits:
        Implies is_append_only.)"""
     schema: Schema | None
     """The schema of the result set, if any."""
-    sql_kind: str  # TODO will grow into an enum some day soon. It always does.
+    sql_kind: str
     upsert_columns: list[int] | None
     """Zero-based indices of upsert columns, if any."""
 

@@ -213,7 +213,8 @@ class Cursor:
         if not self._closed:
             if self._statement is not None and self._statement.is_deletable:
                 try:
-                    # Keep the statement around for posterity, but mark it as deleted.
+                    # Delete the statement server-side. Our handle on it will then smell
+                    # `.is_deleted` as true.
                     self.delete_statement()
                 except Exception as e:
                     logger.error(
