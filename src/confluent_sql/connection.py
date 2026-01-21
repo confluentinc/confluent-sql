@@ -17,11 +17,10 @@ from typing import Any
 
 import httpx
 
-from confluent_sql.statement import Statement
-
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
 from .execution_mode import ExecutionMode
+from .statement import Statement
 from .types import RowPythonTypes
 
 logger = logging.getLogger(__name__)
@@ -290,6 +289,54 @@ class Connection:
 
         return cur.statement
 
+    def delete_statement(self, statement: str | Statement) -> None:
+        """
+        Delete a statement by name or Statement object.
+
+        In Flink SQL, executed statements (especially streaming ones) create
+        resources that linger on within CCLoud until explicitly deleted (or
+        have stopped and enough time has passed for automatic cleanup).
+
+        Deleting a RUNNING statement will stop it first.
+
+        Args:
+            statement: The name of the statement to delete, or the Statement object. If passed
+            a Statement object that is already deleted, the deletion is ignored. However, if
+            passed a Statement object representing a still running statement, the delete
+            operation will be performed, causing the statement to be stopped and deleted.
+        """
+
+        if isinstance(statement, Statement):
+            if statement.is_deleted:
+                logger.info(f"Statement {statement.name} is already deleted, ignoring")
+                return
+            statement_name = statement.name
+        else:
+            if not isinstance(statement, str):
+                raise TypeError(
+                    "Statement to delete must be specified by name or Statement object, "
+                    f" got {type(statement)}"
+                )
+
+            statement_name = statement
+
+        logger.info(f"Deleting statement {statement_name}")
+        response = self._request(
+            f"/statements/{statement_name}", method="DELETE", raise_for_status=False
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:  # noqa: PLR2004
+                raise OperationalError("Error deleting statement") from e
+            # If the response is 404, it means we don't need to delete the statement.
+            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
+
+        if isinstance(statement, Statement):
+            # Mark the Statement object as deleted for if the caller still is interested in its
+            # reference.
+            statement.set_deleted()
+
     @property
     def is_closed(self) -> bool:
         """
@@ -317,8 +364,8 @@ class Connection:
     def _execute_statement(
         self,
         statement: str,
+        execution_mode: ExecutionMode,
         statement_name: str | None = None,
-        execution_mode: ExecutionMode = ExecutionMode.SNAPSHOT,
     ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response.
@@ -408,53 +455,6 @@ class Connection:
         if not next_url:
             next_url = None
         return (results, next_url)
-
-    def delete_statement(self, statement: str | Statement) -> None:
-        """
-        Delete a statement by name or Statement object.
-
-        In Flink SQL, executed statements (especially streaming ones) create
-        resources that linger on within CCLoud until explicitly deleted (or
-        have stopped and enough time has passed for automatic cleanup).
-
-        Deleting a RUNNING statement will stop it first.
-
-        Args:
-            statement: The name of the statement to delete, or the Statement object. If passed
-            a Statement object that is already deleted, the deletion is ignored. However, if
-            passed a Statement object representing a still running statement, the delete
-            operation will be performed, causing the statement to be stopped and deleted.
-        """
-
-        if isinstance(statement, Statement):
-            if statement.is_deleted:
-                logger.info(f"Statement {statement.name} is already deleted, ignoring")
-                return
-            statement_name = statement.name
-        else:
-            if not isinstance(statement, str):
-                raise TypeError(
-                    f"statement must be a string or Statement object, got {type(statement)}"
-                )
-
-            statement_name = statement
-
-        logger.info(f"Deleting statement {statement_name}")
-        response = self._request(
-            f"/statements/{statement_name}", method="DELETE", raise_for_status=False
-        )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:  # noqa: PLR2004
-                raise OperationalError("Error deleting statement") from e
-            # If the response is 404, it means we don't need to delete the statement.
-            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
-
-        if isinstance(statement, Statement):
-            # Mark the Statement object as deleted for if the caller still is interested in its
-            # reference.
-            statement.set_deleted()
 
     def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:

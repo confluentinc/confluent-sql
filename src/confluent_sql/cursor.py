@@ -483,7 +483,9 @@ class Cursor:
         logger.debug(f"Interpolated statement: {interpolated_statement}")
 
         response = self._connection._execute_statement(
-            interpolated_statement, statement_name, self._execution_mode
+            interpolated_statement,
+            self._execution_mode,
+            statement_name,
         )
         return Statement.from_response(self._connection, response)
 
