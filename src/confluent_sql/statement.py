@@ -87,7 +87,7 @@ class Statement:
         considering other factors such as the current phase (such statements should never reach
         a terminal state on their own).
         """
-        return self.traits and self.traits.is_bounded or None
+        return self._possible_traits().is_bounded
 
     @property
     def is_ready(self) -> bool:
@@ -103,6 +103,11 @@ class Statement:
                 Phase.RUNNING,
                 Phase.FAILED,
             ]
+
+    @property
+    def is_failed(self) -> bool:
+        """Did the statement fail?"""
+        return self.phase == Phase.FAILED
 
     @property
     def is_running(self) -> bool:
@@ -214,8 +219,13 @@ class Statement:
                     "This is probably a bug"
                 ) from err
 
-            # Parse traits, which includes the statement schema.
-            traits = Traits.from_response(status["traits"]) if status["traits"] else None
+            # Parse traits, which includes the statement schema. Won't be present
+            # if the statement failed.
+            traits = (
+                Traits.from_response(status["traits"])
+                if "traits" in status and status["traits"] is not None
+                else None
+            )
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 

@@ -3,7 +3,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
-from confluent_sql import OperationalError
+from confluent_sql import DatabaseError, OperationalError
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import Op, Phase, Schema, Statement
@@ -154,9 +154,10 @@ class TestStatementProperties:
         """Test that phase property returns DELETED when statement is deleted."""
         statement_json = statement_response_factory()
         statement = Statement.from_response(mock_connection, statement_json)
-        # Simulate deletion
+        # Simulate client-side deletion
         statement.set_deleted()
         assert statement.phase == Phase.DELETED
+        assert statement.is_deleted
 
     @pytest.mark.parametrize(
         "phase,expected",

@@ -92,7 +92,7 @@ class TestExecute:
 
         with pytest.raises(
             DatabaseError,
-            match="Statement execution failed: Boom!",
+            match="failed: Boom!",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 

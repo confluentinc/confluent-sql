@@ -15,6 +15,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from .exceptions import (
+    DatabaseError,
     InterfaceError,
     OperationalError,
     ProgrammingError,
@@ -147,6 +148,13 @@ class Cursor:
 
         # Now submit the statement and wait for it to be ready
         self._statement = self._submit_statement(statement_text, parameters, statement_name)
+
+        if self._statement.is_failed:
+            breakpoint()
+            raise OperationalError(
+                f"Statement submission failed: {self._statement.status.get('detail', '')}"
+            )
+
         self._wait_for_statement_ready(timeout)
 
     def executemany(self, operation: str, seq_of_parameters: list[tuple | list | dict]):
@@ -420,18 +428,22 @@ class Cursor:
             logger.info(f"Checking statement '{self._statement.name}' status...")
             response = self._connection._get_statement(self._statement.name)
 
-            # Will raise if the phase is FAILED
-            self._statement = Statement.from_response(self._connection, response)
+            self._statement = statement = Statement.from_response(self._connection, response)
+
+            if statement.is_failed:
+                raise DatabaseError(
+                    f"Statement '{statement.name}' failed: {statement.status.get('detail', '')}"
+                )
 
             # We only support append-only statements for now. Our changelog
             # parsing is not smart enough to handle updates/deletes from streaming statements.
             # (This is different from bounded vs unbounded: even if we relax and start to
             #  return pages of results from unbounded statements, we still can't handle
             #  non-append-only changelogs).
-            if not self._statement.is_append_only:
+            if not statement.is_append_only:
                 raise NotImplementedError("Only append-only statements are supported for now.")
 
-            if self._statement.is_ready or (
+            if statement.is_ready or (
                 # Handle the current (Jan 2026) bug state where streaming DDL statements like CTAS
                 # are erroneously marked as being bounded, see
                 # https://confluent.slack.com/archives/C044A8FNSJ0/p1768575045244419
@@ -442,10 +454,10 @@ class Cursor:
 
             # If the statement is degraded (unbounded and in a bad state), hmm.
             # For now, treat it as an error.
-            if self._statement.is_degraded:
+            if statement.is_degraded:
                 raise OperationalError(
-                    f"Statement '{self._statement.name}' is in DEGRADED state: "
-                    f"{self._statement.status['detail']}"
+                    f"Statement '{statement.name}' is in DEGRADED state: "
+                    f"{statement.status['detail']}"
                 )
 
             # Exponential backoff with jitter to prevent thundering herd
