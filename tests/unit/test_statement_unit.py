@@ -3,7 +3,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
-from confluent_sql import DatabaseError, OperationalError
+from confluent_sql import OperationalError
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import Op, Phase, Schema, Statement
