@@ -64,6 +64,7 @@ def statement_response_factory() -> StatementResponseFactory:
     def _factory(  # noqa: PLR0913
         *,
         sql_statement: str = "SELECT TRUE AS VALUE",
+        sql_kind: str = "SELECT",
         is_bounded: bool = True,
         is_append_only: bool = True,
         phase: str = "COMPLETED",
@@ -124,11 +125,15 @@ def statement_response_factory() -> StatementResponseFactory:
                     "is_append_only": is_append_only,
                     "is_bounded": is_bounded,
                     "schema": maybe_schema,
-                    "sql_kind": "SELECT",
+                    "sql_kind": sql_kind,
                     "upsert_columns": None,
                 },
             },
         }
+
+        if phase == "FAILED":
+            # Failed statements also do not have traits.
+            response["status"]["traits"] = None
 
         return response
 

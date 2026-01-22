@@ -3,7 +3,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
-from confluent_sql import DatabaseError, OperationalError
+from confluent_sql import OperationalError
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.statement import Op, Phase, Schema, Statement
@@ -154,9 +154,10 @@ class TestStatementProperties:
         """Test that phase property returns DELETED when statement is deleted."""
         statement_json = statement_response_factory()
         statement = Statement.from_response(mock_connection, statement_json)
-        # Simulate deletion
+        # Simulate client-side deletion
         statement.set_deleted()
         assert statement.phase == Phase.DELETED
+        assert statement.is_deleted
 
     @pytest.mark.parametrize(
         "phase,expected",
@@ -205,6 +206,140 @@ class TestStatementProperties:
         type_converter = statement.type_converter
         assert isinstance(type_converter, StatementTypeConverter)
 
+    @pytest.mark.parametrize(
+        "phase,expected",
+        [
+            (Phase.COMPLETED, True),
+            (Phase.FAILED, True),
+            (Phase.STOPPED, True),
+            (Phase.RUNNING, False),
+            (Phase.PENDING, False),
+            (Phase.DEGRADED, False),
+            (Phase.DELETED, False),
+        ],
+    )
+    def test_statement_is_deletable(
+        self,
+        phase: Phase,
+        expected: bool,
+        mock_connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test Statement.is_deletable property."""
+        statement = Statement.from_response(
+            mock_connection,
+            statement_response_factory(phase=phase.name),
+        )
+        assert statement.is_deletable == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "phase,expected",
+        [
+            (Phase.COMPLETED, False),
+            (Phase.FAILED, False),
+            (Phase.STOPPED, False),
+            (Phase.RUNNING, False),
+            (Phase.PENDING, False),
+            (Phase.DEGRADED, True),
+            (Phase.DELETED, False),
+        ],
+    )
+    def test_statement_is_degraded(
+        self,
+        phase: Phase,
+        expected: bool,
+        mock_connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test Statement.is_degraded property."""
+        statement = Statement.from_response(
+            mock_connection,
+            statement_response_factory(phase=phase.name),
+        )
+        assert statement.is_degraded == expected
+
+    @pytest.mark.parametrize(
+        "is_append_only",
+        [True, False],
+    )
+    def test_is_append_only_property(
+        self,
+        is_append_only: bool,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_append_only property returns correct value."""
+        statement_json = statement_response_factory(is_append_only=is_append_only)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_append_only is is_append_only
+
+    def test_is_append_only_raises_when_no_traits(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_append_only property raises InterfaceError when
+        failed statement traits are missing."""
+
+        statement_json = statement_response_factory(phase="FAILED")
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        with pytest.raises(
+            InterfaceError,
+            match="Statement traits are not available.",
+        ):
+            _ = statement.is_append_only
+
+    def test_is_deleted_property(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_deleted property returns correct value."""
+        statement_json = statement_response_factory()
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_deleted is False
+
+        # Simulate deletion
+        statement.set_deleted()
+        assert statement.is_deleted is True
+
+    @pytest.mark.parametrize(
+        "sql_kind",
+        [
+            "SELECT",
+            "INSERT",
+        ],
+    )
+    def test_sql_kind_property(
+        self,
+        sql_kind: str,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that sql_kind property returns correct value."""
+        statement_json = statement_response_factory(sql_kind=sql_kind)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.sql_kind == sql_kind
+
+    def test_sql_kind_raises_when_no_traits(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that sql_kind property raises InterfaceError when
+        failed statement traits are missing."""
+
+        statement_json = statement_response_factory(phase="FAILED")
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        with pytest.raises(
+            InterfaceError,
+            match="Statement traits are not available.",
+        ):
+            _ = statement.sql_kind
+
 
 @pytest.mark.unit
 class TestStatementFromResponse:
@@ -216,17 +351,6 @@ class TestStatementFromResponse:
         """Test that from_response raises on unknown status.phase."""
         with pytest.raises(OperationalError, match="Received an unknown phase for statement"):
             Statement.from_response(mock_connection, statement_response_factory(phase="UNKNOWN"))
-
-    def test_raises_databaseerror_if_failed(
-        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
-    ):
-        """Test that a failed statement raises DatabaseError with details when if the
-        statement failed."""
-        failed_statement_json = statement_response_factory(
-            phase="FAILED", status_detail="Some error"
-        )
-        with pytest.raises(DatabaseError, match="Some error"):
-            Statement.from_response(mock_connection, failed_statement_json)
 
     def test_hates_missing_keys(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
