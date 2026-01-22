@@ -242,7 +242,7 @@ class Connection:
 
 
         Args:
-            statement: The DDL statement to execute
+            statement_text: The DDL statement to execute
             parameters: Optional statement parameters
             timeout: Maximum time to wait for completion in seconds
             statement_name: Optional name for the statement
@@ -276,7 +276,7 @@ class Connection:
                                             itself completes once the population job is started)
 
         Args:
-            statement: The DDL statement to execute
+            statement_text: The DDL statement to execute
             parameters: Optional statement parameters
             timeout: Maximum time to wait for completion in seconds
             statement_name: Optional name for the statement

@@ -1,7 +1,7 @@
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.exceptions import DatabaseError, OperationalError, ProgrammingError
+from confluent_sql.exceptions import OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
@@ -91,7 +91,7 @@ class TestExecute:
         )
 
         with pytest.raises(
-            DatabaseError,
+            OperationalError,
             match="failed: Boom!",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")

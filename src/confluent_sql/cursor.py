@@ -150,7 +150,6 @@ class Cursor:
         self._statement = self._submit_statement(statement_text, parameters, statement_name)
 
         if self._statement.is_failed:
-            breakpoint()
             raise OperationalError(
                 f"Statement submission failed: {self._statement.status.get('detail', '')}"
             )
@@ -226,7 +225,7 @@ class Cursor:
                     self.delete_statement()
                 except Exception as e:
                     logger.error(
-                        f"Error deleting statement {self._statement.name} during cursorclose: {e}"
+                        f"Error deleting statement {self._statement.name} during cursor close: {e}"
                     )
 
             self.rowcount = -1
@@ -431,7 +430,7 @@ class Cursor:
             self._statement = statement = Statement.from_response(self._connection, response)
 
             if statement.is_failed:
-                raise DatabaseError(
+                raise OperationalError(
                     f"Statement '{statement.name}' failed: {statement.status.get('detail', '')}"
                 )
 
