@@ -8,7 +8,10 @@ import pytest
 
 from confluent_sql import InterfaceError, OperationalError
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
+from confluent_sql.connection import logger as connection_module_logger
+from confluent_sql.statement import Statement
 from tests.conftest import ConnectionFactory
+from tests.unit.conftest import StatementResponseFactory
 
 
 @pytest.fixture()
@@ -59,7 +62,7 @@ class TestConnectionDeleteStatementErrors:
         request_mock.return_value = response_mock
 
         # Will not raise since we ignore 404s in delete_statement
-        invalid_credential_connection._delete_statement("non-existent-statement")
+        invalid_credential_connection.delete_statement("non-existent-statement")
 
     def test_delete_statement_other_error(self, invalid_credential_connection: Connection, mocker):
         """Test that deleting a statement that raises an error other than 404
@@ -78,7 +81,7 @@ class TestConnectionDeleteStatementErrors:
         request_mock.return_value = response_mock
 
         with pytest.raises(OperationalError, match="Error deleting statement"):
-            invalid_credential_connection._delete_statement("statement-with-error")
+            invalid_credential_connection.delete_statement("statement-with-error")
 
 
 @pytest.mark.unit
@@ -261,3 +264,42 @@ class TestRowTypeRegistry:
         registry.register_row_type(row_type)
         retrieved_class = registry.get_row_class(field_names)
         assert retrieved_class is row_type, "Expected to retrieve the registered class"
+
+
+@pytest.mark.unit
+class TestConnectionDeleteStatement:
+    """Tests for connection.delete_statement method."""
+
+    def test_delete_already_deleted_statement_is_noop(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        # Make a mock statement
+        statement = Statement.from_response(
+            invalid_credential_connection,
+            statement_response_factory(),
+        )
+
+        # Make smell deleted already.
+        statement._deleted = True
+        assert statement.is_deleted
+
+        logger_info_spy = mocker.spy(connection_module_logger, "info")
+
+        invalid_credential_connection.delete_statement(statement)  # Should be a no-op
+
+        logger_info_spy.assert_called_with(
+            f"Statement {statement.name} is already deleted, ignoring"
+        )
+
+    def test_delete_statement_not_by_name_or_statement_raises(
+        self,
+        invalid_credential_connection: Connection,
+    ):
+        with pytest.raises(
+            TypeError,
+            match="Statement to delete must be specified by name or Statement object",
+        ):
+            invalid_credential_connection.delete_statement(123)  # type: ignore
