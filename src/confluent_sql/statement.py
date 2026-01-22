@@ -82,10 +82,10 @@ class Statement:
         streaming query with a defined end (need to find a good example here, but perhaps
         one selecting from a VALUES clause or whatnot).
 
-        As of time of writing, streaming mode CREATE TABLE AS SELECT (CTAS) statements are being
+        As of Jan 2026, streaming mode CREATE TABLE AS SELECT (CTAS) statements are being
         reported back wrongly as bounded, so this property should be used with caution unless
         considering other factors such as the current phase (such statements should never reach
-        a terminal state on their own).
+        a terminal state on their own). This is captured as Jira FSE-1021.
         """
         return self._possible_traits().is_bounded
 
