@@ -599,8 +599,7 @@ class TestExecuteDDL:
                 limit 10
         """
 
-        # execute_streaming_ddl() should ensure to return when the statement is running,
-        # and that it submits a streaming / not snapshot mode statement.
+        # execute_snapshot_ddl() should return when the statement is completed.
         statement = connection.execute_snapshot_ddl(statement_text)
 
         # Returned statement should be completed.
