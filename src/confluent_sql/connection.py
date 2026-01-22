@@ -315,7 +315,7 @@ class Connection:
             if not isinstance(statement, str):
                 raise TypeError(
                     "Statement to delete must be specified by name or Statement object, "
-                    f" got {type(statement)}"
+                    f"got {type(statement)}"
                 )
 
             statement_name = statement
