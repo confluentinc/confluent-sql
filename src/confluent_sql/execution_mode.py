@@ -11,11 +11,11 @@ class ExecutionMode(Enum):
     """Submit the statement as a streaming query -- possibly(probably) unbounded result set."""
 
     SNAPSHOT_DDL = "snapshot_ddl"
-    """Submit the statement as a snapshot DDL -- point in time schema change. Any queries done 
+    """Submit the statement as a snapshot DDL -- point in time schema change. Any queries done
     as part of this DDL will be executed as snapshot queries. No results will be returned."""
 
     STREAMING_DDL = "streaming_ddl"
-    """Submit the statement as a streaming DDL -- ongoing schema change. Any queries done as part 
+    """Submit the statement as a streaming DDL -- ongoing schema change. Any queries done as part
     of this DDL will be executed as long-lived streaming queries. No results will be returned."""
 
     @property
