@@ -102,8 +102,8 @@ def test_table_name():
 @pytest.fixture
 def cursor(connection: Connection):
     """
-    Returns a tuple-returning cursor for the shared connection. Deletes the cursor (and if was
-    a non-streaming statement, will also delete the statement) at test teardown.
+    Returns a mode=ExecutionMode.SNAPSHOT tuple-returning cursor for the shared connection.
+    Closes the cursor at the end of the test.
 
     This cursor is unique for each test, even if they all share the same connection.
     """

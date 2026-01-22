@@ -1,7 +1,8 @@
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.exceptions import DatabaseError, OperationalError, ProgrammingError
+from confluent_sql.exceptions import OperationalError, ProgrammingError
+from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
@@ -27,9 +28,10 @@ class TestExecute:
         self, mock_connection_cursor: Cursor, mocker
     ):
         """Prove that if executing a new statement after a bounded one, we delete the prior."""
-        # Simulate that the prior statement was bounded.
-        mock_connection_cursor._statement = mocker.Mock()
-        mock_connection_cursor._statement.is_bounded = True  # type: ignore
+        # Simulate that a prior statement for the cursor existed.
+        mock_connection_cursor._statement = prior_statement = mocker.Mock()
+        prior_statement.is_deletable = True
+        prior_statement.is_deleted = False
 
         delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
 
@@ -43,12 +45,12 @@ class TestExecute:
         """Prove that if executing a new statement after an unbounded one, we get a warning."""
         # Simulate that the prior statement was unbounded.
         mock_connection_cursor._statement = mocker.Mock()
-        mock_connection_cursor._statement.is_bounded = False  # type: ignore
+        mock_connection_cursor._statement.is_deleted = False  # type: ignore
+        mock_connection_cursor._statement.is_deletable = False  # type: ignore
 
         with pytest.warns(
             UserWarning,
-            match="Executing a new statement on a cursor with an existing"
-            " unbounded/streaming statement",
+            match="Executing a new statement on a cursor with an existing active statement",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
@@ -89,8 +91,8 @@ class TestExecute:
         )
 
         with pytest.raises(
-            DatabaseError,
-            match="Statement execution failed: Boom!",
+            OperationalError,
+            match="failed: Boom!",
         ):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
@@ -369,21 +371,93 @@ class TestCursorFetching:
         ):
             mock_connection_cursor._fetch_next_page()
 
+    @pytest.mark.parametrize("ddl_mode", [ExecutionMode.SNAPSHOT_DDL, ExecutionMode.STREAMING_DDL])
+    def test_fetch_raises_if_ddl_mode(
+        self,
+        mock_connection_cursor: Cursor,
+        ddl_mode: ExecutionMode,
+    ):
+        """Test that fetch*() raises if the execution mode is DDL."""
+        mock_connection_cursor._execution_mode = ddl_mode
+
+        expected_match = (
+            f"Cannot fetch results in {ddl_mode}.*DDL statements do not produce result sets."
+        )
+
+        with pytest.raises(
+            InterfaceError,
+            match=expected_match,
+        ):
+            mock_connection_cursor.fetchone()
+
+        with pytest.raises(
+            InterfaceError,
+            match=expected_match,
+        ):
+            mock_connection_cursor.fetchmany(size=10)
+
+        with pytest.raises(
+            InterfaceError,
+            match=expected_match,
+        ):
+            mock_connection_cursor.fetchall()
+
 
 @pytest.mark.unit
 def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mocker):
     """Test that if deleting the statement on close raises, we log but do not raise."""
-    # Simulate that the prior statement was bounded.
-    mock_connection_cursor._statement = mocker.Mock()
-    mock_connection_cursor._statement.is_bounded = True  # type: ignore
 
+    # As if had some results fetched.
+    mock_connection_cursor.rowcount = 100
+    mock_connection_cursor._results = [{"row": (1, 2, 3)}] * 100
+
+    # Simulate that the prior statement was deletable.
+    mock_connection_cursor._statement = mocker.Mock()
+    mock_connection_cursor._statement.is_deletable = True  # type: ignore
+
+    # Set up that the delete_statement will raise.
     delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
     # Make the delete_statement raise an error.
     delete_statement_spy.side_effect = Exception("Delete failed")
 
     # Closing the cursor should not raise despite the delete_statement error.
     mock_connection_cursor.close()
-    assert mock_connection_cursor.is_closed is True
-    assert mock_connection_cursor._statement is None
 
     delete_statement_spy.assert_called_once()
+
+    assert mock_connection_cursor.is_closed is True
+    assert mock_connection_cursor.rowcount == -1
+    assert mock_connection_cursor._results == []
+
+
+@pytest.mark.unit
+class TestCursorStatementProperty:
+    """Unit tests over the cursor.statement property."""
+
+    def test_statement_property_after_execute(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that after executing a statement, the cursor.statement property
+        reflects the statement used."""
+        # Mock the connection's _get_statement to return a specific statement.
+        expected_statement_dict = statement_response_factory(sql_statement="SELECT 1 AS col")
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            expected_statement_dict
+        )
+
+        mock_connection_cursor.execute("SELECT 1 AS col")
+
+        statement = mock_connection_cursor.statement
+
+        assert statement is not None
+        assert statement.name == expected_statement_dict["name"]
+
+    def test_statement_property_no_execute_returns_none(self, mock_connection_cursor: Cursor):
+        """Test that if no statement has been executed, cursor.statement is None."""
+        with pytest.raises(
+            InterfaceError,
+            match="No statement has been executed yet",
+        ):
+            _ = mock_connection_cursor.statement
