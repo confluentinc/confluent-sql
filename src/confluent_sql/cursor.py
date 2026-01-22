@@ -15,7 +15,6 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from .exceptions import (
-    DatabaseError,
     InterfaceError,
     OperationalError,
     ProgrammingError,
