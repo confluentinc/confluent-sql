@@ -19,6 +19,8 @@ import httpx
 
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
+from .execution_mode import ExecutionMode
+from .statement import Statement
 from .types import RowPythonTypes
 
 logger = logging.getLogger(__name__)
@@ -178,13 +180,10 @@ class Connection:
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
-    def cursor(self, *, as_dict: bool = False) -> Cursor:
+    def cursor(self, *, as_dict: bool = False, mode=ExecutionMode.SNAPSHOT) -> Cursor:
         """
-        Create and return a new cursor object. The cursor will need
-        to be manually closed by the caller.
-
-        Statement results fetched via this cursor will be returned
-        as dictionaries if as_dict is True, otherwise as tuples.
+        Create a new cursor for executing statements. Defaults to creating
+        a snapshot (bounded) query cursor for returning point-in-time results.
 
         Returns:
             A new Cursor object associated with this connection
@@ -195,14 +194,21 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        return Cursor(self, as_dict)
+        return Cursor(self, as_dict=as_dict, execution_mode=mode)
+
+    def streaming_cursor(self, *, as_dict: bool = False) -> Cursor:
+        """Create a streaming query cursor. Waits for RUNNING, iterates over continuous results."""
+        return Cursor(self, as_dict=as_dict, execution_mode=ExecutionMode.STREAMING_QUERY)
 
     @contextmanager
-    def closing_cursor(self, as_dict: bool = False) -> Generator[Cursor, None, None]:
+    def closing_cursor(
+        self, *, as_dict: bool = False, mode: ExecutionMode = ExecutionMode.SNAPSHOT
+    ) -> Generator[Cursor, None, None]:
         """
         Context manager for creating and automatically closing a cursor.
         Args:
             as_dict: If True, fetch results as dictionaries, otherwise as tuples
+            mode: The execution mode for the cursor. Defaults to SNAPSHOT.
 
         Yields:
             A new Cursor object associated with this connection
@@ -210,11 +216,126 @@ class Connection:
         Raises:
             InterfaceError: If the connection is closed
         """
-        cursor = self.cursor(as_dict=as_dict)
+        cursor = self.cursor(as_dict=as_dict, mode=mode)
         try:
             yield cursor
         finally:
             cursor.close()
+
+    def execute_snapshot_ddl(
+        self,
+        statement_text: str,
+        parameters: tuple | list | None = None,
+        timeout: int = 3000,
+        statement_name: str | None = None,
+    ) -> Statement:
+        """Execute bounded DDL that completes after consuming snapshot data.
+
+        Use for statements like:
+        - CREATE TABLE (not AS SELECT)
+        - DROP TABLE
+        - ALTER TABLE
+        - CREATE VIEW
+        - DROP VIEW
+        - CREATE TABLE foo AS SELECT ... (snapshot mode, where the SELECT portion completes
+                                            with snapshot behavior)
+
+
+        Args:
+            statement_text: The DDL statement to execute
+            parameters: Optional statement parameters
+            timeout: Maximum time to wait for completion in seconds
+            statement_name: Optional name for the statement
+
+        Returns:
+            Statement for managing the statement lifecycle
+
+        Raises:
+            OperationalError: If statement fails or times out
+            ProgrammingError: If statement is invalid
+        """
+        with self.closing_cursor(mode=ExecutionMode.SNAPSHOT_DDL) as cur:
+            cur.execute(statement_text, parameters, timeout=timeout, statement_name=statement_name)
+
+        # Return the last version of the statement
+        return cur.statement
+
+    def execute_streaming_ddl(
+        self,
+        statement_text: str,
+        parameters: tuple | list | None = None,
+        timeout: int = 3000,
+        statement_name: str | None = None,
+    ) -> Statement:
+        """Execute unbounded DDL that starts a streaming job.
+
+        Use for statements like:
+        - CREATE TABLE ... AS SELECT ... (streaming mode, where the SELECT portion is unbounded)
+        - CREATE MATERIALIZED TABLE ... (streaming mode, where the table is populated by an
+                                            unbounded streaming job but the overall CREATE statement
+                                            itself completes once the population job is started)
+
+        Args:
+            statement_text: The DDL statement to execute
+            parameters: Optional statement parameters
+            timeout: Maximum time to wait for completion in seconds
+            statement_name: Optional name for the statement
+        Returns:
+            Statement for any further management of the statement lifecycle
+        """
+
+        with self.closing_cursor(mode=ExecutionMode.STREAMING_DDL) as cur:
+            cur.execute(statement_text, parameters, timeout=timeout, statement_name=statement_name)
+
+        return cur.statement
+
+    def delete_statement(self, statement: str | Statement) -> None:
+        """
+        Delete a statement by name or Statement object.
+
+        In Flink SQL, executed statements (especially streaming ones) create
+        resources that linger on within CCLoud until explicitly deleted (or
+        have stopped and enough time has passed for automatic cleanup).
+
+        Deleting a RUNNING statement will stop it first.
+
+        Args:
+            statement: The name of the statement to delete, or the Statement object. If passed
+            a Statement object that is already deleted, the deletion is ignored. However, if
+            passed a Statement object representing a still running statement, the delete
+            operation will be performed, causing the statement to be stopped and deleted.
+        """
+
+        if isinstance(statement, Statement):
+            if statement.is_deleted:
+                logger.info(f"Statement {statement.name} is already deleted, ignoring")
+                return
+            statement_name = statement.name
+        else:
+            if not isinstance(statement, str):
+                raise TypeError(
+                    "Statement to delete must be specified by name or Statement object, "
+                    f"got {type(statement)}"
+                )
+
+            statement_name = statement
+
+        logger.info(f"Deleting statement {statement_name}")
+        response = self._request(
+            f"/statements/{statement_name}", method="DELETE", raise_for_status=False
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:  # noqa: PLR2004
+                raise OperationalError("Error deleting statement") from e
+            # If the response is 404, it means we don't need to delete the statement.
+            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
+
+        if isinstance(statement, Statement):
+            # Mark the Statement object as deleted for if the caller still is interested in its
+            # reference.
+            statement.set_deleted()
 
     @property
     def is_closed(self) -> bool:
@@ -243,8 +364,8 @@ class Connection:
     def _execute_statement(
         self,
         statement: str,
+        execution_mode: ExecutionMode,
         statement_name: str | None = None,
-        bounded: bool = True,
     ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response.
@@ -261,7 +382,6 @@ class Connection:
             OperationalError: If statement execution fails
         """
 
-        # TODO: apply parameters to the statement
         # Create the statement payload as per Flink SQL API documentation
         if statement_name is None:
             statement_name = f"dbapi-{str(uuid.uuid4())}"
@@ -272,7 +392,9 @@ class Connection:
 
         if self._dbname is not None:
             properties["sql.current-database"] = self._dbname
-        if bounded:
+
+        if execution_mode.is_snapshot:
+            # Ask for snapshot mode behavior -- point-in-time results.
             properties["sql.snapshot.mode"] = "now"
 
         payload = {
@@ -333,25 +455,6 @@ class Connection:
         if not next_url:
             next_url = None
         return (results, next_url)
-
-    def _delete_statement(self, statement_name: str) -> None:
-        """
-        Delete a statement.
-
-        Args:
-            statement_name: The name of the statement to delete
-        """
-        logger.info(f"Deleting statement {statement_name}")
-        response = self._request(
-            f"/statements/{statement_name}", method="DELETE", raise_for_status=False
-        )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:  # noqa: PLR2004
-                raise OperationalError("Error deleting statement") from e
-            # If the response is 404, it means we don't need to delete the statement.
-            logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
 
     def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:
