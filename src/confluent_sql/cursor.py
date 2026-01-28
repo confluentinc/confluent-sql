@@ -26,7 +26,6 @@ from .types import convert_statement_parameters
 if TYPE_CHECKING:
     from .connection import Connection
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -317,8 +316,6 @@ class Cursor:
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
-        self._fetch_next_page_called = True
-
         if not self._results or self._next_page is not None:
             logger.info(f"Fetching next page of results for statement {self._statement.name}")
             results, next_page = self._connection._get_statement_results(
@@ -327,29 +324,30 @@ class Cursor:
             self._next_page = next_page
             self.rowcount += len(results)
 
+            # XXX todo push the following down into AppendOnlyChangelogProcessor.
+
             # Use the statement's type converter to decode rows from API JSON to Python values
             type_converter = self._statement.type_converter
             for res in results:
-                decoded_row = type_converter.to_python_row(res.get("row", []))
+                decoded_row = type_converter.to_python_row(res.row)
 
                 row: dict[str, tuple | Op] = {"row": decoded_row}
 
                 # op is not mandatory
-                op_id = res.get("op", None)
-                if op_id is not None:
-                    op = Op(op_id)
-
+                if res.op is not None:
                     # Temporary until smarter changelog parsing.
-                    if op != Op.INSERT:
+                    if res.op != Op.INSERT:
                         logger.error(
-                            f"""Received non-INSERT op {op} in results, not smart enough to handle
-                            this yet."""
+                            f"""Received non-INSERT op {res.op} in results, not smart enough
+                            to handle this yet."""
                         )
                         raise NotImplementedError("Only INSERT op is supported in results for now.")
 
-                    row["op"] = op
+                    row["op"] = res.op
 
                 self._results.append(row)
+
+        self._fetch_next_page_called = True
 
     def __iter__(self):
         return self
@@ -412,6 +410,7 @@ class Cursor:
         Raises:
             OperationalError: If polling times out or fails
         """
+
         if self._statement is None:
             raise InterfaceError(
                 "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"

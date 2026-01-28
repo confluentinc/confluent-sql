@@ -8,10 +8,8 @@ import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
 
 import confluent_sql
-
 
 logger = logging.getLogger("confluent_sql")
 
@@ -41,7 +39,7 @@ class ConfluentCloud:
         self._current_db = None
         self._init_connection()
 
-    def _init_connection(self, dbname: Optional[str] = None):
+    def _init_connection(self, dbname: str | None = None):
         flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY")
         flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET")
         environment = os.getenv("CONFLUENT_ENV_ID")
