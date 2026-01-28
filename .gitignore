@@ -52,6 +52,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+test-results.xml
 
 # Translations
 *.mo
@@ -207,3 +208,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# OSX finder files
+.DS_Store
+
+# Environment variable files
+*.env
+
+# vscode settings
+.vscode/settings.json
