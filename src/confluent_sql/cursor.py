@@ -331,7 +331,7 @@ class Cursor:
             for res in results:
                 decoded_row = type_converter.to_python_row(res.row)
 
-                row: dict[str, tuple | Op] = {"row": decoded_row}
+                row: dict[str, tuple[SupportedPythonTypes] | Op] = {"row": decoded_row}
 
                 # op is not mandatory
                 if res.op is not None:
