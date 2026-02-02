@@ -21,9 +21,10 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .statement import Op, Schema, Statement
-from .types import convert_statement_parameters
+from .types import convert_statement_parameters, SupportedPythonTypes
 
 if TYPE_CHECKING:
+    from .changelog import ChangelogProcessor
     from .connection import Connection
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class Cursor:
 
         # Statement execution state
         self._statement: Statement | None = None
+        self._changelog_processor: ChangelogProcessor[tuple[SupportedPythonTypes]] | None = None
 
         # TODO -- simplify to get rid of the dict-ness, stop storing the changelog operation,
         # no need.
@@ -138,6 +140,7 @@ class Cursor:
         # Reset internal state
         self._statement = None
         self._statement_handle = None
+        self._changelog_processor = None
         self._results = []
         self._index = 0
         self.rowcount = -1
@@ -172,6 +175,10 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
+        if self._changelog_processor:
+            return self._changelog_processor.fetchone()
+
+        # Fallback to existing implementation
         res = self._get_next_results(1)
         assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
         # If no results are available, `res` is an empty list,
@@ -182,6 +189,10 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
+        if self._changelog_processor:
+            return self._changelog_processor.fetchmany(size if size is not None else self.arraysize)
+
+        # Fallback to existing implementation
         if size is None:
             size = self.arraysize
         if size <= 0:
@@ -201,6 +212,10 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
+        if self._changelog_processor:
+            return self._changelog_processor.fetchall()
+
+        # Fallback to existing implementation
         return self._get_next_results()
 
     def close(self) -> None:
@@ -368,6 +383,10 @@ class Cursor:
         Will be a tuple if as_dict is False, or a dict based on the statement schema if as_dict
         is True
         """
+        if self._changelog_processor:
+            return next(self._changelog_processor)
+
+        # Existing implementation for fallback
         assert self._statement is not None, "Trying to fetch results with null statement"
         if self._remaining == 0:
             if self._results and not self._next_page:
@@ -439,6 +458,14 @@ class Cursor:
             #  non-append-only changelogs).
             if not statement.is_append_only:
                 raise NotImplementedError("Only append-only statements are supported for now.")
+
+            # Create changelog processor for append-only statements
+            from .changelog import AppendOnlyChangelogProcessor
+            self._changelog_processor = AppendOnlyChangelogProcessor(
+                self._connection,
+                self._statement,
+                as_dict=self._results_as_dicts
+            )
 
             if statement.is_ready or (
                 # Handle the current (Jan 2026) bug state where streaming DDL statements like CTAS
