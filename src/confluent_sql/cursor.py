@@ -339,8 +339,6 @@ class Cursor:
             self._next_page = next_page
             self.rowcount += len(results)
 
-            # XXX todo push the following down into AppendOnlyChangelogProcessor.
-
             # Use the statement's type converter to decode rows from API JSON to Python values
             type_converter = self._statement.type_converter
             for res in results:
