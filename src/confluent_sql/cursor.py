@@ -11,7 +11,8 @@ import logging
 import random
 import time
 import warnings
-from typing import TYPE_CHECKING, Any, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from .changelog import AppendOnlyChangelogProcessor, ChangelogProcessor
 from .exceptions import (

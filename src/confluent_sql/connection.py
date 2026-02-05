@@ -440,7 +440,8 @@ class Connection:
                         the results endpoint for the statement will be used.
 
         Returns:
-            A 2-tuple: (list of results in changelog row format, optional url to fetch next page)
+            A 2-tuple: (list of results in changelog row format, optional url to fetch next page.)
+            If the next page URL is None, there are no more pages to fetch.
 
         Raises:
             OperationalError: If results retrieval fails

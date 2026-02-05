@@ -30,12 +30,9 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
     _connection: Connection
     """The connection associated with this changelog processor."""
-    _next_page: str | None
-    """The URL next page of results, if any."""
 
     def __init__(self, connection: Connection):
         self._connection = connection
-        self._next_page = None
 
     def __iter__(self) -> ChangelogProcessor[ProcessorOutput]:
         """Returns an iterator over the processed changelog results."""
@@ -86,8 +83,15 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
     _as_dict: bool
     """Whether to return results as dicts or tuples."""
 
-    _fetch_next_page_called: bool = False
+    _fetch_next_page_called: bool
     """Whether _fetch_next_page has been called at least once."""
+
+    _next_page: str | None
+    """The URL of the next page of results, if any. 
+
+       Initial state is None, but may also be set to None after fetching a page if there are
+       no more pages to fetch (distinguished from the initial state by
+       `_fetch_next_page_called` being set to `True`)."""
 
     def __init__(self, connection: Connection, statement: Statement, as_dict: bool = False):
         super().__init__(connection)
@@ -96,6 +100,8 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
         self._as_dict = as_dict
         self._results: list[StatementResultTuple] = []
         self._index = 0
+        self._next_page = None
+        self._fetch_next_page_called = False
 
     @property
     def may_have_results(self) -> bool:
