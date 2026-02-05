@@ -3,6 +3,7 @@ import time
 import pytest
 
 from confluent_sql import Connection, Cursor, InterfaceError
+from confluent_sql.exceptions import NotSupportedError
 from confluent_sql.statement import Phase
 
 """A one column very fast to complete query."""
@@ -39,6 +40,7 @@ class TestCursor:
         # For an actual unbounded query, we need to use an actual table that comes from
         # a kafka topic.
         cursor = populated_table_connection.streaming_cursor()
+        # Will be an append-only unbounded query
         cursor.execute(f"SELECT * FROM {test_table_name}")
         statement = cursor.statement
         assert statement is not None
@@ -60,6 +62,27 @@ class TestCursor:
         # Deleting the statement will inherently stop it. TODO need more explicit way to
         # differentiate between stopping and deleting a running statement, but that's for
         # a different test.
+        cursor.delete_statement()
+        cursor.close()
+
+    @pytest.mark.slow
+    def test_streaming_cursor_fetchall_raises(
+        self, populated_table_connection: Connection, test_table_name: str
+    ):
+        """Prove that if we try to call fetchall() on an unbounded streaming statement, we get an
+        error instead of hanging indefinitely."""
+        cursor = populated_table_connection.streaming_cursor()
+        cursor.execute(f"SELECT * FROM {test_table_name}")
+        statement = cursor.statement
+        assert statement is not None
+        assert statement.is_bounded is False
+        assert statement.phase is Phase.RUNNING
+
+        with pytest.raises(
+            NotSupportedError, match="Cannot call fetchall() on an unbounded streaming statement"
+        ):
+            cursor.fetchall()
+
         cursor.delete_statement()
         cursor.close()
 

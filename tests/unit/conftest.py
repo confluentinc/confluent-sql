@@ -10,7 +10,7 @@ import pytest
 
 from confluent_sql import Connection
 from confluent_sql.connection import RowTypeRegistry
-from confluent_sql.statement import ChangelogRow, Op
+from confluent_sql.statement import ChangelogRow, Op, Statement
 
 
 def pytest_runtest_setup(item):
@@ -135,6 +135,34 @@ def statement_response_factory() -> StatementResponseFactory:
 
     return _factory
 
+
+@pytest.fixture()
+def statement_factory(
+    mock_connection: Connection,
+    statement_response_factory: StatementResponseFactory,
+) -> Callable[..., Statement]:
+    """Returns a factory function that creates Statement instances from mock_connection,
+    using statement_response_factory to create the underlying JSON
+    dictionaries.
+    """
+
+    def _factory(**kwargs: Any) -> Statement:
+        """Construct a Statement instance from JSON dictionary.
+
+        Args:
+            **kwargs: Arguments to pass to statement_response_factory to create
+                the statement JSON dictionary.
+        Returns:
+            A Statement instance.
+        """
+        statement_json = statement_response_factory(**kwargs)
+        return Statement.from_response(mock_connection, statement_json)
+
+    return _factory
+
+
+StatementFactory: TypeAlias = Callable[..., Statement]
+"""A factory type alias for creating Statement instances."""
 
 GetStatementsResultsValue: TypeAlias = tuple[list[ChangelogRow], str | None]
 """A type alias for the return value of _get_statement_results()."""

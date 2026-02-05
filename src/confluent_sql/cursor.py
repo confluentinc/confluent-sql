@@ -11,20 +11,19 @@ import logging
 import random
 import time
 import warnings
-from itertools import islice
 from typing import TYPE_CHECKING, Any
 
+from .changelog import AppendOnlyChangelogProcessor, ChangelogProcessor
 from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
-from .statement import Op, Schema, Statement
-from .types import convert_statement_parameters, SupportedPythonTypes
+from .statement import Schema, Statement
+from .types import convert_statement_parameters
 
 if TYPE_CHECKING:
-    from .changelog import ChangelogProcessor
     from .connection import Connection
 
 logger = logging.getLogger(__name__)
@@ -62,15 +61,10 @@ class Cursor:
         self._next_page = None
         self._results_as_dicts = as_dict
         self._execution_mode = execution_mode
-        self._fetch_next_page_called = False
 
         # Statement execution state
         self._statement: Statement | None = None
-        self._changelog_processor: ChangelogProcessor[tuple[SupportedPythonTypes]] | None = None
-
-        # TODO -- simplify to get rid of the dict-ness, stop storing the changelog operation,
-        # no need.
-        self._results: list[dict[str, tuple | Op]] = []
+        self._changelog_processor: AppendOnlyChangelogProcessor | None = None
 
     @property
     def description(self) -> list[tuple] | None:
@@ -144,7 +138,6 @@ class Cursor:
         self._results = []
         self._index = 0
         self.rowcount = -1
-        self._fetch_next_page_called = False
         self._next_page = None
 
         # Now submit the statement and wait for it to be ready
@@ -171,34 +164,31 @@ class Cursor:
                 "DDL statements do not produce result sets."
             )
 
+    def _get_changelog_processor(self) -> ChangelogProcessor[Any]:
+        """Raise if changelog processor is not initialized, which should be the case if the
+        statement is not append-only or if we haven't successfully waited for the statement to
+        be ready."""
+        if self._changelog_processor is None:
+            raise InterfaceError(
+                "Changelog processor not initialized. This likely means the statement is not "
+                "append-only, or that the statement is not ready for fetching results yet."
+            )
+
+        return self._changelog_processor
+
     def fetchone(self) -> dict | tuple | None:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        if self._changelog_processor:
-            return self._changelog_processor.fetchone()
-
-        # Fallback to existing implementation
-        res = self._get_next_results(1)
-        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
-        # If no results are available, `res` is an empty list,
-        # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
-        return res[0] if res else None
+        return self._get_changelog_processor().fetchone()
 
     def fetchmany(self, size: int | None = None) -> list[dict | tuple]:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        if self._changelog_processor:
-            return self._changelog_processor.fetchmany(size if size is not None else self.arraysize)
-
-        # Fallback to existing implementation
-        if size is None:
-            size = self.arraysize
-        if size <= 0:
-            raise InterfaceError(f"size must be a non-negative integer, got {size}")
-
-        return self._get_next_results(size)
+        return self._get_changelog_processor().fetchmany(
+            size if size is not None else self.arraysize
+        )
 
     def fetchall(self) -> list[dict | tuple]:
         """
@@ -212,11 +202,19 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        if self._changelog_processor:
-            return self._changelog_processor.fetchall()
+        return self._get_changelog_processor().fetchall()
 
-        # Fallback to existing implementation
-        return self._get_next_results()
+    def __iter__(self) -> Cursor:
+        """Implementation of iterator protocol."""
+        self._raise_if_closed()
+        self._raise_if_ddl_mode()
+        return self
+
+    def __next__(self) -> dict | tuple:
+        """Implementation of iterator protocol."""
+        self._raise_if_closed()
+        self._raise_if_ddl_mode()
+        return self._get_changelog_processor().__next__()
 
     def close(self) -> None:
         """
@@ -245,6 +243,7 @@ class Cursor:
             self._closed = True
             self._results = []
             self._index = 0
+            self._changelog_processor = None
 
     def setinputsizes(self, sizes) -> None:
         """
@@ -302,14 +301,7 @@ class Cursor:
         return (
             self._statement is not None
             and self._statement.schema is not None
-            and (
-                # We haven't fetched any pages yet to know about results or next page token
-                (not self._fetch_next_page_called)
-                # Or we have some remaining results in the local cache
-                or self._remaining > 0
-                # Or we know there are more pages to fetch.
-                or self._next_page is not None
-            )
+            and self._get_changelog_processor().may_have_results
         )
 
     def _raise_if_closed(self) -> None:
@@ -318,101 +310,6 @@ class Cursor:
             raise InterfaceError("Cursor is closed")
         if self._connection.is_closed:
             raise InterfaceError("Connection is closed")
-
-    def _fetch_next_page(self):
-        self._raise_if_closed()
-
-        if not self._statement:
-            raise InterfaceError("No statement was used. Call execute() first.")
-
-        if not self._statement.is_ready:
-            raise InterfaceError("Statement is not ready for result fetching.")
-
-        if not self._statement.schema:
-            raise InterfaceError("Trying to fetch results for a non-query statement")
-
-        if not self._results or self._next_page is not None:
-            logger.info(f"Fetching next page of results for statement {self._statement.name}")
-            results, next_page = self._connection._get_statement_results(
-                self._statement.name, self._next_page
-            )
-            self._next_page = next_page
-            self.rowcount += len(results)
-
-            # Use the statement's type converter to decode rows from API JSON to Python values
-            type_converter = self._statement.type_converter
-            for res in results:
-                decoded_row = type_converter.to_python_row(res.row)
-
-                row: dict[str, tuple[SupportedPythonTypes] | Op] = {"row": decoded_row}
-
-                # op is not mandatory
-                if res.op is not None:
-                    # Temporary until smarter changelog parsing.
-                    if res.op != Op.INSERT:
-                        logger.error(
-                            f"""Received non-INSERT op {res.op} in results, not smart enough
-                            to handle this yet."""
-                        )
-                        raise NotImplementedError("Only INSERT op is supported in results for now.")
-
-                    row["op"] = res.op
-
-                self._results.append(row)
-
-        self._fetch_next_page_called = True
-
-    def __iter__(self):
-        return self
-
-    @property
-    def _remaining(self):
-        remaining = len(self._results) - self._index
-        if remaining < 0:
-            raise InterfaceError(
-                "Internal index bigger than results list. This is probably a bug."
-            )  # pragma: no cover
-        return remaining
-
-    def __next__(self) -> tuple[Any] | dict[str, Any]:
-        """
-        Return the next row from the result set.
-
-        Will be a tuple if as_dict is False, or a dict based on the statement schema if as_dict
-        is True
-        """
-        if self._changelog_processor:
-            return next(self._changelog_processor)
-
-        # Existing implementation for fallback
-        assert self._statement is not None, "Trying to fetch results with null statement"
-        if self._remaining == 0:
-            if self._results and not self._next_page:
-                raise StopIteration
-            self._fetch_next_page()
-            # Check again, as we might not have new results for any reason
-            if self._remaining == 0:
-                raise StopIteration
-
-        # By default, we return the raw row as a tuple.
-        res: Any = self._results[self._index]["row"]
-        self._index += 1
-
-        # If this is a dict cursor, map the tuple to a dict using the statement schema
-        if self._results_as_dicts and self._statement.schema is not None:
-            res = self._map_row_to_dict(res)
-
-        return res
-
-    def _get_next_results(self, limit: int | None = None) -> list[dict[str, Any] | tuple[Any]]:
-        """
-        Get the next results from the cursor, up to the specified limit.
-        Returns either tuples or dicts based on the `as_dict` flag the cursor was created with.
-        """
-        if limit is None:
-            return list(self)
-        else:
-            return list(islice(self, limit))
 
     def _wait_for_statement_ready(self, timeout: int) -> None:
         """
@@ -458,11 +355,8 @@ class Cursor:
                 raise NotImplementedError("Only append-only statements are supported for now.")
 
             # Create changelog processor for append-only statements
-            from .changelog import AppendOnlyChangelogProcessor
             self._changelog_processor = AppendOnlyChangelogProcessor(
-                self._connection,
-                self._statement,
-                as_dict=self._results_as_dicts
+                self._connection, self._statement, as_dict=self._results_as_dicts
             )
 
             if statement.is_ready or (

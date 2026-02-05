@@ -453,7 +453,7 @@ class Connection:
         # Promote from the pure from-response-json 'data' sub-member list of dicts
         # to a list of ChangelogRow.
         results: list[ChangelogRow] = [
-            # 'op' may be omitted, in which case we assume INSERT (0)
+            # 'op' may be omitted, in which case we assume 0 (INSERT)
             ChangelogRow(r.get("op", 0), r["row"])
             for r in response.get("results", {}).get("data", [])
         ]
