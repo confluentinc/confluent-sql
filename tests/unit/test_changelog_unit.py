@@ -1,5 +1,4 @@
 import re
-import time
 
 import pytest
 
@@ -53,7 +52,8 @@ def test_may_have_results(
     append_only_processor._next_page = next_page
 
     assert append_only_processor.may_have_results is expected, (
-        f"Expected may_have_results to be {expected} when _fetch_next_page_called={next_page_called}, _remaining={remaining}, and _next_page={next_page}"
+        f"Expected may_have_results to be {expected} when"
+        f" next_page_called={next_page_called}, remaining={remaining}, next_page={next_page}"
     )
 
 
@@ -265,7 +265,7 @@ class TestFetchNextPage:
 
         assert call_tracker["called"], "Expected _get_statement_results to have been called"
         assert append_only_processor._results == [(True,), (False,)], (
-            f"Expected fetched results to be stored in processor, got {append_only_processor._results}"
+            "Expected fetched results to be stored in processor"
         )
 
     def test_fetch_next_page_called_during_iteration(
