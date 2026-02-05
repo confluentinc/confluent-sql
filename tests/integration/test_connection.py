@@ -56,6 +56,9 @@ class TestConnection:
         catalog_ids = [res["Catalog ID"] for res in result]  # type: ignore
         assert environment_id in catalog_ids
 
+        # Stop + delete the statement, CCloud-Flink side.
+        cursor.close()
+
     def test_closing_cursor_after_executing_statement(self, connection: Connection, mocker):
         """Test that auto closing a cursor used for a bounded statement works as expected."""
         with connection.closing_cursor() as cursor:

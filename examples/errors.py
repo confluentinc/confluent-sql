@@ -9,7 +9,6 @@ import os
 
 import confluent_sql
 
-
 logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
