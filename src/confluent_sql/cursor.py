@@ -11,7 +11,7 @@ import logging
 import random
 import time
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 from .changelog import AppendOnlyChangelogProcessor, ChangelogProcessor
 from .exceptions import (
@@ -177,6 +177,7 @@ class Cursor:
         return self._changelog_processor
 
     def fetchone(self) -> dict | tuple | None:
+        """Fetch the next row of a query result set, if any."""
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
@@ -198,23 +199,19 @@ class Cursor:
         at once to fetch the whole result set.
         If you want more control, use the cursor as an iterator, or use `fetchone`/`fetchmany`
         to fetch results one-by-one or in batches.
+
+        Will raise NotSupportedError if the statement is unbounded (streaming).
         """
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
         return self._get_changelog_processor().fetchall()
 
-    def __iter__(self) -> Cursor:
-        """Implementation of iterator protocol."""
+    def __iter__(self) -> Iterator[dict | tuple]:
+        """Defer to the changelog processor's iterator."""
         self._raise_if_closed()
         self._raise_if_ddl_mode()
-        return self
-
-    def __next__(self) -> dict | tuple:
-        """Implementation of iterator protocol."""
-        self._raise_if_closed()
-        self._raise_if_ddl_mode()
-        return self._get_changelog_processor().__next__()
+        return self._get_changelog_processor().__iter__()
 
     def close(self) -> None:
         """

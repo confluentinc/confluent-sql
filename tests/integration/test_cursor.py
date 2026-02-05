@@ -1,3 +1,4 @@
+import re
 import time
 
 import pytest
@@ -79,7 +80,8 @@ class TestCursor:
         assert statement.phase is Phase.RUNNING
 
         with pytest.raises(
-            NotSupportedError, match="Cannot call fetchall() on an unbounded streaming statement"
+            NotSupportedError,
+            match=re.escape("Cannot call fetchall() on an unbounded streaming statement"),
         ):
             cursor.fetchall()
 
