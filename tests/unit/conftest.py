@@ -10,7 +10,7 @@ import pytest
 
 from confluent_sql import Connection
 from confluent_sql.connection import RowTypeRegistry
-from confluent_sql.statement import Op
+from confluent_sql.statement import ChangelogRow, Op, Statement
 
 
 def pytest_runtest_setup(item):
@@ -20,7 +20,7 @@ def pytest_runtest_setup(item):
         pytest.fail("Tests within 'unit/' must be marked with @pytest.mark.unit.")
 
 
-ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], dict[str, Any]]
+ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], ChangelogRow]
 
 
 @pytest.fixture
@@ -31,20 +31,16 @@ def result_row_maker() -> ResultRowFactory:
     These are helpful for overriding the return value of `mock_connection._get_statement_results`.
     """
 
-    def _maker(row_values: list[Any], op: Op | None = None) -> dict[str, Any]:
-        """Helper to create a result row dictionary for mocking statement results.
+    def _maker(row_values: list[Any], op: Op | None = None) -> ChangelogRow:
+        """Helper to create a ChangelogRow for mocking statement results.
 
         Args:
             row_values: The list of values for the row.
             op: The changelog operation code (0=INSERT, 1=DELETE, etc). Default is 0 (INSERT).
         Returns:
-            A dictionary representing the result row.
+            A ChangelogRow instance.
         """
-        if op is None:
-            # If no op is specified, code will assume it was an INSERT (op=0)
-            return {"row": row_values}
-
-        return {"row": row_values, "op": op.value}
+        return ChangelogRow(op.value if op is not None else 0, row_values)
 
     return _maker
 
@@ -140,7 +136,35 @@ def statement_response_factory() -> StatementResponseFactory:
     return _factory
 
 
-GetStatementsResultsValue: TypeAlias = tuple[list[dict[str, Any]], str | None]
+@pytest.fixture()
+def statement_factory(
+    mock_connection: Connection,
+    statement_response_factory: StatementResponseFactory,
+) -> Callable[..., Statement]:
+    """Returns a factory function that creates Statement instances from mock_connection,
+    using statement_response_factory to create the underlying JSON
+    dictionaries.
+    """
+
+    def _factory(**kwargs: Any) -> Statement:
+        """Construct a Statement instance from JSON dictionary.
+
+        Args:
+            **kwargs: Arguments to pass to statement_response_factory to create
+                the statement JSON dictionary.
+        Returns:
+            A Statement instance.
+        """
+        statement_json = statement_response_factory(**kwargs)
+        return Statement.from_response(mock_connection, statement_json)
+
+    return _factory
+
+
+StatementFactory: TypeAlias = Callable[..., Statement]
+"""A factory type alias for creating Statement instances."""
+
+GetStatementsResultsValue: TypeAlias = tuple[list[ChangelogRow], str | None]
 """A type alias for the return value of _get_statement_results()."""
 
 MockConnectionFactory: TypeAlias = Callable[
