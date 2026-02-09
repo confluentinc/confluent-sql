@@ -1,7 +1,7 @@
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.exceptions import OperationalError, ProgrammingError
+from confluent_sql.exceptions import NotSupportedError, OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
@@ -354,7 +354,7 @@ class TestCursorFetching:
         cursor.execute("SELECT true as value")
 
         with pytest.raises(
-            NotImplementedError,
+            NotSupportedError,
             match="Non-INSERT op was received by AppendOnlyChangelogProcessor",
         ):
             cursor.fetchone()

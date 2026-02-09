@@ -41,30 +41,30 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     @abc.abstractmethod
     def __next__(self) -> ProcessorOutput:
         """Returns an iterator over the processed changelog results."""
-        pass  # pragma: no cover
+        raise NotImplementedError("Abstract method")  # pragma: no cover
 
     @abc.abstractmethod
     def fetchone(self) -> ProcessorOutput | None:
         """Returns the next result, or None if there are no more results."""
-        pass  # pragma: no cover
+        raise NotImplementedError("Abstract method")  # pragma: no cover
 
     @abc.abstractmethod
     def fetchmany(self, size: int) -> list[ProcessorOutput]:
         """Returns the next size results. Cursor will always be calling with
         size > 0.
         """
-        pass  # pragma: no cover
+        raise NotImplementedError("Abstract method")  # pragma: no cover
 
     @abc.abstractmethod
     def fetchall(self) -> list[ProcessorOutput]:
         """Returns all remaining results. Use with caution, as this may consume a lot of memory."""
-        pass  # pragma: no cover
+        raise NotImplementedError("Abstract method")  # pragma: no cover
 
     @property
     @abc.abstractmethod
     def may_have_results(self) -> bool:
         """Whether there may be more results to fetch."""
-        pass  # pragma: no cover
+        raise NotImplementedError("Abstract method")  # pragma: no cover
 
 
 StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes]
@@ -77,8 +77,14 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
     Returns statement result rows as either tuples or dicts based on the `as_dict` flag.
     """
 
-    _rows: list[StatementResultTuple]
+    _statement: Statement
+    """The statement associated with this changelog processor."""
+
+    _results: list[StatementResultTuple]
     """The accumulated post-python type conversion results."""
+
+    _index: int
+    """The index indicating the most recent returned position in the results list."""
 
     _as_dict: bool
     """Whether to return results as dicts or tuples."""
@@ -96,7 +102,6 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
     def __init__(self, connection: Connection, statement: Statement, as_dict: bool = False):
         super().__init__(connection)
         self._statement = statement
-        self._statement_name = statement.name
         self._as_dict = as_dict
         self._results: list[StatementResultTuple] = []
         self._index = 0
@@ -198,7 +203,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
         if not self._results or self._next_page is not None:
             # Get raw ChangelogRow results from connection
             results, next_page = self._connection._get_statement_results(
-                self._statement_name, self._next_page
+                self._statement.name, self._next_page
             )
             self._next_page = next_page
 
@@ -215,7 +220,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
                     logger.error(
                         f"Received non-INSERT op {res.op} in results for append-only statement."
                     )
-                    raise NotImplementedError(
+                    raise NotSupportedError(
                         f"Non-INSERT op was received by AppendOnlyChangelogProcessor: {res.op}. "
                     )
 

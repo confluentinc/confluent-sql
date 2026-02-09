@@ -312,5 +312,5 @@ class TestFetchNextPage:
         append_only_processor._index = 0
         append_only_processor._next_page = None
 
-        with pytest.raises(NotImplementedError, match="Non-INSERT op"):
+        with pytest.raises(NotSupportedError, match="Non-INSERT op"):
             append_only_processor._fetch_next_page()
