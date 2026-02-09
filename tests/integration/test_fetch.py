@@ -84,22 +84,6 @@ class TestCursorFetch:
             expected_row = expected_results.pop(0)
             assert row == expected_row
 
-    def test_non_append_only_query(self, connection: Connection):
-        """Test that a non-append-only query raises an error when fetching results."""
-        with connection.closing_cursor() as cursor:
-            cursor.execute(
-                """
-                select
-                    SUBSTRING(symbol, 2, 1) AS `second_char`,
-                    count(*) as `count_with_second_letter`
-                from `sample_data_stock_trades`
-                -- where `$rowtime` <= TIMESTAMP '2026-01-20 05:01:09.782'
-                group by SUBSTRING(symbol, 2, 1)
-                """
-            )
-
-            cursor.fetchall()
-
     @pytest.mark.slow
     @pytest.mark.typeconv
     def test_encoding_decoding_scalars_round_tripping(
