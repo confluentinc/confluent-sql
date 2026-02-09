@@ -3,7 +3,7 @@ import pytest
 from confluent_sql import Cursor, InterfaceError
 from confluent_sql.exceptions import NotSupportedError, OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import Op
+from confluent_sql.statement import ChangelogRow, Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
 
@@ -416,6 +416,67 @@ def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mo
     assert mock_connection_cursor.is_closed is True
     assert mock_connection_cursor.rowcount == -1
     assert mock_connection_cursor._results == []
+
+
+@pytest.mark.unit
+class TestIteration:
+    def test_iteration_on_ddl_mode_raises(self, mock_connection_cursor: Cursor):
+        """Test that iterating over the cursor when in DDL mode raises."""
+        mock_connection_cursor._execution_mode = ExecutionMode.SNAPSHOT_DDL
+
+        with pytest.raises(
+            InterfaceError,
+            match="DDL statements do not produce result sets",
+        ):
+            iter(mock_connection_cursor)
+
+    def test_iteration_next_on_closed_cursor_raises(self, mock_connection_cursor: Cursor):
+        """Test that calling next() on a closed cursor raises -- after getting the iterator"""
+        it = iter(mock_connection_cursor)
+        mock_connection_cursor.close()
+        with pytest.raises(InterfaceError, match="Cursor is closed"):
+            next(it)
+
+    def test_iteration_success(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that iterating over the cursor yields results as expected."""
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 1 AS col",
+            schema_columns=[
+                {
+                    "name": "col",
+                    "type": {
+                        "type": "INTEGER",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
+        # Simulate a single page of results with 3 rows.
+        statement_results_return_value = (
+            [
+                ChangelogRow(Op.INSERT.value, ["1"]),
+                ChangelogRow(Op.INSERT.value, ["2"]),
+                ChangelogRow(Op.INSERT.value, ["3"]),
+            ],
+            None,
+        )
+
+        mock_connection = mock_connection_factory(
+            statement_response, statement_results_return_value
+        )
+
+        cursor = mock_connection.cursor()
+        cursor.execute("SELECT 1 AS col")
+
+        # Drives iteration and exhausts the results.
+        results = list(cursor)
+
+        assert results == [(1,), (2,), (3,)]
 
 
 @pytest.mark.unit

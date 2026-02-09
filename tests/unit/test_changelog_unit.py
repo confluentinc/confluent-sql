@@ -72,7 +72,7 @@ class TestFetchMethods:
         assert fetched == [("row3",)], f"Expected to fetch last row, got {fetched}"
 
     def test_fetchmany_with_invalid_size(self, append_only_processor: AppendOnlyChangelogProcessor):
-        with pytest.raises(InterfaceError, match="size must be a non-negative integer"):
+        with pytest.raises(InterfaceError, match="size must be a positive integer"):
             append_only_processor.fetchmany(-1)
 
     def test_fetchone(self, append_only_processor: AppendOnlyChangelogProcessor):

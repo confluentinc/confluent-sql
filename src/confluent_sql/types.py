@@ -166,7 +166,7 @@ class StatementTypeConverter:
             get_api_type_converter(connection, col.type) for col in schema.columns
         ]
 
-    def to_python_row(self, sql_row: list[FromResponseTypes]) -> tuple[SupportedPythonTypes]:
+    def to_python_row(self, sql_row: list[FromResponseTypes]) -> tuple[SupportedPythonTypes, ...]:
         """Convert a SQL row (list of from-results-API encoded values) to a Python row
         (tuple of Python values) to be returned by a Cursor."""
         return tuple(

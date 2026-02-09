@@ -67,7 +67,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         raise NotImplementedError("Abstract method")  # pragma: no cover
 
 
-StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes]
+StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
 """__next__ output type for AppendOnlyChangelogProcessor."""
 
 
@@ -129,7 +129,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
 
     def fetchmany(self, size: int) -> list[StrAnyDict | StatementResultTuple]:
         if size <= 0:
-            raise InterfaceError(f"size must be a non-negative integer, got {size}")
+            raise InterfaceError(f"size must be a positive integer, got {size}")
 
         return self._get_next_results(size)
 
@@ -257,7 +257,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
         else:
             return list(islice(self, limit))
 
-    def _map_row_to_dict(self, row: tuple[SupportedPythonTypes]) -> StrAnyDict:
+    def _map_row_to_dict(self, row: tuple[SupportedPythonTypes, ...]) -> StrAnyDict:
         """Map tuple row to dict using statement schema."""
         if not self._statement.schema:
             raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover

@@ -209,10 +209,16 @@ class Cursor:
         return self._get_changelog_processor().fetchall()
 
     def __iter__(self) -> Iterator[dict | tuple]:
-        """Defer to the changelog processor's iterator."""
+        """Return the cursor as an iterator, so that our __next__ can ensure .close() checks."""
         self._raise_if_closed()
         self._raise_if_ddl_mode()
-        return self._get_changelog_processor().__iter__()
+        return self
+
+    def __next__(self) -> dict | tuple:
+        """Defer to the changelog processor's iterator after proving
+        the cursor is not yet closed."""
+        self._raise_if_closed()
+        return self._get_changelog_processor().__next__()
 
     def close(self) -> None:
         """
@@ -442,23 +448,3 @@ class Cursor:
             raise ProgrammingError(f"Error interpolating parameters into statement: {e}") from e
 
         return interpolated_statement
-
-    def _map_row_to_dict(self, values) -> dict:
-        assert self._statement is not None, "statement is none, this is probably a bug"
-        if self._statement.schema is None:
-            raise InterfaceError("schema not present, can't map values to keys")
-        return _map_tuple_to_dict(self._statement.schema, values)
-
-
-def _map_tuple_to_dict(schema: Schema, values: tuple) -> dict:
-    """
-    Recursively transforms a tuple of data values into a
-    dictionary based on the provided schema.
-    """
-    result_dict = {}
-
-    for column, value in zip(schema.columns, values, strict=True):
-        field_name = column.name
-        # Skip recursive mapping for nonatomic types for now.
-        result_dict[field_name] = value
-    return result_dict
