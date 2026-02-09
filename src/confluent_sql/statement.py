@@ -7,7 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from .exceptions import InterfaceError, OperationalError
-from .types import ColumnTypeDefinition, StatementTypeConverter, StrAnyDict
+from .types import ColumnTypeDefinition, FromResponseTypes, StatementTypeConverter, StrAnyDict
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -36,6 +36,22 @@ class Op(Enum):
             raise ValueError(
                 f"Unknown value for Op: '{self.value}'. This is probably a bug"
             )  # pragma: no cover
+
+
+class ChangelogRow:
+    """A single row in a changelog stream, including changelog operation type
+    and from-json row data."""
+
+    __slots__ = ("op", "row")
+
+    op: Op
+    """The changelog operation type."""
+    row: list[FromResponseTypes]
+    """The row data as a list of from-response-api-json values."""
+
+    def __init__(self, op: int, row: list[FromResponseTypes]):
+        self.op = Op(op)
+        self.row = row
 
 
 class Phase(Enum):

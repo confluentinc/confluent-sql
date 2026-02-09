@@ -3,7 +3,6 @@ import os
 
 import confluent_sql
 
-
 if __name__ == "__main__":
     # Setup logging so we show info level messages from our library only
     logging.basicConfig(level=logging.INFO)

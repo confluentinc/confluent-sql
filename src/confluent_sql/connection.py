@@ -20,7 +20,7 @@ import httpx
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
 from .execution_mode import ExecutionMode
-from .statement import Statement
+from .statement import ChangelogRow, Statement
 from .types import RowPythonTypes
 
 logger = logging.getLogger(__name__)
@@ -430,30 +430,38 @@ class Connection:
 
     def _get_statement_results(
         self, statement_name: str, next_url: str | None
-    ) -> tuple[list, str | None]:
+    ) -> tuple[list[ChangelogRow], str | None]:
         """
-        Get results for a completed statement.
+        Get a page of results for a statement.
 
         Args:
             statement_name: The name of the statement
-            page_token: Optional page token for pagination
+            next_url: Optional full URL to fetch the next page of results from. If None, then
+                        the results endpoint for the statement will be used.
 
         Returns:
-            A 2-tuple: (list of results in changelog row format, optional url to fetch next page)
+            A 2-tuple: (list of results in changelog row format, optional url to fetch next page.)
+            If the next page URL is None, there are no more pages to fetch.
 
         Raises:
             OperationalError: If results retrieval fails
         """
         if next_url is None:
             next_url = f"/statements/{statement_name}/results"
+
         response = self._request(next_url).json()
-        results = response.get("results", {}).get("data", [])
-        logger.info(f"got {len(results)} results for statement {statement_name}")
-        next_url = response.get("metadata", {}).get("next")
-        # next_url is an empty string even if it's not set,
-        # so we need to explicitly set to None in that case.
-        if not next_url:
-            next_url = None
+
+        # Promote from the pure from-response-json 'data' sub-member list of dicts
+        # to a list of ChangelogRow.
+        results: list[ChangelogRow] = [
+            # 'op' may be omitted, in which case we assume 0 (INSERT)
+            ChangelogRow(r.get("op", 0), r["row"])
+            for r in response.get("results", {}).get("data", [])
+        ]
+
+        logger.info(f"got {len(results)} changelog rows for statement {statement_name}")
+        next_url = response.get("metadata", {}).get("next") or None
+
         return (results, next_url)
 
     def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
