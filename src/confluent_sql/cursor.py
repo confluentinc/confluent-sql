@@ -21,7 +21,7 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
-from .statement import Schema, Statement
+from .statement import Statement
 from .types import convert_statement_parameters
 
 if TYPE_CHECKING:
