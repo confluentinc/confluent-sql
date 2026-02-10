@@ -1,9 +1,9 @@
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.exceptions import OperationalError, ProgrammingError
+from confluent_sql.exceptions import NotSupportedError, OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import Op
+from confluent_sql.statement import ChangelogRow, Op
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 
 
@@ -213,22 +213,36 @@ class TestCursorInterpolatingParameters:
 class TestFetchMany:
     """Unit tests over cursor.fetchmany()."""
 
+    def test_fetchmany_on_closed_cursor_raises(self, mock_connection_cursor: Cursor):
+        """Test that calling fetchmany on a closed cursor raises."""
+        mock_connection_cursor.close()
+        with pytest.raises(InterfaceError, match="Cursor is closed"):
+            mock_connection_cursor.fetchmany(size=10)
+
+    def test_fetchmany_on_ddl_mode_raises(self, mock_connection_cursor: Cursor):
+        """Test that calling fetchmany when execution mode is DDL raises."""
+        mock_connection_cursor._execution_mode = ExecutionMode.SNAPSHOT_DDL
+        with pytest.raises(
+            InterfaceError,
+            match="DDL statements do not produce result sets",
+        ):
+            mock_connection_cursor.fetchmany(size=10)
+
     def test_defaults_to_arraysize(self, mock_connection_cursor: Cursor, mocker):
         """Test that fetchmany with no size uses the cursor's arraysize."""
         expected_arraysize = 5
         mock_connection_cursor.arraysize = expected_arraysize
 
-        get_next_results_mock = mocker.Mock()
-        get_next_results_mock.return_value = None
-        mocker.patch.object(mock_connection_cursor, "_get_next_results")
+        changelog_processor_mock = mocker.Mock()
+        changelog_processor_mock.fetchmany.return_value = []
+        mocker.patch.object(
+            mock_connection_cursor,
+            "_get_changelog_processor",
+            return_value=changelog_processor_mock,
+        )
 
         mock_connection_cursor.fetchmany()
-        mock_connection_cursor._get_next_results.assert_called_once_with(expected_arraysize)  # type: ignore
-
-    def test_negative_size_raises(self, mock_connection_cursor: Cursor):
-        """Test that fetchmany with negative size raises."""
-        with pytest.raises(InterfaceError, match="size must be a non-negative integer, got -1"):
-            mock_connection_cursor.fetchmany(size=-1)
+        changelog_processor_mock.fetchmany.assert_called_once_with(expected_arraysize)  # type: ignore
 
 
 @pytest.mark.unit
@@ -340,36 +354,10 @@ class TestCursorFetching:
         cursor.execute("SELECT true as value")
 
         with pytest.raises(
-            NotImplementedError,
-            match="Only INSERT op is supported in results for now.",
+            NotSupportedError,
+            match="Non-INSERT op was received by AppendOnlyChangelogProcessor",
         ):
             cursor.fetchone()
-
-    def test_fetch_next_page_exception_handling(
-        self,
-        mock_connection_cursor: Cursor,
-        mocker,
-    ):
-        """Test various exception handling paths in _fetch_next_page."""
-        # Simulate that there is no statement.
-        mock_connection_cursor._statement = None
-        with pytest.raises(InterfaceError, match="No statement was used"):
-            mock_connection_cursor._fetch_next_page()
-
-        # Simulate that the statement is not ready.
-        mock_statement = mocker.Mock()
-        mock_statement.is_ready = False
-        mock_connection_cursor._statement = mock_statement
-        with pytest.raises(InterfaceError, match="Statement is not ready"):
-            mock_connection_cursor._fetch_next_page()
-
-        # No schema attached to the statement.
-        mock_statement.is_ready = True
-        mock_statement.schema = None
-        with pytest.raises(
-            InterfaceError, match="Trying to fetch results for a non-query statement"
-        ):
-            mock_connection_cursor._fetch_next_page()
 
     @pytest.mark.parametrize("ddl_mode", [ExecutionMode.SNAPSHOT_DDL, ExecutionMode.STREAMING_DDL])
     def test_fetch_raises_if_ddl_mode(
@@ -428,6 +416,67 @@ def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mo
     assert mock_connection_cursor.is_closed is True
     assert mock_connection_cursor.rowcount == -1
     assert mock_connection_cursor._results == []
+
+
+@pytest.mark.unit
+class TestIteration:
+    def test_iteration_on_ddl_mode_raises(self, mock_connection_cursor: Cursor):
+        """Test that iterating over the cursor when in DDL mode raises."""
+        mock_connection_cursor._execution_mode = ExecutionMode.SNAPSHOT_DDL
+
+        with pytest.raises(
+            InterfaceError,
+            match="DDL statements do not produce result sets",
+        ):
+            iter(mock_connection_cursor)
+
+    def test_iteration_next_on_closed_cursor_raises(self, mock_connection_cursor: Cursor):
+        """Test that calling next() on a closed cursor raises -- after getting the iterator"""
+        it = iter(mock_connection_cursor)
+        mock_connection_cursor.close()
+        with pytest.raises(InterfaceError, match="Cursor is closed"):
+            next(it)
+
+    def test_iteration_success(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that iterating over the cursor yields results as expected."""
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 1 AS col",
+            schema_columns=[
+                {
+                    "name": "col",
+                    "type": {
+                        "type": "INTEGER",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
+        # Simulate a single page of results with 3 rows.
+        statement_results_return_value = (
+            [
+                ChangelogRow(Op.INSERT.value, ["1"]),
+                ChangelogRow(Op.INSERT.value, ["2"]),
+                ChangelogRow(Op.INSERT.value, ["3"]),
+            ],
+            None,
+        )
+
+        mock_connection = mock_connection_factory(
+            statement_response, statement_results_return_value
+        )
+
+        cursor = mock_connection.cursor()
+        cursor.execute("SELECT 1 AS col")
+
+        # Drives iteration and exhausts the results.
+        results = list(cursor)
+
+        assert results == [(1,), (2,), (3,)]
 
 
 @pytest.mark.unit

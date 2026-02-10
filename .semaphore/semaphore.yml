@@ -38,7 +38,7 @@ blocks:
     task:
       prologue:
         commands:
-          - curl -LsSf https://astral.sh/uv/0.9.18/install.sh | sh
+          - curl -LsSf https://astral.sh/uv/0.9.27/install.sh | sh
           - uv sync
       jobs:
         - name: "Run Tests"
@@ -48,7 +48,7 @@ blocks:
       epilogue:
         always:
           commands:
-            - '[[ -f test-results.xml ]] && test-results publish test-results.xml'
+            - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
 after_pipeline:
   task:
     jobs:
