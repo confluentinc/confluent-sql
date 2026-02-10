@@ -1,6 +1,9 @@
+import re
+
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
+from confluent_sql.changelog import ChangeloggedRow, RawChangelogProcessor
 from confluent_sql.exceptions import NotSupportedError, OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import ChangelogRow, Op
@@ -63,22 +66,21 @@ class TestExecute:
         ):
             mock_connection_cursor.execute(empty_query)
 
-    def test_execute_non_append_only_statement_raises(
+    def test_execute_non_append_only_statement(
         self, mock_connection_cursor: Cursor, statement_response_factory: StatementResponseFactory
     ):
-        """Prove that executing a non-append-only statement raises NotImplementedError
-        until our changelog parser were to improve."""
+        """Prove that executing a non-append-only statement does not raise."""
         # Mock the connection's _get_statement to return a non-append-only statement.
         non_append_only_statement_dict = statement_response_factory(is_append_only=False)
         mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
             non_append_only_statement_dict
         )
 
-        with pytest.raises(
-            NotImplementedError,
-            match="Only append-only statements are supported for now.",
-        ):
-            mock_connection_cursor.execute("SELECT 1 AS col")
+        mock_connection_cursor.execute("SELECT 1 AS col")
+
+        # Prove that we set the changelog processor to a RawChangelogProcessor, which can handle
+        # non-append-only statements.
+        assert isinstance(mock_connection_cursor._changelog_processor, RawChangelogProcessor)
 
     def test_execute_failed_statement_raises(
         self, mock_connection_cursor: Cursor, statement_response_factory: StatementResponseFactory
@@ -306,8 +308,80 @@ class TestCursorFetching:
         row3 = cursor.fetchone()
         assert row3 is None  # No more rows
 
+    def test_fetchall_append_only_mode_works(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+        result_row_maker: ResultRowFactory,
+    ):
+        """Test that fetchall() collects all rows properly in append-only mode."""
+
+        # Statement columns needs to match the result rows being returned.
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 'Joe' as name, TRUE AS value",
+            schema_columns=[
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "value",
+                    "type": {
+                        "type": "BOOLEAN",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
+        # As if statement results included only INSERT changelog rows and no next page.
+        statement_results_return_value = (
+            [
+                result_row_maker(["Joe", "TRUE"], Op.INSERT),
+                result_row_maker(["Jane", "FALSE"], Op.INSERT),
+            ],
+            None,
+        )
+
+        mock_connection = mock_connection_factory(
+            statement_response, statement_results_return_value
+        )
+
+        cursor = mock_connection.cursor()
+        cursor.execute("SELECT name, value")
+
+        all_rows = cursor.fetchall()
+        assert all_rows == [("Joe", True), ("Jane", False)]
+
+    def test_fetchall_unbounded_non_append_only_raises(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that fetchall() raises if the statement is not bounded, because
+        that's a nonsensical combination."""
+        # Mock the connection's _get_statement to return a non-append-only statement.
+        unbounded_non_append_only_statement_dict = statement_response_factory(
+            is_append_only=False, is_bounded=False
+        )
+        mock_connection = mock_connection_factory(
+            unbounded_non_append_only_statement_dict, None
+        )  # No need to mock results for this test since should raise before fetching.
+
+        cursor = mock_connection.cursor()
+        cursor.execute("SELECT name, value")
+
+        with pytest.raises(
+            NotSupportedError,
+            match=re.escape("Cannot call fetchall() on an unbounded streaming statement"),
+        ):
+            cursor.fetchall()
+
     @pytest.mark.parametrize("op", [Op.UPDATE_BEFORE, Op.UPDATE_AFTER, Op.DELETE])
-    def test_raises_if_statement_produces_non_insert_changelog_rows(
+    def test_raises_if_append_only_statement_produces_non_insert_changelog_rows(
         self,
         mock_connection_factory: MockConnectionFactory,
         result_row_maker: ResultRowFactory,
@@ -316,6 +390,10 @@ class TestCursorFetching:
     ):
         """Test that an error is raised on fetch*() if a statement
         produces non-insert changelog rows."""
+
+        # By default, statement_response_factory() will return an append-only
+        # statement response, which is what we want for this test. The associated
+        # AppendOnlyChangelogProcessor will raise if it receives non-INSERT ops.
 
         # Statement columns needs to match the result rows being returned.
         statement_response = statement_response_factory(
@@ -389,6 +467,132 @@ class TestCursorFetching:
             match=expected_match,
         ):
             mock_connection_cursor.fetchall()
+
+    def test_raw_changelog_fetch(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        result_row_maker: ResultRowFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Prove that a cursor using RawChangelogProcessor can handle non-insert changelog rows,
+        returning them as ChangeloggedRow containing the op + row tuple."""
+
+        # Statement columns needs to match the result rows being returned.
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 'Joe' as name, TRUE AS value",
+            is_append_only=False,
+            schema_columns=[
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "count",
+                    "type": {
+                        "type": "INTEGER",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
+        # As if statement results included some non-insert changelog rows + no next page.
+        get_statement_results_return_value = (
+            [
+                result_row_maker(["Joe", "1"], Op.INSERT),
+                result_row_maker(["Joe", "1"], Op.DELETE),
+                result_row_maker(["Joe", "2"], Op.INSERT),
+            ],
+            None,
+        )
+
+        mock_connection = mock_connection_factory(
+            statement_response, get_statement_results_return_value
+        )
+
+        cursor = mock_connection.cursor()
+        cursor.execute("SELECT name, count(*) as count from mytab group by name")
+
+        res1 = cursor.fetchone()
+        assert isinstance(res1, ChangeloggedRow)
+        assert res1.row == ("Joe", 1)
+        assert res1.op == Op.INSERT
+
+        rest = cursor.fetchmany(2)
+        assert len(rest) == 2  # noqa: PLR2004
+        assert isinstance(rest[0], ChangeloggedRow)
+        assert rest[0].row == ("Joe", 1)
+        assert rest[0].op == Op.DELETE
+
+        assert isinstance(rest[1], ChangeloggedRow)
+        assert rest[1].row == ("Joe", 2)
+        assert rest[1].op == Op.INSERT
+
+    def test_raw_changelog_fetch_dict_cursor(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        result_row_maker: ResultRowFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Prove that a cursor using RawChangelogProcessor can handle non-insert changelog rows,
+        returning them as ChangeloggedRow containing the op + row-as-dict."""
+
+        # Statement columns needs to match the result rows being returned.
+        statement_response = statement_response_factory(
+            sql_statement="SELECT 'Joe' as name, TRUE AS value",
+            is_append_only=False,
+            schema_columns=[
+                {
+                    "name": "name",
+                    "type": {
+                        "type": "STRING",
+                        "nullable": False,
+                    },
+                },
+                {
+                    "name": "count",
+                    "type": {
+                        "type": "INTEGER",
+                        "nullable": False,
+                    },
+                },
+            ],
+        )
+
+        # As if statement results included some non-insert changelog rows + no next page.
+        get_statement_results_return_value = (
+            [
+                result_row_maker(["Joe", "1"], Op.INSERT),
+                result_row_maker(["Joe", "1"], Op.DELETE),
+                result_row_maker(["Joe", "2"], Op.INSERT),
+            ],
+            None,
+        )
+
+        mock_connection = mock_connection_factory(
+            statement_response, get_statement_results_return_value
+        )
+
+        cursor = mock_connection.cursor(as_dict=True)
+        cursor.execute("SELECT name, count(*) as count from mytab group by name")
+
+        res1 = cursor.fetchone()
+        assert isinstance(res1, ChangeloggedRow)
+        assert res1.row == {"name": "Joe", "count": 1}
+        assert res1.op == Op.INSERT
+
+        rest = cursor.fetchmany(2)
+        assert len(rest) == 2  # noqa: PLR2004
+        assert isinstance(rest[0], ChangeloggedRow)
+        assert rest[0].row == {"name": "Joe", "count": 1}
+        assert rest[0].op == Op.DELETE
+
+        assert isinstance(rest[1], ChangeloggedRow)
+        assert rest[1].row == {"name": "Joe", "count": 2}
+        assert rest[1].op == Op.INSERT
 
 
 @pytest.mark.unit

@@ -2,7 +2,11 @@ import re
 
 import pytest
 
-from confluent_sql.changelog import AppendOnlyChangelogProcessor
+from confluent_sql.changelog import (
+    AppendOnlyChangelogProcessor,
+    ChangeloggedRow,
+    RawChangelogProcessor,
+)
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError, NotSupportedError
 from confluent_sql.statement import ChangelogRow, Op, Phase
@@ -19,7 +23,7 @@ def append_only_processor(
 
 
 """
- Tests over AppendOnlyChangelogProcessor to start with.
+ Tests over AppendOnlyChangelogProcessor
 """
 
 
@@ -194,7 +198,7 @@ class TestIteration:
 
         # Mock the _fetch_next_page method to simulate fetching results
         def mock_fetch_next_page():
-            processor._results = [("row1",), ("row2",)]
+            processor._results = [{"value": "row1"}, {"value": "row2"}]
             processor._index = 0
             processor._next_page = None
 
@@ -294,10 +298,12 @@ class TestFetchNextPage:
             f"Expected to collect fetched rows through iteration, got {collected}"
         )
 
-    def test_raises_if_non_insert_op_in_results(
+    def test_raises_if_non_insert_op_in_append_only_results(
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
-        # Mock the connection's _get_statement_results to return a result with a non-INSERT op
+        """append-only changelog processor should raise if it encounters a non-INSERT op in results
+        from the server, since that violates the contract of append-only statements."""
+
         def mock_get_statement_results(
             statement_name: str, next_url: str | None
         ) -> tuple[list[ChangelogRow], str | None]:
@@ -314,3 +320,49 @@ class TestFetchNextPage:
 
         with pytest.raises(NotSupportedError, match="Non-INSERT op"):
             append_only_processor._fetch_next_page()
+
+
+@pytest.fixture
+def raw_changelog_processor(
+    statement_factory: StatementFactory, mock_connection: Connection
+) -> RawChangelogProcessor:
+    """A fixture that returns a RawChangelogProcessor instance."""
+    statement = statement_factory(is_append_only=False)
+    return RawChangelogProcessor(mock_connection, statement)
+
+
+@pytest.mark.unit
+class TestRawChangelogProcessor:
+    """
+    Tests over RawChangelogProcessor. Only material difference
+    between this and AppendOnlyChangelogProcessor is that the _retain method in this class
+    converts retained rows into ChangeloggedRow named tuples that include the changelog operation
+    type, so we focus tests on that behavior here.
+    """
+
+    def test_retain_converts_to_changelogged_row(
+        self, raw_changelog_processor: RawChangelogProcessor
+    ):
+        # Call _retain a couple of times -- first with an INSERT op, then with a DELETE op.
+
+        raw_changelog_processor._retain(
+            Op.INSERT, ("value1", 123, "true")
+        )  # Mock an INSERT op with some values
+
+        raw_changelog_processor._retain(Op.DELETE, ("value1", 123, "true"))
+
+        # Fetch the first retained row and check that it's a ChangeloggedRow with expected values
+        v = raw_changelog_processor.fetchone()
+        assert isinstance(v, ChangeloggedRow), (
+            f"Expected fetched row to be a ChangeloggedRow, got {type(v)}"
+        )
+        assert v.op == Op.INSERT, f"Expected op to be Op.INSERT, got {v.op}"
+        assert v.row == ("value1", 123, "true"), f"Expected row data to be unchanged, got {v.row}"
+
+        # Fetch the second retained row and check that it's a ChangeloggedRow with expected values
+        v = raw_changelog_processor.fetchone()
+        assert isinstance(v, ChangeloggedRow), (
+            f"Expected fetched row to be a ChangeloggedRow, got {type(v)}"
+        )
+        assert v.op == Op.DELETE, f"Expected op to be Op.DELETE, got {v.op}"
+        assert v.row == ("value1", 123, "true"), f"Expected row data to be unchanged, got {v.row}"

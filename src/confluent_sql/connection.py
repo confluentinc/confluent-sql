@@ -37,6 +37,7 @@ def connect(  # noqa: PLR0913
     api_key: str | None = None,
     api_secret: str | None = None,
     dbname: str | None = None,
+    result_page_fetch_pause_millis: int = 100,
 ) -> Connection:
     """
     Create a connection to a Confluent SQL service.
@@ -52,6 +53,15 @@ def connect(  # noqa: PLR0913
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
         dbname: The name of the database to use (optional)
+        result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
+            statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
+            to the statement results API when consuming results for a statement, especially when
+            no results are currently available but more may be forthcoming, such as when
+            consuming results from a running streaming query, or prior to when the first page
+            of results is ready for a snapshot query.
+
+            If it has already been at least this long since the most recent fetch of results for the
+            statement, then no delay will happen.
 
     Returns:
         A Connection object representing the database connection
@@ -90,6 +100,7 @@ def connect(  # noqa: PLR0913
         api_key=api_key,
         api_secret=api_secret,
         dbname=dbname,
+        statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
     )
 
 
@@ -107,6 +118,21 @@ class Connection:
     api_key: str | None
     api_secret: str | None
     host: str | None
+    statement_results_page_fetch_pause_secs: float
+    """Maximum seconds to wait between fetching pages of statement
+        results (per statement). Prevents tight loops of requests to the
+        statement results API when consuming results for a statement, especially when no results are
+        currently available but more may be forthcoming, such as when consuming results from
+        a running streaming query, or prior to when the first page of results is ready for
+        a snapshot query.
+
+        If it has already been at least this long since the most recent fetch of results for the
+        statement, then no delay will happen.
+
+        Referenced by the changelog processor when fetching pages of results for individual
+        statements.
+    """
+
     _closed: bool
     _dbname: str | None
     _client: httpx.Client
@@ -127,6 +153,7 @@ class Connection:
         api_secret: str | None = None,
         host: str | None = None,
         dbname: str | None = None,
+        statement_results_page_fetch_pause_millis: int = 100,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -139,6 +166,10 @@ class Connection:
             organization_id: Organization ID
             cloud_provider: Cloud provider
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
+            result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
+                statement results. Defaults to 100ms. If most recent fetch of results for a
+                statement was more than this long ago, then no delay will happen when fetching
+                the next page of results for the statement.
             api_key: Confluent Cloud API key for general Confluent Cloud resources (optional)
             api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
             host: The base URL for Confluent Cloud API (optional)
@@ -150,6 +181,15 @@ class Connection:
         self.api_key = api_key
         self.api_secret = api_secret
         self.host = host
+
+        if statement_results_page_fetch_pause_millis < 0:
+            raise InterfaceError("result_page_fetch_pause_millis must be non-negative")
+
+        # Will be referenced by cursor / changelog processor when
+        # fetching pages of results for individual statements.
+        self.statement_results_page_fetch_pause_secs = (
+            statement_results_page_fetch_pause_millis / 1000.0
+        )
 
         # Internal state
         self._closed = False
