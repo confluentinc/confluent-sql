@@ -361,8 +361,8 @@ class TestCursorFetching:
         mock_connection_factory: MockConnectionFactory,
         statement_response_factory: StatementResponseFactory,
     ):
-        """Test that fetchall() raises if the statement is not append-only, since we don't want to
-        accidentally collect a large number of non-append-only changelog rows into memory."""
+        """Test that fetchall() raises if the statement is not bounded, because
+        that's a nonsensical combination."""
         # Mock the connection's _get_statement to return a non-append-only statement.
         unbounded_non_append_only_statement_dict = statement_response_factory(
             is_append_only=False, is_bounded=False

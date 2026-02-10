@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 ResultRow: TypeAlias = ResultTupleOrDict | ChangeloggedRow
 """A single row of results returned from a cursor fetch or iteration.
-Can be a dict or tuple depending on cursor configuration and statement schema, or a ChangelogedRow
+Can be a dict or tuple depending on cursor configuration and statement schema, or a ChangeloggedRow
 containing the changelog operation and a dict or tuple if the statement is not append-only."""
 
 

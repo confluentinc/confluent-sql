@@ -300,7 +300,7 @@ class ChangeloggedRow(NamedTuple):
     """
 
     op: Op
-    """The changelog operation type, or None if not provided by the server."""
+    """The changelog operation type."""
     row: ResultTupleOrDict
     """The row data as either a tuple or dict based on the `as_dict` flag, after type conversion
     from Results API JSON to Python types."""
@@ -309,8 +309,8 @@ class ChangeloggedRow(NamedTuple):
 class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
     """Non-append-only changelog processor implementation.
 
-    Returns changelog results as ChangelogResult namedtuples containing both the operation type and
-    row data.
+    Returns changelog results as `ChangeloggedRow` namedtuples containing both the operation
+    type (op) and the either tuple-or-dict row data (`row`).
 
     Used for the subset of streaming statements that are not append-only, where we need to return
     the changelog operation type along with each row.
