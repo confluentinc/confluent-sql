@@ -53,12 +53,12 @@ def connect(  # noqa: PLR0913
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
         dbname: The name of the database to use (optional)
-        result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of statement
-            results (per statement). Defaults to 100ms. Prevents tight loops of requests to the
-            statement results API when consuming results for a statement, especially when no results are
-            currently available but more may be forthcoming, such as when consuming results from
-            a running streaming query, or prior to when the first page of results is ready for
-            a snapshot query.
+        result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
+            statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
+            to the statement results API when consuming results for a statement, especially when
+            no results are currently available but more may be forthcoming, such as when
+            consuming results from a running streaming query, or prior to when the first page
+            of results is ready for a snapshot query.
 
             If it has already been at least this long since the most recent fetch of results for the
             statement, then no delay will happen.
