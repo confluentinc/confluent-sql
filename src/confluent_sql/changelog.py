@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import time
 from itertools import islice
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
@@ -47,7 +48,9 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     """Whether to return the row portion of results as dicts or tuples."""
 
     _fetch_next_page_called: bool
-    """Whether _fetch_next_page has been called at least once."""
+    """Whether _fetch_next_page has been called at least once.
+        TODO: discard in favor of _most_recent_results_fetch_time
+    """
 
     _next_page: str | None
     """The URL of the next page of results, if any. 
@@ -67,6 +70,10 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     position in `_results` list during iteration and fetch operations.
     """
 
+    _most_recent_results_fetch_time: float | None
+    """Timestamp of the most recent results fetch operation, in seconds since epoch.
+        Used for result page fetch pacing."""
+
     def __init__(self, connection: Connection, statement: Statement, as_dict: bool = False):
         self._connection = connection
         self._statement = statement
@@ -74,6 +81,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         self._next_page = None
         self._fetch_next_page_called = False
+        self._most_recent_results_fetch_time = None
 
         self._results = []
         self._index = 0
@@ -220,13 +228,26 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
         if not self._results or self._next_page is not None:
+            if self._most_recent_results_fetch_time is not None:
+                # Should we pause before fetching the next page?
+                elapsed_secs = time.time() - self._most_recent_results_fetch_time
+                if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
+                    # Sleep the difference between when we last fetched results
+                    # and the configured pause time so that we ensure to not
+                    # hit the endpoint for this statement more often than
+                    # the configured pause time.
+                    pause_secs = (
+                        self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
+                    )
+                    time.sleep(pause_secs)
+
             # Get raw ChangelogRow results from connection
             results, next_page = self._connection._get_statement_results(
                 self._statement.name, self._next_page
             )
             self._next_page = next_page
 
-            # Process each result
+            # Process each changelog row just fetched
             type_converter = self._statement.type_converter
             for res in results:
                 # Convert row to Python types
@@ -236,10 +257,11 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
                 if self._as_dict:
                     decoded_row = self._map_row_to_dict(decoded_row)
 
-                # Retain the changelog row in the processor's internal state
+                # Retain the row (and perhaps also the operation) in the processor's internal state
                 self._retain(res.op, decoded_row)
 
         self._fetch_next_page_called = True
+        self._most_recent_results_fetch_time = time.time()
 
 
 class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
