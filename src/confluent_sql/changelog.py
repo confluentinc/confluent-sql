@@ -10,7 +10,7 @@ from __future__ import annotations
 import abc
 import logging
 from itertools import islice
-from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
 from .exceptions import InterfaceError, NotSupportedError
 from .statement import Op, Statement
@@ -25,69 +25,26 @@ ProcessorOutput = TypeVar("ProcessorOutput")
 """Type that a changelog processor produces as output from its __iter__ method."""
 
 
+StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
+"""The tuple representation of a row of Flink statement results
+   after type conversion from Results API JSON to Python types."""
+
+
+ResultTupleOrDict: TypeAlias = StatementResultTuple | StrAnyDict
+"""Output type for AppendOnlyChangelogProcessor fetch methods and iteration."""
+
+
 class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     """Abstract base class for changelog processors."""
 
     _connection: Connection
     """The connection associated with this changelog processor."""
 
-    def __init__(self, connection: Connection):
-        self._connection = connection
-
-    def __iter__(self) -> ChangelogProcessor[ProcessorOutput]:
-        """Returns an iterator over the processed changelog results."""
-        return self
-
-    @abc.abstractmethod
-    def __next__(self) -> ProcessorOutput:
-        """Returns an iterator over the processed changelog results."""
-        raise NotImplementedError("Abstract method")  # pragma: no cover
-
-    @abc.abstractmethod
-    def fetchone(self) -> ProcessorOutput | None:
-        """Returns the next result, or None if there are no more results."""
-        raise NotImplementedError("Abstract method")  # pragma: no cover
-
-    @abc.abstractmethod
-    def fetchmany(self, size: int) -> list[ProcessorOutput]:
-        """Returns the next size results. Cursor will always be calling with
-        size > 0.
-        """
-        raise NotImplementedError("Abstract method")  # pragma: no cover
-
-    @abc.abstractmethod
-    def fetchall(self) -> list[ProcessorOutput]:
-        """Returns all remaining results. Use with caution, as this may consume a lot of memory."""
-        raise NotImplementedError("Abstract method")  # pragma: no cover
-
-    @property
-    @abc.abstractmethod
-    def may_have_results(self) -> bool:
-        """Whether there may be more results to fetch."""
-        raise NotImplementedError("Abstract method")  # pragma: no cover
-
-
-StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
-"""__next__ output type for AppendOnlyChangelogProcessor."""
-
-
-class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | StrAnyDict]):
-    """Append-only changelog processor implementation.
-
-    Returns statement result rows as either tuples or dicts based on the `as_dict` flag.
-    """
-
     _statement: Statement
     """The statement associated with this changelog processor."""
 
-    _results: list[StatementResultTuple]
-    """The accumulated post-python type conversion results."""
-
-    _index: int
-    """The index indicating the most recent returned position in the results list."""
-
     _as_dict: bool
-    """Whether to return results as dicts or tuples."""
+    """Whether to return the row portion of results as dicts or tuples."""
 
     _fetch_next_page_called: bool
     """Whether _fetch_next_page has been called at least once."""
@@ -99,14 +56,86 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
        no more pages to fetch (distinguished from the initial state by
        `_fetch_next_page_called` being set to `True`)."""
 
+    _results: list[ProcessorOutput]
+    """The accumulated post-from-response-api to Python and processor
+    return type conversion results."""
+
+    _index: int
+    """Index of the next result to return from the local buffer.
+    
+    Starts at 0 and increments after each result is returned. Used to track
+    position in `_results` list during iteration and fetch operations.
+    """
+
     def __init__(self, connection: Connection, statement: Statement, as_dict: bool = False):
-        super().__init__(connection)
+        self._connection = connection
         self._statement = statement
         self._as_dict = as_dict
-        self._results: list[StatementResultTuple] = []
-        self._index = 0
+
         self._next_page = None
         self._fetch_next_page_called = False
+
+        self._results = []
+        self._index = 0
+
+    @abc.abstractmethod
+    def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
+        """Retain the changelog row in the processor's internal state.
+
+        This is used by RawChangelogProcessor to retain the full changelog result,
+        and by AppendOnlyChangelogProcessor to retain just the row data (after validating
+        that the operation is an INSERT if provided by the server).
+
+        The exact retention logic is left to the concrete implementations since it may differ
+        based on whether we are retaining full changelog results or just row data.
+        """
+        raise NotImplementedError("Abstract method")  # pragma: no cover
+
+    def __iter__(self) -> ChangelogProcessor[ProcessorOutput]:
+        """Returns an iterator over the processed changelog results."""
+        return self
+
+    def fetchone(self) -> ProcessorOutput | None:
+        res = self._get_next_results(1)
+        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
+        # If no results are available, `res` is an empty list,
+        # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
+        return res[0] if res else None
+
+    def _map_row_to_dict(self, row: StatementResultTuple) -> StrAnyDict:
+        """Map tuple row to dict using statement schema."""
+        if not self._statement.schema:
+            raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover
+        return dict(zip([col.name for col in self._statement.schema.columns], row, strict=True))
+
+    def _get_next_results(self, limit: int | None) -> list[ProcessorOutput]:
+        """
+        Retrieve up to `limit` results, fetching additional pages as needed.
+
+        This is the core result-fetching method that all public fetch methods
+        delegate to. It drives the iterator protocol (`__next__`), which in turn
+        calls `_fetch_next_page()` when the local buffer is exhausted.
+
+        Design note:
+            By funneling all fetch methods through iteration, we maintain a single
+            code path for buffer management and page fetching. This trades some
+            per-row function call overhead for correctness and simplicity. The
+            overhead is negligible compared to network I/O for fetching pages.
+
+        Args:
+            limit: Maximum number of results to return, or None for all remaining.
+
+        Returns:
+            A list of result rows (as tuples or dicts based on `as_dict` flag).
+
+        Raises:
+            InterfaceError: If limit is None and the statement is unbounded (streaming),
+                since iteration would never complete.
+        """
+        if limit is None:
+            return list(self)
+        else:
+            return list(islice(self, limit))
 
     @property
     def may_have_results(self) -> bool:
@@ -120,20 +149,13 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
             or self._next_page is not None
         )
 
-    def fetchone(self) -> StrAnyDict | StatementResultTuple | None:
-        res = self._get_next_results(1)
-        assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
-        # If no results are available, `res` is an empty list,
-        # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
-        return res[0] if res else None
-
-    def fetchmany(self, size: int) -> list[StrAnyDict | StatementResultTuple]:
+    def fetchmany(self, size: int) -> list[ProcessorOutput]:
         if size <= 0:
             raise InterfaceError(f"size must be a positive integer, got {size}")
 
         return self._get_next_results(size)
 
-    def fetchall(self) -> list[StrAnyDict | StatementResultTuple]:
+    def fetchall(self) -> list[ProcessorOutput]:
         """
         Fetch all remaining rows of a query result.
 
@@ -165,7 +187,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
 
         return self._get_next_results(None)
 
-    def __next__(self) -> StrAnyDict | StatementResultTuple:
+    def __next__(self) -> ProcessorOutput:
         """Implementation of iterator protocol."""
         if self._remaining == 0:
             if self._results and not self._next_page:
@@ -178,9 +200,6 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
         res = self._results[self._index]
         self._index += 1
 
-        # Return as dict if requested
-        if self._as_dict and self._statement.schema:
-            return self._map_row_to_dict(res)
         return res
 
     @property
@@ -213,52 +232,79 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[StatementResultTuple | Str
                 # Convert row to Python types
                 decoded_row = type_converter.to_python_row(res.row)
 
-                # Validate that the operation is INSERT if provided, since here in
-                # AppendOnlyChangelogProcessor we only expect INSERT operations.
-                if res.op is not None and res.op != Op.INSERT:
-                    # Only expect INSERT operations for append-only
-                    logger.error(
-                        f"Received non-INSERT op {res.op} in results for append-only statement."
-                    )
-                    raise NotSupportedError(
-                        f"Non-INSERT op was received by AppendOnlyChangelogProcessor: {res.op}. "
-                    )
+                # Promote from tuple -> dict if requested
+                if self._as_dict:
+                    decoded_row = self._map_row_to_dict(decoded_row)
 
-                self._results.append(decoded_row)
+                # Retain the changelog row in the processor's internal state
+                self._retain(res.op, decoded_row)
 
         self._fetch_next_page_called = True
 
-    def _get_next_results(self, limit: int | None) -> list[StrAnyDict | StatementResultTuple]:
-        """
-        Retrieve up to `limit` results, fetching additional pages as needed.
 
-        This is the core result-fetching method that all public fetch methods
-        delegate to. It drives the iterator protocol (`__next__`), which in turn
-        calls `_fetch_next_page()` when the local buffer is exhausted.
+class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
+    """Append-only changelog processor implementation.
 
-        Design note:
-            By funneling all fetch methods through iteration, we maintain a single
-            code path for buffer management and page fetching. This trades some
-            per-row function call overhead for correctness and simplicity. The
-            overhead is negligible compared to network I/O for fetching pages.
+    Returns statement result rows as either tuples or dicts based on the `as_dict` flag.
+    """
+
+    def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
+        """Retain the changelog row in the processor's internal state.
+
+        For AppendOnlyChangelogProcessor, we only retain the row data (after validating
+        that the operation is an INSERT if provided by the server), since we only return
+        the row data in fetch and iteration methods.
+
+        Raise NotSupportedError if a non-INSERT operation is encountered.
 
         Args:
-            limit: Maximum number of results to return, or None for all remaining.
-
-        Returns:
-            A list of result rows (as tuples or dicts based on `as_dict` flag).
-
-        Raises:
-            InterfaceError: If limit is None and the statement is unbounded (streaming),
-                since iteration would never complete.
+            op: The changelog operation type.
+            decoded: The row data as either a tuple or dict based on the `as_dict` flag,
+                     after type conversion from Results API JSON to Python types.
         """
-        if limit is None:
-            return list(self)
-        else:
-            return list(islice(self, limit))
+        if op is not None and op != Op.INSERT:
+            # Only expect INSERT operations for append-only
+            logger.error(f"Received non-INSERT op {op} in results for append-only statement.")
+            raise NotSupportedError(
+                f"Non-INSERT op was received by AppendOnlyChangelogProcessor: {op}. "
+            )
 
-    def _map_row_to_dict(self, row: tuple[SupportedPythonTypes, ...]) -> StrAnyDict:
-        """Map tuple row to dict using statement schema."""
-        if not self._statement.schema:
-            raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover
-        return dict(zip([col.name for col in self._statement.schema.columns], row, strict=True))
+        self._results.append(decoded)
+
+
+class ChangeloggedRow(NamedTuple):
+    """Changelog operation and corresponding row data after type conversion from Results API JSON
+    to Python types. Returned by cursors using RawChangelogProcessor for non-append-only statements.
+    """
+
+    op: Op
+    """The changelog operation type, or None if not provided by the server."""
+    row: ResultTupleOrDict
+    """The row data as either a tuple or dict based on the `as_dict` flag, after type conversion
+    from Results API JSON to Python types."""
+
+
+class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
+    """Non-append-only changelog processor implementation.
+
+    Returns changelog results as ChangelogResult namedtuples containing both the operation type and
+    row data.
+
+    Used for the subset of streaming statements that are not append-only, where we need to return
+    the changelog operation type along with each row.
+
+    No changelog interpretation is done at this level.
+    """
+
+    def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
+        """Retain the changelog row in the processor's internal state.
+
+        For RawChangelogProcessor, we retain both the operation type and the row data
+
+        Args:
+            op: The changelog operation type.
+            decoded: The row data as either a tuple or dict based on the `as_dict` flag,
+                     after type conversion from Results API JSON to Python types.
+        """
+
+        self._results.append(ChangeloggedRow(op, decoded))

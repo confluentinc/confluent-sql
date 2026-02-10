@@ -5,6 +5,7 @@ This module provides a DB-API v2 compliant interface for connecting to and
 executing SQL queries against Confluent SQL services.
 """
 
+from .changelog import ChangeloggedRow
 from .connection import Connection, connect
 from .cursor import Cursor
 from .exceptions import (
@@ -20,6 +21,7 @@ from .exceptions import (
     TypeMismatchError,
     Warning,
 )
+from .statement import Op
 from .types import SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
@@ -31,6 +33,8 @@ __all__ = [
     "connect",
     "Connection",
     "Cursor",
+    "Op",
+    "ChangeloggedRow",
     "Warning",
     "Error",
     "InterfaceError",

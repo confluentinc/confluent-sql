@@ -183,6 +183,13 @@ def populated_table_connection(table_connection: Connection, test_table_name: st
     yield table_connection
 
 
+@pytest.fixture(scope="session")
+def populated_table_rowcount() -> int:
+    """Returns the number of rows inserted into the test table by the populated_table_connection
+    fixture."""
+    return 10
+
+
 @pytest.fixture
 def cursor_with_nonstreaming_data_factory(
     table_connection: Connection, test_table_name: str
