@@ -326,7 +326,7 @@ class TestFetchNextPage:
 def raw_changelog_processor(
     statement_factory: StatementFactory, mock_connection: Connection
 ) -> RawChangelogProcessor:
-    """A fixture that returns an AppendOnlyChangelogProcessor instance."""
+    """A fixture that returns a RawChangelogProcessor instance."""
     statement = statement_factory(is_append_only=False)
     return RawChangelogProcessor(mock_connection, statement)
 
