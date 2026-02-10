@@ -5,7 +5,7 @@ import pytest
 
 from confluent_sql import Connection, Cursor, InterfaceError
 from confluent_sql.exceptions import NotSupportedError
-from confluent_sql.statement import Phase
+from confluent_sql.statement import Op, Phase
 
 """A one column very fast to complete query."""
 SINGLE_COLUMN_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES`"
@@ -28,6 +28,27 @@ class TestCursor:
         assert len(cursor._statement.description) == 1
         assert cursor._statement.description[0][0] == "answer"
 
+    def test_cursor_description_raises_if_closed(self, cursor: Cursor):
+        cursor.close()
+        with pytest.raises(InterfaceError, match="Cursor is closed"):
+            _ = cursor.description
+
+    def test_cursor_description_none_if_no_statement(self, cursor: Cursor):
+        assert cursor.description is None
+
+    def test_cursor_description_after_execution(self, cursor: Cursor):
+        cursor.execute(SINGLE_COLUMN_QUERY)
+        description = cursor.description
+        assert description is not None
+        assert len(description) == 1
+        assert description[0][0] == "answer"
+        assert description[0][1] == "INTEGER"
+        # display_size, internal_size, precision, scale are all None
+        for idx in range(2, 6):
+            assert description[0][idx] is None
+        # null_ok is False
+        assert description[0][6] is False
+
     def test_unbounded_query_with_finite_statement(self, cursor: Cursor):
         # Cursor fixture factory provides snapshot (bounded) cursors by default.
         assert cursor._execution_mode.is_snapshot is True
@@ -37,7 +58,9 @@ class TestCursor:
         assert cursor.statement.is_bounded is True
 
     @pytest.mark.slow
-    def test_streaming_cursor(self, populated_table_connection: Connection, test_table_name: str):
+    def test_streaming_append_only_cursor(
+        self, populated_table_connection: Connection, test_table_name: str
+    ):
         # For an actual unbounded query, we need to use an actual table that comes from
         # a kafka topic.
         cursor = populated_table_connection.streaming_cursor()
@@ -46,6 +69,7 @@ class TestCursor:
         statement = cursor.statement
         assert statement is not None
         assert statement.is_bounded is False
+        assert statement.is_append_only is True
         assert statement.phase is Phase.RUNNING
 
         rows = []
@@ -59,6 +83,74 @@ class TestCursor:
             wait_iterations += 1
 
         assert len(rows) > 0, "Expected to fetch some rows from the streaming query."
+
+        # Deleting the statement will inherently stop it. TODO need more explicit way to
+        # differentiate between stopping and deleting a running statement, but that's for
+        # a different test.
+        cursor.delete_statement()
+        cursor.close()
+
+    @pytest.mark.slow
+    def test_streaming_changelog_cursor(
+        self,
+        populated_table_connection: Connection,
+        test_table_name: str,
+        populated_table_rowcount: int,
+    ):
+        cursor = populated_table_connection.streaming_cursor()
+        # Will be a retractable changelog unbounded query. It will emit an INSERT
+        # result set changelog row when the first message is observed, initial count of 1,
+        # then repeatedly revise that single row with UPDATE_BEFORE and UPDATE_AFTER pairs.
+
+        # The final observed count will be the last UPDATE_AFTER row's count value.
+
+        cursor.execute(f"SELECT count(*) as `count` FROM {test_table_name}")
+        statement = cursor.statement
+        assert statement is not None
+        assert statement.is_bounded is False
+        assert statement.is_append_only is False
+        assert statement.phase is Phase.RUNNING
+
+        max_wait_iterations = 60  # Wait up to 60 seconds
+        wait_iterations = 0
+
+        the_count = 0
+
+        had_insert = False
+        had_update_before = False
+        had_update_after = False
+
+        # Keep consuming until we observe both an insert and a delete,
+        # which proves that we are correctly consuming from the changelog stream
+        while cursor.may_have_results and wait_iterations < max_wait_iterations:
+            op_and_row = cursor.fetchone()
+            if op_and_row is not None:
+                op, row = op_and_row
+                if op == Op.INSERT:
+                    had_insert = True
+                    the_count = row[0]  # type: ignore[index]
+                elif op == Op.UPDATE_BEFORE:
+                    had_update_before = True
+                    # Will come in pairs with UPDATE_AFTER, so we don't need to do anything
+                    # with the count here.
+                elif op == Op.UPDATE_AFTER:
+                    had_update_after = True
+                    # Update the count.
+                    the_count = row[0]  # type: ignore[index]
+
+                # {test_table_name} is populated with a total of populated_table_rowcount
+                # rows by the test fixture.
+                if the_count == populated_table_rowcount:
+                    break
+
+            wait_iterations += 1
+
+        assert had_insert, "Expected to observe an INSERT changelog operation."
+        assert had_update_before, "Expected to observe an UPDATE_BEFORE changelog operation."
+        assert had_update_after, "Expected to observe an UPDATE_AFTER changelog operation."
+        assert the_count == populated_table_rowcount, (
+            f"Expected final count to be {populated_table_rowcount}, got {the_count}."
+        )
 
         # Deleting the statement will inherently stop it. TODO need more explicit way to
         # differentiate between stopping and deleting a running statement, but that's for
