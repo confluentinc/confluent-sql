@@ -310,7 +310,7 @@ class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
     """Non-append-only changelog processor implementation.
 
     Returns changelog results as `ChangeloggedRow` namedtuples containing both the operation
-    type (op) and the either tuple-or-dict row data (`row`).
+    type (op) and the tuple or dict row data (`row`).
 
     Used for the subset of streaming statements that are not append-only, where we need to return
     the changelog operation type along with each row.
