@@ -51,6 +51,23 @@ def test_connection_error(invalid_credential_connection, mocker):
 
 
 @pytest.mark.unit
+def test_connection_constructor_hates_negative_pause_millis(connection_factory: ConnectionFactory):
+    """Test that the Connection constructor raises an error if given a negative
+    statement_results_page_fetch_pause_millis."""
+    with pytest.raises(InterfaceError, match="result_page_fetch_pause_millis must be non-negative"):
+        connection_factory(
+            environment="foo_id",
+            compute_pool_id="1234",
+            organization_id="4567",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+            result_page_fetch_pause_millis=-100,
+        )
+
+
+@pytest.mark.unit
 class TestConnectionDeleteStatementErrors:
     """Tests for delete_statement error handling."""
 
