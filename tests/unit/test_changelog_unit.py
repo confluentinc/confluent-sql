@@ -342,6 +342,79 @@ class TestFetchMethods:
             "Should indicate no more results when permanently empty"
         )
 
+    def test_fetchone_non_blocking_in_streaming_mode(
+        self, statement_factory: StatementFactory, mock_connection: Connection
+    ):
+        """Test that fetchone() makes at most one fetch per call in streaming mode."""
+        statement = statement_factory(is_append_only=True)
+        # Create processor in STREAMING_QUERY mode
+        processor = AppendOnlyChangelogProcessor(
+            mock_connection, statement, ExecutionMode.STREAMING_QUERY
+        )
+
+        fetch_count = 0
+
+        def mock_fetch_next_page():
+            nonlocal fetch_count
+            fetch_count += 1
+            # First fetch returns one row
+            if fetch_count == 1:
+                processor._results = [("row1",)]
+                processor._index = 0
+                processor._next_page = None  # No more pages
+                processor._fetch_next_page_called = True
+            else:
+                # Should not be called more than once per fetchone() call
+                processor._results = []
+                processor._index = 0
+                processor._next_page = None
+                processor._fetch_next_page_called = True
+
+        processor._fetch_next_page = mock_fetch_next_page
+        processor._results = []  # Start with empty buffer
+        processor._index = 0
+
+        # First fetchone() - should fetch once and return row1
+        result = processor.fetchone()
+
+        assert fetch_count == 1, "Should have fetched exactly once"
+        assert result == ("row1",), "Should return the fetched row"
+        assert processor.may_have_results is False, "No more results (next_page is None)"
+
+        # Second fetchone() - buffer empty, no next page, should NOT fetch
+        fetch_count = 0  # Reset counter to verify no fetch happens
+        result = processor.fetchone()
+
+        assert fetch_count == 0, "Should NOT fetch when no next page available"
+        assert result is None, "Should return None when no data"
+        assert processor.may_have_results is False, "Should indicate no more results"
+
+        # Test scenario with more pages available
+        # Reset for a new scenario
+        processor._next_page = "more_pages"  # Simulate more pages
+        processor._results = []
+        processor._index = 0
+
+        # Create a new mock that tracks this specific call
+        third_call_fetch_count = 0
+
+        def mock_fetch_for_third_call():
+            nonlocal third_call_fetch_count
+            third_call_fetch_count += 1
+            processor._results = []  # Return empty results this time
+            processor._index = 0
+            processor._next_page = None
+            processor._fetch_next_page_called = True
+
+        processor._fetch_next_page = mock_fetch_for_third_call
+
+        # This fetchone() SHOULD fetch because there are more pages
+        result = processor.fetchone()
+
+        assert third_call_fetch_count == 1, "Should fetch once when more pages are available"
+        assert result is None, "Returns None when fetch yields no data"
+        assert processor.may_have_results is False, "No more results after fetch"
+
     def test_fetchone(self, append_only_processor: AppendOnlyChangelogProcessor):
         # Mock some results in the processor
         append_only_processor._results = [("row1",), ("row2",)]
