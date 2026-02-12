@@ -316,12 +316,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             # We've already fetched before and there are no more pages
             return []
 
-        # Try to fetch one page
-        try:
-            self._fetch_next_page()
-        except InterfaceError:
-            # Could happen if statement not ready, etc.
-            return []
+        # Try to fetch one page of results
+        self._fetch_next_page()
 
         # Return up to 'limit' results from what we just fetched
         if self._remaining > 0:
