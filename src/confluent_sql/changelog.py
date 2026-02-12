@@ -15,6 +15,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
 from .exceptions import InterfaceError, NotSupportedError
+from .execution_mode import ExecutionMode
 from .statement import Op, Statement
 from .types import StrAnyDict, SupportedPythonTypes
 
@@ -50,8 +51,7 @@ class FetchMetrics:
     """Number of times the processor fetched a page of results that contained no rows."""
 
     fetch_request_secs: float = 0.0
-    """Total elapsed c
-    seconds spent on results fetch operations (excluding any pauses)."""
+    """Total elapsed seconds spent on results fetch operations (excluding any pauses)."""
 
     paused_times: int = 0
     """Number of times the processor paused before fetching the next page of results."""
@@ -139,9 +139,19 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     _metrics: FetchMetrics
     """Metrics related to results fetching operations"""
 
-    def __init__(self, connection: Connection, statement: Statement, as_dict: bool = False):
+    _execution_mode: ExecutionMode
+    """The execution mode for this processor (snapshot vs streaming)."""
+
+    def __init__(
+        self,
+        connection: Connection,
+        statement: Statement,
+        execution_mode: ExecutionMode,
+        as_dict: bool = False,
+    ):
         self._connection = connection
         self._statement = statement
+        self._execution_mode = execution_mode
         self._as_dict = as_dict
 
         self._next_page = None
@@ -170,6 +180,18 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         return self
 
     def fetchone(self) -> ProcessorOutput | None:
+        """
+        Fetch the next row from the query result.
+
+        Behavior depends on execution mode:
+        - Snapshot mode: Blocking behavior, may fetch multiple pages to return a row
+        - Streaming mode: Non-blocking, fetches at most one page
+
+        Returns:
+            A single row or None if no rows are available.
+            In streaming mode, use may_have_results property to distinguish between
+            temporary emptiness (more data may come) and end of results.
+        """
         res = self._get_next_results(1)
         assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
         # If no results are available, `res` is an empty list,
@@ -187,45 +209,80 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover
         return dict(zip([col.name for col in self._statement.schema.columns], row, strict=True))
 
+    def _consume_from_buffer(self, limit: int) -> list[ProcessorOutput]:
+        """
+        Consume up to 'limit' results from the internal buffer.
+
+        Args:
+            limit: Maximum number of results to consume from buffer.
+
+        Returns:
+            List of up to 'limit' results from the buffer.
+        """
+        actual_limit = min(limit, self._remaining)
+        results = self._results[self._index : self._index + actual_limit]
+        self._index += actual_limit
+        return results
+
     def _get_next_results(self, limit: int | None) -> list[ProcessorOutput]:
         """
-        Retrieve up to `limit` results, fetching additional pages as needed.
+        Retrieve up to `limit` results, with behavior depending on execution mode.
 
         This is the core result-fetching method that all public fetch methods
-        delegate to. It drives the iterator protocol (`__next__`), which in turn
-        calls `_fetch_next_page()` when the local buffer is exhausted.
+        delegate to. The behavior differs based on execution mode:
 
-        Design note:
-            By funneling all fetch methods through iteration, we maintain a single
-            code path for buffer management and page fetching. This trades some
-            per-row function call overhead for correctness and simplicity. The
-            overhead is negligible compared to network I/O for fetching pages.
+        - Snapshot mode: Uses blocking behavior for bounded result sets, fetching
+          multiple pages if needed to satisfy the requested limit (traditional
+          DB-API behavior).
+        - Streaming mode: Non-blocking, makes at most one request to the server,
+          returning whatever is available (suitable for polling).
+        - Unlimited fetches (fetchall): Always blocking.
 
         Args:
             limit: Maximum number of results to return, or None for all remaining.
 
         Returns:
             A list of result rows (as tuples or dicts based on `as_dict` flag).
-            May return fewer rows than requested if that's all that's currently
-            buffered and no more pages are immediately available.
+            Behavior depends on mode and processor type.
 
         Raises:
             InterfaceError: If limit is None and the statement is unbounded (streaming),
                 since iteration would never complete.
         """
         if limit is None:
+            # fetchall() - maintain blocking behavior to fetch everything
             return list(self)
-        # Check if we have buffered results that we can return immediately
-        # without fetching a new page, even if fewer than requested
-        elif self._remaining > 0:
-            # Return up to 'limit' results from the buffer
-            actual_limit = min(limit, self._remaining)
-            results = self._results[self._index : self._index + actual_limit]
-            self._index += actual_limit
-            return results
-        else:
-            # No buffered results, use iteration which will fetch if needed
+
+        # Determine if we should use blocking behavior
+        # Snapshot mode uses traditional blocking behavior for bounded result sets
+        # Streaming mode uses non-blocking for efficient polling
+        if self._execution_mode.is_snapshot:
+            # Traditional blocking behavior for snapshot mode with append-only
+            # Use iteration to fetch as many pages as needed to satisfy limit
             return list(islice(self, limit))
+
+        # Non-blocking behavior for streaming mode or changelog processing
+        # Check if we have buffered results
+        if self._remaining > 0:
+            return self._consume_from_buffer(limit)
+
+        # Buffer is empty - check if we can fetch more
+        if self._fetch_next_page_called and self._next_page is None:
+            # We've already fetched before and there are no more pages
+            return []
+
+        # Try to fetch one page
+        try:
+            self._fetch_next_page()
+        except InterfaceError:
+            # Could happen if statement not ready, etc.
+            return []
+
+        # Return up to 'limit' results from what we just fetched
+        if self._remaining > 0:
+            return self._consume_from_buffer(limit)
+
+        return []  # Fetched but got no results
 
     @property
     def may_have_results(self) -> bool:
@@ -240,6 +297,24 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         )
 
     def fetchmany(self, size: int) -> list[ProcessorOutput]:
+        """
+        Fetch up to 'size' rows from the query result.
+
+        Behavior depends on execution mode:
+        - Snapshot mode: Blocking behavior, may fetch multiple pages to satisfy count
+        - Streaming mode: Non-blocking, fetches at most one page and may return fewer
+          rows than requested. Use may_have_results property to distinguish between
+          temporary emptiness and end of results.
+
+        Args:
+            size: Maximum number of rows to return. Must be positive.
+
+        Returns:
+            List of 0 to 'size' rows, depending on what's available.
+
+        Raises:
+            InterfaceError: If size is not positive.
+        """
         if size <= 0:
             raise InterfaceError(f"size must be a positive integer, got {size}")
 

@@ -192,13 +192,83 @@ class Cursor:
         return self._changelog_processor
 
     def fetchone(self) -> ResultRow | None:
-        """Fetch the next row of a query result set, if any."""
+        """
+        Fetch the next row of a query result set.
+
+        Behavior depends on execution mode:
+        - Snapshot mode with bounded queries: Uses traditional blocking behavior,
+          fetching additional pages if needed to return a row.
+        - Streaming mode or changelog queries: Non-blocking, makes at most one
+          server request and returns None if no data is immediately available.
+
+        Important for streaming mode:
+            When fetchone() returns None, check cursor.may_have_results to determine:
+            - If may_have_results is True: No data currently available, but more may
+              arrive later. Continue polling.
+            - If may_have_results is False: End of results reached. No more data will
+              arrive.
+
+        Example (streaming mode):
+            while True:
+                row = cursor.fetchone()
+                if row is not None:
+                    process_row(row)
+                elif not cursor.may_have_results:
+                    break  # End of results
+                else:
+                    time.sleep(0.1)  # Wait before polling again
+
+        Returns:
+            A single row (tuple or dict based on cursor settings) or None if no
+            rows are available.
+
+        Raises:
+            InterfaceError: If cursor is closed or in DDL mode.
+        """
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
         return self._get_changelog_processor().fetchone()
 
     def fetchmany(self, size: int | None = None) -> list[ResultRow]:
+        """
+        Fetch up to 'size' rows from the query result set.
+
+        Behavior depends on execution mode:
+        - Snapshot mode with bounded queries: Uses traditional blocking behavior,
+          fetching multiple pages if needed to return up to 'size' rows.
+        - Streaming mode or changelog queries: Non-blocking, makes at most one
+          server request and may return fewer rows than requested.
+
+        Important for streaming mode:
+            When fetchmany() returns an empty list, check cursor.may_have_results to
+            determine:
+            - If may_have_results is True: No data currently available, but more may
+              arrive later. Continue polling.
+            - If may_have_results is False: End of results reached. No more data will
+              arrive.
+
+        Example (streaming mode):
+            while cursor.may_have_results:
+                rows = cursor.fetchmany(10)
+                if rows:
+                    for row in rows:
+                        process_row(row)
+                else:
+                    time.sleep(0.1)  # Wait before polling again
+
+        Args:
+            size: Maximum number of rows to return. If None, uses cursor.arraysize.
+
+        Returns:
+            List of 0 to 'size' rows. In snapshot mode, will attempt to return
+            exactly 'size' rows if available. In streaming mode, returns whatever
+            is immediately available (possibly empty list).
+            Rows are returned as tuples or dicts based on cursor settings.
+
+        Raises:
+            InterfaceError: If cursor is closed or in DDL mode.
+        """
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
@@ -208,14 +278,25 @@ class Cursor:
 
     def fetchall(self) -> list[ResultRow]:
         """
-        Fetch all the results from the current cursor.
-        Beware that this will download and put into memory all the available results.
-        Make sure the result set can fit in memory, and that you are not making too many calls
-        at once to fetch the whole result set.
-        If you want more control, use the cursor as an iterator, or use `fetchone`/`fetchmany`
-        to fetch results one-by-one or in batches.
+        Fetch all remaining rows of a query result, blocking until complete.
 
-        Will raise NotSupportedError if the statement is unbounded (streaming).
+        This method will fetch all remaining pages from the server and accumulate
+        them in memory. Unlike fetchone() and fetchmany(), this method blocks and
+        makes multiple server requests as needed to retrieve all results.
+
+        Warning:
+            This downloads the entire remaining result set into memory.
+            For large result sets, consider using iteration or fetchmany()
+            to process results in batches.
+
+        Returns:
+            A list of all remaining rows (tuples or dicts based on cursor settings).
+            Returns an empty list if no rows are available.
+
+        Raises:
+            InterfaceError: If cursor is closed or in DDL mode.
+            NotSupportedError: If called on an unbounded streaming statement,
+                since fetchall() would never complete.
         """
         self._raise_if_closed()
         self._raise_if_ddl_mode()
@@ -313,8 +394,20 @@ class Cursor:
     @property
     def may_have_results(self) -> bool:
         """
-        Return true if a statement has been submitted and may have results to fetch (or have
-        cached some results already).
+        Check if there may be results available to fetch.
+
+        This property is essential for streaming mode to distinguish between:
+        - Temporary emptiness: fetchone() returns None but may_have_results is True
+          (more data might arrive later)
+        - Permanent end: fetchone() returns None and may_have_results is False
+          (no more data will ever arrive)
+
+        Returns:
+            True if:
+            - Results are buffered locally, OR
+            - More pages might be available from the server, OR
+            - We haven't fetched any pages yet (initial state)
+            False if we've fetched at least once and know no more results exist.
         """
         return (
             self._statement is not None
@@ -377,14 +470,20 @@ class Cursor:
                 # Create changelog processor for append-only statements, will
                 # return row tuples or dicts depending on self._results_as_dicts.
                 self._changelog_processor = AppendOnlyChangelogProcessor(
-                    self._connection, self._statement, as_dict=self._results_as_dicts
+                    self._connection,
+                    self._statement,
+                    self._execution_mode,
+                    as_dict=self._results_as_dicts,
                 )
             else:
                 # Use a RawChangelogProcessor that will return pairs of the changelog
                 # operation and the type-promoted row data as a dict or tuple depending
                 # on self._results_as_dicts.
                 self._changelog_processor = RawChangelogProcessor(
-                    self._connection, self._statement, as_dict=self._results_as_dicts
+                    self._connection,
+                    self._statement,
+                    self._execution_mode,
+                    as_dict=self._results_as_dicts,
                 )
 
             if statement.is_ready or (

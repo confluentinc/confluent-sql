@@ -11,6 +11,7 @@ from confluent_sql.changelog import (
 )
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError, NotSupportedError
+from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import ChangelogRow, Op, Phase
 from tests.unit.conftest import StatementFactory
 
@@ -19,9 +20,11 @@ from tests.unit.conftest import StatementFactory
 def append_only_processor(
     statement_factory: StatementFactory, mock_connection: Connection
 ) -> AppendOnlyChangelogProcessor:
-    """A fixture that returns an AppendOnlyChangelogProcessor instance."""
+    """A fixture that returns an AppendOnlyChangelogProcessor instance in streaming mode."""
     statement = statement_factory(is_append_only=True)
-    return AppendOnlyChangelogProcessor(mock_connection, statement)
+    return AppendOnlyChangelogProcessor(
+        mock_connection, statement, ExecutionMode.STREAMING_QUERY
+    )
 
 
 """
@@ -172,6 +175,173 @@ class TestFetchMethods:
         assert fetch_tracker["count"] == 2, "Should have fetched twice"
         assert result4 == [("page2_row1",), ("page2_row2",)]
 
+    def test_fetchmany_makes_at_most_one_fetch(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that fetchmany makes at most one fetch request per call.
+
+        When the buffer is empty and fetchmany is called with a large size,
+        it should fetch once and return whatever it got, not try to fulfill
+        the entire requested count.
+        """
+        fetch_count = 0
+
+        def mock_fetch_next_page():
+            nonlocal fetch_count
+            fetch_count += 1
+            # Only return 3 rows even though more were requested
+            append_only_processor._results = [("row1",), ("row2",), ("row3",)]
+            append_only_processor._index = 0
+            append_only_processor._next_page = "more_pages"  # More pages available
+
+        append_only_processor._fetch_next_page = mock_fetch_next_page
+        append_only_processor._results = []  # Start with empty buffer
+        append_only_processor._index = 0
+
+        # Request 10 results but only 3 are fetched
+        result = append_only_processor.fetchmany(10)
+
+        assert fetch_count == 1, "Should have fetched exactly once"
+        assert len(result) == 3, f"Should return 3 rows that were fetched, got {len(result)}"
+        assert result == [("row1",), ("row2",), ("row3",)]
+
+    def test_fetchmany_returns_empty_when_no_data_available(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that fetchmany returns empty list when no data is available."""
+
+        def mock_fetch_next_page():
+            # Simulate no results available
+            append_only_processor._results = []
+            append_only_processor._index = 0
+            append_only_processor._next_page = None
+
+        append_only_processor._fetch_next_page = mock_fetch_next_page
+        append_only_processor._results = []  # Empty buffer
+        append_only_processor._index = 0
+        append_only_processor._fetch_next_page_called = False
+
+        result = append_only_processor.fetchmany(5)
+        assert result == [], "Should return empty list when no data available"
+
+    def test_fetchmany_blocking_in_snapshot_mode(
+        self, statement_factory: StatementFactory, mock_connection: Connection
+    ):
+        """Test that fetchmany uses blocking behavior in snapshot mode with AppendOnlyChangelogProcessor."""
+        statement = statement_factory(is_append_only=True)
+        # Create processor in SNAPSHOT mode
+        processor = AppendOnlyChangelogProcessor(
+            mock_connection, statement, ExecutionMode.SNAPSHOT
+        )
+
+        fetch_count = 0
+
+        def mock_fetch_next_page():
+            nonlocal fetch_count
+            fetch_count += 1
+            if fetch_count == 1:
+                # First fetch returns 2 rows
+                processor._results = [("row1",), ("row2",)]
+                processor._index = 0
+                processor._next_page = "page2"
+            elif fetch_count == 2:
+                # Second fetch returns 2 more rows
+                processor._results.extend([("row3",), ("row4",)])
+                processor._next_page = "page3"
+            elif fetch_count == 3:
+                # Third fetch returns 1 row
+                processor._results.extend([("row5",)])
+                processor._next_page = None
+
+        processor._fetch_next_page = mock_fetch_next_page
+        processor._results = []
+        processor._index = 0
+
+        # Request 5 results - should fetch multiple pages to fulfill request
+        result = processor.fetchmany(5)
+
+        # In snapshot mode, it should have fetched 3 times to get 5 rows
+        assert fetch_count == 3, f"Should have fetched 3 times in snapshot mode, got {fetch_count}"
+        assert len(result) == 5, f"Should return exactly 5 rows, got {len(result)}"
+        assert result == [("row1",), ("row2",), ("row3",), ("row4",), ("row5",)]
+
+    def test_fetchmany_non_blocking_in_streaming_mode(
+        self, statement_factory: StatementFactory, mock_connection: Connection
+    ):
+        """Test that fetchmany uses non-blocking behavior in streaming mode even with AppendOnlyChangelogProcessor."""
+        statement = statement_factory(is_append_only=True)
+        # Create processor in STREAMING_QUERY mode
+        processor = AppendOnlyChangelogProcessor(
+            mock_connection, statement, ExecutionMode.STREAMING_QUERY
+        )
+
+        fetch_count = 0
+
+        def mock_fetch_next_page():
+            nonlocal fetch_count
+            fetch_count += 1
+            # Only return 3 rows even though 5 were requested
+            processor._results = [("row1",), ("row2",), ("row3",)]
+            processor._index = 0
+            processor._next_page = "more_pages"
+
+        processor._fetch_next_page = mock_fetch_next_page
+        processor._results = []
+        processor._index = 0
+
+        # Request 5 results - should only fetch once in streaming mode
+        result = processor.fetchmany(5)
+
+        # In streaming mode, it should fetch only once
+        assert fetch_count == 1, f"Should have fetched only once in streaming mode, got {fetch_count}"
+        assert len(result) == 3, f"Should return only 3 rows available, got {len(result)}"
+        assert result == [("row1",), ("row2",), ("row3",)]
+
+    def test_may_have_results_distinguishes_temporary_vs_permanent_emptiness(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that may_have_results helps distinguish between temporary and permanent emptiness."""
+        # Initially, no results fetched yet
+        assert append_only_processor.may_have_results is True, "Should indicate may have results initially"
+
+        # Set up mock that returns empty on first fetch, data on second
+        fetch_count = 0
+
+        def mock_fetch_next_page():
+            nonlocal fetch_count
+            fetch_count += 1
+            if fetch_count == 1:
+                # First fetch: no data yet, but more pages available
+                append_only_processor._results = []
+                append_only_processor._index = 0
+                append_only_processor._next_page = "more_coming"
+                append_only_processor._fetch_next_page_called = True
+            elif fetch_count == 2:
+                # Second fetch: some data arrives
+                append_only_processor._results = [("row1",)]
+                append_only_processor._index = 0
+                append_only_processor._next_page = None  # No more pages
+
+        append_only_processor._fetch_next_page = mock_fetch_next_page
+
+        # First fetchone - no data yet but more may come
+        result = append_only_processor.fetchone()
+        assert result is None, "Should return None when no data available"
+        assert append_only_processor.may_have_results is True, (
+            "Should still indicate may have results when temporary empty"
+        )
+
+        # Second fetchone - data arrives
+        result = append_only_processor.fetchone()
+        assert result == ("row1",), "Should return the row"
+
+        # Third fetchone - permanently empty now
+        result = append_only_processor.fetchone()
+        assert result is None, "Should return None when no more data"
+        assert append_only_processor.may_have_results is False, (
+            "Should indicate no more results when permanently empty"
+        )
+
     def test_fetchone(self, append_only_processor: AppendOnlyChangelogProcessor):
         # Mock some results in the processor
         append_only_processor._results = [("row1",), ("row2",)]
@@ -287,7 +457,9 @@ class TestIteration:
         # Create a processor with as_dict=True. By default, the statement factory
         # creates a statement with a simple schema that has one column named "value".
         statement = statement_factory(is_append_only=True)
-        processor = AppendOnlyChangelogProcessor(mock_connection, statement, as_dict=True)
+        processor = AppendOnlyChangelogProcessor(
+            mock_connection, statement, ExecutionMode.STREAMING_QUERY, as_dict=True
+        )
 
         # Mock the _fetch_next_page method to simulate fetching results
         def mock_fetch_next_page():
@@ -419,9 +591,11 @@ class TestFetchNextPage:
 def raw_changelog_processor(
     statement_factory: StatementFactory, mock_connection: Connection
 ) -> RawChangelogProcessor:
-    """A fixture that returns a RawChangelogProcessor instance."""
+    """A fixture that returns a RawChangelogProcessor instance in streaming mode."""
     statement = statement_factory(is_append_only=False)
-    return RawChangelogProcessor(mock_connection, statement)
+    return RawChangelogProcessor(
+        mock_connection, statement, ExecutionMode.STREAMING_QUERY
+    )
 
 
 @pytest.mark.unit
@@ -459,6 +633,49 @@ class TestRawChangelogProcessor:
         )
         assert v.op == Op.DELETE, f"Expected op to be Op.DELETE, got {v.op}"
         assert v.row == ("value1", 123, "true"), f"Expected row data to be unchanged, got {v.row}"
+
+    def test_raw_processor_blocking_in_snapshot_mode(
+        self, statement_factory: StatementFactory, mock_connection: Connection
+    ):
+        """Test that RawChangelogProcessor also uses blocking behavior in snapshot mode."""
+        statement = statement_factory(is_append_only=False)
+        # Create processor in SNAPSHOT mode
+        processor = RawChangelogProcessor(
+            mock_connection, statement, ExecutionMode.SNAPSHOT
+        )
+
+        fetch_count = 0
+
+        def mock_fetch_next_page():
+            nonlocal fetch_count
+            fetch_count += 1
+            if fetch_count == 1:
+                # First fetch returns 2 changelog rows
+                processor._results = [
+                    ChangeloggedRow(Op.INSERT, ("row1",)),
+                    ChangeloggedRow(Op.UPDATE_BEFORE, ("row2",)),
+                ]
+                processor._index = 0
+                processor._next_page = "page2"
+            elif fetch_count == 2:
+                # Second fetch returns 2 more changelog rows
+                processor._results.extend([
+                    ChangeloggedRow(Op.UPDATE_AFTER, ("row2_updated",)),
+                    ChangeloggedRow(Op.DELETE, ("row3",)),
+                ])
+                processor._next_page = None
+
+        processor._fetch_next_page = mock_fetch_next_page
+        processor._results = []
+        processor._index = 0
+
+        # Request 4 results - should fetch multiple pages to fulfill request
+        result = processor.fetchmany(4)
+
+        # In snapshot mode, it should have fetched 2 times to get 4 rows
+        assert fetch_count == 2, f"Should have fetched 2 times in snapshot mode, got {fetch_count}"
+        assert len(result) == 4, f"Should return exactly 4 rows, got {len(result)}"
+        assert all(isinstance(r, ChangeloggedRow) for r in result)
 
 
 @pytest.mark.unit

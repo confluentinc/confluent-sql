@@ -120,18 +120,15 @@ class TestCursor:
         had_update_before = False
         had_update_after = False
 
-        rows_fetched_per_iteration: list[int] = []
-
         # Keep consuming until we observe the expected final count.
         while cursor.may_have_results and wait_iterations < max_wait_iterations:
             # Will return a batch of up to 10 rows, where each row is a tuple of (operation, data),
             # where operation is one of Op.INSERT, Op.UPDATE_BEFORE, Op.UPDATE_AFTER, and data is
             # the row data for that operation.
 
-            # If no rows are currently available, this will return an empty list,
-            # and we'll wait (currently internally handled within the cursor) and try again.
+            # If no rows are currently available, will return an empty list, but
+            # may_have_results will still be True, so we can keep trying until we get some rows.
             rows = cursor.fetchmany(10)
-            rows_fetched_per_iteration.append(len(rows))
 
             # Process each row in the batch
             for op_and_row in rows:
@@ -153,7 +150,9 @@ class TestCursor:
                 if the_count == populated_table_rowcount:
                     break
 
-            # Break outer loop if we found the expected count
+            # Break outer loop if we found the expected count.
+            # (A real client of a streaming query will probably want to loop forever,
+            #  but we're just a test here.)
             if the_count == populated_table_rowcount:
                 break
 
