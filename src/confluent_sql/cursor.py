@@ -67,6 +67,27 @@ class Cursor:
     For streaming queries, choose based on your use case:
     - Continuous consumption: Use iteration
     - Polling/async patterns: Use fetch methods with may_have_results
+
+    Result Type Determination
+    -------------------------
+    The cursor exposes properties to help determine what type of results will be returned:
+
+    - `cursor.as_dict`: True if rows are dicts, False if tuples
+    - `cursor.execution_mode`: SNAPSHOT or STREAMING_QUERY
+    - `cursor.is_streaming`: True if in streaming mode (convenience for execution_mode check)
+    - `cursor.returns_changelog`: True if results are ChangeloggedRow namedtuples
+    - `cursor.statement.is_append_only`: True if only INSERT operations (after execute)
+
+    Example:
+        cursor.execute("SELECT * FROM orders")
+        if cursor.returns_changelog:
+            # Results are ChangeloggedRow(op=..., row=...)
+            row = cursor.fetchone()
+            if row:
+                op, data = row  # Unpack operation and row data
+        else:
+            # Results are plain tuples or dicts
+            row = cursor.fetchone()  # tuple or dict based on cursor.as_dict
     """
 
     def __init__(
@@ -442,6 +463,101 @@ class Cursor:
                 "No changelog processor initialized, cannot get metrics."
             )  # pragma: no cover
         return self._changelog_processor.metrics
+
+    @property
+    def as_dict(self) -> bool:
+        """
+        Check if the cursor returns row data as dictionaries.
+
+        Returns:
+            True if rows are returned as dicts, False if as tuples.
+            This applies to the row data portion whether in plain rows or
+            within ChangeloggedRow namedtuples.
+
+        Example:
+            cursor = conn.cursor(as_dict=True)
+            if cursor.as_dict:
+                print("Results will have column names as dict keys")
+        """
+        return self._results_as_dicts
+
+    @property
+    def execution_mode(self) -> ExecutionMode:
+        """
+        Get the execution mode of this cursor.
+
+        Returns:
+            ExecutionMode.SNAPSHOT for bounded queries or
+            ExecutionMode.STREAMING_QUERY for continuous/unbounded queries.
+
+        Example:
+            cursor = conn.cursor(mode=ExecutionMode.STREAMING_QUERY)
+            if cursor.execution_mode == ExecutionMode.STREAMING_QUERY:
+                print("This is a streaming cursor")
+        """
+        return self._execution_mode
+
+    @property
+    def is_streaming(self) -> bool:
+        """
+        Check if this cursor is in streaming mode.
+
+        This is a convenience property equivalent to checking:
+        `cursor.execution_mode == ExecutionMode.STREAMING_QUERY`
+
+        Returns:
+            True if the cursor is in streaming mode, False if in snapshot mode.
+
+        Example:
+            cursor = conn.streaming_cursor()
+            if cursor.is_streaming:
+                # Use non-blocking fetch pattern for streaming
+                while cursor.may_have_results:
+                    row = cursor.fetchone()
+                    if row:
+                        process(row)
+                    else:
+                        time.sleep(0.1)
+            else:
+                # Use standard blocking fetch for snapshot
+                for row in cursor:
+                    process(row)
+        """
+        return self._execution_mode == ExecutionMode.STREAMING_QUERY
+
+    @property
+    def returns_changelog(self) -> bool:
+        """
+        Check if the cursor returns changelog events with row data.
+
+        This property helps determine the result structure:
+        - True: Results are ChangeloggedRow namedtuples with (op, row)
+        - False: Results are plain rows (tuples or dicts)
+
+        For streaming non-append-only queries, this will be True,
+        meaning each result includes an operation type (INSERT, DELETE,
+        UPDATE_BEFORE, UPDATE_AFTER) along with the row data.
+
+        Returns:
+            True if results include changelog operations, False otherwise.
+            Returns False if no statement has been executed yet.
+
+        Example:
+            cursor.execute("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
+            if cursor.returns_changelog:
+                row = cursor.fetchone()
+                if row:
+                    op, data = row  # ChangeloggedRow unpacks to (operation, row_data)
+                    print(f"Operation: {op}, Data: {data}")
+            else:
+                row = cursor.fetchone()  # Plain tuple or dict
+        """
+        if self._statement is None:
+            return False
+        # Changelog results occur when:
+        # 1. Query is streaming (not snapshot), AND
+        # 2. Query is not append-only (has updates/deletes)
+        return self.is_streaming and not self._statement.is_append_only
 
     def _raise_if_closed(self) -> None:
         """Raise InterfaceError if the cursor or connection is closed."""
