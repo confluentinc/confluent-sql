@@ -12,9 +12,15 @@ import random
 import time
 import warnings
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
-from .changelog import AppendOnlyChangelogProcessor, ChangelogProcessor
+from .changelog import (
+    AppendOnlyChangelogProcessor,
+    ChangeloggedRow,
+    ChangelogProcessor,
+    RawChangelogProcessor,
+    ResultTupleOrDict,
+)
 from .exceptions import (
     InterfaceError,
     OperationalError,
@@ -28,6 +34,11 @@ if TYPE_CHECKING:
     from .connection import Connection
 
 logger = logging.getLogger(__name__)
+
+ResultRow: TypeAlias = ResultTupleOrDict | ChangeloggedRow
+"""A single row of results returned from a cursor fetch or iteration.
+Can be a dict or tuple depending on cursor configuration and statement schema, or a ChangeloggedRow
+containing the changelog operation and a dict or tuple if the statement is not append-only."""
 
 
 class Cursor:
@@ -65,7 +76,9 @@ class Cursor:
 
         # Statement execution state
         self._statement: Statement | None = None
-        self._changelog_processor: AppendOnlyChangelogProcessor | None = None
+        self._changelog_processor: AppendOnlyChangelogProcessor | RawChangelogProcessor | None = (
+            None
+        )
 
     @property
     def description(self) -> list[tuple] | None:
@@ -171,20 +184,20 @@ class Cursor:
         be ready."""
         if self._changelog_processor is None:
             raise InterfaceError(
-                "Changelog processor not initialized. This likely means the statement is not "
-                "append-only, or that the statement is not ready for fetching results yet."
+                "Changelog processor not initialized. This likely means the statement"
+                " is not ready for fetching results yet."
             )
 
         return self._changelog_processor
 
-    def fetchone(self) -> dict | tuple | None:
+    def fetchone(self) -> ResultRow | None:
         """Fetch the next row of a query result set, if any."""
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
         return self._get_changelog_processor().fetchone()
 
-    def fetchmany(self, size: int | None = None) -> list[dict | tuple]:
+    def fetchmany(self, size: int | None = None) -> list[ResultRow]:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
@@ -192,7 +205,7 @@ class Cursor:
             size if size is not None else self.arraysize
         )
 
-    def fetchall(self) -> list[dict | tuple]:
+    def fetchall(self) -> list[ResultRow]:
         """
         Fetch all the results from the current cursor.
         Beware that this will download and put into memory all the available results.
@@ -208,13 +221,13 @@ class Cursor:
 
         return self._get_changelog_processor().fetchall()
 
-    def __iter__(self) -> Iterator[dict | tuple]:
+    def __iter__(self) -> Iterator[ResultRow]:
         """Return the cursor as an iterator, so that our __next__ can ensure .close() checks."""
         self._raise_if_closed()
         self._raise_if_ddl_mode()
         return self
 
-    def __next__(self) -> dict | tuple:
+    def __next__(self) -> ResultRow:
         """Defer to the changelog processor's iterator after proving
         the cursor is not yet closed."""
         self._raise_if_closed()
@@ -350,18 +363,19 @@ class Cursor:
                     f"Statement '{statement.name}' failed: {statement.status.get('detail', '')}"
                 )
 
-            # We only support append-only statements for now. Our changelog
-            # parsing is not smart enough to handle updates/deletes from streaming statements.
-            # (This is different from bounded vs unbounded: even if we relax and start to
-            #  return pages of results from unbounded statements, we still can't handle
-            #  non-append-only changelogs).
-            if not statement.is_append_only:
-                raise NotImplementedError("Only append-only statements are supported for now.")
-
-            # Create changelog processor for append-only statements
-            self._changelog_processor = AppendOnlyChangelogProcessor(
-                self._connection, self._statement, as_dict=self._results_as_dicts
-            )
+            if statement.is_append_only:
+                # Create changelog processor for append-only statements, will
+                # return row tuples or dicts depending on self._results_as_dicts.
+                self._changelog_processor = AppendOnlyChangelogProcessor(
+                    self._connection, self._statement, as_dict=self._results_as_dicts
+                )
+            else:
+                # Use a RawChangelogProcessor that will return pairs of the changelog
+                # operation and the type-promoted row data as a dict or tuple depending
+                # on self._results_as_dicts.
+                self._changelog_processor = RawChangelogProcessor(
+                    self._connection, self._statement, as_dict=self._results_as_dicts
+                )
 
             if statement.is_ready or (
                 # Handle the current (Jan 2026) bug state where streaming DDL statements like CTAS
