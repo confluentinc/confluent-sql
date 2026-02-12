@@ -281,9 +281,7 @@ class TestFetchMany:
         assert result == cached_rows, (
             f"Expected only the 3 cached rows to be returned, got {result}"
         )
-        assert len(result) == 3, (
-            f"Expected exactly 3 rows (what was cached), got {len(result)}"
-        )
+        assert len(result) == 3, f"Expected exactly 3 rows (what was cached), got {len(result)}"
 
 
 @pytest.mark.unit
@@ -821,7 +819,7 @@ class TestCursorResultTypeProperties:
     def test_returns_changelog_property(
         self,
         mock_connection_factory: MockConnectionFactory,
-        statement_response_factory: StatementResponseFactory
+        statement_response_factory: StatementResponseFactory,
     ):
         """Test that returns_changelog property correctly identifies changelog results."""
         mock_connection = mock_connection_factory(None, None)
@@ -832,11 +830,9 @@ class TestCursorResultTypeProperties:
 
         # Execute an append-only streaming statement
         statement_dict = statement_response_factory(
-            sql_statement="SELECT * FROM users",
-            is_append_only=True,
-            is_bounded=False
+            sql_statement="SELECT * FROM users", is_append_only=True, is_bounded=False
         )
-        mock_connection._get_statement.return_value = statement_dict
+        mock_connection._get_statement.return_value = statement_dict  # pyright: ignore[reportAttributeAccessIssue]
         cursor.execute("SELECT * FROM users")
 
         # Streaming but append-only should NOT return changelog
@@ -851,9 +847,9 @@ class TestCursorResultTypeProperties:
         statement_dict2 = statement_response_factory(
             sql_statement="SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
             is_append_only=False,  # Aggregation is not append-only
-            is_bounded=False
+            is_bounded=False,
         )
-        mock_connection._get_statement.return_value = statement_dict2
+        mock_connection._get_statement.return_value = statement_dict2  # pyright: ignore[reportAttributeAccessIssue]
         cursor2.execute("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
 
         # Streaming and not append-only SHOULD return changelog
@@ -868,9 +864,9 @@ class TestCursorResultTypeProperties:
         statement_dict3 = statement_response_factory(
             sql_statement="SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
             is_append_only=False,
-            is_bounded=True  # Snapshot query
+            is_bounded=True,  # Snapshot query
         )
-        mock_connection._get_statement.return_value = statement_dict3
+        mock_connection._get_statement.return_value = statement_dict3  # pyright: ignore[reportAttributeAccessIssue]
         cursor3.execute("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
 
         # Snapshot mode should NEVER return changelog even if not append-only
@@ -883,7 +879,7 @@ class TestCursorResultTypeProperties:
     def test_all_four_result_type_combinations(
         self,
         mock_connection_factory: MockConnectionFactory,
-        statement_response_factory: StatementResponseFactory
+        statement_response_factory: StatementResponseFactory,
     ):
         """Test all four possible result type combinations based on properties."""
         mock_connection = mock_connection_factory(None, None)
@@ -909,9 +905,9 @@ class TestCursorResultTypeProperties:
         statement_dict = statement_response_factory(
             sql_statement="SELECT COUNT(*) FROM orders GROUP BY user_id",
             is_append_only=False,
-            is_bounded=False
+            is_bounded=False,
         )
-        mock_connection._get_statement.return_value = statement_dict
+        mock_connection._get_statement.return_value = statement_dict  # type: ignore
         cursor3.execute("SELECT COUNT(*) FROM orders GROUP BY user_id")
         assert cursor3.as_dict is False
         assert cursor3.is_streaming is True
