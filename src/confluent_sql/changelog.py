@@ -10,6 +10,7 @@ from __future__ import annotations
 import abc
 import logging
 import time
+from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
@@ -33,6 +34,67 @@ StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
 
 ResultTupleOrDict: TypeAlias = StatementResultTuple | StrAnyDict
 """Output type for AppendOnlyChangelogProcessor fetch methods and iteration."""
+
+
+@dataclass()
+class FetchMetrics:
+    """Holds metrics related to fetch results route operations in ChangelogProcessor."""
+
+    total_page_fetches: int = 0
+    """Total number of times the processor fetched a page of results from the server."""
+
+    total_changelog_rows_fetched: int = 0
+    """Total number of changelog rows fetched from the server across all pages."""
+
+    empty_page_fetches: int = 0
+    """Number of times the processor fetched a page of results that contained no rows."""
+
+    fetch_request_secs: float = 0.0
+    """Total elapsed c
+    seconds spent on results fetch operations (excluding any pauses)."""
+
+    paused_times: int = 0
+    """Number of times the processor paused before fetching the next page of results."""
+
+    paused_secs: float = 0.0
+    """Total number of seconds the processor spent paused before fetching pages."""
+
+    _before_fetch_timestamp: float | None = None
+    """Internal timestamp to track when a fetch operation started, used for metrics calculation."""
+
+    @property
+    def avg_rows_per_page(self) -> float:
+        """Average number of changelog rows fetched per page."""
+        if self.total_page_fetches == 0:
+            return 0.0
+        return self.total_changelog_rows_fetched / self.total_page_fetches
+
+    def paused_before_fetch(self, pause_secs: float) -> None:
+        """Record that the processor paused for a certain number of seconds before fetching results."""
+        self.paused_times += 1
+        self.paused_secs += pause_secs
+
+    def prep_for_fetch(self) -> None:
+        """Call before starting a fetch operation to record the start time."""
+        self._before_fetch_timestamp = time.monotonic()
+
+    def record_fetch_completion(self, rows_fetched: int) -> None:
+        """Call after completing a fetch operation to update metrics.
+
+        Args:
+            rows_fetched: The number of changelog rows fetched in the completed operation.
+        """
+        if self._before_fetch_timestamp is None:
+            raise InterfaceError(
+                "prep_for_fetch() must be called before recording fetch completion."
+            )  # pragma: no cover
+        elapsed_secs = time.monotonic() - self._before_fetch_timestamp
+        self.fetch_request_secs += elapsed_secs
+        self.total_changelog_rows_fetched += rows_fetched
+        self.total_page_fetches += 1
+        if rows_fetched == 0:
+            self.empty_page_fetches += 1
+        self._before_fetch_timestamp = None
 
 
 class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
@@ -74,6 +136,9 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     """Timestamp of the most recent results fetch operation, in seconds since epoch.
         Used for result page fetch pacing."""
 
+    _metrics: FetchMetrics
+    """Metrics related to results fetching operations"""
+
     def __init__(self, connection: Connection, statement: Statement, as_dict: bool = False):
         self._connection = connection
         self._statement = statement
@@ -85,6 +150,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         self._results = []
         self._index = 0
+        self._metrics = FetchMetrics()
 
     @abc.abstractmethod
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
@@ -109,6 +175,11 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         # If no results are available, `res` is an empty list,
         # but we want to return None in this case: https://peps.python.org/pep-0249/#fetchone
         return res[0] if res else None
+
+    @property
+    def metrics(self) -> FetchMetrics:
+        """Return the current metrics over results fetching activity."""
+        return self._metrics
 
     def _map_row_to_dict(self, row: StatementResultTuple) -> StrAnyDict:
         """Map tuple row to dict using statement schema."""
@@ -135,6 +206,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         Returns:
             A list of result rows (as tuples or dicts based on `as_dict` flag).
+            May return fewer rows than requested if that's all that's currently
+            buffered and no more pages are immediately available.
 
         Raises:
             InterfaceError: If limit is None and the statement is unbounded (streaming),
@@ -143,7 +216,17 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         if limit is None:
             return list(self)
         else:
-            return list(islice(self, limit))
+            # Check if we have buffered results that we can return immediately
+            # without fetching a new page, even if fewer than requested
+            if self._remaining > 0:
+                # Return up to 'limit' results from the buffer
+                actual_limit = min(limit, self._remaining)
+                results = self._results[self._index : self._index + actual_limit]
+                self._index += actual_limit
+                return results
+            else:
+                # No buffered results, use iteration which will fetch if needed
+                return list(islice(self, limit))
 
     @property
     def may_have_results(self) -> bool:
@@ -230,7 +313,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         if not self._results or self._next_page is not None:
             if self._most_recent_results_fetch_time is not None:
                 # Should we pause before fetching the next page?
-                elapsed_secs = time.time() - self._most_recent_results_fetch_time
+                elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
                 if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
                     # Sleep the difference between when we last fetched results
                     # and the configured pause time so that we ensure to not
@@ -240,11 +323,17 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
                         self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
                     )
                     time.sleep(pause_secs)
+                    self._metrics.paused_before_fetch(pause_secs)
+
+            self._metrics.prep_for_fetch()
 
             # Get raw ChangelogRow results from connection
             results, next_page = self._connection._get_statement_results(
                 self._statement.name, self._next_page
             )
+
+            self._metrics.record_fetch_completion(len(results))
+
             self._next_page = next_page
 
             # Process each changelog row just fetched
@@ -261,7 +350,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
                 self._retain(res.op, decoded_row)
 
         self._fetch_next_page_called = True
-        self._most_recent_results_fetch_time = time.time()
+        self._most_recent_results_fetch_time = time.monotonic()
 
 
 class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):

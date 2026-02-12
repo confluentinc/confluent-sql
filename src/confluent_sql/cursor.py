@@ -18,6 +18,7 @@ from .changelog import (
     AppendOnlyChangelogProcessor,
     ChangeloggedRow,
     ChangelogProcessor,
+    FetchMetrics,
     RawChangelogProcessor,
     ResultTupleOrDict,
 )
@@ -160,7 +161,7 @@ class Cursor:
         if self._statement.is_failed:
             raise OperationalError(
                 f"Statement submission failed: {self._statement.status.get('detail', '')}"
-            )
+            )  # pragma: no cover
 
         self._wait_for_statement_ready(timeout)
 
@@ -186,7 +187,7 @@ class Cursor:
             raise InterfaceError(
                 "Changelog processor not initialized. This likely means the statement"
                 " is not ready for fetching results yet."
-            )
+            )  # pragma: no cover
 
         return self._changelog_processor
 
@@ -321,6 +322,15 @@ class Cursor:
             and self._get_changelog_processor().may_have_results
         )
 
+    @property
+    def metrics(self) -> FetchMetrics:
+        """Return the current fetch metrics from the changelog processor, if available."""
+        if self._changelog_processor is None:
+            raise InterfaceError(
+                "No changelog processor initialized, cannot get metrics."
+            )  # pragma: no cover
+        return self._changelog_processor.metrics
+
     def _raise_if_closed(self) -> None:
         """Raise InterfaceError if the cursor or connection is closed."""
         if self._closed:
@@ -345,14 +355,14 @@ class Cursor:
         if self._statement is None:
             raise InterfaceError(
                 "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
-            )
+            )  # pragma: no cover
 
-        start_time = time.time()
+        start_time = time.monotonic()
         base_delay = 1.0  # Start with 1 second
         max_delay = 30.0  # Maximum delay between polls
         current_delay = base_delay
 
-        while time.time() - start_time < timeout:
+        while time.monotonic() - start_time < timeout:
             logger.info(f"Checking statement '{self._statement.name}' status...")
             response = self._connection._get_statement(self._statement.name)
 

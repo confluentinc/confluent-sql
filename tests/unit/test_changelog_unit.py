@@ -1,10 +1,13 @@
 import re
+import time
+from unittest.mock import patch
 
 import pytest
 
 from confluent_sql.changelog import (
     AppendOnlyChangelogProcessor,
     ChangeloggedRow,
+    FetchMetrics,
     RawChangelogProcessor,
 )
 from confluent_sql.connection import Connection
@@ -78,6 +81,97 @@ class TestFetchMethods:
     def test_fetchmany_with_invalid_size(self, append_only_processor: AppendOnlyChangelogProcessor):
         with pytest.raises(InterfaceError, match="size must be a positive integer"):
             append_only_processor.fetchmany(-1)
+
+    def test_fetchmany_returns_buffered_results_without_fetching_new_page(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that fetchmany returns buffered results even if fewer than requested,
+        without fetching a new page.
+
+        This tests the relaxed behavior where if fewer rows are buffered than requested,
+        we return what's available rather than forcing a fetch to meet the exact count.
+        """
+        # Mock the _fetch_next_page method to track calls
+        fetch_tracker = {"called": False}
+
+        def mock_fetch_next_page():
+            fetch_tracker["called"] = True
+            # Simulate fetching more results
+            append_only_processor._results.extend([("fetched_row1",), ("fetched_row2",)])
+            append_only_processor._next_page = None
+
+        append_only_processor._fetch_next_page = mock_fetch_next_page
+
+        # Set up processor with 2 buffered results and indicate more pages available
+        append_only_processor._results = [("row1",), ("row2",)]
+        append_only_processor._index = 0
+        append_only_processor._next_page = "next_page_url"  # More pages available
+
+        # Request 5 results - more than buffered
+        fetched = append_only_processor.fetchmany(5)
+
+        # Should return only the 2 buffered results without fetching new page
+        assert fetched == [("row1",), ("row2",)], (
+            f"Expected to return 2 buffered rows without fetching, got {fetched}"
+        )
+        assert not fetch_tracker["called"], (
+            "Should not have fetched new page when buffered results are available"
+        )
+
+        # Now buffer is empty, so next fetchmany should trigger a fetch
+        fetched = append_only_processor.fetchmany(1)
+        assert fetch_tracker["called"], "Should have fetched new page when buffer is empty"
+        assert fetched == [("fetched_row1",)], f"Expected to fetch new results, got {fetched}"
+
+    def test_empty_buffer_triggers_fetch_on_next_call(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that when the buffer is completely empty after consuming data,
+        the next fetch/iteration call triggers fetching more data from the connection.
+
+        This specifically tests the cycle:
+        1. Start with buffered data
+        2. Consume all buffered data (buffer becomes empty)
+        3. Next fetch call triggers _fetch_next_page to refill buffer
+        """
+        # Track calls to _fetch_next_page
+        fetch_tracker = {"count": 0}
+
+        def mock_fetch_next_page():
+            fetch_tracker["count"] += 1
+            # Simulate fetching a new page of 2 results each time
+            append_only_processor._results.extend(
+                [(f"page{fetch_tracker['count']}_row1",), (f"page{fetch_tracker['count']}_row2",)]
+            )
+            append_only_processor._next_page = "next_page" if fetch_tracker["count"] < 2 else None
+
+        append_only_processor._fetch_next_page = mock_fetch_next_page
+
+        # Start with 2 buffered results
+        append_only_processor._results = [("initial_row1",), ("initial_row2",)]
+        append_only_processor._index = 0
+        append_only_processor._next_page = "next_page_url"
+
+        # Consume all buffered data
+        result1 = append_only_processor.fetchmany(2)
+        assert result1 == [("initial_row1",), ("initial_row2",)]
+        assert fetch_tracker["count"] == 0, "Should not have fetched yet"
+        assert append_only_processor._remaining == 0, "Buffer should be empty"
+
+        # Next fetchmany should trigger a fetch since buffer is empty
+        result2 = append_only_processor.fetchmany(1)
+        assert fetch_tracker["count"] == 1, "Should have fetched once"
+        assert result2 == [("page1_row1",)]
+
+        # Consume the rest of the current buffer
+        result3 = append_only_processor.fetchone()
+        assert result3 == ("page1_row2",)
+        assert append_only_processor._remaining == 0, "Buffer should be empty again"
+
+        # Another fetch should trigger another page fetch
+        result4 = append_only_processor.fetchmany(2)
+        assert fetch_tracker["count"] == 2, "Should have fetched twice"
+        assert result4 == [("page2_row1",), ("page2_row2",)]
 
     def test_fetchone(self, append_only_processor: AppendOnlyChangelogProcessor):
         # Mock some results in the processor
@@ -366,3 +460,175 @@ class TestRawChangelogProcessor:
         )
         assert v.op == Op.DELETE, f"Expected op to be Op.DELETE, got {v.op}"
         assert v.row == ("value1", 123, "true"), f"Expected row data to be unchanged, got {v.row}"
+
+
+@pytest.mark.unit
+class TestFetchMetrics:
+    """Tests for FetchMetrics collection and the metrics property."""
+
+    def test_metrics_initialized_to_zero(self, append_only_processor: AppendOnlyChangelogProcessor):
+        """Test that metrics are initialized with zero values."""
+        metrics = append_only_processor.metrics
+
+        assert isinstance(metrics, FetchMetrics)
+        assert metrics.total_page_fetches == 0
+        assert metrics.total_changelog_rows_fetched == 0
+        assert metrics.empty_page_fetches == 0
+        assert metrics.fetch_request_secs == pytest.approx(0.0)
+        assert metrics.paused_times == 0
+        assert metrics.paused_secs == pytest.approx(0.0)
+        assert metrics.avg_rows_per_page == pytest.approx(0.0)
+
+    def test_metrics_updated_during_fetch(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that metrics are properly updated when fetching pages."""
+        # Mock the connection's _get_statement_results to return results
+        def mock_get_statement_results(
+            statement_name: str, next_url: str | None
+        ) -> tuple[list[ChangelogRow], str | None]:
+            # Return 3 rows on first fetch
+            return [
+                ChangelogRow(Op.INSERT.value, ["value1"]),
+                ChangelogRow(Op.INSERT.value, ["value2"]),
+                ChangelogRow(Op.INSERT.value, ["value3"]),
+            ], None
+
+        append_only_processor._connection._get_statement_results = mock_get_statement_results
+
+        # Ensure processor starts with no results
+        append_only_processor._results = []
+        append_only_processor._index = 0
+
+        # Fetch a page
+        # Need 3 time.monotonic() calls: prep_for_fetch, record_fetch_completion,
+        # and setting _most_recent_results_fetch_time
+        with patch("time.monotonic", side_effect=[100.0, 100.5, 100.5]):
+            append_only_processor._fetch_next_page()
+
+        metrics = append_only_processor.metrics
+        assert metrics.total_page_fetches == 1
+        assert metrics.total_changelog_rows_fetched == 3
+        assert metrics.empty_page_fetches == 0
+        assert metrics.fetch_request_secs == pytest.approx(0.5)
+        assert metrics.avg_rows_per_page == pytest.approx(3.0)
+
+    def test_metrics_with_pausing(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that pausing metrics are tracked correctly."""
+        # Set up connection pause time
+        append_only_processor._connection.statement_results_page_fetch_pause_secs = 2.0
+
+        # Mock get_statement_results to return some rows
+        def mock_get_statement_results(
+            statement_name: str, next_url: str | None
+        ) -> tuple[list[ChangelogRow], str | None]:
+            return [ChangelogRow(Op.INSERT.value, ["value1"])], None
+
+        append_only_processor._connection._get_statement_results = mock_get_statement_results
+
+        # Set up state as if we had fetched before (to trigger pause logic)
+        append_only_processor._results = []
+        append_only_processor._index = 0
+        append_only_processor._most_recent_results_fetch_time = 99.0  # Previous fetch time
+        append_only_processor._fetch_next_page_called = True
+
+        # Mock time to simulate: current time is 99.5, so only 0.5 seconds elapsed
+        # This means we need to pause for 1.5 seconds (2.0 - 0.5)
+        # Need: elapsed check, prep_for_fetch, record_fetch_completion, setting _most_recent_results_fetch_time
+        with patch("time.monotonic", side_effect=[99.5, 100.0, 100.1, 100.1]):
+            with patch("time.sleep") as mock_sleep:
+                append_only_processor._fetch_next_page()
+                mock_sleep.assert_called_once_with(1.5)
+
+        metrics = append_only_processor.metrics
+        assert metrics.paused_times == 1
+        assert metrics.paused_secs == pytest.approx(1.5)
+        assert metrics.total_page_fetches == 1
+        assert metrics.fetch_request_secs == pytest.approx(0.1)  # 100.1 - 100.0
+
+    def test_metrics_empty_page_fetch(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that empty page fetches are tracked."""
+        # Mock to return empty results
+        def mock_get_statement_results(
+            statement_name: str, next_url: str | None
+        ) -> tuple[list[ChangelogRow], str | None]:
+            return [], None  # Empty page
+
+        append_only_processor._connection._get_statement_results = mock_get_statement_results
+        append_only_processor._results = []
+        append_only_processor._index = 0
+
+        with patch("time.monotonic", side_effect=[100.0, 100.2, 100.2]):
+            append_only_processor._fetch_next_page()
+
+        metrics = append_only_processor.metrics
+        assert metrics.total_page_fetches == 1
+        assert metrics.total_changelog_rows_fetched == 0
+        assert metrics.empty_page_fetches == 1
+        assert metrics.avg_rows_per_page == pytest.approx(0.0)
+
+    def test_metrics_accumulate_across_multiple_fetches(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that metrics accumulate correctly across multiple fetch operations."""
+        fetch_count = 0
+
+        def mock_get_statement_results(
+            statement_name: str, next_url: str | None
+        ) -> tuple[list[ChangelogRow], str | None]:
+            nonlocal fetch_count
+            fetch_count += 1
+            if fetch_count == 1:
+                # First fetch: 2 rows
+                return [
+                    ChangelogRow(Op.INSERT.value, ["value1"]),
+                    ChangelogRow(Op.INSERT.value, ["value2"]),
+                ], "next_page"
+            elif fetch_count == 2:
+                # Second fetch: 3 rows
+                return [
+                    ChangelogRow(Op.INSERT.value, ["value3"]),
+                    ChangelogRow(Op.INSERT.value, ["value4"]),
+                    ChangelogRow(Op.INSERT.value, ["value5"]),
+                ], "next_page"
+            else:
+                # Third fetch: empty
+                return [], None
+
+        append_only_processor._connection._get_statement_results = mock_get_statement_results
+        append_only_processor._connection.statement_results_page_fetch_pause_secs = 0  # No pausing for this test
+        append_only_processor._results = []
+        append_only_processor._index = 0
+
+        # Perform three fetches
+        with patch("time.monotonic", side_effect=[100.0, 100.1, 100.1]):  # First fetch
+            append_only_processor._fetch_next_page()
+
+        # Clear results to trigger next fetch
+        append_only_processor._results = []
+        append_only_processor._index = 0
+        append_only_processor._most_recent_results_fetch_time = 100.1
+
+        # Second fetch (check elapsed, prep, complete, set time)
+        with patch("time.monotonic", side_effect=[101.0, 101.0, 101.2, 101.2]):
+            append_only_processor._fetch_next_page()
+
+        # Clear results to trigger next fetch
+        append_only_processor._results = []
+        append_only_processor._index = 0
+        append_only_processor._most_recent_results_fetch_time = 101.2
+
+        # Third fetch (empty)
+        with patch("time.monotonic", side_effect=[102.0, 102.0, 102.05, 102.05]):
+            append_only_processor._fetch_next_page()
+
+        metrics = append_only_processor.metrics
+        assert metrics.total_page_fetches == 3
+        assert metrics.total_changelog_rows_fetched == 5  # 2 + 3 + 0
+        assert metrics.empty_page_fetches == 1  # Only the third fetch was empty
+        assert metrics.fetch_request_secs == pytest.approx(0.35)  # 0.1 + 0.2 + 0.05
+        assert metrics.avg_rows_per_page == pytest.approx(5/3)  # 5 rows / 3 fetches

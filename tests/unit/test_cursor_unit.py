@@ -3,7 +3,7 @@ import re
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.changelog import ChangeloggedRow, RawChangelogProcessor
+from confluent_sql.changelog import ChangeloggedRow, FetchMetrics, RawChangelogProcessor
 from confluent_sql.exceptions import NotSupportedError, OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import ChangelogRow, Op
@@ -133,10 +133,12 @@ class TestExecute:
         # Mock out time.sleep to avoid actually waiting.
         sleep_mock = mocker.patch("time.sleep", return_value=None)
 
-        # But must also mock out time.time to simulate passage of time, say
-        # each call to time.time() returns +1 second
+        # But must also mock out time.monotonic to simulate passage of time, say
+        # each call to time.monotonic() returns +1 second
         start_time = 1000000.0
-        time_mock = mocker.patch("time.time", side_effect=lambda: start_time + time_mock.call_count)
+        time_mock = mocker.patch(
+            "time.monotonic", side_effect=lambda: start_time + time_mock.call_count
+        )
 
         with pytest.raises(
             OperationalError,
@@ -246,6 +248,43 @@ class TestFetchMany:
         mock_connection_cursor.fetchmany()
         changelog_processor_mock.fetchmany.assert_called_once_with(expected_arraysize)  # type: ignore
 
+    def test_fetchmany_returns_buffered_rows_even_if_fewer_than_requested(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that fetchmany returns only buffered rows without fetching new pages.
+
+        When the cursor's changelog processor has 3 rows cached and fetchmany(5)
+        is called, only the 3 cached rows should be returned without triggering
+        a new page fetch.
+        """
+        # Create mock changelog processor with 3 cached rows
+        changelog_processor_mock = mocker.Mock()
+
+        # The processor will return 3 rows when fetchmany(5) is called
+        cached_rows = [("row1",), ("row2",), ("row3",)]
+        changelog_processor_mock.fetchmany.return_value = cached_rows
+
+        # Mock the _get_changelog_processor to return our mock processor
+        mocker.patch.object(
+            mock_connection_cursor,
+            "_get_changelog_processor",
+            return_value=changelog_processor_mock,
+        )
+
+        # Request 5 rows but only 3 are cached
+        result = mock_connection_cursor.fetchmany(size=5)
+
+        # Verify that fetchmany was called with size=5 on the processor
+        changelog_processor_mock.fetchmany.assert_called_once_with(5)
+
+        # Verify that only 3 rows were returned (the cached ones)
+        assert result == cached_rows, (
+            f"Expected only the 3 cached rows to be returned, got {result}"
+        )
+        assert len(result) == 3, (
+            f"Expected exactly 3 rows (what was cached), got {len(result)}"
+        )
+
 
 @pytest.mark.unit
 class TestCursorFetching:
@@ -314,7 +353,7 @@ class TestCursorFetching:
         statement_response_factory: StatementResponseFactory,
         result_row_maker: ResultRowFactory,
     ):
-        """Test that fetchall() collects all rows properly in append-only mode."""
+        """Test that fetchall() collects all rows properly in append-only mode and tracks metrics."""
 
         # Statement columns needs to match the result rows being returned.
         statement_response = statement_response_factory(
@@ -353,8 +392,23 @@ class TestCursorFetching:
         cursor = mock_connection.cursor()
         cursor.execute("SELECT name, value")
 
+        # Verify metrics before fetching
+        metrics_before = cursor.metrics
+        assert isinstance(metrics_before, FetchMetrics)
+        assert metrics_before.total_page_fetches == 0
+        assert metrics_before.total_changelog_rows_fetched == 0
+
         all_rows = cursor.fetchall()
         assert all_rows == [("Joe", True), ("Jane", False)]
+
+        # Verify metrics after fetching
+        metrics_after = cursor.metrics
+        assert metrics_after.total_page_fetches == 1, "Should have fetched one page"
+        assert metrics_after.total_changelog_rows_fetched == 2, "Should have fetched 2 rows"
+        assert metrics_after.empty_page_fetches == 0, "Should not have empty page fetches"
+        assert metrics_after.avg_rows_per_page == pytest.approx(2.0), (
+            "Average should be 2 rows per page"
+        )
 
     def test_fetchall_unbounded_non_append_only_raises(
         self,
