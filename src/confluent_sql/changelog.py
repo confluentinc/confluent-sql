@@ -98,7 +98,29 @@ class FetchMetrics:
 
 
 class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
-    """Abstract base class for changelog processors."""
+    """Abstract base class for changelog processors.
+
+    Important: Iteration vs Fetch Methods Behavior
+    ------------------------------------------------
+    This processor provides two ways to consume results, with different
+    blocking behaviors in streaming mode:
+
+    1. **Iteration (for row in processor):**
+       - Always blocking in both snapshot and streaming modes
+       - Waits for data to become available or until definitively complete
+       - Suitable for consuming complete result sets
+       - Will retry fetching pages until data arrives
+
+    2. **Fetch methods (fetchone/fetchmany):**
+       - Blocking in snapshot mode (traditional DB-API behavior)
+       - Non-blocking in streaming mode (at most one server request)
+       - Suitable for polling patterns in streaming applications
+       - Use may_have_results to distinguish temporary vs permanent emptiness
+
+    Recommendations:
+    - For snapshot queries: Use either approach (both block until complete)
+    - For streaming queries: Use fetch methods for polling, iteration for continuous consumption
+    """
 
     _connection: Connection
     """The connection associated with this changelog processor."""
@@ -176,7 +198,16 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         raise NotImplementedError("Abstract method")  # pragma: no cover
 
     def __iter__(self) -> ChangelogProcessor[ProcessorOutput]:
-        """Returns an iterator over the processed changelog results."""
+        """Returns an iterator over the processed changelog results.
+
+        Important: Iteration always uses blocking behavior, even in streaming mode.
+        When the buffer is empty, iteration will fetch and wait for more data to
+        become available. This differs from fetchone/fetchmany which are non-blocking
+        in streaming mode.
+
+        For streaming queries where non-blocking behavior is desired, use fetchone()
+        or fetchmany() in a polling loop instead of iteration.
+        """
         return self
 
     def fetchone(self) -> ProcessorOutput | None:
@@ -185,12 +216,26 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         Behavior depends on execution mode:
         - Snapshot mode: Blocking behavior, may fetch multiple pages to return a row
-        - Streaming mode: Non-blocking, fetches at most one page
+        - Streaming mode: Non-blocking, fetches at most one page per call
 
         Returns:
             A single row or None if no rows are available.
             In streaming mode, use may_have_results property to distinguish between
             temporary emptiness (more data may come) and end of results.
+
+        Note: This non-blocking behavior in streaming mode differs from iteration.
+        When iterating (for row in processor), the processor will block waiting
+        for data. Use fetchone() in a polling loop for non-blocking streaming:
+
+        Example:
+            # Streaming mode polling pattern
+            while processor.may_have_results:
+                row = processor.fetchone()
+                if row is not None:
+                    process(row)
+                else:
+                    # No data right now, could sleep/yield control
+                    time.sleep(0.1)
         """
         res = self._get_next_results(1)
         assert len(res) <= 1, "fetchone returned more than one result, this is probably a bug"
@@ -302,15 +347,32 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         Behavior depends on execution mode:
         - Snapshot mode: Blocking behavior, may fetch multiple pages to satisfy count
-        - Streaming mode: Non-blocking, fetches at most one page and may return fewer
-          rows than requested. Use may_have_results property to distinguish between
-          temporary emptiness and end of results.
+        - Streaming mode: Non-blocking, fetches at most one page per call and may
+          return fewer rows than requested (including an empty list)
+
+        Use may_have_results property to distinguish between temporary emptiness
+        and end of results in streaming mode.
+
+        Note: This non-blocking behavior in streaming mode differs from iteration.
+        Direct iteration will block waiting for data to fill the requested size.
+
+        Example:
+            # Streaming mode batch polling pattern
+            while processor.may_have_results:
+                batch = processor.fetchmany(100)
+                if batch:
+                    for row in batch:
+                        process(row)
+                else:
+                    # No data available right now
+                    time.sleep(0.1)
 
         Args:
             size: Maximum number of rows to return. Must be positive.
 
         Returns:
             List of 0 to 'size' rows, depending on what's available.
+            In streaming mode, may return empty list even if more data will come.
 
         Raises:
             InterfaceError: If size is not positive.
@@ -353,7 +415,16 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         return self._get_next_results(None)
 
     def __next__(self) -> ProcessorOutput:
-        """Implementation of iterator protocol."""
+        """Implementation of iterator protocol.
+
+        This method implements blocking iteration behavior:
+        - When the buffer is empty, it calls _fetch_next_page() to get more data
+        - Raises StopIteration only when no more results will ever be available
+        - In streaming mode, this means iteration will block/wait for new data
+
+        Note: This blocking behavior differs from fetchone/fetchmany in streaming
+        mode, which return immediately with None/empty list if no data is buffered.
+        """
         if self._remaining == 0:
             if self._results and not self._next_page:
                 raise StopIteration

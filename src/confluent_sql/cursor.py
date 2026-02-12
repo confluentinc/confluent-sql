@@ -48,6 +48,25 @@ class Cursor:
 
     This class provides methods for executing SQL statements and fetching
     results from a Confluent SQL service connection.
+
+    Result Consumption Methods
+    --------------------------
+    Two approaches are available for consuming query results, with different
+    blocking behaviors in streaming mode:
+
+    1. **Iteration (for row in cursor):**
+       - Always blocking, waits for data to become available
+       - Suitable for consuming complete result sets
+       - Will retry fetching until data arrives or stream ends
+
+    2. **Fetch methods (fetchone/fetchmany/fetchall):**
+       - Snapshot mode: Blocking (traditional DB-API behavior)
+       - Streaming mode: Non-blocking for fetchone/fetchmany (single request max)
+       - Use cursor.may_have_results to check if more data might come
+
+    For streaming queries, choose based on your use case:
+    - Continuous consumption: Use iteration
+    - Polling/async patterns: Use fetch methods with may_have_results
     """
 
     def __init__(
