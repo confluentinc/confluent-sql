@@ -3,7 +3,7 @@ import re
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.changelog import ChangeloggedRow, RawChangelogProcessor
+from confluent_sql.changelog import ChangeloggedRow, FetchMetrics, RawChangelogProcessor
 from confluent_sql.exceptions import NotSupportedError, OperationalError, ProgrammingError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import ChangelogRow, Op
@@ -133,10 +133,12 @@ class TestExecute:
         # Mock out time.sleep to avoid actually waiting.
         sleep_mock = mocker.patch("time.sleep", return_value=None)
 
-        # But must also mock out time.time to simulate passage of time, say
-        # each call to time.time() returns +1 second
+        # But must also mock out time.monotonic to simulate passage of time, say
+        # each call to time.monotonic() returns +1 second
         start_time = 1000000.0
-        time_mock = mocker.patch("time.time", side_effect=lambda: start_time + time_mock.call_count)
+        time_mock = mocker.patch(
+            "time.monotonic", side_effect=lambda: start_time + time_mock.call_count
+        )
 
         with pytest.raises(
             OperationalError,
@@ -246,6 +248,41 @@ class TestFetchMany:
         mock_connection_cursor.fetchmany()
         changelog_processor_mock.fetchmany.assert_called_once_with(expected_arraysize)  # type: ignore
 
+    def test_fetchmany_returns_buffered_rows_even_if_fewer_than_requested(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that fetchmany returns only buffered rows without fetching new pages.
+
+        When the cursor's changelog processor has 3 rows cached and fetchmany(5)
+        is called, only the 3 cached rows should be returned without triggering
+        a new page fetch.
+        """
+        # Create mock changelog processor with 3 cached rows
+        changelog_processor_mock = mocker.Mock()
+
+        # The processor will return 3 rows when fetchmany(5) is called
+        cached_rows = [("row1",), ("row2",), ("row3",)]
+        changelog_processor_mock.fetchmany.return_value = cached_rows
+
+        # Mock the _get_changelog_processor to return our mock processor
+        mocker.patch.object(
+            mock_connection_cursor,
+            "_get_changelog_processor",
+            return_value=changelog_processor_mock,
+        )
+
+        # Request 5 rows but only 3 are cached
+        result = mock_connection_cursor.fetchmany(size=5)
+
+        # Verify that fetchmany was called with size=5 on the processor
+        changelog_processor_mock.fetchmany.assert_called_once_with(5)
+
+        # Verify that only 3 rows were returned (the cached ones)
+        assert result == cached_rows, (
+            f"Expected only the 3 cached rows to be returned, got {result}"
+        )
+        assert len(result) == 3, f"Expected exactly 3 rows (what was cached), got {len(result)}"
+
 
 @pytest.mark.unit
 class TestCursorFetching:
@@ -314,7 +351,7 @@ class TestCursorFetching:
         statement_response_factory: StatementResponseFactory,
         result_row_maker: ResultRowFactory,
     ):
-        """Test that fetchall() collects all rows properly in append-only mode."""
+        """Test that fetchall() collects all rows properly in append-only mode and tracks metrics"""
 
         # Statement columns needs to match the result rows being returned.
         statement_response = statement_response_factory(
@@ -353,8 +390,23 @@ class TestCursorFetching:
         cursor = mock_connection.cursor()
         cursor.execute("SELECT name, value")
 
+        # Verify metrics before fetching
+        metrics_before = cursor.metrics
+        assert isinstance(metrics_before, FetchMetrics)
+        assert metrics_before.total_page_fetches == 0
+        assert metrics_before.total_changelog_rows_fetched == 0
+
         all_rows = cursor.fetchall()
         assert all_rows == [("Joe", True), ("Jane", False)]
+
+        # Verify metrics after fetching
+        metrics_after = cursor.metrics
+        assert metrics_after.total_page_fetches == 1, "Should have fetched one page"
+        assert metrics_after.total_changelog_rows_fetched == 2, "Should have fetched 2 rows"
+        assert metrics_after.empty_page_fetches == 0, "Should not have empty page fetches"
+        assert metrics_after.avg_rows_per_page == pytest.approx(2.0), (
+            "Average should be 2 rows per page"
+        )
 
     def test_fetchall_unbounded_non_append_only_raises(
         self,
@@ -522,7 +574,7 @@ class TestCursorFetching:
         assert res1.op == Op.INSERT
 
         rest = cursor.fetchmany(2)
-        assert len(rest) == 2  # noqa: PLR2004
+        assert len(rest) == 2
         assert isinstance(rest[0], ChangeloggedRow)
         assert rest[0].row == ("Joe", 1)
         assert rest[0].op == Op.DELETE
@@ -585,7 +637,7 @@ class TestCursorFetching:
         assert res1.op == Op.INSERT
 
         rest = cursor.fetchmany(2)
-        assert len(rest) == 2  # noqa: PLR2004
+        assert len(rest) == 2
         assert isinstance(rest[0], ChangeloggedRow)
         assert rest[0].row == {"name": "Joe", "count": 1}
         assert rest[0].op == Op.DELETE
@@ -714,3 +766,160 @@ class TestCursorStatementProperty:
             match="No statement has been executed yet",
         ):
             _ = mock_connection_cursor.statement
+
+
+@pytest.mark.unit
+class TestCursorResultTypeProperties:
+    """Test the cursor properties for determining result types."""
+
+    def test_as_dict_property(self, mock_connection_factory: MockConnectionFactory):
+        """Test that as_dict property reflects cursor configuration."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # Test with as_dict=False (default)
+        cursor_tuple = mock_connection.cursor(as_dict=False)
+        assert cursor_tuple.as_dict is False
+        cursor_tuple.close()
+
+        # Test with as_dict=True
+        cursor_dict = mock_connection.cursor(as_dict=True)
+        assert cursor_dict.as_dict is True
+        cursor_dict.close()
+
+    def test_execution_mode_property(self, mock_connection_factory: MockConnectionFactory):
+        """Test that execution_mode property reflects cursor configuration."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # Test snapshot mode (default)
+        cursor_snapshot = mock_connection.cursor()
+        assert cursor_snapshot.execution_mode == ExecutionMode.SNAPSHOT
+        cursor_snapshot.close()
+
+        # Test streaming mode
+        cursor_streaming = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        assert cursor_streaming.execution_mode == ExecutionMode.STREAMING_QUERY
+        cursor_streaming.close()
+
+    def test_is_streaming_property(self, mock_connection_factory: MockConnectionFactory):
+        """Test that is_streaming property correctly identifies streaming mode."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # Test snapshot mode
+        cursor_snapshot = mock_connection.cursor()
+        assert cursor_snapshot.is_streaming is False
+        assert cursor_snapshot.execution_mode == ExecutionMode.SNAPSHOT
+        cursor_snapshot.close()
+
+        # Test streaming mode
+        cursor_streaming = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        assert cursor_streaming.is_streaming is True
+        assert cursor_streaming.execution_mode == ExecutionMode.STREAMING_QUERY
+        cursor_streaming.close()
+
+    def test_returns_changelog_property(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that returns_changelog property correctly identifies changelog results."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # Test without statement - should be False
+        cursor = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        assert cursor.returns_changelog is False
+
+        # Execute an append-only streaming statement
+        statement_dict = statement_response_factory(
+            sql_statement="SELECT * FROM users", is_append_only=True, is_bounded=False
+        )
+        mock_connection._get_statement.return_value = statement_dict  # pyright: ignore[reportAttributeAccessIssue]
+        cursor.execute("SELECT * FROM users")
+
+        # Streaming but append-only should NOT return changelog
+        assert cursor.is_streaming is True
+        assert cursor.statement.is_append_only is True
+        assert cursor.returns_changelog is False
+
+        cursor.close()
+
+        # Test non-append-only streaming statement
+        cursor2 = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        statement_dict2 = statement_response_factory(
+            sql_statement="SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
+            is_append_only=False,  # Aggregation is not append-only
+            is_bounded=False,
+        )
+        mock_connection._get_statement.return_value = statement_dict2  # pyright: ignore[reportAttributeAccessIssue]
+        cursor2.execute("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
+
+        # Streaming and not append-only SHOULD return changelog
+        assert cursor2.is_streaming is True
+        assert cursor2.statement.is_append_only is False
+        assert cursor2.returns_changelog is True
+
+        cursor2.close()
+
+        # Test snapshot mode never returns changelog
+        cursor3 = mock_connection.cursor()  # Snapshot mode
+        statement_dict3 = statement_response_factory(
+            sql_statement="SELECT user_id, COUNT(*) FROM orders GROUP BY user_id",
+            is_append_only=False,
+            is_bounded=True,  # Snapshot query
+        )
+        mock_connection._get_statement.return_value = statement_dict3  # pyright: ignore[reportAttributeAccessIssue]
+        cursor3.execute("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id")
+
+        # Snapshot mode should NEVER return changelog even if not append-only
+        assert cursor3.is_streaming is False
+        assert cursor3.statement.is_append_only is False
+        assert cursor3.returns_changelog is False  # Snapshot never returns changelog
+
+        cursor3.close()
+
+    def test_all_four_result_type_combinations(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test all four possible result type combinations based on properties."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # 1. Snapshot + tuples (standard DB-API)
+        cursor1 = mock_connection.cursor(as_dict=False)
+        assert cursor1.as_dict is False
+        assert cursor1.is_streaming is False
+        assert cursor1.returns_changelog is False
+        # Result type would be: plain tuples
+        cursor1.close()
+
+        # 2. Snapshot + dicts
+        cursor2 = mock_connection.cursor(as_dict=True)
+        assert cursor2.as_dict is True
+        assert cursor2.is_streaming is False
+        assert cursor2.returns_changelog is False
+        # Result type would be: plain dicts
+        cursor2.close()
+
+        # 3. Streaming changelog + tuples
+        cursor3 = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY, as_dict=False)
+        statement_dict = statement_response_factory(
+            sql_statement="SELECT COUNT(*) FROM orders GROUP BY user_id",
+            is_append_only=False,
+            is_bounded=False,
+        )
+        mock_connection._get_statement.return_value = statement_dict  # type: ignore
+        cursor3.execute("SELECT COUNT(*) FROM orders GROUP BY user_id")
+        assert cursor3.as_dict is False
+        assert cursor3.is_streaming is True
+        assert cursor3.returns_changelog is True
+        # Result type would be: ChangeloggedRow(op=..., row=tuple)
+        cursor3.close()
+
+        # 4. Streaming changelog + dicts
+        cursor4 = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY, as_dict=True)
+        cursor4.execute("SELECT COUNT(*) FROM orders GROUP BY user_id")  # Uses same mock
+        assert cursor4.as_dict is True
+        assert cursor4.is_streaming is True
+        assert cursor4.returns_changelog is True
+        # Result type would be: ChangeloggedRow(op=..., row=dict)
+        cursor4.close()
