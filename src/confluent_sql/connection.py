@@ -261,7 +261,7 @@ class Connection:
            Column names as keys for better readability
 
         3. **Changelog queries + as_dict=False** (streaming non-append-only, row as tuples):
-           Returns ChangeloggedRow namedtuples: `ChangeloggedRow(op=Op.INSERT, row=("val1", "val2"))`
+           Returns ChangeloggedRow namedtuples: `ChangeloggedRow(op=Op.INSERT,row=("v1", "v2"))`
            Includes operation type (INSERT/UPDATE_BEFORE/UPDATE_AFTER/DELETE) with row data
 
         4. **Changelog queries + as_dict=True** (streaming non-append-only, row as dicts):
