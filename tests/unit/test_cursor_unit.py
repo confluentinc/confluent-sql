@@ -353,7 +353,7 @@ class TestCursorFetching:
         statement_response_factory: StatementResponseFactory,
         result_row_maker: ResultRowFactory,
     ):
-        """Test that fetchall() collects all rows properly in append-only mode and tracks metrics."""
+        """Test that fetchall() collects all rows properly in append-only mode and tracks metrics"""
 
         # Statement columns needs to match the result rows being returned.
         statement_response = statement_response_factory(
@@ -576,7 +576,7 @@ class TestCursorFetching:
         assert res1.op == Op.INSERT
 
         rest = cursor.fetchmany(2)
-        assert len(rest) == 2  # noqa: PLR2004
+        assert len(rest) == 2
         assert isinstance(rest[0], ChangeloggedRow)
         assert rest[0].row == ("Joe", 1)
         assert rest[0].op == Op.DELETE
@@ -639,7 +639,7 @@ class TestCursorFetching:
         assert res1.op == Op.INSERT
 
         rest = cursor.fetchmany(2)
-        assert len(rest) == 2  # noqa: PLR2004
+        assert len(rest) == 2
         assert isinstance(rest[0], ChangeloggedRow)
         assert rest[0].row == {"name": "Joe", "count": 1}
         assert rest[0].op == Op.DELETE

@@ -70,7 +70,7 @@ class FetchMetrics:
         return self.total_changelog_rows_fetched / self.total_page_fetches
 
     def paused_before_fetch(self, pause_secs: float) -> None:
-        """Record that the processor paused for a certain number of seconds before fetching results."""
+        """Record that the processor paused for a some time before fetching results."""
         self.paused_times += 1
         self.paused_secs += pause_secs
 
@@ -215,18 +215,17 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         """
         if limit is None:
             return list(self)
+        # Check if we have buffered results that we can return immediately
+        # without fetching a new page, even if fewer than requested
+        elif self._remaining > 0:
+            # Return up to 'limit' results from the buffer
+            actual_limit = min(limit, self._remaining)
+            results = self._results[self._index : self._index + actual_limit]
+            self._index += actual_limit
+            return results
         else:
-            # Check if we have buffered results that we can return immediately
-            # without fetching a new page, even if fewer than requested
-            if self._remaining > 0:
-                # Return up to 'limit' results from the buffer
-                actual_limit = min(limit, self._remaining)
-                results = self._results[self._index : self._index + actual_limit]
-                self._index += actual_limit
-                return results
-            else:
-                # No buffered results, use iteration which will fetch if needed
-                return list(islice(self, limit))
+            # No buffered results, use iteration which will fetch if needed
+            return list(islice(self, limit))
 
     @property
     def may_have_results(self) -> bool:

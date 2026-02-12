@@ -12,9 +12,6 @@ from tests.unit.conftest import StatementResponseFactory
 
 """Unit tests over Statement class."""
 
-# Stop complaining about inlined constants. These are test cases!
-# ruff: noqa: PLR2004
-
 
 @pytest.mark.unit
 class TestOp:

@@ -1,5 +1,4 @@
 import re
-import time
 from unittest.mock import patch
 
 import pytest
@@ -483,6 +482,7 @@ class TestFetchMetrics:
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
         """Test that metrics are properly updated when fetching pages."""
+
         # Mock the connection's _get_statement_results to return results
         def mock_get_statement_results(
             statement_name: str, next_url: str | None
@@ -513,9 +513,7 @@ class TestFetchMetrics:
         assert metrics.fetch_request_secs == pytest.approx(0.5)
         assert metrics.avg_rows_per_page == pytest.approx(3.0)
 
-    def test_metrics_with_pausing(
-        self, append_only_processor: AppendOnlyChangelogProcessor
-    ):
+    def test_metrics_with_pausing(self, append_only_processor: AppendOnlyChangelogProcessor):
         """Test that pausing metrics are tracked correctly."""
         # Set up connection pause time
         append_only_processor._connection.statement_results_page_fetch_pause_secs = 2.0
@@ -536,11 +534,14 @@ class TestFetchMetrics:
 
         # Mock time to simulate: current time is 99.5, so only 0.5 seconds elapsed
         # This means we need to pause for 1.5 seconds (2.0 - 0.5)
-        # Need: elapsed check, prep_for_fetch, record_fetch_completion, setting _most_recent_results_fetch_time
-        with patch("time.monotonic", side_effect=[99.5, 100.0, 100.1, 100.1]):
-            with patch("time.sleep") as mock_sleep:
-                append_only_processor._fetch_next_page()
-                mock_sleep.assert_called_once_with(1.5)
+        # Need: elapsed check, prep_for_fetch, record_fetch_completion, setting
+        # _most_recent_results_fetch_time
+        with (
+            patch("time.monotonic", side_effect=[99.5, 100.0, 100.1, 100.1]),
+            patch("time.sleep") as mock_sleep,
+        ):
+            append_only_processor._fetch_next_page()
+            mock_sleep.assert_called_once_with(1.5)
 
         metrics = append_only_processor.metrics
         assert metrics.paused_times == 1
@@ -548,10 +549,9 @@ class TestFetchMetrics:
         assert metrics.total_page_fetches == 1
         assert metrics.fetch_request_secs == pytest.approx(0.1)  # 100.1 - 100.0
 
-    def test_metrics_empty_page_fetch(
-        self, append_only_processor: AppendOnlyChangelogProcessor
-    ):
+    def test_metrics_empty_page_fetch(self, append_only_processor: AppendOnlyChangelogProcessor):
         """Test that empty page fetches are tracked."""
+
         # Mock to return empty results
         def mock_get_statement_results(
             statement_name: str, next_url: str | None
@@ -600,7 +600,9 @@ class TestFetchMetrics:
                 return [], None
 
         append_only_processor._connection._get_statement_results = mock_get_statement_results
-        append_only_processor._connection.statement_results_page_fetch_pause_secs = 0  # No pausing for this test
+        append_only_processor._connection.statement_results_page_fetch_pause_secs = (
+            0  # No pausing for this test
+        )
         append_only_processor._results = []
         append_only_processor._index = 0
 
@@ -631,4 +633,4 @@ class TestFetchMetrics:
         assert metrics.total_changelog_rows_fetched == 5  # 2 + 3 + 0
         assert metrics.empty_page_fetches == 1  # Only the third fetch was empty
         assert metrics.fetch_request_secs == pytest.approx(0.35)  # 0.1 + 0.2 + 0.05
-        assert metrics.avg_rows_per_page == pytest.approx(5/3)  # 5 rows / 3 fetches
+        assert metrics.avg_rows_per_page == pytest.approx(5 / 3)  # 5 rows / 3 fetches

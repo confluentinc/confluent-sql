@@ -769,10 +769,10 @@ class YearMonthInterval:
         if (self.years < 0 and self.months > 0) or (self.years > 0 and self.months < 0):
             raise ValueError("YearMonthInterval years and months must have the same sign.")
 
-        if abs(self.months) >= 12:  # noqa: PLR2004
+        if abs(self.months) >= 12:
             raise ValueError("YearMonthInterval months must be in the range -11 to 11.")
 
-        if abs(self.years) > 9999:  # noqa: PLR2004
+        if abs(self.years) > 9999:
             raise ValueError("YearMonthInterval years must be in the range -9999 to 9999")
 
     @property
@@ -1124,7 +1124,7 @@ class MapConverter(TypeConverter[dict, list]):
 
         result_dict = {}
         for pair in response_value:
-            if not isinstance(pair, list) or len(pair) != 2:  # noqa: PLR2004
+            if not isinstance(pair, list) or len(pair) != 2:
                 raise ValueError(
                     f"Expected key-value pair list of length 2 for MapConverter but got: {pair}"
                 )
