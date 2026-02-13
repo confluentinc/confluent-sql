@@ -176,11 +176,11 @@ class Statement:
     @property
     def scaling_status(self) -> StrAnyDict:
         """Get the scaling status from the statement status, if available."""
-        ss: StrAnyDict | None = self.status.get("scaling_status")
-        if ss is None:
+        scaling_status_dict: StrAnyDict | None = self.status.get("scaling_status")
+        if scaling_status_dict is None:
             return {}
         else:
-            return ss
+            return scaling_status_dict
 
     @property
     def is_pool_exhausted(self) -> bool:

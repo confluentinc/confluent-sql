@@ -94,14 +94,19 @@ class OperationalError(DatabaseError):
 
 class ComputePoolExhaustedError(OperationalError):
     """
-    Exception raised when a statement cannot be executed because the compute pool is exhausted.
+    Exception raised when a statement cannot be executed due to compute pool exhaustion.
 
-    This exception is raised when a statement cannot be executed because the compute pool is
-    exhausted. This is a subclass of OperationalError, as it is an error related to the
-    operation of the database rather than a programming error.
+    This is a subclass of OperationalError.
+
+    Attributes:
+        statement_name: The name of the statement that could not be executed.
+        statement_deleted: Whether the statement was successfully deleted.
     """
 
-    pass
+    def __init__(self, message: str, statement_name: str, statement_deleted: bool):
+        super().__init__(message)
+        self.statement_name = statement_name
+        self.statement_deleted = statement_deleted
 
 
 class IntegrityError(DatabaseError):

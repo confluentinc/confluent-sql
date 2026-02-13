@@ -168,7 +168,11 @@ class TestExecute:
         raise_if_broken_mock = mocker.patch.object(
             mock_connection_cursor,
             "_raise_if_statement_is_broken",
-            side_effect=ComputePoolExhaustedError("Pool exhausted"),
+            side_effect=ComputePoolExhaustedError(
+                "Pool exhausted",
+                statement_name="test-statement",
+                statement_deleted=True,
+            ),
         )
 
         with pytest.raises(ComputePoolExhaustedError):
@@ -1173,18 +1177,21 @@ class TestRaiseIfStatementIsBroken:
             mock_connection_cursor._connection,
             pool_exhausted_response,
         )
+        # Assign the statement to the cursor so delete_statement has a target
+        mock_connection_cursor._statement = pool_exhausted_statement
 
         # Spy on delete_statement to verify it's called
         delete_spy = mocker.spy(mock_connection_cursor, "delete_statement")
 
-        with pytest.raises(
-            ComputePoolExhaustedError,
-            match=(
-                "Statement .* was not accepted for execution due to compute pool exhaustion. "
-                "The statement has been deleted. Please retry your query."
-            ),
-        ):
+        with pytest.raises(ComputePoolExhaustedError) as exc_info:
             mock_connection_cursor._raise_if_statement_is_broken(pool_exhausted_statement)
+
+        # Verify the exception properties
+        exception = exc_info.value
+        assert exception.statement_name == pool_exhausted_statement.name
+        assert exception.statement_deleted is True
+        assert "The statement has been deleted." in str(exception)
+        assert "Please retry your query." in str(exception)
 
         # Verify that delete_statement was called
         delete_spy.assert_called_once()
@@ -1205,6 +1212,8 @@ class TestRaiseIfStatementIsBroken:
             mock_connection_cursor._connection,
             pool_exhausted_response,
         )
+        # Assign the statement to the cursor so delete_statement attempts deletion
+        mock_connection_cursor._statement = pool_exhausted_statement
 
         # Mock delete_statement to raise an exception
         mocker.patch.object(
@@ -1214,11 +1223,15 @@ class TestRaiseIfStatementIsBroken:
         )
 
         # The method should still raise ComputePoolExhaustedError even if delete fails
-        with pytest.raises(
-            ComputePoolExhaustedError,
-            match="Statement .* was not accepted for execution due to compute pool exhaustion",
-        ):
+        with pytest.raises(ComputePoolExhaustedError) as exc_info:
             mock_connection_cursor._raise_if_statement_is_broken(pool_exhausted_statement)
+
+        # Verify the exception properties when deletion failed
+        exception = exc_info.value
+        assert exception.statement_name == pool_exhausted_statement.name
+        assert exception.statement_deleted is False
+        assert "The statement could not be deleted and may need manual cleanup." in str(exception)
+        assert "Please retry your query." in str(exception)
 
         # Check that the error was logged
         assert "Error deleting pool-exhausted statement" in caplog.text
@@ -1251,3 +1264,25 @@ class TestRaiseIfStatementIsBroken:
         )
         # Should not raise (statement is PENDING but not pool-exhausted)
         mock_connection_cursor._raise_if_statement_is_broken(pending_ok_statement)
+
+    def test_compute_pool_exhausted_error_properties(self):
+        """Test that ComputePoolExhaustedError correctly exposes statement properties."""
+        # Test successful deletion
+        exc1 = ComputePoolExhaustedError(
+            "Test message - deleted",
+            statement_name="test-stmt-123",
+            statement_deleted=True,
+        )
+        assert exc1.statement_name == "test-stmt-123"
+        assert exc1.statement_deleted is True
+        assert "Test message - deleted" in str(exc1)
+
+        # Test failed deletion
+        exc2 = ComputePoolExhaustedError(
+            "Test message - not deleted",
+            statement_name="test-stmt-456",
+            statement_deleted=False,
+        )
+        assert exc2.statement_name == "test-stmt-456"
+        assert exc2.statement_deleted is False
+        assert "Test message - not deleted" in str(exc2)

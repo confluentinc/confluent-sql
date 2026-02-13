@@ -637,8 +637,13 @@ class Cursor:
         raise OperationalError(f"Statement submission timed out after {timeout} seconds")
 
     def _raise_if_statement_is_broken(self, statement: Statement) -> None:
-        """Raise an OperationalError if the statement is in a failed, degraded,
-        or pool-exhausted state."""
+        """Raise an exception if the statement is in a failed, degraded, or pool-exhausted state.
+
+        Raises:
+            OperationalError: If the statement is failed or degraded.
+            ComputePoolExhaustedError: If the statement is pool-exhausted (a subclass of
+                OperationalError).
+        """
 
         if statement.is_failed:
             raise OperationalError(
@@ -656,15 +661,25 @@ class Cursor:
         # time we choose to both _delete_ the statement and raise a specific
         # exception.
         if statement.is_pool_exhausted:
+            statement_deleted = False
             try:
                 self.delete_statement()
+                statement_deleted = True
             except Exception as e:
                 logger.error(f"Error deleting pool-exhausted statement {statement.name}: {e}")
+
+            # Build message based on whether deletion succeeded
+            if statement_deleted:
+                deletion_msg = "The statement has been deleted."
+            else:
+                deletion_msg = "The statement could not be deleted and may need manual cleanup."
 
             # Subclass of OperationalError....
             raise ComputePoolExhaustedError(
                 f"Statement '{statement.name}' was not accepted for execution due to compute"
-                " pool exhaustion. The statement has been deleted. Please retry your query."
+                f" pool exhaustion. {deletion_msg} Please retry your query.",
+                statement_name=statement.name,
+                statement_deleted=statement_deleted,
             )
 
     def _submit_statement(
