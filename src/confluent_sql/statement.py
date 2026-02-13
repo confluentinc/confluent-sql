@@ -16,12 +16,47 @@ logger = logging.getLogger(__name__)
 
 
 class Op(Enum):
-    """Row operation types for Flink SQL changelog streams."""
+    """Row operation types for Flink SQL changelog streams.
+
+    These operation types correspond to Apache Flink's RowKind enum and indicate
+    the type of change for each row in a changelog stream. They are used when
+    processing non-append-only streaming queries that can produce updates and deletions.
+
+    For more information, see:
+    https://nightlies.apache.org/flink/flink-docs-stable/api/java/org/apache/flink/types/RowKind.html
+    """
 
     INSERT = 0
+    """Insertion operation.
+
+    Represents a new row being added to the result set.
+    String representation: +I
+    """
+
     UPDATE_BEFORE = 1
+    """Update operation with the previous content of the updated row.
+
+    This operation SHOULD occur together with UPDATE_AFTER for modelling
+    an update that needs to retract the previous row first. Represents
+    the "before" state of a row that is being updated.
+    String representation: -U
+    """
+
     UPDATE_AFTER = 2
+    """Update operation with new content of the updated row.
+
+    This operation CAN occur together with UPDATE_BEFORE for modelling
+    an update that needs to retract the previous row first. Represents
+    the "after" state of a row that has been updated.
+    String representation: +U
+    """
+
     DELETE = 3
+    """Deletion operation.
+
+    Represents a row being removed from the result set.
+    String representation: -D
+    """
 
     def __str__(self):
         if self is self.INSERT:

@@ -225,11 +225,99 @@ class Connection:
         Create a new cursor for executing statements. Defaults to creating
         a snapshot (bounded) query cursor for returning point-in-time results.
 
+        Snapshot queries will return results from a consistent point in time, and
+        the result stream is considered both bounded and append-only, and will
+        only be generated when the query execution has completed, having consumed
+        all source data as of the query start time.
+
+        Streaming queries will return results as they are produced by the executing query,
+        but may or may not be append-only depending on the query characteristics. For example,
+        a streaming query that only filters from source tables (Kafka topics) will be append-only,
+        but a streaming query that performs aggregations or joins will not be, as updates to
+        previously emitted results may occur as more data is processed. Non-append-only streaming
+        query results will include a changelog operation with each row indicating whether the row
+        is an insertion, update, or deletion, indicated by the 'op' field in the returned
+        ChangeloggedRow namedtuple.
+
+        So, while mode=ExecutionMode.STREAMING_QUERY will always initiate a streaming query,
+        the presence of changelog operations in the results depends on whether the
+        query submitted will result in append-only processing or not.
+
+        See the documentation in the Cursor class for more details on the behavior
+        of the cursor, its fetch method and iteration behavior, as to the differences
+        between snapshot and streaming queries.
+
+        The cursor's fetch methods return different types based on configuration
+        and query characteristics:
+
+        Return Type Matrix
+        ------------------
+        1. **Append-only queries + as_dict=False** (default):
+           Returns tuples: `("val1", "val2", ...)`
+           Standard DB-API format for regular SELECT queries
+
+        2. **Append-only queries + as_dict=True**:
+           Returns dicts: `{"col1": "val1", "col2": "val2"}`
+           Column names as keys for better readability
+
+        3. **Changelog queries + as_dict=False** (streaming non-append-only, row as tuples):
+           Returns ChangeloggedRow namedtuples: `ChangeloggedRow(op=Op.INSERT,row=("v1", "v2"))`
+           Includes operation type (INSERT/UPDATE_BEFORE/UPDATE_AFTER/DELETE) with row data
+
+        4. **Changelog queries + as_dict=True** (streaming non-append-only, row as dicts):
+           Returns ChangeloggedRow with dict: `ChangeloggedRow(op=Op.INSERT, row={"col1": "val1"})`
+           Combines operation tracking with named column access
+
+        Args:
+            as_dict: If True, return row data as dictionaries with column names as keys.
+                     If False (default), return row data as tuples.
+            mode: The execution mode for the cursor. Defaults to SNAPSHOT for bounded
+                  queries. Use STREAMING_QUERY for continuous/unbounded queries.
+
         Returns:
             A new Cursor object associated with this connection
 
         Raises:
             InterfaceError: If the connection is closed
+
+        Examples:
+            # Standard snapshot query with tuples
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users")
+            assert not cursor.is_streaming
+            row = cursor.fetchone()  # Returns: ("Alice", 25), or None if no more rows, period.
+
+            # Snapshot query with dicts
+            cursor = conn.cursor(as_dict=True)
+            cursor.execute("SELECT * FROM users")
+            assert cursor.as_dict == True
+            assert not cursor.is_streaming
+            row = cursor.fetchone() # Returns: {"name": "Alice", "age": 25} or None if no more rows
+
+            # Streaming append-only query with tuples
+            cursor = conn.cursor(mode=ExecutionMode.STREAMING_QUERY)
+            assert cursor.is_streaming
+            cursor.execute("SELECT user_id FROM orders")
+            assert not cursor.returns_changelog # Will not be known until after execute().
+            while cursor.may_have_results:
+                # Returns either ("Alice",) or None if _no data available at this time_.
+                row = cursor.fetchone()
+                if row is not None:
+                    ...
+
+            # Streaming changelog query
+            cursor = conn.cursor(mode=ExecutionMode.STREAMING_QUERY)
+            cursor.execute("SELECT user_id, count(*) from orders group by user_id")
+            assert cursor.is_streaming
+            assert cursor.returns_changelog
+            while cursor.may_have_results:
+                row = cursor.fetchone()
+                # may return None if _no data available at this time_
+                if row is not None:
+                    # Returns a ChangeloggedRow namedtuple:
+                    # ChangeloggedRow(op=Op.INSERT, row=("Alice", 25))
+
+
         """
         if self._closed:
             raise InterfaceError("Connection is closed")
@@ -237,7 +325,24 @@ class Connection:
         return Cursor(self, as_dict=as_dict, execution_mode=mode)
 
     def streaming_cursor(self, *, as_dict: bool = False) -> Cursor:
-        """Create a streaming query cursor. Waits for RUNNING, iterates over continuous results."""
+        """
+        Create a streaming query cursor. Waits for RUNNING, iterates over continuous results.
+
+        This is a convenience method equivalent to:
+        `cursor(as_dict=as_dict, mode=ExecutionMode.STREAMING_QUERY)`
+
+        For streaming queries, the return type depends on whether the query is append-only:
+        - Append-only: Returns tuples or dicts based on as_dict parameter
+        - Non-append-only: Returns ChangeloggedRow namedtuples containing operation and row data
+
+        See cursor() method documentation for detailed return type information.
+
+        Args:
+            as_dict: If True, return row data as dictionaries. If False, as tuples.
+
+        Returns:
+            A new Cursor configured for streaming query execution
+        """
         return Cursor(self, as_dict=as_dict, execution_mode=ExecutionMode.STREAMING_QUERY)
 
     @contextmanager
@@ -246,6 +351,11 @@ class Connection:
     ) -> Generator[Cursor, None, None]:
         """
         Context manager for creating and automatically closing a cursor.
+
+        Creates a cursor with the same return type variations as cursor() method.
+        See cursor() documentation for details on the four possible return types
+        based on as_dict and query characteristics (append-only vs changelog).
+
         Args:
             as_dict: If True, fetch results as dictionaries, otherwise as tuples
             mode: The execution mode for the cursor. Defaults to SNAPSHOT.
@@ -255,6 +365,13 @@ class Connection:
 
         Raises:
             InterfaceError: If the connection is closed
+
+        Example:
+            with conn.closing_cursor(as_dict=True) as cursor:
+                cursor.execute("SELECT * FROM users")
+                for row in cursor:
+                    print(row)  # Prints dicts with column names
+            # cursor is automatically closed after the with block
         """
         cursor = self.cursor(as_dict=as_dict, mode=mode)
         try:
@@ -367,7 +484,7 @@ class Connection:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:  # noqa: PLR2004
+            if e.response.status_code != 404:
                 raise OperationalError("Error deleting statement") from e
             # If the response is 404, it means we don't need to delete the statement.
             logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")

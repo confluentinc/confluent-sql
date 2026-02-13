@@ -1780,7 +1780,7 @@ class TestRowConverter:
         assert result == expected
         # And also is a namedtuple with correct field names ...
         assert result.str_field == "hello"  # pyright: ignore[reportAttributeAccessIssue]
-        assert result.int_field == 123  # pyright: ignore[reportAttributeAccessIssue]  # noqa: PLR2004
+        assert result.int_field == 123  # pyright: ignore[reportAttributeAccessIssue]
 
         # And decoding multiple rows (such as multiple rows in same result set, or across queries)
         # will reuse the same namedtuple class ...

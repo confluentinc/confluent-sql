@@ -10,6 +10,10 @@ requires-python = ">=3.10"
 dependencies = ["httpx>=0.23.0,<0.29.0"]
 
 [tool.ruff]
+line-length = 100
+lint.ignore = [
+    "PLR2004", # stop complaining about inlined constants, mostly in test cases
+]
 lint.select = [
     "UP",
     "PL",
@@ -20,7 +24,6 @@ lint.select = [
     "I",
     "D300", # docstring conventions
 ]
-line-length = 100
 
 [tool.ruff.format]
 # Enable Ruff to format code blocks in docstrings.
