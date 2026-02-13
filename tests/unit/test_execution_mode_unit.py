@@ -28,3 +28,15 @@ class TestExecutionModeUnit:
     )
     def test_is_snapshot(self, mode: ExecutionMode, expected_is_snapshot: bool):
         assert mode.is_snapshot == expected_is_snapshot
+
+    @pytest.mark.parametrize(
+        "mode, expected_is_streaming",
+        [
+            (ExecutionMode.SNAPSHOT, False),
+            (ExecutionMode.STREAMING_QUERY, True),
+            (ExecutionMode.SNAPSHOT_DDL, False),
+            (ExecutionMode.STREAMING_DDL, True),
+        ],
+    )
+    def test_is_streaming(self, mode: ExecutionMode, expected_is_streaming: bool):
+        assert mode.is_streaming == expected_is_streaming

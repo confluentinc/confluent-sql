@@ -148,6 +148,121 @@ class TestExecute:
 
         assert sleep_mock.called, "Expected time.sleep to have been called during wait loop."
 
+    @pytest.mark.parametrize(
+        "streaming_mode",
+        [ExecutionMode.STREAMING_QUERY, ExecutionMode.STREAMING_DDL],
+        ids=["streaming_query", "streaming_ddl"]
+    )
+    def test_streaming_ddl_workaround_for_bounded_running_bug(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+        streaming_mode: ExecutionMode,
+    ):
+        """Test the workaround for the Jan 2026 bug where streaming statements
+        like CTAS are erroneously marked as bounded while in RUNNING state.
+
+        This tests the specific workaround in _wait_for_statement_ready() lines 624-629
+        that checks if execution_mode.is_streaming and statement.is_running to treat
+        the statement as ready even though it's marked as bounded.
+
+        Tests both STREAMING_QUERY and STREAMING_DDL modes since the workaround
+        applies to any streaming mode (checks execution_mode.is_streaming).
+
+        See: https://confluent.slack.com/archives/C044A8FNSJ0/p1768575045244419
+        """
+        # Choose appropriate SQL based on the mode
+        if streaming_mode == ExecutionMode.STREAMING_DDL:
+            sql_statement = "CREATE TABLE new_table AS SELECT * FROM source_table"
+            sql_kind = "CREATE_TABLE_AS"
+        else:  # STREAMING_QUERY
+            sql_statement = "SELECT * FROM source_table"
+            sql_kind = "SELECT"
+
+        # Create a statement that is:
+        # - Erroneously marked as bounded (the bug)
+        # - In RUNNING phase
+        statement_response = statement_response_factory(
+            sql_statement=sql_statement,
+            sql_kind=sql_kind,
+            is_bounded=True,  # This is the bug - streaming statement marked as bounded
+            phase="RUNNING",   # Statement is running
+            is_append_only=True,
+        )
+
+        # Set execution mode to the streaming mode being tested
+        mock_connection_cursor._execution_mode = streaming_mode
+
+        # Mock the connection's _get_statement to return the buggy statement
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            statement_response
+        )
+
+        # Mock time functions to avoid actual waiting
+        mocker.patch("time.sleep", return_value=None)
+        mocker.patch("time.monotonic", return_value=1000000.0)
+
+        # Execute should succeed due to the workaround, not raise a timeout
+        # The workaround treats it as ready because:
+        # - execution_mode.is_streaming is True (for both STREAMING_QUERY and STREAMING_DDL)
+        # - statement.is_running is True (phase="RUNNING")
+        try:
+            mock_connection_cursor.execute(sql_statement, timeout=5)
+        except OperationalError as e:
+            pytest.fail(
+                f"Execute raised OperationalError despite workaround: {e}. "
+                f"The workaround should treat {streaming_mode.name} in RUNNING state as ready."
+            )
+
+        # Verify the statement was set
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "RUNNING"
+        assert mock_connection_cursor._statement.is_bounded  # Verify the bug condition
+
+    def test_bounded_running_without_streaming_mode_keeps_waiting(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that the workaround for the bounded+RUNNING bug is NOT applied
+        when NOT in streaming mode - it should keep waiting/timeout.
+
+        This ensures the workaround is only applied in streaming mode.
+        """
+        # Create a statement that is bounded and RUNNING (similar to the bug case)
+        bounded_running_statement = statement_response_factory(
+            sql_statement="SELECT * FROM table",
+            sql_kind="SELECT",
+            is_bounded=True,
+            phase="RUNNING",
+            is_append_only=True,
+        )
+
+        # Set execution mode to SNAPSHOT (non-streaming)
+        mock_connection_cursor._execution_mode = ExecutionMode.SNAPSHOT
+
+        # Mock the connection to always return the bounded+RUNNING statement
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            bounded_running_statement
+        )
+
+        # Mock time functions to simulate timeout
+        mocker.patch("time.sleep", return_value=None)
+        start_time = 1000000.0
+        time_mock = mocker.patch(
+            "time.monotonic", side_effect=lambda: start_time + time_mock.call_count * 10
+        )
+
+        # Execute should timeout because the workaround should NOT apply
+        # (execution_mode.is_streaming is False for SNAPSHOT mode)
+        with pytest.raises(
+            OperationalError,
+            match="Statement submission timed out",
+        ):
+            mock_connection_cursor.execute("SELECT * FROM table", timeout=5)
+
 
 @pytest.mark.unit
 class TestCursorInterpolatingParameters:
