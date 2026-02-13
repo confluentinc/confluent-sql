@@ -23,6 +23,7 @@ from .changelog import (
     ResultTupleOrDict,
 )
 from .exceptions import (
+    ComputePoolExhaustedError,
     InterfaceError,
     OperationalError,
     ProgrammingError,
@@ -596,10 +597,7 @@ class Cursor:
 
             self._statement = statement = Statement.from_response(self._connection, response)
 
-            if statement.is_failed:
-                raise OperationalError(
-                    f"Statement '{statement.name}' failed: {statement.status.get('detail', '')}"
-                )
+            self._raise_if_statement_is_broken(statement)
 
             if statement.is_append_only:
                 # Create changelog processor for append-only statements, will
@@ -630,20 +628,59 @@ class Cursor:
                 # Ready to possibly fetch results!
                 return
 
-            # If the statement is degraded (unbounded and in a bad state), hmm.
-            # For now, treat it as an error.
-            if statement.is_degraded:
-                raise OperationalError(
-                    f"Statement '{statement.name}' is in DEGRADED state: "
-                    f"{statement.status['detail']}"
-                )
-
             # Exponential backoff with jitter to prevent thundering herd
             jitter = random.uniform(0.75, 1.25)  # ±25% randomness
             actual_delay = current_delay * jitter
             time.sleep(actual_delay)
             current_delay = min(current_delay * 1.5, max_delay)
+
         raise OperationalError(f"Statement submission timed out after {timeout} seconds")
+
+    def _raise_if_statement_is_broken(self, statement: Statement) -> None:
+        """Raise an exception if the statement is in a failed, degraded, or pool-exhausted state.
+
+        Raises:
+            OperationalError: If the statement is failed or degraded.
+            ComputePoolExhaustedError: If the statement is pool-exhausted (a subclass of
+                OperationalError).
+        """
+
+        if statement.is_failed:
+            raise OperationalError(
+                f"Statement '{statement.name}' failed: {statement.status.get('detail', '')}"
+            )
+
+        # If the statement is degraded (unbounded and in a bad state), hmm.
+        # For now, treat it as an error.
+        if statement.is_degraded:
+            raise OperationalError(
+                f"Statement '{statement.name}' is in DEGRADED state: {statement.status['detail']}"
+            )
+
+        # If was submitted to an overloaded compute pool, then at this
+        # time we choose to both _delete_ the statement and raise a specific
+        # exception.
+        if statement.is_pool_exhausted:
+            statement_deleted = False
+            try:
+                self.delete_statement()
+                statement_deleted = True
+            except Exception as e:
+                logger.error(f"Error deleting pool-exhausted statement {statement.name}: {e}")
+
+            # Build message based on whether deletion succeeded
+            if statement_deleted:
+                deletion_msg = "The statement has been deleted."
+            else:
+                deletion_msg = "The statement could not be deleted and may need manual cleanup."
+
+            # Subclass of OperationalError....
+            raise ComputePoolExhaustedError(
+                f"Statement '{statement.name}' was not accepted for execution due to compute"
+                f" pool exhaustion. {deletion_msg} Please retry your query.",
+                statement_name=statement.name,
+                statement_deleted=statement_deleted,
+            )
 
     def _submit_statement(
         self,

@@ -174,6 +174,24 @@ class Statement:
         return self.phase is Phase.DEGRADED
 
     @property
+    def scaling_status(self) -> StrAnyDict:
+        """Get the scaling status from the statement status, if available."""
+        scaling_status_dict: StrAnyDict | None = self.status.get("scaling_status")
+        if scaling_status_dict is None:
+            return {}
+        else:
+            return scaling_status_dict
+
+    @property
+    def is_pool_exhausted(self) -> bool:
+        """Is the statement currently pending and waiting for compute resources due to
+        compute pool exhaustion?"""
+        return (
+            self.phase is Phase.PENDING
+            and self.scaling_status.get("scaling_state") == "POOL_EXHAUSTED"
+        )
+
+    @property
     def phase(self) -> Phase:
         if self._deleted:
             return Phase.DELETED
