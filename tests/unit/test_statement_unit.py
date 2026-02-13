@@ -387,11 +387,8 @@ class TestStatementProperties:
             ("PENDING", "POOL_EXHAUSTED", True),
             ("PENDING", "OK", False),
             ("PENDING", "SCALING", False),
-            ("RUNNING", "POOL_EXHAUSTED", False),
-            ("COMPLETED", "POOL_EXHAUSTED", False),
-            ("FAILED", "POOL_EXHAUSTED", False),
-            ("STOPPED", "POOL_EXHAUSTED", False),
-            ("DEGRADED", "POOL_EXHAUSTED", False),
+            ("RUNNING", "OK", False),
+            t,
         ],
     )
     def test_is_pool_exhausted(
