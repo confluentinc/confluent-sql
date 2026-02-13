@@ -9,6 +9,7 @@ from .changelog import ChangeloggedRow
 from .connection import Connection, connect
 from .cursor import Cursor
 from .exceptions import (
+    ComputePoolExhaustedError,
     DatabaseError,
     DataError,
     Error,
@@ -41,6 +42,7 @@ __all__ = [
     "DatabaseError",
     "DataError",
     "OperationalError",
+    "ComputePoolExhaustedError",
     "IntegrityError",
     "InternalError",
     "ProgrammingError",

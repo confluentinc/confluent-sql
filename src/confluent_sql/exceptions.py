@@ -92,6 +92,18 @@ class OperationalError(DatabaseError):
     pass
 
 
+class ComputePoolExhaustedError(OperationalError):
+    """
+    Exception raised when a statement cannot be executed because the compute pool is exhausted.
+
+    This exception is raised when a statement cannot be executed because the compute pool is
+    exhausted. This is a subclass of OperationalError, as it is an error related to the
+    operation of the database rather than a programming error.
+    """
+
+    pass
+
+
 class IntegrityError(DatabaseError):
     """
     Exception raised when the relational integrity of the database is affected.
