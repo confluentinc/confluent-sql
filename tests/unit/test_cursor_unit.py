@@ -163,7 +163,8 @@ class TestExecute:
             pool_exhausted_dict
         )
 
-        # Mock _raise_if_statement_is_broken to raise ComputePoolExhaustedError (its expected behavior)
+        # Mock _raise_if_statement_is_broken to raise ComputePoolExhaustedError (its
+        # expected behavior)
         raise_if_broken_mock = mocker.patch.object(
             mock_connection_cursor,
             "_raise_if_statement_is_broken",
@@ -216,7 +217,7 @@ class TestExecute:
     @pytest.mark.parametrize(
         "streaming_mode",
         [ExecutionMode.STREAMING_QUERY, ExecutionMode.STREAMING_DDL],
-        ids=["streaming_query", "streaming_ddl"]
+        ids=["streaming_query", "streaming_ddl"],
     )
     def test_streaming_ddl_workaround_for_bounded_running_bug(
         self,
@@ -252,7 +253,7 @@ class TestExecute:
             sql_statement=sql_statement,
             sql_kind=sql_kind,
             is_bounded=True,  # This is the bug - streaming statement marked as bounded
-            phase="RUNNING",   # Statement is running
+            phase="RUNNING",  # Statement is running
             is_append_only=True,
         )
 
