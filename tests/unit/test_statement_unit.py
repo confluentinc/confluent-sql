@@ -337,6 +337,106 @@ class TestStatementProperties:
         ):
             _ = statement.sql_kind
 
+    def test_scaling_status_present(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that scaling_status property returns the scaling status when present."""
+        statement_json = statement_response_factory()
+        # The default factory includes a scaling_status
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        scaling_status = statement.scaling_status
+        assert isinstance(scaling_status, dict)
+        assert "scaling_state" in scaling_status
+        assert scaling_status["scaling_state"] == "OK"
+        assert "last_updated" in scaling_status
+
+    def test_scaling_status_absent(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that scaling_status property returns empty dict when absent."""
+        statement_json = statement_response_factory()
+        # Remove scaling_status from the response
+        del statement_json["status"]["scaling_status"]
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        scaling_status = statement.scaling_status
+        assert scaling_status == {}
+
+    def test_scaling_status_with_pool_exhausted(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that scaling_status property correctly returns POOL_EXHAUSTED state."""
+        statement_json = statement_response_factory(phase="PENDING")
+        # Modify the scaling_status to indicate pool exhaustion
+        statement_json["status"]["scaling_status"]["scaling_state"] = "POOL_EXHAUSTED"
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        scaling_status = statement.scaling_status
+        assert scaling_status["scaling_state"] == "POOL_EXHAUSTED"
+
+    @pytest.mark.parametrize(
+        "phase,scaling_state,expected",
+        [
+            ("PENDING", "POOL_EXHAUSTED", True),
+            ("PENDING", "OK", False),
+            ("PENDING", "SCALING", False),
+            ("RUNNING", "POOL_EXHAUSTED", False),
+            ("COMPLETED", "POOL_EXHAUSTED", False),
+            ("FAILED", "POOL_EXHAUSTED", False),
+            ("STOPPED", "POOL_EXHAUSTED", False),
+            ("DEGRADED", "POOL_EXHAUSTED", False),
+        ],
+    )
+    def test_is_pool_exhausted(
+        self,
+        phase: str,
+        scaling_state: str,
+        expected: bool,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pool_exhausted property correctly identifies pool exhaustion state."""
+        statement_json = statement_response_factory(phase=phase)
+        statement_json["status"]["scaling_status"]["scaling_state"] = scaling_state
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        assert statement.is_pool_exhausted == expected
+
+    def test_is_pool_exhausted_no_scaling_status(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pool_exhausted returns False when scaling_status is absent."""
+        statement_json = statement_response_factory(phase="PENDING")
+        # Remove scaling_status entirely
+        del statement_json["status"]["scaling_status"]
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        # Should return False when no scaling_status is present
+        assert statement.is_pool_exhausted is False
+
+    def test_is_pool_exhausted_no_scaling_state(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pool_exhausted returns False when scaling_state is absent."""
+        statement_json = statement_response_factory(phase="PENDING")
+        # Remove just the scaling_state key
+        del statement_json["status"]["scaling_status"]["scaling_state"]
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        # Should return False when scaling_state is not present
+        assert statement.is_pool_exhausted is False
+
 
 @pytest.mark.unit
 class TestStatementFromResponse:
