@@ -144,10 +144,15 @@ class Statement:
     def is_ready(self) -> bool:
         """Is the statement in a ready state for consumption/deletion?"""
         if self.is_bounded:
-            # Bounded statements are ready if completed, stopped, or failed.
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
+            phases = [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
+            # Pure DDL (DROP, CREATE TABLE/VIEW) must reach COMPLETED.
+            # Non-pure-DDL bounded statements (e.g. CTAS marked as bounded
+            # due to server bug) are ready at RUNNING.
+            if not self.is_pure_ddl:
+                phases.append(Phase.RUNNING)
+            return self.phase in phases
         else:
-            # Streaming statements are ready if running, completed, or stopped, failed
+            # Streaming statements are ready if running, completed, stopped, or failed
             return self.phase in [
                 Phase.COMPLETED,
                 Phase.STOPPED,
@@ -208,6 +213,26 @@ class Statement:
     @property
     def sql_kind(self) -> str:
         return self._possible_traits().sql_kind
+
+    # Pure DDL sql_kinds are one-shot operations that must reach COMPLETED
+    # before subsequent statements can rely on their effects.
+    # CTAS (CREATE_TABLE_AS) is NOT pure DDL — it's a long-lived streaming job
+    # that is ready at RUNNING.
+    _PURE_DDL_KINDS = frozenset({
+        "CREATE_TABLE",
+        "DROP_TABLE",
+        "CREATE_VIEW",
+        "DROP_VIEW",
+        "ALTER_TABLE",
+    })
+
+    @property
+    def is_pure_ddl(self) -> bool:
+        """Is this a one-shot DDL statement that must complete before proceeding?"""
+        try:
+            return self.sql_kind in self._PURE_DDL_KINDS
+        except InterfaceError:
+            return False
 
     @property
     def is_append_only(self) -> bool:
