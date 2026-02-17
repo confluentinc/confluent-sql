@@ -563,8 +563,9 @@ class TestFetchNextPage:
     def test_raises_if_statement_not_ready(
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
-        # A bounded statement is ready when in the RUNNING or DONE phases, so set to a phase before
-        # that.
+        # Bounded non–pure DDL statements may be ready in the RUNNING phase, but pure DDL must
+        # reach the COMPLETED/DONE phase before it is considered ready. This test uses a pure DDL
+        # statement in the RUNNING phase, which should still be treated as not ready.
         append_only_processor._statement._phase = Phase.RUNNING
         assert append_only_processor._statement.traits is not None
         append_only_processor._statement.traits.sql_kind = "CREATE_TABLE"

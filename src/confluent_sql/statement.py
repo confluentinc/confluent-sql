@@ -143,19 +143,25 @@ class Statement:
     @property
     def is_ready(self) -> bool:
         """Is the statement in a ready state for consumption/deletion?"""
-        # Pure DDL (DROP, CREATE TABLE/VIEW) must reach COMPLETED.
-        # Non-pure-DDL bounded statements (e.g. CTAS marked as bounded
-        # due to server bug) are ready at RUNNING.
-        if self.is_bounded and self.is_pure_ddl:
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
-        else:
-            # Streaming statements are ready if running, completed, stopped, or failed
-            return self.phase in [
-                Phase.COMPLETED,
-                Phase.STOPPED,
-                Phase.RUNNING,
-                Phase.FAILED,
-            ]
+
+        ready_states = [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
+
+        if not (self.is_bounded and self.is_pure_ddl):
+            # If the statement is streaming (not bounded) or not pure DDL, then we consider it ready
+            # as soon as it's RUNNING, since it will be producing results that can be consumed as
+            # soon as it starts running.
+            #
+            # Rephrased, if it IS bounded and pure DDL, then we require it to reach a terminal state
+            # before we consider it ready.
+            #
+            # (CTAS is an example of a statement that is not pure DDL, since it's a long-running
+            #  streaming job, even though it's bounded due to current reporting issues -- see
+            #  `is_bounded` docstring. CTAS is properly reported as unbounded, this logic
+            #  (and `is_pure_ddl`) should be simplified.)
+
+            ready_states.append(Phase.RUNNING)
+
+        return self.phase in ready_states
 
     @property
     def is_failed(self) -> bool:
@@ -228,10 +234,7 @@ class Statement:
     @property
     def is_pure_ddl(self) -> bool:
         """Is this a one-shot DDL statement that must complete before proceeding?"""
-        try:
-            return self.sql_kind in self._PURE_DDL_KINDS
-        except InterfaceError:
-            return False
+        return self.sql_kind in self._PURE_DDL_KINDS
 
     @property
     def is_append_only(self) -> bool:

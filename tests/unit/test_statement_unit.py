@@ -62,8 +62,8 @@ class TestStatementIsReady:
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that a bounded statement not in COMPLETED or
-        STOPPED phase is ready if it's sql kind is not what we call
-        `pure-ddl`."""
+        STOPPED phase is ready if its sql kind is not what we call
+        `pure_ddl`."""
         statement_json = statement_response_factory(
             phase="RUNNING",
             sql_kind="SELECT",
