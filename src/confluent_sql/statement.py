@@ -143,14 +143,11 @@ class Statement:
     @property
     def is_ready(self) -> bool:
         """Is the statement in a ready state for consumption/deletion?"""
-        if self.is_bounded:
-            phases = [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
-            # Pure DDL (DROP, CREATE TABLE/VIEW) must reach COMPLETED.
-            # Non-pure-DDL bounded statements (e.g. CTAS marked as bounded
-            # due to server bug) are ready at RUNNING.
-            if not self.is_pure_ddl:
-                phases.append(Phase.RUNNING)
-            return self.phase in phases
+        # Pure DDL (DROP, CREATE TABLE/VIEW) must reach COMPLETED.
+        # Non-pure-DDL bounded statements (e.g. CTAS marked as bounded
+        # due to server bug) are ready at RUNNING.
+        if self.is_bounded and self.is_pure_ddl:
+            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
         else:
             # Streaming statements are ready if running, completed, stopped, or failed
             return self.phase in [
@@ -218,13 +215,15 @@ class Statement:
     # before subsequent statements can rely on their effects.
     # CTAS (CREATE_TABLE_AS) is NOT pure DDL — it's a long-lived streaming job
     # that is ready at RUNNING.
-    _PURE_DDL_KINDS = frozenset({
-        "CREATE_TABLE",
-        "DROP_TABLE",
-        "CREATE_VIEW",
-        "DROP_VIEW",
-        "ALTER_TABLE",
-    })
+    _PURE_DDL_KINDS = frozenset(
+        {
+            "CREATE_TABLE",
+            "DROP_TABLE",
+            "CREATE_VIEW",
+            "DROP_VIEW",
+            "ALTER_TABLE",
+        }
+    )
 
     @property
     def is_pure_ddl(self) -> bool:
