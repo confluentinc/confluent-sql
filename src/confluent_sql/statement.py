@@ -140,28 +140,27 @@ class Statement:
         """
         return self._possible_traits().is_bounded
 
+    _always_ready_states = frozenset({Phase.COMPLETED, Phase.STOPPED, Phase.FAILED})
+    """States in which any statement can be considered ready for consumption/deletion."""
+
     @property
     def is_ready(self) -> bool:
         """Is the statement in a ready state for consumption/deletion?"""
 
-        ready_states = [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
-
-        if not (self.is_bounded and self.is_pure_ddl):
-            # If the statement is streaming (not bounded) or not pure DDL, then we consider it ready
-            # as soon as it's RUNNING, since it will be producing results that can be consumed as
-            # soon as it starts running.
-            #
-            # Rephrased, if it IS bounded and pure DDL, then we require it to reach a terminal state
-            # before we consider it ready.
-            #
-            # (CTAS is an example of a statement that is not pure DDL, since it's a long-running
-            #  streaming job, even though it's bounded due to current reporting issues -- see
-            #  `is_bounded` docstring. CTAS is properly reported as unbounded, this logic
-            #  (and `is_pure_ddl`) should be simplified.)
-
-            ready_states.append(Phase.RUNNING)
-
-        return self.phase in ready_states
+        # If the statement is streaming (not bounded) or not pure DDL, then we consider it ready
+        # as soon as it's RUNNING, since it will be producing results that can be consumed as
+        # soon as it starts running.
+        #
+        # Rephrased, if it IS bounded and pure DDL, then we require it to reach a terminal state
+        # before we consider it ready.
+        #
+        # (CTAS is an example of a statement that is not pure DDL, since it's a long-running
+        #  streaming job, even though it's bounded due to current reporting issues -- see
+        #  `is_bounded` docstring. CTAS is properly reported as unbounded, this logic
+        #  (and `is_pure_ddl`) should be simplified.)
+        return self.phase in self._always_ready_states or (
+            not (self.is_bounded and self.is_pure_ddl) and self.phase == Phase.RUNNING
+        )
 
     @property
     def is_failed(self) -> bool:
