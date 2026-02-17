@@ -566,6 +566,7 @@ class TestFetchNextPage:
         # A bounded statement is ready when in the RUNNING or DONE phases, so set to a phase before
         # that.
         append_only_processor._statement._phase = Phase.RUNNING
+        assert append_only_processor._statement.traits is not None
         append_only_processor._statement.traits.sql_kind = "CREATE_TABLE"
 
         with pytest.raises(InterfaceError, match="Statement is not ready"):
