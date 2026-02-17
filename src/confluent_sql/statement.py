@@ -159,7 +159,7 @@ class Statement:
         #  `is_bounded` docstring. CTAS is properly reported as unbounded, this logic
         #  (and `is_pure_ddl`) should be simplified.)
         return self.phase in self._always_ready_states or (
-            not (self.is_bounded and self.is_pure_ddl) and self.phase == Phase.RUNNING
+            self.phase == Phase.RUNNING and not (self.is_bounded and self.is_pure_ddl)
         )
 
     @property
