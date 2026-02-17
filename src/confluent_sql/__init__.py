@@ -6,6 +6,7 @@ executing SQL queries against Confluent SQL services.
 """
 
 from .changelog import ChangeloggedRow
+from .changelog_compressor import ChangelogCompressor
 from .connection import Connection, connect
 from .cursor import Cursor
 from .exceptions import (
@@ -36,6 +37,7 @@ __all__ = [
     "Cursor",
     "Op",
     "ChangeloggedRow",
+    "ChangelogCompressor",
     "Warning",
     "Error",
     "InterfaceError",

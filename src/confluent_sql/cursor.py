@@ -22,6 +22,7 @@ from .changelog import (
     RawChangelogProcessor,
     ResultTupleOrDict,
 )
+from .changelog_compressor import ChangelogCompressor, create_changelog_compressor
 from .exceptions import (
     ComputePoolExhaustedError,
     InterfaceError,
@@ -559,6 +560,24 @@ class Cursor:
         # 1. Query is streaming (not snapshot), AND
         # 2. Query is not append-only (has updates/deletes)
         return self.is_streaming and not self._statement.is_append_only
+
+    def changelog_compressor(self) -> ChangelogCompressor:
+        """Create a changelog compressor for streaming non-append-only results.
+
+        The compressor accumulates and applies changelog operations to maintain
+        a logical result set that changes over time.
+
+        Returns:
+            A ChangelogCompressor instance appropriate for this cursor's configuration.
+
+        Raises:
+            InterfaceError: If the cursor is not configured for changelog results or
+                           if there is no statement.
+        """
+        if not self._statement:
+            raise InterfaceError("Cannot create changelog compressor without a statement")
+
+        return create_changelog_compressor(self, self._statement)
 
     def _raise_if_closed(self) -> None:
         """Raise InterfaceError if the cursor or connection is closed."""
