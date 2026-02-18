@@ -43,34 +43,17 @@ class TestStatementIsReady:
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_ready
 
-    def test_bounded_ddl_not_ready(
+    def test_bounded_not_ready(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that a bounded statement not in COMPLETED or
-        STOPPED phase is not ready.
-        We also need to specify a `pure-ddl` sql_kind until the `is_bounded`
-        property is properly reported."""
+        STOPPED phase is not ready."""
         statement_json = statement_response_factory(
             phase="RUNNING",
-            sql_kind="CREATE_TABLE",
             is_bounded=True,
         )
         statement = Statement.from_response(mock_connection, statement_json)
         assert not statement.is_ready
-
-    def test_bounded_non_pure_ddl_ready(
-        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
-    ):
-        """Test that a bounded statement not in COMPLETED or
-        STOPPED phase is ready if it's sql kind is not what we call
-        `pure-ddl`."""
-        statement_json = statement_response_factory(
-            phase="RUNNING",
-            sql_kind="SELECT",
-            is_bounded=True,
-        )
-        statement = Statement.from_response(mock_connection, statement_json)
-        assert statement.is_ready
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "RUNNING"])
     def test_unbounded_is_ready(
@@ -664,3 +647,38 @@ class TestSchemaParsing:
         assert [col.name for col in schema.columns] == ["id", "name"]
 
         # Don't bother about the rest, let the individual column tests handle that.
+
+
+@pytest.mark.unit
+class TestStatementEndUserLabels:
+    """Tests for Statement.end_user_labels property."""
+
+    def test_labels_present(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that end_user_labels property returns correct prefix-stripped labels
+        when present."""
+        statement_json = statement_response_factory(
+            labels={"user.confluent.io/foo": "true", "user.confluent.io/bar": "true"},
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.end_user_labels == ["foo", "bar"]
+
+    def test_empty_labels(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that end_user_labels property returns empty list when labels are empty."""
+        statement_json = statement_response_factory()
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.end_user_labels == []
+
+    def test_missing_metadata_labels_dict_raises(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that end_user_labels property returns empty dict when labels are absent."""
+        statement_json = statement_response_factory()
+        # Remove end_user_labels from the response
+        del statement_json["metadata"]["labels"]
+        statement = Statement.from_response(mock_connection, statement_json)
+        with pytest.raises(InterfaceError):
+            _ = statement.end_user_labels

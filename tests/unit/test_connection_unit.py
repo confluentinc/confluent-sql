@@ -1,3 +1,4 @@
+import copy
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -116,6 +117,26 @@ class TestConnectionClosedThrows:
         invalid_credential_connection.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
             invalid_credential_connection._get_statement("test-name")
+
+
+@pytest.mark.unit
+class TestGetNextPageToken:
+    """Tests for the Connection._get_next_page_token method."""
+
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            (None, None),
+            ("https://api.confluent.cloud/statements?label_selector=foo&other_param=bar", None),
+            (
+                "https://api.confluent.cloud/statements?label_selector=foo&page_token=abc123&other_param=bar",
+                "abc123",
+            ),
+        ],
+    )
+    def test_get_next_page_token(self, invalid_credential_connection: Connection, url, expected):
+        """Test that _get_next_page_token correctly extracts the page token from a URL."""
+        assert invalid_credential_connection._get_next_page_token(url) == expected
 
 
 @pytest.mark.unit
@@ -320,3 +341,198 @@ class TestConnectionDeleteStatement:
             match="Statement to delete must be specified by name or Statement object",
         ):
             invalid_credential_connection.delete_statement(123)  # type: ignore
+
+
+@pytest.mark.unit
+class TestConnectionListStatements:
+    """Tests for connection.list_statements method."""
+
+    def test_list_statements_single_page(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test listing statements that fit in a single page."""
+        # Create mock response with 2 statements, no pagination
+        statement1 = statement_response_factory(name="stmt-1")
+        statement2 = statement_response_factory(name="stmt-2")
+
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [statement1, statement2], "metadata": {}}
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        # Call list_statements
+        statements = invalid_credential_connection.list_statements(label="my-label", page_size=100)
+
+        # Verify request was made with correct parameters
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={"label_selector": "user.confluent.io/my-label=true", "page_size": 100},
+        )
+
+        # Verify we got 2 statements back
+        assert len(statements) == 2
+        assert statements[0].name == "stmt-1"
+        assert statements[1].name == "stmt-2"
+
+    def test_list_statements_multiple_pages(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test listing statements with pagination across multiple pages."""
+        # Create mock responses for 2 pages
+        statement1 = statement_response_factory(name="stmt-1")
+        statement2 = statement_response_factory(name="stmt-2")
+        statement3 = statement_response_factory(name="stmt-3")
+        statement4 = statement_response_factory(name="stmt-4")
+
+        # First page response with 'next' URL
+        mock_response_page1 = Mock()
+        mock_response_page1.json.return_value = {
+            "data": [statement1, statement2],
+            "metadata": {
+                "next": "https://api.confluent.cloud/statements?page_token=token123&label_selector=user.confluent.io%2Fmy-label%3Dtrue"
+            },
+        }
+
+        # Second page response without 'next' URL (last page)
+        mock_response_page2 = Mock()
+        mock_response_page2.json.return_value = {"data": [statement3, statement4], "metadata": {}}
+
+        # Track the actual parameters passed on each call
+        captured_params = []
+
+        def capture_request(*args, **kwargs):
+            # Deep copy the params to avoid mutation issues
+            captured_params.append(copy.deepcopy(kwargs.get("params", {})))
+            # Vary which mock response we return based on how many times we've been called (first
+            # call gets page 1, second call gets page 2)
+            return [mock_response_page1, mock_response_page2][len(captured_params) - 1]
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", side_effect=capture_request
+        )
+
+        # Call list_statements with small page_size to force pagination
+        statements = invalid_credential_connection.list_statements(label="my-label", page_size=2)
+
+        # Verify we made 2 requests
+        assert request_mock.call_count == 2
+
+        # Verify first request (no page_token)
+        assert captured_params[0] == {
+            "label_selector": "user.confluent.io/my-label=true",
+            "page_size": 2,
+        }
+
+        # Verify second request includes page_token
+        assert captured_params[1] == {
+            "label_selector": "user.confluent.io/my-label=true",
+            "page_size": 2,
+            "page_token": "token123",
+        }
+
+        # Verify we got all 4 statements back
+        assert len(statements) == 4
+        assert statements[0].name == "stmt-1"
+        assert statements[1].name == "stmt-2"
+        assert statements[2].name == "stmt-3"
+        assert statements[3].name == "stmt-4"
+
+    def test_list_statements_empty_result(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test listing statements when no statements match the label."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [], "metadata": {}}
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        # Call list_statements with a label that doesn't match any statements
+        statements = invalid_credential_connection.list_statements(label="nonexistent-label")
+
+        # Verify request was made with correct parameters
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={"label_selector": "user.confluent.io/nonexistent-label=true", "page_size": 100},
+        )
+
+        # Verify we got empty list
+        assert len(statements) == 0
+        assert statements == []
+
+    def test_list_statements_custom_page_size(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that custom page_size is passed correctly."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [statement_response_factory()], "metadata": {}}
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        # Call with custom page_size
+        invalid_credential_connection.list_statements(label="test-label", page_size=50)
+
+        # Verify page_size parameter
+        request_mock.assert_called_once()
+        call_params = request_mock.call_args[1]["params"]
+        assert call_params["page_size"] == 50
+
+    def test_list_statements_label_prefix_added(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that the label prefix is correctly added to the filter."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [statement_response_factory()], "metadata": {}}
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        # Call list_statements
+        invalid_credential_connection.list_statements(label="custom-label")
+
+        # Verify label_selector has the prefix
+        call_params = request_mock.call_args[1]["params"]
+        assert call_params["label_selector"] == "user.confluent.io/custom-label=true"
+
+    def test_does_not_double_prefix_label(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that if the user includes the label prefix, it is not added again."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [statement_response_factory()], "metadata": {}}
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        # Call list_statements with label that already has prefix
+        invalid_credential_connection.list_statements(label="user.confluent.io/already-prefixed")
+
+        # Verify label_selector is not double-prefixed
+        call_params = request_mock.call_args[1]["params"]
+        assert call_params["label_selector"] == "user.confluent.io/already-prefixed=true"

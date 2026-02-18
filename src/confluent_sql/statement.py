@@ -15,6 +15,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+LABEL_PREFIX = "user.confluent.io/"
+"""Required prefix for all end-user labels in statement metadata. When filtering statements by
+label, users can provide just the end-user portion of the label (without the prefix) and this driver
+will add the prefix before making API calls."""
+
+
 class Op(Enum):
     """Row operation types for Flink SQL changelog streams.
 
@@ -119,6 +125,7 @@ class Statement:
     name: str
     spec: StrAnyDict
     status: StrAnyDict
+    metadata: StrAnyDict
     # Parsed fields ...
     traits: Traits | None
 
@@ -140,22 +147,23 @@ class Statement:
         """
         return self._possible_traits().is_bounded
 
+    _always_ready_states = frozenset({Phase.COMPLETED, Phase.STOPPED, Phase.FAILED})
+    """States in which any statement can be considered ready for consumption/deletion."""
+
     @property
     def is_ready(self) -> bool:
-        """Is the statement in a ready state for consumption/deletion?"""
-        # Pure DDL (DROP, CREATE TABLE/VIEW) must reach COMPLETED.
-        # Non-pure-DDL bounded statements (e.g. CTAS marked as bounded
-        # due to server bug) are ready at RUNNING.
-        if self.is_bounded and self.is_pure_ddl:
-            return self.phase in [Phase.COMPLETED, Phase.STOPPED, Phase.FAILED]
+        """Is the statement in a ready state for consumption/deletion?
+
+        Note: This property only considers the statement's traits (bounded vs unbounded).
+        The actual readiness for cursor operations also depends on the execution mode,
+        which is handled in Cursor._wait_for_statement_ready.
+        """
+        if self.is_bounded:
+            # Bounded statements are ready if completed, stopped, or failed.
+            return self.phase in self._always_ready_states
         else:
-            # Streaming statements are ready if running, completed, stopped, or failed
-            return self.phase in [
-                Phase.COMPLETED,
-                Phase.STOPPED,
-                Phase.RUNNING,
-                Phase.FAILED,
-            ]
+            # Unbounded (streaming) statements are ready if running, completed, stopped, or failed
+            return self.phase in self._always_ready_states or self.phase == Phase.RUNNING
 
     @property
     def is_failed(self) -> bool:
@@ -210,28 +218,6 @@ class Statement:
     @property
     def sql_kind(self) -> str:
         return self._possible_traits().sql_kind
-
-    # Pure DDL sql_kinds are one-shot operations that must reach COMPLETED
-    # before subsequent statements can rely on their effects.
-    # CTAS (CREATE_TABLE_AS) is NOT pure DDL — it's a long-lived streaming job
-    # that is ready at RUNNING.
-    _PURE_DDL_KINDS = frozenset(
-        {
-            "CREATE_TABLE",
-            "DROP_TABLE",
-            "CREATE_VIEW",
-            "DROP_VIEW",
-            "ALTER_TABLE",
-        }
-    )
-
-    @property
-    def is_pure_ddl(self) -> bool:
-        """Is this a one-shot DDL statement that must complete before proceeding?"""
-        try:
-            return self.sql_kind in self._PURE_DDL_KINDS
-        except InterfaceError:
-            return False
 
     @property
     def is_append_only(self) -> bool:
@@ -302,6 +288,7 @@ class Statement:
             name = response["name"]
             spec = response["spec"]
             status = response["status"]
+            metadata = response["metadata"]
 
             # Check the phase first.
             try:
@@ -322,7 +309,7 @@ class Statement:
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
-        return cls(connection, statement_id, name, spec, status, traits, phase)
+        return cls(connection, statement_id, name, spec, status, metadata, traits, phase)
 
     def _possible_traits(self) -> Traits:
         """Raise InterfaceError if traits are not available, else return them."""
@@ -330,6 +317,34 @@ class Statement:
         if traits is None:
             raise InterfaceError("Statement traits are not available -- failed statement?")
         return traits
+
+    @property
+    def end_user_labels(self) -> list[str]:
+        """Returns list of end-user labels for this statement, if available.
+        End-user labels are labels that were provided by the user at statement
+        submission time. They are included in the statement metadata with a
+        "user.confluent.io/" prefix, which is stripped off in the returned list.
+
+        If no end-user labels are available, empty list is returned. If metadata is
+        not available, raises InterfaceError.
+        """
+
+        labels = self.metadata.get("labels")
+        if labels is None:
+            raise InterfaceError("Statement metadata labels are not available.")
+
+        # strip the "user.confluent.io/" prefix from label keys to get the original end-user labels
+        end_user_labels = []
+        prefix_length = len(LABEL_PREFIX)
+
+        # For reasons unknown to me, statement labels is modeled as a dict/object
+        # in the API, even though currently only used as a set of strings
+        # (the values are always "true").
+        for key in labels:
+            if key.startswith(LABEL_PREFIX):
+                end_user_labels.append(key[prefix_length:])
+
+        return end_user_labels
 
 
 @dataclass(kw_only=True)
