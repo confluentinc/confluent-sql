@@ -615,14 +615,14 @@ class TestCloseMethod:
 
         # Verify data exists
         assert len(compressor._rows) == 2
-        assert len(compressor._pending_update_positions) == 1
+        assert compressor._pending_update_position == 0
 
         # Close the compressor
         compressor.close()
 
         # Verify internal state is cleared
         assert len(compressor._rows) == 0
-        assert len(compressor._pending_update_positions) == 0
+        assert compressor._pending_update_position is None
 
     def test_close_with_dict_compressor(self, mock_cursor):
         """Test that close() works with dict compressor."""

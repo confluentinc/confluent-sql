@@ -1,8 +1,26 @@
 """
-Changelog compressor module for streaming non-append-only Flink statement results.
+Changelog state management and compression for streaming non-append-only queries.
 
-This module provides compressors that accumulate and apply changelog operations
-to maintain a logical result set that changes over time based on changelog events.
+This module provides the RECOMMENDED high-level interface for client code working with
+streaming non-append-only Flink statements (e.g., GROUP BY, JOIN). Instead of manually
+processing raw changelog events (INSERT, UPDATE_BEFORE/AFTER, DELETE), clients should use
+a ChangelogCompressor to automatically maintain a logical result set that reflects the
+current state over time.
+
+Usage:
+    cursor = conn.streaming_cursor()
+    cursor.execute("SELECT first_letter, COUNT(*) FROM users GROUP BY first_letter")
+    compressor = cursor.changelog_compressor()
+
+    # Get current snapshot of accumulated results
+    snapshot = compressor.get_snapshot()
+
+Compressors consume raw changelog events from RawChangelogProcessor (via the cursor)
+and apply operations to maintain the compressed result set. Storage strategies are
+automatically selected based on whether the statement has upsert columns (dict-based
+keyed lookup vs list-based scanning) and whether results are tuples or dicts.
+
+For low-level changelog fetching without state management, see the `changelog` module.
 """
 
 from __future__ import annotations
@@ -108,9 +126,7 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
 
         # Validate statement has a schema
         if not statement.schema:
-            raise InterfaceError(
-                "ChangelogCompressor requires a statement with a schema"
-            )
+            raise InterfaceError("ChangelogCompressor requires a statement with a schema")
 
         # Get statement info we need
         self._as_dict = cursor.as_dict
@@ -166,9 +182,7 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         super().__init__(cursor, statement)
 
         if not statement.traits or not statement.traits.upsert_columns:
-            raise InterfaceError(
-                "UpsertColumnsCompressor requires a statement with upsert columns"
-            )
+            raise InterfaceError("UpsertColumnsCompressor requires a statement with upsert columns")
 
         self._upsert_column_indices = statement.traits.upsert_columns
         self._rows = {}
@@ -212,18 +226,15 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         elif op == Op.UPDATE_AFTER:
             # Use marked position if available
             old_key = self._pending_update_positions.get(key)
-            if old_key:
+            if old_key and old_key != key and old_key in self._rows:
                 # Remove old key if different
-                if old_key != key and old_key in self._rows:
-                    del self._rows[old_key]
-                # Don't clear pending position - keep it for potential future updates
+                del self._rows[old_key]
 
             # Add/update with new key
             self._rows[key] = row
 
-        elif op == Op.DELETE:
-            if key in self._rows:
-                del self._rows[key]
+        elif op == Op.DELETE and key in self._rows:
+            del self._rows[key]
 
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
@@ -265,14 +276,17 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
     """Abstract base class for compressors handling statements without upsert columns.
 
     Uses list-based storage with linear scan for row matching.
+
+    Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
+    Only one pending update is tracked at a time.
     """
 
     _rows: list[T]
     """List of rows maintaining insertion order. Scanned linearly for matching."""
 
-    _pending_update_positions: dict[int, T]
-    """Mapping of list positions to rows, tracking UPDATE_BEFORE operations awaiting
-    UPDATE_AFTER."""
+    _pending_update_position: int | None
+    """Position of the row marked by the most recent UPDATE_BEFORE, awaiting UPDATE_AFTER.
+    None when no UPDATE_BEFORE is pending."""
 
     def __init__(self, cursor: Cursor, statement: Statement):
         """Initialize the compressor.
@@ -283,7 +297,7 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         """
         super().__init__(cursor, statement)
         self._rows = []
-        self._pending_update_positions = {}
+        self._pending_update_position = None
 
     def _find_row_position(self, row: T) -> int | None:
         """Find the position of a matching row by scanning backwards.
@@ -311,25 +325,19 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             self._rows.append(row)
 
         elif op == Op.UPDATE_BEFORE:
-            # Find and mark position
+            # Find and mark position for the immediately following UPDATE_AFTER
             pos = self._find_row_position(row)
             if pos is not None:
-                # Store position mapped to row for UPDATE_AFTER
-                self._pending_update_positions[pos] = row
+                self._pending_update_position = pos
 
         elif op == Op.UPDATE_AFTER:
-            # Look for a pending update position
-            update_pos = None
-            for pos, _ in self._pending_update_positions.items():
-                # Check if this UPDATE_AFTER matches a pending UPDATE_BEFORE
-                # Since we don't have keys, we rely on the position
-                if pos < len(self._rows):
-                    update_pos = pos
-                    # Keep the pending position for potential future updates
-                    break
-
-            if update_pos is not None and update_pos < len(self._rows):
-                self._rows[update_pos] = row
+            # Use the pending position if available
+            if (
+                self._pending_update_position is not None
+                and self._pending_update_position < len(self._rows)
+            ):
+                self._rows[self._pending_update_position] = row
+                self._pending_update_position = None
             else:
                 # No matching UPDATE_BEFORE, treat as INSERT
                 self._rows.append(row)
@@ -338,15 +346,14 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             pos = self._find_row_position(row)
             if pos is not None:
                 del self._rows[pos]
-                # Adjust pending positions after this deletion
-                new_pending = {}
-                for p, r in self._pending_update_positions.items():
-                    if p > pos:
-                        new_pending[p - 1] = r
-                    elif p < pos:
-                        new_pending[p] = r
-                    # Skip position that was deleted
-                self._pending_update_positions = new_pending
+                # Adjust pending position if needed
+                if self._pending_update_position is not None:
+                    if self._pending_update_position > pos:
+                        # Position shifted down by one
+                        self._pending_update_position -= 1
+                    elif self._pending_update_position == pos:
+                        # The pending update row was deleted
+                        self._pending_update_position = None
 
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
@@ -380,25 +387,29 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         delegating to parent class to close the cursor.
         """
         self._rows.clear()
-        self._pending_update_positions.clear()
+        self._pending_update_position = None
         super().close()
 
 
 class UpsertColumnsTupleCompressor(UpsertColumnsCompressor[StatementResultTuple]):
     """Concrete compressor for statements with upsert columns returning tuples."""
+
     pass
 
 
 class UpsertColumnsDictCompressor(UpsertColumnsCompressor[StrAnyDict]):
     """Concrete compressor for statements with upsert columns returning dicts."""
+
     pass
 
 
 class NoUpsertColumnsTupleCompressor(NoUpsertColumnsCompressor[StatementResultTuple]):
     """Concrete compressor for statements without upsert columns returning tuples."""
+
     pass
 
 
 class NoUpsertColumnsDictCompressor(NoUpsertColumnsCompressor[StrAnyDict]):
     """Concrete compressor for statements without upsert columns returning dicts."""
+
     pass

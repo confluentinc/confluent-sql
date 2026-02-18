@@ -1,8 +1,24 @@
 """
-Changelog processor module for Confluent SQL DB-API driver.
+Changelog fetching and conversion for Confluent SQL DB-API driver.
 
-This module provides implementations of changelog processing for streaming
-queries in Confluent SQL.
+This module provides low-level changelog processors that fetch statement results
+from the server, handle paging, and convert row data from JSON to Python types.
+
+- AppendOnlyChangelogProcessor: For append-only streaming (or all snapshot mode)
+  queries (returns row data only).
+- RawChangelogProcessor: For non-append-only queries -- a subset of streaming queries
+  (returns ChangeloggedRow with operation + row).
+
+These processors fetch and expose either result rows or changelog events including
+result rows but do NOT apply or interpret them. These implementations back
+the iteration, fetchone/fetchmany/fetchall methods of our Cursor class.
+
+For stateful compression of changelog events into a logical result set, see
+the `changelog_compressor` module, which makes use of the sequence of ChangeloggedRow
+returned by RawChangelogProcessor to produce a compressed result set ("interpreted changelog")
+that applies the changelog operations to maintain the current state of each row in the result
+and the logical result set at large over time. That functionality is exposed from the Cursor
+class's `changelog_compressor()` method (only callable for non-append-only streaming statements).
 """
 
 from __future__ import annotations
