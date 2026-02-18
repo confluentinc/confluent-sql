@@ -563,11 +563,9 @@ class TestFetchNextPage:
     def test_raises_if_statement_not_ready(
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
-        # A bounded statement is ready when in the RUNNING or DONE phases, so set to a phase before
-        # that.
+        # Bounded statements are only ready when in terminal states (COMPLETED, STOPPED, FAILED).
+        # Set the statement to RUNNING phase to verify it's not considered ready.
         append_only_processor._statement._phase = Phase.RUNNING
-        assert append_only_processor._statement.traits is not None
-        append_only_processor._statement.traits.sql_kind = "CREATE_TABLE"
 
         with pytest.raises(InterfaceError, match="Statement is not ready"):
             append_only_processor._fetch_next_page()

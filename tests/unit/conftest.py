@@ -69,6 +69,8 @@ def statement_response_factory() -> StatementResponseFactory:
         principal: str = "u-0xw9v9p",
         schema_columns: list[dict[str, Any]] | None = None,
         null_schema: bool = False,
+        name: str = "dbapi-d4c685ef-befe-4091-9548-05d5ccb52d4a",
+        labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
 
@@ -94,7 +96,7 @@ def statement_response_factory() -> StatementResponseFactory:
                 "uid": "77826b1d-314e-4c6a-b33c-46e879930160",
                 "updated_at": "2025-11-07T18:45:05.989814Z",
             },
-            "name": "dbapi-d4c685ef-befe-4091-9548-05d5ccb52d4a",
+            "name": name,
             "organization_id": "7c210ed4-6e1e-4355-abf9-b25e25a8b25a",
             "spec": {
                 "compute_pool_id": compute_pool_id,
@@ -130,6 +132,9 @@ def statement_response_factory() -> StatementResponseFactory:
         if phase == "FAILED":
             # Failed statements also do not have traits.
             response["status"]["traits"] = None
+
+        if labels is not None:
+            response["metadata"]["labels"] = labels
 
         return response
 
