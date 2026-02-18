@@ -659,8 +659,14 @@ class Connection:
         }
 
         if statement_label is not None:
+            # Guard against user already including the mandatory prefix.
+            if statement_label.startswith(STATEMENT_LABEL_PREFIX):
+                label_key = statement_label
+            else:
+                label_key = f"{STATEMENT_LABEL_PREFIX}{statement_label}"
+
             payload["metadata"] = {
-                "labels": {f"{STATEMENT_LABEL_PREFIX}{statement_label}": "true"},
+                "labels": {label_key: "true"},
             }
 
         # Submit statement using the API

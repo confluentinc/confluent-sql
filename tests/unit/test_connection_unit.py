@@ -10,7 +10,8 @@ import pytest
 from confluent_sql import InterfaceError, OperationalError
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
 from confluent_sql.connection import logger as connection_module_logger
-from confluent_sql.statement import Statement
+from confluent_sql.execution_mode import ExecutionMode
+from confluent_sql.statement import LABEL_PREFIX, Statement
 from tests.conftest import ConnectionFactory
 from tests.unit.conftest import StatementResponseFactory
 
@@ -536,3 +537,132 @@ class TestConnectionListStatements:
         # Verify label_selector is not double-prefixed
         call_params = request_mock.call_args[1]["params"]
         assert call_params["label_selector"] == "user.confluent.io/already-prefixed=true"
+
+
+@pytest.mark.unit
+class TestExecuteStatement:
+    """Tests for _execute_statement method."""
+
+    def install_request_mock(self, connection: Connection, mocker):
+        """Helper method to set up a request mock for testing _execute_statement.
+
+        Args:
+            connection: The connection object to mock requests on
+            mocker: The pytest mocker fixture
+
+        Returns:
+            The mocked request object that can be used for assertions
+        """
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "name": "test-statement",
+            "status": {"phase": "RUNNING"},
+        }
+
+        return mocker.patch.object(connection._client, "request", return_value=mock_response)
+
+    def test_no_label_omits_metadata_labels(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when no label is provided, the payload metadata has no labels key."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement without a label
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_label=None,
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify no metadata key exists in payload
+        assert "metadata" not in payload, (
+            "Payload should not contain metadata when no label provided"
+        )
+
+    def test_unprefixed_label_gets_prefixed(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when an un-prefixed label is provided, it gets prefixed.
+
+        Verifies that the label is present in payload metadata['labels'].
+        """
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with un-prefixed label
+        test_label = "my-custom-label"
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_label=test_label,
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when label provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify the label was prefixed correctly
+        expected_label_key = f"{LABEL_PREFIX}{test_label}"
+        assert expected_label_key in payload["metadata"]["labels"], (
+            f"Label should be prefixed with {LABEL_PREFIX}"
+        )
+        assert payload["metadata"]["labels"][expected_label_key] == "true"
+
+    def test_prefixed_label_not_double_prefixed(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when an already-prefixed label is provided, it does not get double-prefixed."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with already-prefixed label
+        already_prefixed_label = f"{LABEL_PREFIX}already-prefixed"
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_label=already_prefixed_label,
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when label provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify the label was NOT double-prefixed
+        assert already_prefixed_label in payload["metadata"]["labels"], (
+            "Label should not be double-prefixed"
+        )
+        assert payload["metadata"]["labels"][already_prefixed_label] == "true"
+
+        # Verify no double-prefixed version exists
+        double_prefixed = f"{LABEL_PREFIX}{already_prefixed_label}"
+        assert double_prefixed not in payload["metadata"]["labels"], (
+            "Label should not be double-prefixed"
+        )
