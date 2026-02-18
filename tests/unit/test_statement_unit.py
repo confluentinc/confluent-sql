@@ -82,6 +82,21 @@ class TestStatementIsReady:
         statement = Statement.from_response(mock_connection, statement_json)
         assert not statement.is_ready
 
+    def test_failed_statement_is_ready(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that a failed statement is always ready, despite missing status.traits."""
+        statement_json = statement_response_factory(
+            phase="FAILED",
+            is_bounded=True,  # Bounded or unbounded shouldn't matter for failed statements.
+        )
+        # Failed statements won't have traits
+
+        assert statement_json["status"].get("traits") is None
+
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_ready
+
 
 @pytest.mark.unit
 class TestStatementDescriptionProperty:
@@ -675,7 +690,7 @@ class TestStatementEndUserLabels:
     def test_missing_metadata_labels_dict_raises(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
-        """Test that end_user_labels property returns empty dict when labels are absent."""
+        """Test that end_user_labels property raises when metadata has no labels member."""
         statement_json = statement_response_factory()
         # Remove end_user_labels from the response
         del statement_json["metadata"]["labels"]

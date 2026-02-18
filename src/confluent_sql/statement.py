@@ -158,12 +158,14 @@ class Statement:
         The actual readiness for cursor operations also depends on the execution mode,
         which is handled in Cursor._wait_for_statement_ready.
         """
-        if self.is_bounded:
-            # Bounded statements are ready if completed, stopped, or failed.
-            return self.phase in self._always_ready_states
+
+        # Consult _always_ready_states first always, because if statement is FAILED
+        # then traits will not be available and `.is_bounded` will raise an error.
+        if self.phase in self._always_ready_states:
+            return True
         else:
-            # Unbounded (streaming) statements are ready if running, completed, stopped, or failed
-            return self.phase in self._always_ready_states or self.phase == Phase.RUNNING
+            # Return true if streaming (unbounded) statement is running, otherwise false.
+            return self.phase == Phase.RUNNING and not self.is_bounded
 
     @property
     def is_failed(self) -> bool:
