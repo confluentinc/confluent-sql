@@ -1,5 +1,6 @@
 import re
 import time
+from uuid import uuid4
 
 import pytest
 
@@ -27,6 +28,31 @@ class TestCursor:
         assert cursor._statement.description is not None
         assert len(cursor._statement.description) == 1
         assert cursor._statement.description[0][0] == "answer"
+
+    def test_cursor_execute_and_find_with_label(self, cursor: Cursor, connection: Connection):
+        """Test over submitting and finding statements via end-user-provided label."""
+        label = f"test-label-{uuid4()}"
+        name = f"test-statement-{uuid4()}".lower()
+        cursor.execute(SINGLE_COLUMN_QUERY, statement_name=name, statement_label=label)
+
+        statement = cursor._statement
+        assert statement is not None
+        assert label in statement.end_user_labels
+
+        # Should be able to list statements by label and find it.
+        statements = connection.list_statements(label=label)
+
+        # Should find the statement with same name by its label being present.
+        # Should have found exactly one.
+        assert len(statements) == 1
+        assert statements[0].name == statement.name
+
+        # But not find any statements if we filter by a different label.
+        statements = connection.list_statements(label="some_other_label")
+        assert all(s.name != statement.name for s in statements)
+
+        # Cleanup.
+        connection.delete_statement(statement)
 
     def test_cursor_description_raises_if_closed(self, cursor: Cursor):
         cursor.close()
