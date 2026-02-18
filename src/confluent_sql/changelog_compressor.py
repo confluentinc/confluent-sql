@@ -252,7 +252,8 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             del self._rows_by_key[key]
 
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
-        """Fetch and accumulate changelog operations, returning the current logical result set.
+        """Fetch and interpret/compress changelog operations, returning the current logical result
+        set.
 
         Args:
             fetch_batchsize: The batch size to use for fetching, or None to use cursor.arraysize.
