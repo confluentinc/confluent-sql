@@ -656,7 +656,8 @@ class TestStatementEndUserLabels:
     def test_labels_present(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
-        """Test that end_user_labels property returns correct prefix-stripped labels when present."""
+        """Test that end_user_labels property returns correct prefix-stripped labels
+        when present."""
         statement_json = statement_response_factory(
             labels={"user.confluent.io/foo": "true", "user.confluent.io/bar": "true"},
         )
