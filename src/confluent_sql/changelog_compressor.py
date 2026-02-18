@@ -158,16 +158,19 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
     """Abstract base class for compressors handling statements with upsert columns.
 
     Uses dict-based storage for fast O(1) key-based lookups.
+
+    Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
+    Only one pending update is tracked at a time.
     """
 
     _upsert_column_indices: list[int]
     """Zero-based indices of columns that form the upsert key."""
 
-    _rows: dict[tuple, T]
+    _rows_by_key: dict[tuple, T]
     """Dictionary mapping key tuples to row data. Dict maintains insertion order in Python 3.7+."""
 
-    _pending_update_positions: dict[tuple, tuple]
-    """Mapping of keys to keys, tracking UPDATE_BEFORE operations awaiting UPDATE_AFTER."""
+    _expecting_update_after: bool
+    """True when UPDATE_BEFORE has been received and UPDATE_AFTER is expected next."""
 
     def __init__(self, cursor: Cursor, statement: Statement):
         """Initialize the compressor with upsert column indices.
@@ -185,9 +188,10 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             raise InterfaceError("UpsertColumnsCompressor requires a statement with upsert columns")
 
         self._upsert_column_indices = statement.traits.upsert_columns
-        self._rows = {}
-        self._pending_update_positions = {}
+        self._rows_by_key = {}
+        self._expecting_update_after = False
 
+    @abc.abstractmethod
     def _extract_key(self, row: T) -> tuple:
         """Extract the key tuple from a row based on upsert columns.
 
@@ -197,14 +201,7 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         Returns:
             A tuple of the key values.
         """
-        if isinstance(row, dict):
-            # For dicts, we need to convert to list first to use indices
-            col_names = [col.name for col in self._schema.columns]
-            row_list = [row.get(col_names[i]) for i in range(len(col_names))]
-            return tuple(row_list[i] for i in self._upsert_column_indices)
-        else:
-            # For tuples, direct index access
-            return tuple(row[i] for i in self._upsert_column_indices)
+        ...
 
     def _apply_operation(self, op: Op, row: T) -> None:
         """Apply a changelog operation to the internal state.
@@ -213,28 +210,46 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             op: The changelog operation.
             row: The row data.
         """
+        # Check for unexpected pending update (except when processing UPDATE_AFTER).
+        # (Basically, if we had gotten an UPDATE_BEFORE, we highly expect the next
+        #  event to be its matching UPDATE_AFTER.)
+        if op != Op.UPDATE_AFTER and self._expecting_update_after:
+            raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
+
         key = self._extract_key(row)
 
         if op == Op.INSERT:
-            self._rows[key] = row
+            # When iterating _rows_by_keys in get_snapshot(), this newly inserted key will be
+            # at the end of the dict, so insertion order will be maintained.
+            self._rows_by_key[key] = row
 
         elif op == Op.UPDATE_BEFORE:
-            # Mark the position for UPDATE_AFTER
-            if key in self._rows:
-                self._pending_update_positions[key] = key
+            # Raise if we receive an UPDATE_BEFORE for a key that doesn't exist in current state
+            if key not in self._rows_by_key:
+                raise InterfaceError(
+                    f"Received UPDATE_BEFORE for a key that does not exist in current state: {key}"
+                )
+            # Mark that we're expecting UPDATE_AFTER next
+            self._expecting_update_after = True
 
         elif op == Op.UPDATE_AFTER:
-            # Use marked position if available
-            old_key = self._pending_update_positions.get(key)
-            if old_key and old_key != key and old_key in self._rows:
-                # Remove old key if different
-                del self._rows[old_key]
+            # May or may not have gotten a preceding UPDATE_BEFORE.
+            # In either case, verify the key exists in current state
+            if key not in self._rows_by_key:
+                raise InterfaceError(
+                    f"Received UPDATE_AFTER for a key that does not exist in current state: {key}"
+                )
 
-            # Add/update with new key
-            self._rows[key] = row
+            # Update the row
+            self._rows_by_key[key] = row
+            self._expecting_update_after = False
 
-        elif op == Op.DELETE and key in self._rows:
-            del self._rows[key]
+        elif op == Op.DELETE:
+            if key not in self._rows_by_key:
+                raise InterfaceError(
+                    f"Received DELETE for a key that does not exist in current state: {key}"
+                )
+            del self._rows_by_key[key]
 
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
@@ -259,7 +274,7 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
                     self._apply_operation(op, cast(T, row))
 
         # Return deep copy in insertion order (dict maintains order)
-        return [copy.deepcopy(row) for row in self._rows.values()]
+        return [copy.deepcopy(row) for row in self._rows_by_key.values()]
 
     def close(self) -> None:
         """Close the compressor and release resources.
@@ -267,8 +282,8 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         Clears internal row storage and pending update tracking before
         delegating to parent class to close the cursor.
         """
-        self._rows.clear()
-        self._pending_update_positions.clear()
+        self._rows_by_key.clear()
+        self._expecting_update_after = False
         super().close()
 
 
@@ -299,20 +314,28 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         self._rows = []
         self._pending_update_position = None
 
-    def _find_row_position(self, row: T) -> int | None:
+    def _find_row_position(self, row: T, operation: Op) -> int:
         """Find the position of a matching row by scanning backwards.
 
         Args:
             row: The row to find.
+            operation: The operation being performed (for error messaging).
 
         Returns:
-            The position index if found, None otherwise.
+            The position index of the row.
+
+        Raises:
+            InterfaceError: If the row is not found in current state.
         """
         # Scan backwards to find most recent matching row
         for i in range(len(self._rows) - 1, -1, -1):
             if self._rows[i] == row:
                 return i
-        return None
+
+        # Row not found - raise error with operation-specific message
+        raise InterfaceError(
+            f"Received {operation.name} for a row that does not exist in current state: {row}"
+        )
 
     def _apply_operation(self, op: Op, row: T) -> None:
         """Apply a changelog operation to the internal state.
@@ -321,39 +344,37 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             op: The changelog operation.
             row: The row data.
         """
+        # Check for unexpected pending update (except when processing UPDATE_AFTER).
+        # (Basically, if we had gotten an UPDATE_BEFORE, we highly expect the next
+        #  event to be its matching UPDATE_AFTER.)
+        if op != Op.UPDATE_AFTER and self._pending_update_position is not None:
+            raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
+
         if op == Op.INSERT:
             self._rows.append(row)
 
         elif op == Op.UPDATE_BEFORE:
-            # Find and mark position for the immediately following UPDATE_AFTER
-            pos = self._find_row_position(row)
-            if pos is not None:
-                self._pending_update_position = pos
+            # Find row position (raises InterfaceError if not found)
+            pos = self._find_row_position(row, Op.UPDATE_BEFORE)
+            # Record position for pending update (expecting matching UPDATE_AFTER next)
+            self._pending_update_position = pos
 
         elif op == Op.UPDATE_AFTER:
-            # Use the pending position if available
-            if (
-                self._pending_update_position is not None
-                and self._pending_update_position < len(self._rows)
-            ):
-                self._rows[self._pending_update_position] = row
-                self._pending_update_position = None
-            else:
-                # No matching UPDATE_BEFORE, treat as INSERT
-                self._rows.append(row)
+            # MUST have gotten a preceding UPDATE_BEFORE.
+            # (Without upsert columns, we can't identify the row to update from the
+            #  UPDATE_AFTER row alone, since the row content has changed.)
+            if self._pending_update_position is None:
+                raise InterfaceError(
+                    f"Received UPDATE_AFTER without a preceding UPDATE_BEFORE: {row}"
+                )
+
+            self._rows[self._pending_update_position] = row
+            self._pending_update_position = None
 
         elif op == Op.DELETE:
-            pos = self._find_row_position(row)
-            if pos is not None:
-                del self._rows[pos]
-                # Adjust pending position if needed
-                if self._pending_update_position is not None:
-                    if self._pending_update_position > pos:
-                        # Position shifted down by one
-                        self._pending_update_position -= 1
-                    elif self._pending_update_position == pos:
-                        # The pending update row was deleted
-                        self._pending_update_position = None
+            # Find row position (raises InterfaceError if not found)
+            pos = self._find_row_position(row, Op.DELETE)
+            del self._rows[pos]
 
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
@@ -392,15 +413,56 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
 
 
 class UpsertColumnsTupleCompressor(UpsertColumnsCompressor[StatementResultTuple]):
-    """Concrete compressor for statements with upsert columns returning tuples."""
+    """Concrete compressor for statements with upsert columns returning tuples.
 
-    pass
+    Optimized for tuple row access with direct indexing.
+    """
+
+    def _extract_key(self, row: StatementResultTuple) -> tuple:
+        """Extract the key tuple from a tuple row using direct index access.
+
+        Args:
+            row: The row data as a tuple.
+
+        Returns:
+            A tuple of the key values.
+        """
+        return tuple(row[i] for i in self._upsert_column_indices)
 
 
 class UpsertColumnsDictCompressor(UpsertColumnsCompressor[StrAnyDict]):
-    """Concrete compressor for statements with upsert columns returning dicts."""
+    """Concrete compressor for statements with upsert columns returning dicts.
 
-    pass
+    Optimized for dict row access with precomputed column names for upsert key fields.
+    """
+
+    _upsert_key_column_names: list[str]
+    """Precomputed list of column names corresponding to upsert column indices."""
+
+    def __init__(self, cursor: Cursor, statement: Statement):
+        """Initialize the compressor with precomputed column names for upsert keys.
+
+        Args:
+            cursor: The cursor to fetch changelog data from.
+            statement: The statement associated with the cursor.
+        """
+        super().__init__(cursor, statement)
+
+        # Precompute the column names for upsert key fields
+        self._upsert_key_column_names = [
+            self._schema.columns[i].name for i in self._upsert_column_indices
+        ]
+
+    def _extract_key(self, row: StrAnyDict) -> tuple:
+        """Extract the key tuple from a dict row using precomputed column names.
+
+        Args:
+            row: The row data as a dict.
+
+        Returns:
+            A tuple of the key values.
+        """
+        return tuple(row[col_name] for col_name in self._upsert_key_column_names)
 
 
 class NoUpsertColumnsTupleCompressor(NoUpsertColumnsCompressor[StatementResultTuple]):

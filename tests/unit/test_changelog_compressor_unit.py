@@ -1,7 +1,8 @@
 """Unit tests for changelog compressor module."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from confluent_sql.changelog import ChangeloggedRow
 from confluent_sql.changelog_compressor import (
@@ -31,11 +32,13 @@ def mock_cursor():
 
     # Create a simple schema
     schema = MagicMock(spec=Schema)
-    schema.columns = [
-        MagicMock(name="id"),
-        MagicMock(name="value"),
-        MagicMock(name="count"),
-    ]
+    col_id = MagicMock()
+    col_id.name = "id"
+    col_value = MagicMock()
+    col_value.name = "value"
+    col_count = MagicMock()
+    col_count.name = "count"
+    schema.columns = [col_id, col_value, col_count]
     statement.schema = schema
 
     cursor._statement = statement
@@ -144,7 +147,9 @@ class TestUpsertColumnsTupleCompressor:
         snapshot1 = compressor.get_snapshot()
 
         # Reset fetchmany for second call
-        mock_cursor.fetchmany.side_effect = [[], ]  # No new results
+        mock_cursor.fetchmany.side_effect = [
+            [],
+        ]  # No new results
 
         snapshot2 = compressor.get_snapshot()
 
@@ -291,27 +296,28 @@ class TestNoUpsertColumnsTupleCompressor:
         assert snapshot[0] == (1, "a", 10)
 
     def test_position_adjustment_after_delete(self, mock_cursor):
-        """Test that pending positions are adjusted after deletions."""
+        """Test that UPDATE_BEFORE must be immediately followed by UPDATE_AFTER."""
         compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
-        # Mock fetchmany
+        # Mock fetchmany with DELETE between UPDATE_BEFORE and UPDATE_AFTER
         mock_cursor.fetchmany.side_effect = [
             [
                 ChangeloggedRow(Op.INSERT, (1, "a", 10)),
                 ChangeloggedRow(Op.INSERT, (2, "b", 20)),
                 ChangeloggedRow(Op.INSERT, (3, "c", 30)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (3, "c", 30)),  # Mark position 2
-                ChangeloggedRow(Op.DELETE, (2, "b", 20)),  # Delete position 1
-                ChangeloggedRow(Op.UPDATE_AFTER, (3, "c", 35)),  # Should update correctly
+                ChangeloggedRow(Op.UPDATE_BEFORE, (3, "c", 30)),
+                # ERROR: Can't have DELETE while UPDATE_BEFORE is pending
+                ChangeloggedRow(Op.DELETE, (2, "b", 20)),
             ],
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
-
-        assert len(snapshot) == 2
-        assert snapshot[0] == (1, "a", 10)
-        assert snapshot[1] == (3, "c", 35)  # Updated correctly after delete
+        # Should raise error because UPDATE_BEFORE must be followed by UPDATE_AFTER
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE while an UPDATE_BEFORE is pending",
+        ):
+            compressor.get_snapshot()
 
 
 @pytest.mark.unit
@@ -350,19 +356,31 @@ class TestCompressorValidation:
 
         # Test UpsertColumnsTupleCompressor
         mock_cursor._statement.traits.upsert_columns = [0]
-        with pytest.raises(InterfaceError, match="ChangelogCompressor can only be created for streaming non-append-only queries"):
+        with pytest.raises(
+            InterfaceError,
+            match="ChangelogCompressor can only be created for streaming non-append-only queries",
+        ):
             UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
         # Test UpsertColumnsDictCompressor
-        with pytest.raises(InterfaceError, match="ChangelogCompressor can only be created for streaming non-append-only queries"):
+        with pytest.raises(
+            InterfaceError,
+            match="ChangelogCompressor can only be created for streaming non-append-only queries",
+        ):
             UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
 
         # Test NoUpsertColumnsTupleCompressor
-        with pytest.raises(InterfaceError, match="ChangelogCompressor can only be created for streaming non-append-only queries"):
+        with pytest.raises(
+            InterfaceError,
+            match="ChangelogCompressor can only be created for streaming non-append-only queries",
+        ):
             NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
         # Test NoUpsertColumnsDictCompressor
-        with pytest.raises(InterfaceError, match="ChangelogCompressor can only be created for streaming non-append-only queries"):
+        with pytest.raises(
+            InterfaceError,
+            match="ChangelogCompressor can only be created for streaming non-append-only queries",
+        ):
             NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
 
     def test_upsert_compressor_without_upsert_columns_raises(self, mock_cursor):
@@ -370,10 +388,14 @@ class TestCompressorValidation:
         # Remove upsert columns from statement
         mock_cursor._statement.traits.upsert_columns = None
 
-        with pytest.raises(InterfaceError, match="UpsertColumnsCompressor requires a statement with upsert columns"):
+        with pytest.raises(
+            InterfaceError, match="UpsertColumnsCompressor requires a statement with upsert columns"
+        ):
             UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
-        with pytest.raises(InterfaceError, match="UpsertColumnsCompressor requires a statement with upsert columns"):
+        with pytest.raises(
+            InterfaceError, match="UpsertColumnsCompressor requires a statement with upsert columns"
+        ):
             UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
 
     def test_upsert_compressor_without_traits_raises(self, mock_cursor):
@@ -381,7 +403,9 @@ class TestCompressorValidation:
         # Remove traits entirely
         mock_cursor._statement.traits = None
 
-        with pytest.raises(InterfaceError, match="UpsertColumnsCompressor requires a statement with upsert columns"):
+        with pytest.raises(
+            InterfaceError, match="UpsertColumnsCompressor requires a statement with upsert columns"
+        ):
             UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
     def test_all_compressors_require_schema(self, mock_cursor):
@@ -392,19 +416,27 @@ class TestCompressorValidation:
         # Test with upsert columns (though it won't get that far)
         mock_cursor._statement.traits.upsert_columns = [0]
 
-        with pytest.raises(InterfaceError, match="ChangelogCompressor requires a statement with a schema"):
+        with pytest.raises(
+            InterfaceError, match="ChangelogCompressor requires a statement with a schema"
+        ):
             UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
-        with pytest.raises(InterfaceError, match="ChangelogCompressor requires a statement with a schema"):
+        with pytest.raises(
+            InterfaceError, match="ChangelogCompressor requires a statement with a schema"
+        ):
             UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
 
         # Test without upsert columns
         mock_cursor._statement.traits.upsert_columns = None
 
-        with pytest.raises(InterfaceError, match="ChangelogCompressor requires a statement with a schema"):
+        with pytest.raises(
+            InterfaceError, match="ChangelogCompressor requires a statement with a schema"
+        ):
             NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
-        with pytest.raises(InterfaceError, match="ChangelogCompressor requires a statement with a schema"):
+        with pytest.raises(
+            InterfaceError, match="ChangelogCompressor requires a statement with a schema"
+        ):
             NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
 
     def test_validation_order_changelog_before_schema(self, mock_cursor):
@@ -414,7 +446,10 @@ class TestCompressorValidation:
         mock_cursor._statement.schema = None
 
         # Should get the changelog error first, not the schema error
-        with pytest.raises(InterfaceError, match="ChangelogCompressor can only be created for streaming non-append-only queries"):
+        with pytest.raises(
+            InterfaceError,
+            match="ChangelogCompressor can only be created for streaming non-append-only queries",
+        ):
             NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
 
@@ -451,7 +486,9 @@ class TestFactoryFunction:
         """Test that the factory function validates cursor returns changelog."""
         mock_cursor.returns_changelog = False
 
-        with pytest.raises(InterfaceError, match="can only be created for streaming non-append-only"):
+        with pytest.raises(
+            InterfaceError, match="can only be created for streaming non-append-only"
+        ):
             create_changelog_compressor(mock_cursor, mock_cursor._statement)
 
 
@@ -466,7 +503,9 @@ class TestChangelogCompressorCreation:
         # Bind the real method to the mock
         mock_cursor.changelog_compressor = Cursor.changelog_compressor.__get__(mock_cursor, Cursor)
 
-        with pytest.raises(InterfaceError, match="can only be created for streaming non-append-only"):
+        with pytest.raises(
+            InterfaceError, match="can only be created for streaming non-append-only"
+        ):
             mock_cursor.changelog_compressor()
 
     def test_create_compressor_without_statement(self, mock_cursor):
@@ -476,7 +515,9 @@ class TestChangelogCompressorCreation:
         # Bind the real method to the mock
         mock_cursor.changelog_compressor = Cursor.changelog_compressor.__get__(mock_cursor, Cursor)
 
-        with pytest.raises(InterfaceError, match="Cannot create changelog compressor without a statement"):
+        with pytest.raises(
+            InterfaceError, match="Cannot create changelog compressor without a statement"
+        ):
             mock_cursor.changelog_compressor()
 
     def test_compressor_selection(self, mock_cursor):
@@ -588,15 +629,13 @@ class TestCloseMethod:
         compressor.get_snapshot()
 
         # Verify data exists
-        assert len(compressor._rows) == 2
-        assert len(compressor._pending_update_positions) == 1
+        assert len(compressor._rows_by_key) == 2
 
         # Close the compressor
         compressor.close()
 
         # Verify internal state is cleared
-        assert len(compressor._rows) == 0
-        assert len(compressor._pending_update_positions) == 0
+        assert len(compressor._rows_by_key) == 0
 
     def test_close_clears_no_upsert_compressor_state(self, mock_cursor):
         """Test that close() clears internal state for NoUpsertColumnsCompressor."""
@@ -642,7 +681,7 @@ class TestCloseMethod:
 
         # Verify cursor.close() was called and state is cleared
         mock_cursor.close.assert_called_once()
-        assert len(compressor._rows) == 0
+        assert len(compressor._rows_by_key) == 0
 
     def test_close_idempotent(self, mock_cursor):
         """Test that close() can be called multiple times safely."""
@@ -684,25 +723,25 @@ class TestEdgeCases:
         assert snapshot[0] == (1, "a", 10)
 
     def test_update_after_without_before(self, mock_cursor):
-        """Test UPDATE_AFTER without UPDATE_BEFORE."""
+        """Test bare UPDATE_AFTER requires UPDATE_BEFORE in NoUpsertColumnsCompressor."""
         compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
-        # Mock fetchmany
+        # Mock fetchmany with bare UPDATE_AFTER
         mock_cursor.fetchmany.side_effect = [
             [
                 ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                # UPDATE_BEFORE is missing
-                ChangeloggedRow(Op.UPDATE_AFTER, (2, "b", 20)),
+                # Bare UPDATE_AFTER - no UPDATE_BEFORE
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
             ],
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
-
-        # UPDATE_AFTER treated as INSERT when no matching UPDATE_BEFORE
-        assert len(snapshot) == 2
-        assert snapshot[0] == (1, "a", 10)
-        assert snapshot[1] == (2, "b", 20)
+        # Should raise error because UPDATE_BEFORE is required
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
+        ):
+            compressor.get_snapshot()
 
     def test_multiple_batches(self, mock_cursor):
         """Test fetching across multiple batches."""
@@ -736,16 +775,735 @@ class TestEdgeCases:
         assert snapshot == []
 
     def test_overwriting_pending_update(self, mock_cursor):
-        """Test that subsequent UPDATE_BEFORE overwrites pending position."""
+        """Test that UPDATE_BEFORE must be followed by UPDATE_AFTER immediately."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
-        # Mock fetchmany with multiple UPDATE_BEFOREs for same key
+        # Mock fetchmany with two UPDATE_BEFOREs in a row (invalid)
         mock_cursor.fetchmany.side_effect = [
             [
                 ChangeloggedRow(Op.INSERT, (1, "a", 10)),
                 ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),  # Overwrites previous
+                # ERROR: Can't have another UPDATE_BEFORE
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+            ],
+            [],
+        ]
+
+        # Should raise error because UPDATE_BEFORE must be followed by UPDATE_AFTER
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE while an UPDATE_BEFORE is pending",
+        ):
+            compressor.get_snapshot()
+
+
+@pytest.mark.unit
+class TestUpsertColumnsCompressorErrorCases:
+    """Tests for error cases in UpsertColumnsCompressor when keys are not found."""
+
+    def test_update_before_with_nonexistent_key_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that UPDATE_BEFORE for a non-existent key raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_BEFORE for a key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (999, "z", 99)),  # Key doesn't exist
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(999,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_after_with_nonexistent_key_raises_interface_error(self, mock_cursor):
+        """Test that UPDATE_AFTER for a non-existent key raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_AFTER for a key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_AFTER, (999, "z", 99)),  # Key doesn't exist
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(999,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_before_after_delete_raises_interface_error(self, mock_cursor):
+        """Test that UPDATE_BEFORE after DELETE raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE followed by UPDATE_BEFORE for the same key
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),  # Key no longer exists
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(1,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_after_without_prior_insert_raises_interface_error(self, mock_cursor):
+        """Test that UPDATE_AFTER without any prior INSERT raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_AFTER as the first operation
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 10)),  # No prior INSERT
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(1,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_before_with_compound_key_not_found_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that UPDATE_BEFORE with compound key not found raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_BEFORE for a compound key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "z", 99)),  # Different second key component
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(1, 'z'\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_after_with_compound_key_not_found_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that UPDATE_AFTER with compound key not found raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_AFTER for a compound key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_AFTER, (2, "a", 20)),  # Different first key component
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(2, 'a'\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_before_with_dict_rows_nonexistent_key_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that UPDATE_BEFORE for dict rows with non-existent key raises InterfaceError."""
+        mock_cursor.as_dict = True
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_BEFORE for a key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+                ChangeloggedRow(Op.UPDATE_BEFORE, {"id": 999, "value": "z", "count": 99}),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(999,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_after_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
+        """Test that UPDATE_AFTER for dict rows with non-existent key raises InterfaceError."""
+        mock_cursor.as_dict = True
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_AFTER for a key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+                ChangeloggedRow(Op.UPDATE_AFTER, {"id": 999, "value": "z", "count": 99}),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(999,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_with_nonexistent_key_raises_interface_error(self, mock_cursor):
+        """Test that DELETE for a non-existent key raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE for a key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (999, "z", 99)),  # Key doesn't exist
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a key that does not exist in current state: \(999,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_without_prior_insert_raises_interface_error(self, mock_cursor):
+        """Test that DELETE without any prior INSERT raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE as the first operation
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # No prior INSERT
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a key that does not exist in current state: \(1,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_twice_same_key_raises_interface_error(self, mock_cursor):
+        """Test that deleting the same key twice raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with two DELETEs for the same key
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # First delete is OK
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # Second delete should fail
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a key that does not exist in current state: \(1,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_with_compound_key_not_found_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that DELETE with compound key not found raises InterfaceError."""
+        mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE for a compound key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "z", 99)),  # Different second key component
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a key that does not exist in current state: \(1, 'z'\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_with_dict_rows_nonexistent_key_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that DELETE for dict rows with non-existent key raises InterfaceError."""
+        mock_cursor.as_dict = True
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE for a key that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+                ChangeloggedRow(Op.DELETE, {"id": 999, "value": "z", "count": 99}),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a key that does not exist in current state: \(999,\)",
+        ):
+            compressor.get_snapshot()
+
+    def test_successful_delete_does_not_raise_error(self, mock_cursor):
+        """Test that DELETE for an existing key works correctly."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with successful DELETE
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # Should succeed
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        # Verify delete worked
+        assert len(snapshot) == 1
+        assert snapshot[0] == (2, "b", 20)
+
+
+@pytest.mark.unit
+class TestNoUpsertColumnsCompressorErrorCases:
+    """Tests for error cases in NoUpsertColumnsCompressor when rows are not found."""
+
+    def test_update_before_with_nonexistent_row_raises_interface_error(self, mock_cursor):
+        """Test that UPDATE_BEFORE for a non-existent row raises InterfaceError."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_BEFORE for a row that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (999, "z", 99)),  # Row doesn't exist
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_after_without_update_before_raises_interface_error(self, mock_cursor):
+        """Test that bare UPDATE_AFTER without UPDATE_BEFORE raises InterfaceError."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_AFTER without UPDATE_BEFORE
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                # Bare UPDATE_AFTER - no UPDATE_BEFORE
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 15)),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_before_after_delete_raises_interface_error(self, mock_cursor):
+        """Test that UPDATE_BEFORE after DELETE raises InterfaceError."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE followed by UPDATE_BEFORE for the same row
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),  # Row no longer exists
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_with_nonexistent_row_raises_interface_error(self, mock_cursor):
+        """Test that DELETE for a non-existent row raises InterfaceError."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE for a row that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (999, "z", 99)),  # Row doesn't exist
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_without_prior_insert_raises_interface_error(self, mock_cursor):
+        """Test that DELETE without any prior INSERT raises InterfaceError."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE as the first operation
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # No prior INSERT
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_twice_same_row_raises_interface_error(self, mock_cursor):
+        """Test that deleting the same row twice raises InterfaceError."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with two DELETEs for the same row
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # First delete is OK
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # Second delete should fail
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_before_finds_most_recent_duplicate(self, mock_cursor):
+        """Test that UPDATE_BEFORE finds the most recent duplicate row."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with duplicate rows
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),  # Duplicate
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),  # Updates most recent
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        # Should have two rows: one unchanged, one updated
+        assert len(snapshot) == 2
+        assert snapshot[0] == (1, "a", 10)  # First one unchanged
+        assert snapshot[1] == (1, "a", 20)  # Second one updated
+
+    def test_delete_removes_most_recent_duplicate(self, mock_cursor):
+        """Test that DELETE removes the most recent duplicate row."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with duplicate rows
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),  # Duplicate
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # Deletes most recent
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        # Should have one row remaining
+        assert len(snapshot) == 1
+        assert snapshot[0] == (1, "a", 10)
+
+    def test_update_before_with_dict_rows_nonexistent_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that UPDATE_BEFORE for dict rows with non-existent row raises InterfaceError."""
+        mock_cursor.as_dict = True
+        compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_BEFORE for a row that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+                ChangeloggedRow(Op.UPDATE_BEFORE, {"id": 999, "value": "z", "count": 99}),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_BEFORE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_update_after_without_before_dict_rows_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that bare UPDATE_AFTER for dict rows raises InterfaceError."""
+        mock_cursor.as_dict = True
+        compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with UPDATE_AFTER without UPDATE_BEFORE
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+                # Bare UPDATE_AFTER - no UPDATE_BEFORE
+                ChangeloggedRow(Op.UPDATE_AFTER, {"id": 1, "value": "b", "count": 20}),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_with_dict_rows_nonexistent_raises_interface_error(
+        self, mock_cursor
+    ):
+        """Test that DELETE for dict rows with non-existent row raises InterfaceError."""
+        mock_cursor.as_dict = True
+        compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with DELETE for a row that doesn't exist
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+                ChangeloggedRow(Op.DELETE, {"id": 999, "value": "z", "count": 99}),
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE for a row that does not exist in current state",
+        ):
+            compressor.get_snapshot()
+
+    def test_successful_operations_do_not_raise_errors(self, mock_cursor):
+        """Test that valid operation sequences work correctly."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany with valid operation sequence
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 15)),
+                ChangeloggedRow(Op.DELETE, (2, "b", 20)),
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        # Verify operations worked correctly
+        assert len(snapshot) == 1
+        assert snapshot[0] == (1, "a", 15)
+
+
+@pytest.mark.unit
+class TestUpsertColumnsCompressorUpdateSequencing:
+    """Tests for UPDATE_BEFORE/UPDATE_AFTER sequencing in UpsertColumnsCompressor."""
+
+    def test_bare_update_after_with_existing_key_succeeds(self, mock_cursor):
+        """Test that bare UPDATE_AFTER works when key exists."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                # Bare UPDATE_AFTER - no UPDATE_BEFORE
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        assert len(snapshot) == 1
+        assert snapshot[0] == (1, "a", 20)
+
+    def test_insert_after_update_before_raises_error(self, mock_cursor):
+        """Test that INSERT after UPDATE_BEFORE raises error."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),  # ERROR
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received INSERT while an UPDATE_BEFORE is pending",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_after_update_before_raises_error(self, mock_cursor):
+        """Test that DELETE after UPDATE_BEFORE raises error."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # ERROR
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE while an UPDATE_BEFORE is pending",
+        ):
+            compressor.get_snapshot()
+
+    def test_paired_update_before_after_succeeds(self, mock_cursor):
+        """Test that UPDATE_BEFORE immediately followed by UPDATE_AFTER works."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        assert len(snapshot) == 1
+        assert snapshot[0] == (1, "a", 20)
+
+
+@pytest.mark.unit
+class TestNoUpsertColumnsCompressorUpdateSequencing:
+    """Tests for UPDATE_BEFORE/UPDATE_AFTER sequencing in NoUpsertColumnsCompressor."""
+
+    def test_bare_update_after_requires_update_before(self, mock_cursor):
+        """Test that bare UPDATE_AFTER requires UPDATE_BEFORE."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                # Bare UPDATE_AFTER - no UPDATE_BEFORE (should fail)
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
+            ],
+            [],
+        ]
+
+        # Should raise error because UPDATE_BEFORE is required
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
+        ):
+            compressor.get_snapshot()
+
+    def test_insert_after_update_before_raises_error(self, mock_cursor):
+        """Test that INSERT after UPDATE_BEFORE raises error."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),  # ERROR
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received INSERT while an UPDATE_BEFORE is pending",
+        ):
+            compressor.get_snapshot()
+
+    def test_delete_after_update_before_raises_error(self, mock_cursor):
+        """Test that DELETE after UPDATE_BEFORE raises error."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # ERROR
+            ],
+            [],
+        ]
+
+        with pytest.raises(
+            InterfaceError,
+            match=r"Received DELETE while an UPDATE_BEFORE is pending",
+        ):
+            compressor.get_snapshot()
+
+    def test_paired_update_before_after_succeeds(self, mock_cursor):
+        """Test that UPDATE_BEFORE immediately followed by UPDATE_AFTER works."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
                 ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
             ],
             [],
