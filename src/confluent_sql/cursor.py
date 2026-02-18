@@ -642,7 +642,9 @@ class Cursor:
                 # Handle the current (Jan 2026) bug state where streaming DDL statements like CTAS
                 # are erroneously marked as being bounded, see
                 # https://confluent.slack.com/archives/C044A8FNSJ0/p1768575045244419
-                self._execution_mode.is_streaming and self._statement.is_running
+                self._execution_mode.is_streaming
+                and self._statement.is_running
+                and not self._statement.is_pure_ddl
             ):
                 # Ready to possibly fetch results!
                 return

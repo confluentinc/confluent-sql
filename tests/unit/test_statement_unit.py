@@ -43,17 +43,34 @@ class TestStatementIsReady:
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_ready
 
-    def test_bounded_not_ready(
+    def test_bounded_ddl_not_ready(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that a bounded statement not in COMPLETED or
-        STOPPED phase is not ready."""
+        STOPPED phase is not ready.
+        We also need to specify a `pure-ddl` sql_kind until the `is_bounded`
+        property is properly reported."""
         statement_json = statement_response_factory(
             phase="RUNNING",
+            sql_kind="CREATE_TABLE",
             is_bounded=True,
         )
         statement = Statement.from_response(mock_connection, statement_json)
         assert not statement.is_ready
+
+    def test_bounded_non_pure_ddl_ready(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that a bounded statement not in COMPLETED or
+        STOPPED phase is ready if it's sql kind is not what we call
+        `pure-ddl`."""
+        statement_json = statement_response_factory(
+            phase="RUNNING",
+            sql_kind="SELECT",
+            is_bounded=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_ready
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "RUNNING"])
     def test_unbounded_is_ready(
