@@ -20,6 +20,7 @@ import httpx
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError
 from .execution_mode import ExecutionMode
+from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import RowPythonTypes
 
@@ -385,6 +386,7 @@ class Connection:
         parameters: tuple | list | None = None,
         timeout: int = 3000,
         statement_name: str | None = None,
+        statement_label: str | None = None,
     ) -> Statement:
         """Execute bounded DDL that completes after consuming snapshot data.
 
@@ -403,6 +405,10 @@ class Connection:
             parameters: Optional statement parameters
             timeout: Maximum time to wait for completion in seconds
             statement_name: Optional name for the statement
+            statement_label: Optional label for the statement. Labels can be used to
+                            group and manage related statements. The label will be
+                            prefixed with "user.confluent.io/" when stored but you only
+                            need to provide the label value itself (e.g., "my-ddl-batch")
 
         Returns:
             Statement for managing the statement lifecycle
@@ -412,7 +418,13 @@ class Connection:
             ProgrammingError: If statement is invalid
         """
         with self.closing_cursor(mode=ExecutionMode.SNAPSHOT_DDL) as cur:
-            cur.execute(statement_text, parameters, timeout=timeout, statement_name=statement_name)
+            cur.execute(
+                statement_text,
+                parameters,
+                timeout=timeout,
+                statement_name=statement_name,
+                statement_label=statement_label,
+            )
 
         # Return the last version of the statement
         return cur.statement
@@ -423,6 +435,7 @@ class Connection:
         parameters: tuple | list | None = None,
         timeout: int = 3000,
         statement_name: str | None = None,
+        statement_label: str | None = None,
     ) -> Statement:
         """Execute unbounded DDL that starts a streaming job.
 
@@ -437,14 +450,90 @@ class Connection:
             parameters: Optional statement parameters
             timeout: Maximum time to wait for completion in seconds
             statement_name: Optional name for the statement
+            statement_label: Optional label for the statement. Labels can be used to
+                            group and manage related statements. The label will be
+                            prefixed with "user.confluent.io/" when stored but you only
+                            need to provide the label value itself (e.g., "streaming-jobs")
         Returns:
             Statement for any further management of the statement lifecycle
         """
 
         with self.closing_cursor(mode=ExecutionMode.STREAMING_DDL) as cur:
-            cur.execute(statement_text, parameters, timeout=timeout, statement_name=statement_name)
+            cur.execute(
+                statement_text,
+                parameters,
+                timeout=timeout,
+                statement_name=statement_name,
+                statement_label=statement_label,
+            )
 
         return cur.statement
+
+    def list_statements(self, *, label: str, page_size: int = 100) -> list[Statement]:
+        """Return a list of Statement objects for statements with the given label.
+
+        This method retrieves all statements that were created with the specified label,
+        which is useful for managing groups of related statements. The method handles
+        pagination automatically to retrieve all matching statements.
+
+        Args:
+            label: The label to filter statements by. You can provide either:
+                   - Just the label value (e.g., "my-batch-job") - the "user.confluent.io/"
+                     prefix will be added automatically
+                   - The full label with prefix (e.g., "user.confluent.io/my-batch-job")
+            page_size: Number of statements to fetch per API request (default: 100).
+                      The method will automatically paginate through all results.
+
+        Returns:
+            A list of Statement objects that have the specified label. Returns an
+            empty list if no statements match the label.
+
+        Raises:
+            OperationalError: If the API request fails
+
+        Example:
+            # Submit statements with a label
+            cursor.execute("SELECT * FROM users", statement_label="daily-report")
+            cursor.execute("SELECT * FROM orders", statement_label="daily-report")
+
+            # Later, retrieve all statements with that label
+            statements = connection.list_statements(label="daily-report")
+
+            # Delete all statements with the label
+            for stmt in statements:
+                connection.delete_statement(stmt)
+        """
+
+        if not label.startswith(STATEMENT_LABEL_PREFIX):
+            # Append prefix and make it a label selector for the API query parameter. The API
+            # expects the full label key, which includes the prefix, but we want to allow users
+            # to filter by just the end-user portion of the label.
+            adjusted_label_filter = f"{STATEMENT_LABEL_PREFIX}{label}=true"
+        else:
+            adjusted_label_filter = f"{label}=true"
+
+        statements: list[Statement] = []
+
+        has_more_pages = True
+        next_page_token: str | None = None
+        # Use the `label_selector` query parameter to filter statements by label
+        # on the server side.
+        parameters = {"label_selector": adjusted_label_filter, "page_size": page_size}
+        while has_more_pages:
+            response = self._request("/statements", params=parameters)
+            resp_json = response.json()
+            statements_json = resp_json.get("data", [])
+            statements.extend(Statement.from_response(self, s) for s in statements_json)
+
+            # Check if there are more pages to fetch based on the presence of a 'next' link in the
+            # response metadata. The 'next' value will be an entire URL, but we just need to extract
+            # the page token from it for the next request.
+            next_page_token = self._get_next_page_token(resp_json.get("metadata", {}).get("next"))
+            if next_page_token:
+                parameters["page_token"] = next_page_token
+            has_more_pages = next_page_token is not None
+
+        return statements
 
     def delete_statement(self, statement: str | Statement) -> None:
         """
@@ -523,6 +612,7 @@ class Connection:
         statement: str,
         execution_mode: ExecutionMode,
         statement_name: str | None = None,
+        statement_label: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response.
@@ -531,6 +621,8 @@ class Connection:
             statement: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
             statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}')
+            statement_label: Optional label for the statement for easier identification in
+                            server logs and UIs (defaults to None).
 
         Returns:
             Dictionary containing the API response
@@ -565,6 +657,17 @@ class Connection:
                 "stopped": False,
             },
         }
+
+        if statement_label is not None:
+            # Guard against user already including the mandatory prefix.
+            if statement_label.startswith(STATEMENT_LABEL_PREFIX):
+                label_key = statement_label
+            else:
+                label_key = f"{STATEMENT_LABEL_PREFIX}{statement_label}"
+
+            payload["metadata"] = {
+                "labels": {label_key: "true"},
+            }
 
         # Submit statement using the API
         res = self._request("/statements", method="POST", json=payload)
@@ -633,6 +736,17 @@ class Connection:
             return response
         except httpx.HTTPStatusError as e:
             raise OperationalError(f"Error sending request {e.response.status_code}") from e
+
+    def _get_next_page_token(self, next_url: str | None) -> str | None:
+        """Extract the next page token from the next_url, if present."""
+        if next_url is None:
+            return None
+
+        # The next_url is expected to be a full URL with a query parameter like '?page_token=abc123'
+        # We can parse it to extract the page_token value.
+        parsed = httpx.URL(next_url)
+        page_token = parsed.params.get("page_token")
+        return page_token
 
 
 class RowTypeRegistry:
