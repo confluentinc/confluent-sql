@@ -1,8 +1,10 @@
 """Integration test pytest configuration and fixtures."""
 
+import getpass
 import logging
 import os
 from collections.abc import Callable, Generator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -114,7 +116,8 @@ def test_table_name():
     """Returns a table name to use for the table to populate for testing."""
     # Returns a fixed name for the test table, but if we have to adopt
     # pytest-xdist, we could include the worker id in the name to avoid collisions.
-    return "pytest_table"
+    suffix = f"_{getpass.getuser()}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
+    return "pytest_table" + suffix
 
 
 @pytest.fixture
