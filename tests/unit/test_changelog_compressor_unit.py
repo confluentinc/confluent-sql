@@ -350,7 +350,7 @@ class TestCompressorValidation:
     """Test validation in ChangelogCompressor and its subclasses."""
 
     def test_all_compressors_require_changelog_cursor(self, mock_cursor):
-        """Test that all compressor types raise InterfaceError when cursor.returns_changelog is False."""
+        """Test compressor types raise InterfaceError when cursor.returns_changelog is False."""
         # Set cursor to not return changelog
         mock_cursor.returns_changelog = False
 
@@ -818,7 +818,8 @@ class TestUpsertColumnsCompressorErrorCases:
 
         with pytest.raises(
             InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(999,\)",
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
+            r"\(999,\)",
         ):
             compressor.get_snapshot()
 
@@ -898,7 +899,8 @@ class TestUpsertColumnsCompressorErrorCases:
 
         with pytest.raises(
             InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(1, 'z'\)",
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
+            r"\(1, 'z'\)",
         ):
             compressor.get_snapshot()
 
@@ -918,7 +920,8 @@ class TestUpsertColumnsCompressorErrorCases:
 
         with pytest.raises(
             InterfaceError,
-            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(2, 'a'\)",
+            match=r"Received UPDATE_AFTER for a key that does not exist in current state: "
+            r"\(2, 'a'\)",
         ):
             compressor.get_snapshot()
 
@@ -939,7 +942,8 @@ class TestUpsertColumnsCompressorErrorCases:
 
         with pytest.raises(
             InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(999,\)",
+            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
+            r"\(999,\)",
         ):
             compressor.get_snapshot()
 
@@ -1501,7 +1505,7 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
 class TestCursorClearChangelogBuffer:
     """Tests for Cursor.clear_changelog_buffer() method."""
 
-    def test_clear_changelog_buffer_calls_processor_clear_buffer(self, mock_cursor):
+    def test_clear_changelog_buffer_calls_processor_clear_buffer(self, mock_cursor: Cursor):
         """Test that clear_changelog_buffer() delegates to processor.clear_buffer()."""
         # Bind the real method to the mock cursor
         mock_cursor.clear_changelog_buffer = Cursor.clear_changelog_buffer.__get__(
@@ -1518,7 +1522,7 @@ class TestCursorClearChangelogBuffer:
         # Verify it called clear_buffer on the processor
         mock_processor.clear_buffer.assert_called_once()
 
-    def test_clear_changelog_buffer_no_op_when_no_processor(self, mock_cursor):
+    def test_clear_changelog_buffer_no_op_when_no_processor(self, mock_cursor: Cursor):
         """Test that clear_changelog_buffer() is a no-op when processor is None."""
 
         mock_cursor._changelog_processor = None
