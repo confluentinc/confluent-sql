@@ -29,7 +29,7 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
-from .statement import Statement
+from .statement import Phase, Statement
 from .types import convert_statement_parameters
 
 if TYPE_CHECKING:
@@ -154,16 +154,23 @@ class Cursor:
         *,
         timeout: int = 3000,
         statement_name: str | None = None,
+        statement_label: str | None = None,
     ) -> None:
         """
         Execute a SQL statement.
 
         Args:
-            statement: The SQL statement to execute
+            statement_text: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
             timeout: Maximum time to wait for statement completion in seconds (default: 3000)
             statement_name: Optional name for the statement (defaults to DB-API UUID
                             if not provided)
+            statement_label: Optional label for the statement. Labels can be used to
+                            group and manage related statements. The label will be
+                            prefixed with "user.confluent.io/" when stored but you only
+                            need to provide the label value itself (e.g., "my-batch-job").
+                            Use Connection.list_statements(label=...) to retrieve statements
+                            by label.
 
         Raises:
             InterfaceError: If the cursor is closed
@@ -197,7 +204,9 @@ class Cursor:
         self._next_page = None
 
         # Now submit the statement and wait for it to be ready
-        self._statement = self._submit_statement(statement_text, parameters, statement_name)
+        self._statement = self._submit_statement(
+            statement_text, parameters, statement_name, statement_label
+        )
 
         if self._statement.is_failed:
             raise OperationalError(
@@ -619,14 +628,24 @@ class Cursor:
                     as_dict=self._results_as_dicts,
                 )
 
-            if statement.is_ready or (
-                # Handle the current (Jan 2026) bug state where streaming DDL statements like CTAS
-                # are erroneously marked as being bounded, see
-                # https://confluent.slack.com/archives/C044A8FNSJ0/p1768575045244419
-                self._execution_mode.is_streaming
-                and self._statement.is_running
-                and not self._statement.is_pure_ddl
-            ):
+            # Determine if the statement is ready based on execution mode and statement type
+            if self._execution_mode.is_streaming:
+                # In streaming mode, statements are ready when RUNNING (or terminal states)
+                # This handles:
+                # - Regular streaming queries
+                # - Streaming DDL (CTAS in streaming mode)
+                # Note: CTAS is currently misreported as bounded due to a server bug
+                statement_ready = statement.is_running or statement.phase in [
+                    Phase.COMPLETED,
+                    Phase.STOPPED,
+                    Phase.FAILED,
+                ]
+            else:
+                # In snapshot mode, use the statement's is_ready property
+                # which waits for completion for bounded statements
+                statement_ready = statement.is_ready
+
+            if statement_ready:
                 # Ready to possibly fetch results!
                 return
 
@@ -689,6 +708,7 @@ class Cursor:
         statement_text: str,
         parameters: tuple | list | None = None,
         statement_name: str | None = None,
+        statement_label: str | None = None,
     ) -> Statement:
         """
         Submit a SQL statement for execution.
@@ -698,6 +718,8 @@ class Cursor:
             parameters: Parameters for the SQL statement (optional)
             statement_name: Optional name for the statement (defaults to DB-API UUID if
                             not provided)
+            statement_label: Optional label for the statement for easier identification in
+                            server logs and UIs (defaults to None)
 
         Returns:
             The submitted Statement object
@@ -716,6 +738,7 @@ class Cursor:
             interpolated_statement,
             self._execution_mode,
             statement_name,
+            statement_label,
         )
         return Statement.from_response(self._connection, response)
 
