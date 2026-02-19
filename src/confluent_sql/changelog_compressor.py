@@ -152,6 +152,41 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         """
         ...
 
+    @abc.abstractmethod
+    def _has_pending_update(self) -> bool:
+        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
+
+        Returns:
+            True if a pending update is in progress, False otherwise.
+        """
+        ...
+
+    @abc.abstractmethod
+    def _clear_storage(self) -> None:
+        """Clear internal row storage."""
+        ...
+
+    @abc.abstractmethod
+    def _clear_pending_update(self) -> None:
+        """Clear pending update tracking state."""
+        ...
+
+    def _validate_no_pending_update(self, op: Op, row: T) -> None:
+        """Raise if we have a pending update and aren't processing UPDATE_AFTER.
+
+        Args:
+            op: The changelog operation being processed.
+            row: The row data.
+
+        Raises:
+            InterfaceError: If a pending UPDATE_BEFORE exists while processing a
+                           non-UPDATE_AFTER operation.
+        """
+        if op != Op.UPDATE_AFTER and self._has_pending_update():
+            raise InterfaceError(
+                f"Received {op.name} while an UPDATE_BEFORE is pending: {row}"
+            )
+
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
 
@@ -187,6 +222,8 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         This method closes the underlying cursor and clears any internal state.
         After calling close(), the compressor should not be used anymore.
         """
+        self._clear_storage()
+        self._clear_pending_update()
         self._cursor.close()
 
 
@@ -239,6 +276,22 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         """
         ...
 
+    def _has_pending_update(self) -> bool:
+        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
+
+        Returns:
+            True if a pending update is in progress, False otherwise.
+        """
+        return self._expecting_update_after
+
+    def _clear_storage(self) -> None:
+        """Clear internal row storage."""
+        self._rows_by_key.clear()
+
+    def _clear_pending_update(self) -> None:
+        """Clear pending update tracking state."""
+        self._expecting_update_after = False
+
     def _apply_operation(self, op: Op, row: T) -> None:
         """Apply a changelog operation to the internal state.
 
@@ -246,11 +299,7 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             op: The changelog operation.
             row: The row data.
         """
-        # Check for unexpected pending update (except when processing UPDATE_AFTER).
-        # (Basically, if we had gotten an UPDATE_BEFORE, we highly expect the next
-        #  event to be its matching UPDATE_AFTER.)
-        if op != Op.UPDATE_AFTER and self._expecting_update_after:
-            raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
+        self._validate_no_pending_update(op, row)
 
         key = self._extract_key(row)
 
@@ -295,16 +344,6 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         """
         return [copy.deepcopy(row) for row in self._rows_by_key.values()]
 
-    def close(self) -> None:
-        """Close the compressor and release resources.
-
-        Clears internal row storage and pending update tracking before
-        delegating to parent class to close the cursor.
-        """
-        self._rows_by_key.clear()
-        self._expecting_update_after = False
-        super().close()
-
 
 class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
     """Abstract base class for compressors handling statements without upsert columns.
@@ -331,6 +370,22 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         """
         super().__init__(cursor, statement)
         self._rows = []
+        self._pending_update_position = None
+
+    def _has_pending_update(self) -> bool:
+        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
+
+        Returns:
+            True if a pending update is in progress, False otherwise.
+        """
+        return self._pending_update_position is not None
+
+    def _clear_storage(self) -> None:
+        """Clear internal row storage."""
+        self._rows.clear()
+
+    def _clear_pending_update(self) -> None:
+        """Clear pending update tracking state."""
         self._pending_update_position = None
 
     def _find_row_position(self, row: T, operation: Op) -> int:
@@ -363,11 +418,7 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             op: The changelog operation.
             row: The row data.
         """
-        # Check for unexpected pending update (except when processing UPDATE_AFTER).
-        # (Basically, if we had gotten an UPDATE_BEFORE, we highly expect the next
-        #  event to be its matching UPDATE_AFTER.)
-        if op != Op.UPDATE_AFTER and self._pending_update_position is not None:
-            raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
+        self._validate_no_pending_update(op, row)
 
         if op == Op.INSERT:
             self._rows.append(row)
@@ -402,16 +453,6 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             A deep copy of the list of rows.
         """
         return copy.deepcopy(self._rows)
-
-    def close(self) -> None:
-        """Close the compressor and release resources.
-
-        Clears internal row storage and pending update tracking before
-        delegating to parent class to close the cursor.
-        """
-        self._rows.clear()
-        self._pending_update_position = None
-        super().close()
 
 
 class UpsertColumnsTupleCompressor(UpsertColumnsCompressor[StatementResultTuple]):
