@@ -12,8 +12,12 @@ Usage:
     cursor.execute("SELECT first_letter, COUNT(*) FROM users GROUP BY first_letter")
     compressor = cursor.changelog_compressor()
 
-    # Get current snapshot of accumulated results
-    snapshot = compressor.get_snapshot()
+    # Iterate over snapshots until the query is stopped
+    for snapshot in compressor.snapshots():
+        process(snapshot)
+        time.sleep(5)  # Optional: wait between polls
+
+    # Generator exits when query is externally stopped/deleted or fails
 
 Compressors consume raw changelog events from RawChangelogProcessor (via the cursor)
 and apply operations to maintain the compressed result set. Storage strategies are
@@ -28,10 +32,11 @@ from __future__ import annotations
 import abc
 import copy
 import logging
+from collections.abc import Generator
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from .changelog import ChangeloggedRow, ResultTupleOrDict, StatementResultTuple
-from .exceptions import InterfaceError
+from .exceptions import InterfaceError, StatementStoppedError
 from .statement import Op, Schema, Statement
 from .types import StrAnyDict
 
@@ -183,72 +188,103 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
                            non-UPDATE_AFTER operation.
         """
         if op != Op.UPDATE_AFTER and self._has_pending_update():
-            raise InterfaceError(
-                f"Received {op.name} while an UPDATE_BEFORE is pending: {row}"
-            )
+            raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
 
-    def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
-        """Fetch and accumulate changelog operations, returning the current logical result set.
+    def snapshots(self, fetch_batchsize: int | None = None) -> Generator[list[T], None, None]:
+        """Generator that yields snapshots of the accumulated result set until the query stops.
 
-        This method fetches ALL currently available changelog events from the cursor (until
-        fetchmany returns an empty list), applies them to the internal state, and returns a
-        self-consistent snapshot of the accumulated result set.
+        This generator continuously polls for new changelog events, applies them to the internal
+        state, and yields self-consistent snapshots of the accumulated result set. It automatically
+        terminates when the streaming query enters a terminal state and all results have been
+        consumed.
+
+        Each iteration fetches ALL currently available changelog events from the cursor (until
+        fetchmany returns an empty list), applies them to the internal state, and yields a
+        self-consistent snapshot.
 
         **Self-Consistency**: A snapshot is considered self-consistent when all currently
         available changelog events have been consumed and applied. This means the snapshot
         reflects a coherent state with no pending UPDATE_BEFORE operations awaiting their
         matching UPDATE_AFTER.
 
-        **Usage Pattern**: This method is designed to be called repeatedly in a loop for
-        streaming queries. Each call fetches new events that arrived since the last call
-        and updates the accumulated state accordingly.
+        **No Guarantee of Logical Changes**: There is NO guarantee that consecutive snapshots
+        will differ. If no new changelog events arrived since the prior yield, the snapshot
+        will be logically identical to the previous one. Additionally, even if events were
+        processed, the logical result set may remain unchanged (e.g., an INSERT followed
+        immediately by a DELETE of the same row).
 
-        **No Guarantee of Logical Changes**: There is NO guarantee that the snapshot will
-        differ from the previous call. If no new changelog events have been processed since
-        the prior call, the returned snapshot will be logically identical to the previous one.
-        Additionally, even if events were processed, the logical result set may remain unchanged
-        (e.g., an INSERT followed immediately by a DELETE of the same row).
-
-        **Return Value**: Each call returns a deep copy of the accumulated rows. This ensures
-        that modifications to the returned list or its contents will not affect the compressor's
-        internal state. The caller is free to mutate the returned snapshot.
+        **Return Value**: Each yielded snapshot is a deep copy of the accumulated rows. This
+        ensures that modifications to the snapshot will not affect the compressor's internal
+        state. The caller is free to mutate the yielded snapshots.
 
         **Memory Management**: After consuming all available events, this method automatically
         calls cursor.clear_changelog_buffer() to free memory by clearing the cursor's internal
         event buffer. The compressor's accumulated state remains in memory.
 
+        **Termination**: The generator raises exceptions when the statement stops:
+        - StatementStoppedError: Raised when cursor.may_have_results becomes False,
+          indicating the statement entered a terminal phase (STOPPED, FAILED, COMPLETED).
+          The exception includes the Statement object for inspection of why it stopped.
+        - StatementDeletedError: A subclass of StatementStoppedError raised specifically
+          when the statement is deleted (404 response). This is a distinct error case
+          from normal stopping.
+
+        Since streaming queries run indefinitely, any termination is exceptional and
+        warrants an exception rather than silent StopIteration.
+
         Args:
             fetch_batchsize: The batch size to use for fetching, or None to use cursor.arraysize.
 
-        Returns:
-            A deep copy of the accumulated logical result set.
+        Yields:
+            Deep copies of the accumulated logical result set after consuming all currently
+            available changelog events.
 
         Example:
             >>> compressor = cursor.changelog_compressor()
-            >>> while True:
-            ...     snapshot = compressor.get_snapshot()
+            >>> for snapshot in compressor.snapshots():
             ...     process(snapshot)
-            ...     time.sleep(5)
+            ...     time.sleep(5)  # Optional: wait between polls
+            >>> # Generator exits when query is stopped/deleted or fails
+            >>> print("Streaming query stopped")
         """
         batchsize = fetch_batchsize or self._cursor.arraysize
 
-        # Keep fetching until no more results
         while True:
-            batch = self._cursor.fetchmany(batchsize)
-            if not batch:
-                # No more events available - clear the buffer to free memory
-                self._cursor.clear_changelog_buffer()
-                break
+            if not self._cursor.may_have_results:
+                # Statement stopped unexpectedly - raise exception with context
+                statement = self._cursor.statement
+                statement_name = statement.name if statement else "unknown"
+                phase_info = statement.phase if statement else None
+                phase_suffix = (
+                    f" (phase: {statement.phase})" if statement and statement.phase else ""
+                )
+                message = (
+                    f"Streaming statement '{statement_name}' stopped unexpectedly{phase_suffix}"
+                )
+                raise StatementStoppedError(
+                    message,
+                    statement_name=statement_name,
+                    statement=statement,
+                    phase=phase_info,
+                )
 
-            for changelogged_row in batch:
-                # Must cast because cursor.fetchmany() returns list[ResultRow],
-                # but if using a ChangelogCompressor, we know the rows are actually
-                # ChangeloggedRow consisting of (Op, T).
-                op, row = cast(ChangeloggedRow, changelogged_row)
-                self._apply_operation(op, cast(T, row))
+            # Fetch all currently available events
+            while True:
+                batch = self._cursor.fetchmany(batchsize)
+                if not batch:
+                    # No more events available in this iteration - clear the buffer to free memory
+                    self._cursor.clear_changelog_buffer()
+                    break
 
-        # Delegate to subclass to copy from its specific storage structure
-        return self._copy_accumulated_rows()
+                for changelogged_row in batch:
+                    # Must cast because cursor.fetchmany() returns list[ResultRow],
+                    # but if using a ChangelogCompressor, we know the rows are actually
+                    # ChangeloggedRow consisting of (Op, T).
+                    op, row = cast(ChangeloggedRow, changelogged_row)
+                    self._apply_operation(op, cast(T, row))
+
+            # Yield current snapshot after processing all available events
+            yield self._copy_accumulated_rows()
 
     def close(self) -> None:
         """Close the compressor and release resources.

@@ -13,7 +13,7 @@ from confluent_sql.changelog_compressor import (
     create_changelog_compressor,
 )
 from confluent_sql.cursor import Cursor
-from confluent_sql.exceptions import InterfaceError
+from confluent_sql.exceptions import InterfaceError, StatementStoppedError
 from confluent_sql.statement import Op, Schema, Statement, Traits
 
 
@@ -24,9 +24,12 @@ def mock_cursor():
     cursor.arraysize = 100
     cursor.as_dict = False  # Use the public property
     cursor.returns_changelog = True
+    cursor.may_have_results = True  # Allow generator to yield snapshots
 
     # Mock statement with schema and traits
     statement = MagicMock(spec=Statement)
+    statement.name = "test-statement"
+    statement.phase = None
     statement.traits = MagicMock(spec=Traits)
     statement.traits.upsert_columns = None
 
@@ -42,6 +45,7 @@ def mock_cursor():
     statement.schema = schema
 
     cursor._statement = statement
+    cursor.statement = statement  # Add public statement property
 
     return cursor
 
@@ -64,7 +68,7 @@ class TestUpsertColumnsTupleCompressor:
             [],  # End of results
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 2
         assert snapshot[0] == (1, "a", 10)
@@ -85,7 +89,7 @@ class TestUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 15)
@@ -105,7 +109,7 @@ class TestUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == (2, "b", 20)
@@ -125,7 +129,7 @@ class TestUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 3
         # Order preserved
@@ -144,14 +148,14 @@ class TestUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot1 = compressor.get_snapshot()
+        snapshot1 = next(compressor.snapshots())
 
         # Reset fetchmany for second call
         mock_cursor.fetchmany.side_effect = [
             [],
         ]  # No new results
 
-        snapshot2 = compressor.get_snapshot()
+        snapshot2 = next(compressor.snapshots())
 
         # Modify the first snapshot
         # Cast to list since we know it's a list from the test setup
@@ -183,7 +187,7 @@ class TestUpsertColumnsDictCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == {"id": 1, "value": "b", "count": 15}
@@ -203,7 +207,7 @@ class TestUpsertColumnsDictCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Should only have one row since keys are the same
         assert len(snapshot) == 1
@@ -225,7 +229,7 @@ class TestUpsertColumnsDictCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Verify key extraction worked correctly (used schema to map dict to indices)
         assert len(snapshot) == 1
@@ -249,7 +253,7 @@ class TestNoUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 2  # Both rows kept
         assert snapshot[0] == (1, "a", 10)
@@ -270,7 +274,7 @@ class TestNoUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 2
         assert snapshot[0] == (1, "a", 15)  # Updated
@@ -290,7 +294,7 @@ class TestNoUpsertColumnsTupleCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1  # One remains
         assert snapshot[0] == (1, "a", 10)
@@ -317,7 +321,7 @@ class TestNoUpsertColumnsTupleCompressor:
             InterfaceError,
             match=r"Received DELETE while an UPDATE_BEFORE is pending",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
 
 @pytest.mark.unit
@@ -339,7 +343,7 @@ class TestNoUpsertColumnsDictCompressor:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == {"id": 1, "value": "b"}
@@ -565,7 +569,7 @@ class TestBatchSize:
         ]
 
         # Use custom batch size
-        snapshot = compressor.get_snapshot(fetch_batchsize=50)
+        snapshot = next(compressor.snapshots(fetch_batchsize=50))
 
         # Verify fetchmany was called with custom size
         mock_cursor.fetchmany.assert_called_with(50)
@@ -583,7 +587,7 @@ class TestBatchSize:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Verify fetchmany was called with cursor's arraysize
         mock_cursor.fetchmany.assert_called_with(200)
@@ -604,7 +608,7 @@ class TestCloseMethod:
             [ChangeloggedRow(Op.INSERT, (1, "a", 10))],
             [],
         ]
-        compressor.get_snapshot()
+        next(compressor.snapshots())
 
         # Close the compressor
         compressor.close()
@@ -626,7 +630,7 @@ class TestCloseMethod:
             ],
             [],
         ]
-        compressor.get_snapshot()
+        next(compressor.snapshots())
 
         # Verify data exists
         assert len(compressor._rows_by_key) == 2
@@ -650,7 +654,7 @@ class TestCloseMethod:
             ],
             [],
         ]
-        compressor.get_snapshot()
+        next(compressor.snapshots())
 
         # Verify data exists
         assert len(compressor._rows) == 2
@@ -674,7 +678,7 @@ class TestCloseMethod:
             [ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10})],
             [],
         ]
-        compressor.get_snapshot()
+        next(compressor.snapshots())
 
         # Close the compressor
         compressor.close()
@@ -716,7 +720,7 @@ class TestEdgeCases:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Original row should remain unchanged
         assert len(snapshot) == 1
@@ -741,7 +745,7 @@ class TestEdgeCases:
             InterfaceError,
             match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_multiple_batches(self, mock_cursor):
         """Test fetching across multiple batches."""
@@ -756,7 +760,7 @@ class TestEdgeCases:
             [],  # End of results
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 3
         assert snapshot[0] == (1, "a", 10)
@@ -770,7 +774,7 @@ class TestEdgeCases:
         # Mock fetchmany to return empty
         mock_cursor.fetchmany.side_effect = [[]]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert snapshot == []
 
@@ -795,7 +799,7 @@ class TestEdgeCases:
             InterfaceError,
             match=r"Received UPDATE_BEFORE while an UPDATE_BEFORE is pending",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
 
 @pytest.mark.unit
@@ -821,7 +825,7 @@ class TestUpsertColumnsCompressorErrorCases:
             match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
             r"\(999,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_after_with_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_AFTER for a non-existent key raises InterfaceError."""
@@ -841,7 +845,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(999,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_before_after_delete_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE after DELETE raises InterfaceError."""
@@ -862,7 +866,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(1,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_after_without_prior_insert_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_AFTER without any prior INSERT raises InterfaceError."""
@@ -881,7 +885,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(1,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_before_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE with compound key not found raises InterfaceError."""
@@ -902,7 +906,7 @@ class TestUpsertColumnsCompressorErrorCases:
             match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
             r"\(1, 'z'\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_after_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_AFTER with compound key not found raises InterfaceError."""
@@ -923,7 +927,7 @@ class TestUpsertColumnsCompressorErrorCases:
             match=r"Received UPDATE_AFTER for a key that does not exist in current state: "
             r"\(2, 'a'\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_before_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE for dict rows with non-existent key raises InterfaceError."""
@@ -945,7 +949,7 @@ class TestUpsertColumnsCompressorErrorCases:
             match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
             r"\(999,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_after_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_AFTER for dict rows with non-existent key raises InterfaceError."""
@@ -966,7 +970,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(999,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_with_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that DELETE for a non-existent key raises InterfaceError."""
@@ -986,7 +990,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a key that does not exist in current state: \(999,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_without_prior_insert_raises_interface_error(self, mock_cursor):
         """Test that DELETE without any prior INSERT raises InterfaceError."""
@@ -1005,7 +1009,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a key that does not exist in current state: \(1,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_twice_same_key_raises_interface_error(self, mock_cursor):
         """Test that deleting the same key twice raises InterfaceError."""
@@ -1026,7 +1030,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a key that does not exist in current state: \(1,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
         """Test that DELETE with compound key not found raises InterfaceError."""
@@ -1046,7 +1050,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a key that does not exist in current state: \(1, 'z'\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that DELETE for dict rows with non-existent key raises InterfaceError."""
@@ -1067,7 +1071,7 @@ class TestUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a key that does not exist in current state: \(999,\)",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_successful_delete_does_not_raise_error(self, mock_cursor):
         """Test that DELETE for an existing key works correctly."""
@@ -1084,7 +1088,7 @@ class TestUpsertColumnsCompressorErrorCases:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Verify delete worked
         assert len(snapshot) == 1
@@ -1112,7 +1116,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_BEFORE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_after_without_update_before_raises_interface_error(self, mock_cursor):
         """Test that bare UPDATE_AFTER without UPDATE_BEFORE raises InterfaceError."""
@@ -1132,7 +1136,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_before_after_delete_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE after DELETE raises InterfaceError."""
@@ -1152,7 +1156,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_BEFORE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_with_nonexistent_row_raises_interface_error(self, mock_cursor):
         """Test that DELETE for a non-existent row raises InterfaceError."""
@@ -1171,7 +1175,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_without_prior_insert_raises_interface_error(self, mock_cursor):
         """Test that DELETE without any prior INSERT raises InterfaceError."""
@@ -1189,7 +1193,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_twice_same_row_raises_interface_error(self, mock_cursor):
         """Test that deleting the same row twice raises InterfaceError."""
@@ -1209,7 +1213,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_before_finds_most_recent_duplicate(self, mock_cursor):
         """Test that UPDATE_BEFORE finds the most recent duplicate row."""
@@ -1226,7 +1230,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Should have two rows: one unchanged, one updated
         assert len(snapshot) == 2
@@ -1247,7 +1251,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Should have one row remaining
         assert len(snapshot) == 1
@@ -1271,7 +1275,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_BEFORE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_update_after_without_before_dict_rows_raises_interface_error(self, mock_cursor):
         """Test that bare UPDATE_AFTER for dict rows raises InterfaceError."""
@@ -1292,7 +1296,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_with_dict_rows_nonexistent_raises_interface_error(self, mock_cursor):
         """Test that DELETE for dict rows with non-existent row raises InterfaceError."""
@@ -1312,7 +1316,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             InterfaceError,
             match=r"Received DELETE for a row that does not exist in current state",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_successful_operations_do_not_raise_errors(self, mock_cursor):
         """Test that valid operation sequences work correctly."""
@@ -1330,7 +1334,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Verify operations worked correctly
         assert len(snapshot) == 1
@@ -1355,7 +1359,7 @@ class TestUpsertColumnsCompressorUpdateSequencing:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 20)
@@ -1378,7 +1382,7 @@ class TestUpsertColumnsCompressorUpdateSequencing:
             InterfaceError,
             match=r"Received INSERT while an UPDATE_BEFORE is pending",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_after_update_before_raises_error(self, mock_cursor):
         """Test that DELETE after UPDATE_BEFORE raises error."""
@@ -1398,7 +1402,7 @@ class TestUpsertColumnsCompressorUpdateSequencing:
             InterfaceError,
             match=r"Received DELETE while an UPDATE_BEFORE is pending",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_paired_update_before_after_succeeds(self, mock_cursor):
         """Test that UPDATE_BEFORE immediately followed by UPDATE_AFTER works."""
@@ -1414,7 +1418,7 @@ class TestUpsertColumnsCompressorUpdateSequencing:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 20)
@@ -1442,7 +1446,7 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
             InterfaceError,
             match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_insert_after_update_before_raises_error(self, mock_cursor):
         """Test that INSERT after UPDATE_BEFORE raises error."""
@@ -1461,7 +1465,7 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
             InterfaceError,
             match=r"Received INSERT while an UPDATE_BEFORE is pending",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_delete_after_update_before_raises_error(self, mock_cursor):
         """Test that DELETE after UPDATE_BEFORE raises error."""
@@ -1480,7 +1484,7 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
             InterfaceError,
             match=r"Received DELETE while an UPDATE_BEFORE is pending",
         ):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
     def test_paired_update_before_after_succeeds(self, mock_cursor):
         """Test that UPDATE_BEFORE immediately followed by UPDATE_AFTER works."""
@@ -1495,7 +1499,7 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 20)
@@ -1533,10 +1537,10 @@ class TestCursorClearChangelogBuffer:
 
 @pytest.mark.unit
 class TestGetSnapshotCallsClearBuffer:
-    """Tests that get_snapshot() calls clear_changelog_buffer() after fetching."""
+    """Tests that snapshots() calls clear_changelog_buffer() after fetching."""
 
     def test_upsert_columns_tuple_compressor_calls_clear_buffer(self, mock_cursor):
-        """Test UpsertColumnsTupleCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        """Test UpsertColumnsTupleCompressor.snapshots() calls clear_changelog_buffer()."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
@@ -1550,7 +1554,7 @@ class TestGetSnapshotCallsClearBuffer:
         ]
 
         # Execute get_snapshot
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Verify clear_changelog_buffer was called after fetchmany returned empty
         mock_cursor.clear_changelog_buffer.assert_called_once()
@@ -1559,7 +1563,7 @@ class TestGetSnapshotCallsClearBuffer:
         assert len(snapshot) == 2
 
     def test_upsert_columns_dict_compressor_calls_clear_buffer(self, mock_cursor):
-        """Test UpsertColumnsDictCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        """Test UpsertColumnsDictCompressor.snapshots() calls clear_changelog_buffer()."""
         mock_cursor.as_dict = True
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
@@ -1572,13 +1576,13 @@ class TestGetSnapshotCallsClearBuffer:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         mock_cursor.clear_changelog_buffer.assert_called_once()
         assert len(snapshot) == 1
 
     def test_no_upsert_columns_tuple_compressor_calls_clear_buffer(self, mock_cursor):
-        """Test NoUpsertColumnsTupleCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        """Test NoUpsertColumnsTupleCompressor.snapshots() calls clear_changelog_buffer()."""
         compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
 
         mock_cursor.fetchmany.side_effect = [
@@ -1588,13 +1592,13 @@ class TestGetSnapshotCallsClearBuffer:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         mock_cursor.clear_changelog_buffer.assert_called_once()
         assert len(snapshot) == 1
 
     def test_no_upsert_columns_dict_compressor_calls_clear_buffer(self, mock_cursor):
-        """Test NoUpsertColumnsDictCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        """Test NoUpsertColumnsDictCompressor.snapshots() calls clear_changelog_buffer()."""
         mock_cursor.as_dict = True
         compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
 
@@ -1605,7 +1609,7 @@ class TestGetSnapshotCallsClearBuffer:
             [],
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         mock_cursor.clear_changelog_buffer.assert_called_once()
         assert len(snapshot) == 1
@@ -1623,7 +1627,7 @@ class TestGetSnapshotCallsClearBuffer:
             [],  # Empty signals end
         ]
 
-        snapshot = compressor.get_snapshot()
+        snapshot = next(compressor.snapshots())
 
         # Should be called exactly once, after the empty batch
         mock_cursor.clear_changelog_buffer.assert_called_once()
@@ -1638,7 +1642,237 @@ class TestGetSnapshotCallsClearBuffer:
         mock_cursor.fetchmany.side_effect = RuntimeError("Fetch failed")
 
         with pytest.raises(RuntimeError, match="Fetch failed"):
-            compressor.get_snapshot()
+            next(compressor.snapshots())
 
         # Should not have been called because we never reached the empty batch
         mock_cursor.clear_changelog_buffer.assert_not_called()
+
+
+@pytest.mark.unit
+class TestSnapshotsGeneratorTermination:
+    """Tests for snapshots() generator termination behavior."""
+
+    def test_generator_terminates_when_may_have_results_becomes_false(self, mock_cursor):
+        """Test snapshots() raises StatementStoppedError when may_have_results is False."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock may_have_results to change after first snapshot
+        call_count = 0
+
+        def may_have_results_side_effect():
+            nonlocal call_count
+            call_count += 1
+            return call_count <= 1  # True first time, False second time
+
+        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
+
+        # Mock fetchmany
+        mock_cursor.fetchmany.side_effect = [
+            [ChangeloggedRow(Op.INSERT, (1, "a", 10))],
+            [],  # End of first snapshot
+        ]
+
+        # Consume the generator and expect StatementStoppedError
+        gen = compressor.snapshots()
+        snapshot = next(gen)
+        assert len(snapshot) == 1
+        assert snapshot[0] == (1, "a", 10)
+
+        # Next iteration should raise StatementStoppedError
+        with pytest.raises(StatementStoppedError) as exc_info:
+            next(gen)
+
+        # Verify exception attributes
+        assert exc_info.value.statement_name == "test-statement"
+        assert exc_info.value.statement is mock_cursor.statement
+
+    def test_generator_yields_multiple_snapshots(self, mock_cursor):
+        """Test snapshots() yields multiple snapshots then raises StatementStoppedError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Track which snapshot we're on
+        snapshots_yielded = [0]  # Use list to allow modification in nested function
+
+        def may_have_results_side_effect():
+            # Allow 3 snapshots to be yielded
+            return snapshots_yielded[0] < 3
+
+        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
+
+        # Mock fetchmany to return data then empty for each snapshot
+        # Pattern: data, [], data, [], data, []
+        mock_cursor.fetchmany.side_effect = [
+            [ChangeloggedRow(Op.INSERT, (1, "a", 10))],  # Snapshot 1 data
+            [],  # End snapshot 1
+            [ChangeloggedRow(Op.INSERT, (2, "b", 20))],  # Snapshot 2 data
+            [],  # End snapshot 2
+            [ChangeloggedRow(Op.INSERT, (3, "c", 30))],  # Snapshot 3 data
+            [],  # End snapshot 3
+        ]
+
+        # Track when snapshots are yielded to update may_have_results
+        gen = compressor.snapshots()
+
+        snapshot1 = next(gen)
+        snapshots_yielded[0] = 1
+        assert len(snapshot1) == 1
+        assert snapshot1[0] == (1, "a", 10)
+
+        snapshot2 = next(gen)
+        snapshots_yielded[0] = 2
+        assert len(snapshot2) == 2
+        assert (1, "a", 10) in snapshot2
+        assert (2, "b", 20) in snapshot2
+
+        snapshot3 = next(gen)
+        snapshots_yielded[0] = 3
+        assert len(snapshot3) == 3
+        assert (1, "a", 10) in snapshot3
+        assert (2, "b", 20) in snapshot3
+        assert (3, "c", 30) in snapshot3
+
+        # Next call should raise StatementStoppedError
+        with pytest.raises(StatementStoppedError) as exc_info:
+            next(gen)
+
+        assert exc_info.value.statement_name == "test-statement"
+
+    def test_generator_with_no_events(self, mock_cursor):
+        """Test generator raises StatementStoppedError when may_have_results=False."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock may_have_results to be False immediately
+        mock_cursor.may_have_results = False
+
+        # Generator should raise StatementStoppedError immediately
+        with pytest.raises(StatementStoppedError) as exc_info:
+            next(compressor.snapshots())
+
+        assert exc_info.value.statement_name == "test-statement"
+
+    def test_generator_with_empty_snapshots(self, mock_cursor):
+        """Test generator yields empty snapshots then raises StatementStoppedError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Track snapshots
+        snapshot_count = 0
+
+        def may_have_results_side_effect():
+            nonlocal snapshot_count
+            return snapshot_count < 2
+
+        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
+
+        # Mock fetchmany to return empty batches
+        def fetchmany_side_effect(_size):
+            nonlocal snapshot_count
+            snapshot_count += 1
+            return []
+
+        mock_cursor.fetchmany.side_effect = lambda size: fetchmany_side_effect(size)  # noqa: ARG005
+
+        # Consume the generator
+        gen = compressor.snapshots()
+        snapshot1 = next(gen)
+        snapshot2 = next(gen)
+
+        # Should yield two empty snapshots
+        assert snapshot1 == []
+        assert snapshot2 == []
+
+        # Next should raise StatementStoppedError
+        with pytest.raises(StatementStoppedError) as exc_info:
+            next(gen)
+
+        assert exc_info.value.statement_name == "test-statement"
+
+    def test_generator_with_trailing_events_before_termination(self, mock_cursor):
+        """Test generator processes all events before raising StatementStoppedError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Track fetchmany call count
+        call_count = 0
+
+        def may_have_results_side_effect():
+            nonlocal call_count
+            # True until we've completed 2 snapshots (4 fetchmany calls)
+            return call_count < 4
+
+        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
+
+        # Mock fetchmany to return data across two snapshots
+        def fetchmany_side_effect(_size):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First batch: initial data
+                return [
+                    ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                    ChangeloggedRow(Op.INSERT, (2, "b", 20)),
+                ]
+            elif call_count == 2:
+                # End of first snapshot
+                return []
+            elif call_count == 3:
+                # Second batch: trailing events
+                return [ChangeloggedRow(Op.INSERT, (3, "c", 30))]
+            else:
+                # End of second snapshot and any subsequent calls
+                return []
+
+        mock_cursor.fetchmany.side_effect = lambda size: fetchmany_side_effect(size)  # noqa: ARG005
+
+        # Consume the generator
+        gen = compressor.snapshots()
+        snapshot1 = next(gen)
+        snapshot2 = next(gen)
+
+        # Should have two snapshots with accumulated state
+        assert len(snapshot1) == 2  # First snapshot has 2 rows
+        assert len(snapshot2) == 3  # Second snapshot has 3 rows (accumulated)
+
+        # Next should raise StatementStoppedError
+        with pytest.raises(StatementStoppedError):
+            next(gen)
+
+    def test_generator_terminates_cleanly_on_for_loop(self, mock_cursor):
+        """Test that for loop over snapshots() raises StatementStoppedError."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Track fetchmany call count
+        call_count = 0
+
+        def may_have_results_side_effect():
+            nonlocal call_count
+            # True until we've completed 2 snapshots (4 fetchmany calls)
+            return call_count < 4
+
+        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
+
+        def fetchmany_side_effect(_size):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [ChangeloggedRow(Op.INSERT, (1, "x", 10))]
+            elif call_count == 2:
+                return []  # End of first snapshot
+            elif call_count == 3:
+                return [ChangeloggedRow(Op.INSERT, (2, "y", 20))]
+            else:
+                return []  # End of second snapshot
+
+        mock_cursor.fetchmany.side_effect = lambda size: fetchmany_side_effect(size)  # noqa: ARG005
+
+        # Use for loop pattern with exception catching
+        snapshots_seen = []
+        with pytest.raises(StatementStoppedError):
+            for snapshot in compressor.snapshots():
+                snapshots_seen.append(snapshot)
+
+        # Should have iterated exactly twice before exception
+        assert len(snapshots_seen) == 2

@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from confluent_sql import Connection, Cursor, InterfaceError
+from confluent_sql import Connection, Cursor, InterfaceError, StatementDeletedError
 from confluent_sql.exceptions import NotSupportedError
 from confluent_sql.statement import Op, Phase
 
@@ -316,7 +316,7 @@ class TestStreamingChangelogCursor:
         - (0, 5) or {"even_odd": 0, "cnt": 5} for even values (2, 4, 6, 8, 10)
         - (1, 5) or {"even_odd": 1, "cnt": 5} for odd values (1, 3, 5, 7, 9)
 
-        The upsert column will be index 0 (even_odd), and get_snapshot() should
+        The upsert column will be index 0 (even_odd), and snapshots() should
         progressively update the counts until reaching the final state of 5 and 5.
 
         Tests both tuple and dict result modes.
@@ -353,13 +353,10 @@ class TestStreamingChangelogCursor:
         compressor = cursor.changelog_compressor()
 
         max_iterations = 20
-        iteration = 0
         final_snapshot = None
 
-        # Loop until we see the expected final state
-        while iteration < max_iterations:
-            snapshot = compressor.get_snapshot()
-
+        # Iterate over snapshots until we see the expected final state
+        for iteration, snapshot in enumerate(compressor.snapshots()):
             # print(f"Iteration {iteration}: snapshot = {snapshot}")
             # Expect to have gotten between 0 and 2 rows in the snapshot, depending on how far
             # along we are in processing the changelog.
@@ -383,7 +380,8 @@ class TestStreamingChangelogCursor:
                     final_snapshot = snapshot_sorted
                     break
 
-            iteration += 1
+            if iteration >= max_iterations - 1:
+                break
             time.sleep(1)
 
         assert final_snapshot is not None, (
@@ -450,13 +448,10 @@ class TestStreamingChangelogCursor:
         compressor = cursor.changelog_compressor()
 
         max_iterations = 20
-        iteration = 0
         final_snapshot = None
 
-        # Loop until we see the expected final state
-        while iteration < max_iterations:
-            snapshot = compressor.get_snapshot()
-
+        # Iterate over snapshots until we see the expected final state
+        for iteration, snapshot in enumerate(compressor.snapshots()):
             # Expect to have 0 or 1 row in the snapshot (global aggregation = single row)
             assert len(snapshot) in (0, 1), (
                 f"Expected snapshot to have 0 or 1 row, got {len(snapshot)}"
@@ -473,7 +468,8 @@ class TestStreamingChangelogCursor:
                     final_snapshot = snapshot
                     break
 
-            iteration += 1
+            if iteration >= max_iterations - 1:
+                break
             time.sleep(1)
 
         assert final_snapshot is not None, (
@@ -484,3 +480,59 @@ class TestStreamingChangelogCursor:
 
         # Cleanup
         cursor.delete_statement()
+
+    @pytest.mark.slow
+    def test_changelog_compressor_raises_on_external_deletion(
+        self,
+        populated_table_connection: Connection,
+        test_table_name: str,
+    ):
+        """Test that snapshots() raises StatementDeletedError when statement is externally deleted.
+
+        This test verifies that if a streaming statement is deleted while iterating over
+        snapshots, the generator raises StatementDeletedError (a subclass of OperationalError)
+        on the next fetch attempt.
+        """
+        cursor = populated_table_connection.streaming_cursor()
+        cursor.execute(
+            f"SELECT c1 % 2 as even_odd, count(*) as cnt FROM {test_table_name} GROUP BY c1 % 2"
+        )
+
+        statement = cursor.statement
+        assert statement is not None
+        assert statement.name is not None
+        statement_name = statement.name
+
+        # Create changelog compressor
+        compressor = cursor.changelog_compressor()
+
+        # Get first snapshot successfully
+        snapshot_iter = compressor.snapshots()
+        first_snapshot = next(snapshot_iter)
+
+        # Verify we got a valid snapshot (may be empty or have data depending on timing)
+        assert isinstance(first_snapshot, list)
+
+        # Now explicitly delete the statement using the connection API
+        populated_table_connection.delete_statement(statement_name)
+
+        # The next attempt to get a snapshot should raise StatementDeletedError
+        # when fetching results (404 from the server)
+        with pytest.raises(StatementDeletedError) as exc_info:
+            next(snapshot_iter)
+            # If we get here, the generator did not raise - it might have returned
+            # another snapshot. Try one more time to ensure we hit the deletion.
+            next(snapshot_iter)
+
+        # Verify the exception details
+        assert exc_info.value.statement_name == statement_name
+        assert statement_name in str(exc_info.value)
+
+        # Verify the statement is actually deleted by trying to get statement status
+        with pytest.raises(StatementDeletedError):
+            populated_table_connection._get_statement_results(statement_name, None)
+
+    # NOTE: We will add a test for StatementStoppedError (the base exception) in the future
+    # when we implement an explicit stop_statement() operation. That test will verify that
+    # stopping a statement (without deleting it) raises StatementStoppedError with the
+    # appropriate phase information, allowing users to inspect why the statement stopped.

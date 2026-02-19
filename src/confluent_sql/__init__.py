@@ -20,6 +20,8 @@ from .exceptions import (
     NotSupportedError,
     OperationalError,
     ProgrammingError,
+    StatementDeletedError,
+    StatementStoppedError,
     TypeMismatchError,
     Warning,
 )
@@ -45,6 +47,8 @@ __all__ = [
     "DataError",
     "OperationalError",
     "ComputePoolExhaustedError",
+    "StatementStoppedError",
+    "StatementDeletedError",
     "IntegrityError",
     "InternalError",
     "ProgrammingError",
