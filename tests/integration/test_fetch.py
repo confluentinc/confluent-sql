@@ -1,5 +1,6 @@
 from collections import Counter, namedtuple
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -9,6 +10,7 @@ from typing import NamedTuple
 import pytest
 
 from confluent_sql import Connection, SqlNone, YearMonthInterval
+from confluent_sql.execution_mode import ExecutionMode
 
 
 @pytest.mark.integration
@@ -587,10 +589,10 @@ class TestExecuteDDL:
 
         # The table will be dropped by the fixture teardown.
 
-    def test_execute_snapshot_ddl_submits_finite_statement(
+    def test_execute_snapshot_ddl_ctas_submits_finite_statement(
         self, connection: Connection, auto_dropped_table_name: str
     ):
-        """Prove that execute_snapshot_ddl() submits a completable statement."""
+        """Prove that execute_snapshot_ddl() CTAS submits a completable statement."""
 
         # Make a CREATE TABLE AS SELECT statement that will run as snapshot DDL.
         statement_text = f"""
@@ -602,7 +604,8 @@ class TestExecuteDDL:
         # execute_snapshot_ddl() should return when the statement is completed.
         statement = connection.execute_snapshot_ddl(statement_text)
 
-        # Returned statement should be completed.
+        # Returned statement should be completed, since was a finite snapshot statement
+        # (even though was CTAS -- submitting as snapshot should take precedence).
         assert not statement.is_running
         # And should have been a bounded statement
         assert statement.is_bounded
@@ -614,6 +617,44 @@ class TestExecuteDDL:
             cursor.execute(f"SELECT COUNT(*) AS row_count FROM `{auto_dropped_table_name}`")
             results = cursor.fetchone()
             assert results == {"row_count": 10}
+
+    def test_execute_ctas_streaming_mode_returns_at_running(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Test that CTAS in streaming mode returns when statement is RUNNING.
+
+        This is in contrast to snapshot mode where CTAS waits until COMPLETED.
+        Due to a current server bug, streaming CTAS is incorrectly reported as bounded,
+        but our execution mode logic should handle this correctly.
+        """
+        statement = None
+        try:
+            # Create a CTAS statement in streaming mode (no LIMIT clause)
+            statement_text = f"""
+                CREATE TABLE `{auto_dropped_table_name}` AS
+                SELECT * FROM `sample_data_stock_trades`
+                WHERE quantity > 100
+            """
+
+            # Use streaming cursor to execute the CTAS
+            with connection.closing_cursor(mode=ExecutionMode.STREAMING_QUERY) as cursor:
+                cursor.execute(statement_text, timeout=10)
+                statement = cursor.statement
+
+                # In streaming mode, the cursor should return when the statement is RUNNING
+                assert statement.is_running, "Statement should be in RUNNING state"
+                assert statement.phase.value != "COMPLETED", "Statement should not be completed yet"
+
+                # Due to the bug, it's currently reported as bounded
+                # When the bug is fixed, this assertion should be updated to:
+                # assert not statement.is_bounded
+                assert statement.is_bounded, "CTAS currently misreported as bounded"
+
+        finally:
+            # Clean up: stop and delete the statement
+            if statement and not statement.is_deleted:
+                with suppress(Exception):
+                    connection.delete_statement(statement)
 
 
 @pytest.mark.integration
