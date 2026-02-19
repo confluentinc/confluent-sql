@@ -159,7 +159,6 @@ class StatementDeletedError(StatementStoppedError):
 
     def __init__(self, message: str, statement_name: str):
         super().__init__(message, statement_name, statement=None, phase=None)
-        self.statement_name = statement_name
 
 
 class IntegrityError(DatabaseError):
