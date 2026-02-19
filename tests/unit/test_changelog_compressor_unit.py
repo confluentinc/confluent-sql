@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from confluent_sql.changelog import ChangeloggedRow
+from confluent_sql.changelog import ChangeloggedRow, RawChangelogProcessor
 from confluent_sql.changelog_compressor import (
     NoUpsertColumnsDictCompressor,
     NoUpsertColumnsTupleCompressor,
@@ -802,9 +802,7 @@ class TestEdgeCases:
 class TestUpsertColumnsCompressorErrorCases:
     """Tests for error cases in UpsertColumnsCompressor when keys are not found."""
 
-    def test_update_before_with_nonexistent_key_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_update_before_with_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE for a non-existent key raises InterfaceError."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
@@ -884,9 +882,7 @@ class TestUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_update_before_with_compound_key_not_found_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_update_before_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE with compound key not found raises InterfaceError."""
         mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
         compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
@@ -906,9 +902,7 @@ class TestUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_update_after_with_compound_key_not_found_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_update_after_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_AFTER with compound key not found raises InterfaceError."""
         mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
         compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
@@ -928,9 +922,7 @@ class TestUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_update_before_with_dict_rows_nonexistent_key_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_update_before_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE for dict rows with non-existent key raises InterfaceError."""
         mock_cursor.as_dict = True
         mock_cursor._statement.traits.upsert_columns = [0]
@@ -1032,9 +1024,7 @@ class TestUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_delete_with_compound_key_not_found_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_delete_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
         """Test that DELETE with compound key not found raises InterfaceError."""
         mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
         compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
@@ -1054,9 +1044,7 @@ class TestUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_delete_with_dict_rows_nonexistent_key_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_delete_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that DELETE for dict rows with non-existent key raises InterfaceError."""
         mock_cursor.as_dict = True
         mock_cursor._statement.traits.upsert_columns = [0]
@@ -1261,9 +1249,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 10)
 
-    def test_update_before_with_dict_rows_nonexistent_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_update_before_with_dict_rows_nonexistent_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE for dict rows with non-existent row raises InterfaceError."""
         mock_cursor.as_dict = True
         compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
@@ -1283,9 +1269,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_update_after_without_before_dict_rows_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_update_after_without_before_dict_rows_raises_interface_error(self, mock_cursor):
         """Test that bare UPDATE_AFTER for dict rows raises InterfaceError."""
         mock_cursor.as_dict = True
         compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
@@ -1306,9 +1290,7 @@ class TestNoUpsertColumnsCompressorErrorCases:
         ):
             compressor.get_snapshot()
 
-    def test_delete_with_dict_rows_nonexistent_raises_interface_error(
-        self, mock_cursor
-    ):
+    def test_delete_with_dict_rows_nonexistent_raises_interface_error(self, mock_cursor):
         """Test that DELETE for dict rows with non-existent row raises InterfaceError."""
         mock_cursor.as_dict = True
         compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
@@ -1513,3 +1495,146 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
 
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 20)
+
+
+@pytest.mark.unit
+class TestCursorClearChangelogBuffer:
+    """Tests for Cursor.clear_changelog_buffer() method."""
+
+    def test_clear_changelog_buffer_calls_processor_clear_buffer(self, mock_cursor):
+        """Test that clear_changelog_buffer() delegates to processor.clear_buffer()."""
+        # Bind the real method to the mock cursor
+        mock_cursor.clear_changelog_buffer = Cursor.clear_changelog_buffer.__get__(
+            mock_cursor, Cursor
+        )
+
+        # Create a mock processor
+        mock_processor = MagicMock(spec=RawChangelogProcessor)
+        mock_cursor._changelog_processor = mock_processor
+
+        # Call clear_changelog_buffer
+        mock_cursor.clear_changelog_buffer()
+
+        # Verify it called clear_buffer on the processor
+        mock_processor.clear_buffer.assert_called_once()
+
+    def test_clear_changelog_buffer_no_op_when_no_processor(self, mock_cursor):
+        """Test that clear_changelog_buffer() is a no-op when processor is None."""
+
+        mock_cursor._changelog_processor = None
+
+        # Should not raise an error even if processor is None, just do nothing
+        mock_cursor.clear_changelog_buffer()
+
+
+@pytest.mark.unit
+class TestGetSnapshotCallsClearBuffer:
+    """Tests that get_snapshot() calls clear_changelog_buffer() after fetching."""
+
+    def test_upsert_columns_tuple_compressor_calls_clear_buffer(self, mock_cursor):
+        """Test UpsertColumnsTupleCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany to return some data then empty
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),
+            ],
+            [],  # Empty batch signals end
+        ]
+
+        # Execute get_snapshot
+        snapshot = compressor.get_snapshot()
+
+        # Verify clear_changelog_buffer was called after fetchmany returned empty
+        mock_cursor.clear_changelog_buffer.assert_called_once()
+
+        # Verify snapshot is correct
+        assert len(snapshot) == 2
+
+    def test_upsert_columns_dict_compressor_calls_clear_buffer(self, mock_cursor):
+        """Test UpsertColumnsDictCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        mock_cursor.as_dict = True
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany to return some data then empty
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        mock_cursor.clear_changelog_buffer.assert_called_once()
+        assert len(snapshot) == 1
+
+    def test_no_upsert_columns_tuple_compressor_calls_clear_buffer(self, mock_cursor):
+        """Test NoUpsertColumnsTupleCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        compressor = NoUpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        mock_cursor.clear_changelog_buffer.assert_called_once()
+        assert len(snapshot) == 1
+
+    def test_no_upsert_columns_dict_compressor_calls_clear_buffer(self, mock_cursor):
+        """Test NoUpsertColumnsDictCompressor.get_snapshot() calls clear_changelog_buffer()."""
+        mock_cursor.as_dict = True
+        compressor = NoUpsertColumnsDictCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
+            ],
+            [],
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        mock_cursor.clear_changelog_buffer.assert_called_once()
+        assert len(snapshot) == 1
+
+    def test_clear_buffer_called_only_when_fetchmany_returns_empty(self, mock_cursor):
+        """Test that clear_changelog_buffer() is only called when fetchmany returns []."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany to return data in multiple batches
+        mock_cursor.fetchmany.side_effect = [
+            [ChangeloggedRow(Op.INSERT, (1, "a", 10))],
+            [ChangeloggedRow(Op.INSERT, (2, "b", 20))],
+            [ChangeloggedRow(Op.INSERT, (3, "c", 30))],
+            [],  # Empty signals end
+        ]
+
+        snapshot = compressor.get_snapshot()
+
+        # Should be called exactly once, after the empty batch
+        mock_cursor.clear_changelog_buffer.assert_called_once()
+        assert len(snapshot) == 3
+
+    def test_clear_buffer_not_called_on_exception(self, mock_cursor):
+        """Test clear_changelog_buffer() is not called if exception occurs during fetch."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsTupleCompressor(mock_cursor, mock_cursor._statement)
+
+        # Mock fetchmany to raise an exception
+        mock_cursor.fetchmany.side_effect = RuntimeError("Fetch failed")
+
+        with pytest.raises(RuntimeError, match="Fetch failed"):
+            compressor.get_snapshot()
+
+        # Should not have been called because we never reached the empty batch
+        mock_cursor.clear_changelog_buffer.assert_not_called()

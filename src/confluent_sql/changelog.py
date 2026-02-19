@@ -458,6 +458,22 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             raise InterfaceError("Internal index bigger than results list.")  # pragma: no cover
         return remaining
 
+    def clear_buffer(self) -> None:
+        """Clear the internal results buffer and reset the index position.
+
+        This frees memory after consuming all buffered results. Useful for
+        long-running streaming queries with changelog compressors that repeatedly
+        fetch batches of events.
+
+        Should only be called when the buffer is exhausted (after fetchmany returns
+        an empty list).
+
+        Note: This does NOT affect the server-side result set or pagination state.
+        Only clears the client-side buffer of already-fetched and consumed events.
+        """
+        self._results.clear()
+        self._index = 0
+
     def _fetch_next_page(self) -> None:
         """Fetch and process the next page of results."""
 

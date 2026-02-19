@@ -298,3 +298,97 @@ class TestCursorParameterInterpolation:
             row = results[0]
             assert row["TABLE_NAME"] == test_table_name  # type: ignore[index]
             assert row["TABLE_SCHEMA"] == dbname  # type: ignore[index]
+
+
+@pytest.mark.integration
+class TestStreamingChangelogCursor:
+    @pytest.mark.slow
+    @pytest.mark.parametrize("as_dict", [False, True])
+    def test_changelog_compressor_with_upsert_columns(
+        self,
+        populated_table_connection: Connection,
+        test_table_name: str,
+        as_dict: bool,
+    ):
+        """Test changelog compressor with a GROUP BY query that has upsert columns.
+
+        The query will ultimately produce two rows:
+        - (0, 5) or {"even_odd": 0, "cnt": 5} for even values (2, 4, 6, 8, 10)
+        - (1, 5) or {"even_odd": 1, "cnt": 5} for odd values (1, 3, 5, 7, 9)
+
+        The upsert column will be index 0 (even_odd), and get_snapshot() should
+        progressively update the counts until reaching the final state of 5 and 5.
+
+        Tests both tuple and dict result modes.
+        """
+
+        # Define accessors based on result mode
+        def get_even_odd(row):
+            return row["even_odd"] if as_dict else row[0]  # type: ignore[index]
+
+        def get_count(row):
+            return row["cnt"] if as_dict else row[1]  # type: ignore[index]
+
+        def make_expected(eo, cnt):
+            return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
+
+        cursor = populated_table_connection.streaming_cursor(as_dict=as_dict)
+        cursor.execute(
+            f"SELECT c1 % 2 as even_odd, count(*) as cnt FROM {test_table_name} GROUP BY c1 % 2"
+        )
+
+        statement = cursor.statement
+        assert statement is not None
+        assert statement.is_bounded is False
+        assert statement.is_append_only is False
+        assert statement.phase is Phase.RUNNING
+
+        # Verify upsert columns trait
+        assert statement.traits is not None
+        assert statement.traits.upsert_columns == [0]
+
+        # Create changelog compressor
+        compressor = cursor.changelog_compressor()
+
+        max_iterations = 20
+        iteration = 0
+        final_snapshot = None
+
+        # Loop until we see the expected final state
+        while iteration < max_iterations:
+            snapshot = compressor.get_snapshot()
+
+            # Expect to have gotten between 0 and 2 rows in the snapshot, depending on how far
+            # along we are in processing the changelog.
+            assert len(snapshot) in (0, 1, 2), (
+                f"Expected snapshot to have 0, 1, or 2 rows, got {len(snapshot)}"
+            )
+
+            if len(snapshot) == 2:
+                # Sort by even_odd value for consistent ordering
+                snapshot_sorted = sorted(snapshot, key=get_even_odd)
+
+                even_odd_0 = get_even_odd(snapshot_sorted[0])
+                count_0 = get_count(snapshot_sorted[0])
+                even_odd_1 = get_even_odd(snapshot_sorted[1])
+                count_1 = get_count(snapshot_sorted[1])
+
+                assert even_odd_0 == 0, "First row should be for even values (0)"
+                assert even_odd_1 == 1, "Second row should be for odd values (1)"
+
+                if count_0 == 5 and count_1 == 5:
+                    final_snapshot = snapshot_sorted
+                    break
+
+            iteration += 1
+            time.sleep(1)
+
+        assert final_snapshot is not None, (
+            f"Expected to reach final state with counts (5, 5) within {max_iterations} iterations"
+        )
+        assert len(final_snapshot) == 2
+        assert final_snapshot[0] == make_expected(0, 5)
+        assert final_snapshot[1] == make_expected(1, 5)
+
+        # Cleanup
+        cursor.delete_statement()

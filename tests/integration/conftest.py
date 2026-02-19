@@ -3,9 +3,11 @@
 import logging
 import os
 from collections.abc import Callable, Generator
+from pathlib import Path
 from typing import Any
 
 import pytest
+from dotenv import load_dotenv
 
 import confluent_sql
 from confluent_sql.connection import Connection
@@ -22,7 +24,23 @@ def pytest_runtest_setup(item):
 
 
 @pytest.fixture(scope="session")
-def connection() -> Generator[Connection, Any, None]:
+def load_env_file():
+    """Load environment variables from .env file if it exists in the current working directory.
+
+    This fixture runs once per test session and loads any environment variables
+    from a .env file before any tests run. This allows developers to store
+    integration test credentials locally without committing them to source control.
+    """
+    env_file = Path.cwd() / ".env"
+    if env_file.exists():
+        logger.info(f"Loading environment variables from {env_file}")
+        load_dotenv(env_file)
+    else:
+        logger.debug(f"No .env file found at {env_file}")
+
+
+@pytest.fixture(scope="session")
+def connection(load_env_file) -> Generator[Connection, Any, None]:
     """
     Create a real connection for test suite run.
 

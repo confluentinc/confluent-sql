@@ -134,6 +134,24 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         self._schema = statement.schema
 
     @abc.abstractmethod
+    def _apply_operation(self, op: Op, row: T) -> None:
+        """Apply a changelog operation to the internal state.
+
+        Args:
+            op: The changelog operation.
+            row: The row data.
+        """
+        ...
+
+    @abc.abstractmethod
+    def _copy_accumulated_rows(self) -> list[T]:
+        """Return a deep copy of the accumulated rows from internal storage.
+
+        Returns:
+            A deep copy list of the current logical result set.
+        """
+        ...
+
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
 
@@ -143,7 +161,25 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         Returns:
             A deep copy of the accumulated logical result set.
         """
-        ...
+        batchsize = fetch_batchsize or self._cursor.arraysize
+
+        # Keep fetching until no more results
+        while True:
+            batch = self._cursor.fetchmany(batchsize)
+            if not batch:
+                # No more events available - clear the buffer to free memory
+                self._cursor.clear_changelog_buffer()
+                break
+
+            for changelogged_row in batch:
+                # Must cast because cursor.fetchmany() returns list[ResultRow],
+                # but if using a ChangelogCompressor, we know the rows are actually
+                # ChangeloggedRow consisting of (Op, T).
+                op, row = cast(ChangeloggedRow, changelogged_row)
+                self._apply_operation(op, cast(T, row))
+
+        # Delegate to subclass to copy from its specific storage structure
+        return self._copy_accumulated_rows()
 
     def close(self) -> None:
         """Close the compressor and release resources.
@@ -251,30 +287,12 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
                 )
             del self._rows_by_key[key]
 
-    def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
-        """Fetch and interpret/compress changelog operations, returning the current logical result
-        set.
-
-        Args:
-            fetch_batchsize: The batch size to use for fetching, or None to use cursor.arraysize.
+    def _copy_accumulated_rows(self) -> list[T]:
+        """Return deep copy of rows from dict storage in insertion order.
 
         Returns:
-            A deep copy of the accumulated logical result set in insertion order.
+            A deep copy list of rows from the dict storage.
         """
-        batchsize = fetch_batchsize or self._cursor.arraysize
-
-        # Keep fetching until no more results
-        while True:
-            batch = self._cursor.fetchmany(batchsize)
-            if not batch:
-                break
-
-            for changelogged_row in batch:
-                if isinstance(changelogged_row, ChangeloggedRow):
-                    op, row = changelogged_row
-                    self._apply_operation(op, cast(T, row))
-
-        # Return deep copy in insertion order (dict maintains order)
         return [copy.deepcopy(row) for row in self._rows_by_key.values()]
 
     def close(self) -> None:
@@ -377,29 +395,12 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             pos = self._find_row_position(row, Op.DELETE)
             del self._rows[pos]
 
-    def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
-        """Fetch and accumulate changelog operations, returning the current logical result set.
-
-        Args:
-            fetch_batchsize: The batch size to use for fetching, or None to use cursor.arraysize.
+    def _copy_accumulated_rows(self) -> list[T]:
+        """Return deep copy of rows from list storage.
 
         Returns:
-            A deep copy of the accumulated logical result set.
+            A deep copy of the list of rows.
         """
-        batchsize = fetch_batchsize or self._cursor.arraysize
-
-        # Keep fetching until no more results
-        while True:
-            batch = self._cursor.fetchmany(batchsize)
-            if not batch:
-                break
-
-            for changelogged_row in batch:
-                if isinstance(changelogged_row, ChangeloggedRow):
-                    op, row = changelogged_row
-                    self._apply_operation(op, cast(T, row))
-
-        # Return deep copy
         return copy.deepcopy(self._rows)
 
     def close(self) -> None:
