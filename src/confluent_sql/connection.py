@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from .cursor import Cursor
-from .exceptions import InterfaceError, OperationalError
+from .exceptions import InterfaceError, OperationalError, StatementDeletedError
 from .execution_mode import ExecutionMode
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
@@ -704,19 +704,52 @@ class Connection:
             If the next page URL is None, there are no more pages to fetch.
 
         Raises:
-            OperationalError: If results retrieval fails
+            StatementDeletedError: If the statement has been deleted (404)
+            OperationalError: If results retrieval fails for other reasons
         """
         if next_url is None:
             next_url = f"/statements/{statement_name}/results"
 
-        response = self._request(next_url).json()
+        try:
+            response = self._request(next_url).json()
+        except OperationalError as e:
+            # Check if this is a 404 error indicating the statement was deleted
+            if "404" in str(e):
+                raise StatementDeletedError(
+                    f"Statement '{statement_name}' has been deleted", statement_name
+                ) from e
+            raise
+
+        # Check if the response indicates an error (e.g., statement not found)
+        # Some APIs return 200 OK with an error payload instead of proper HTTP status codes
+        if response is None:
+            raise StatementDeletedError(
+                f"Statement '{statement_name}' has been deleted", statement_name
+            )
 
         # Promote from the pure from-response-json 'data' sub-member list of dicts
         # to a list of ChangelogRow.
+        data_list = response.get("results", {}).get("data")
+        if data_list is None:
+            # Check if this is an error response indicating the statement was deleted
+            error = response.get("error")
+            if error:
+                error_code = error.get("code")
+                if error_code == 404 or "not found" in str(error).lower():
+                    raise StatementDeletedError(
+                        f"Statement '{statement_name}' has been deleted", statement_name
+                    )
+                raise OperationalError(f"Error fetching results: {error}")
+            # If no error but data is None, treat as deleted statement
+            raise StatementDeletedError(
+                f"Statement '{statement_name}' has been deleted or returned invalid response",
+                statement_name,
+            )
+
         results: list[ChangelogRow] = [
             # 'op' may be omitted, in which case we assume 0 (INSERT)
             ChangelogRow(r.get("op", 0), r["row"])
-            for r in response.get("results", {}).get("data", [])
+            for r in data_list
         ]
 
         logger.info(f"got {len(results)} changelog rows for statement {statement_name}")
