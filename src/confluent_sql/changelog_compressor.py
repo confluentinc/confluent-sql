@@ -190,11 +190,45 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
     def get_snapshot(self, fetch_batchsize: int | None = None) -> list[T]:
         """Fetch and accumulate changelog operations, returning the current logical result set.
 
+        This method fetches ALL currently available changelog events from the cursor (until
+        fetchmany returns an empty list), applies them to the internal state, and returns a
+        self-consistent snapshot of the accumulated result set.
+
+        **Self-Consistency**: A snapshot is considered self-consistent when all currently
+        available changelog events have been consumed and applied. This means the snapshot
+        reflects a coherent state with no pending UPDATE_BEFORE operations awaiting their
+        matching UPDATE_AFTER.
+
+        **Usage Pattern**: This method is designed to be called repeatedly in a loop for
+        streaming queries. Each call fetches new events that arrived since the last call
+        and updates the accumulated state accordingly.
+
+        **No Guarantee of Logical Changes**: There is NO guarantee that the snapshot will
+        differ from the previous call. If no new changelog events have been processed since
+        the prior call, the returned snapshot will be logically identical to the previous one.
+        Additionally, even if events were processed, the logical result set may remain unchanged
+        (e.g., an INSERT followed immediately by a DELETE of the same row).
+
+        **Return Value**: Each call returns a deep copy of the accumulated rows. This ensures
+        that modifications to the returned list or its contents will not affect the compressor's
+        internal state. The caller is free to mutate the returned snapshot.
+
+        **Memory Management**: After consuming all available events, this method automatically
+        calls cursor.clear_changelog_buffer() to free memory by clearing the cursor's internal
+        event buffer. The compressor's accumulated state remains in memory.
+
         Args:
             fetch_batchsize: The batch size to use for fetching, or None to use cursor.arraysize.
 
         Returns:
             A deep copy of the accumulated logical result set.
+
+        Example:
+            >>> compressor = cursor.changelog_compressor()
+            >>> while True:
+            ...     snapshot = compressor.get_snapshot()
+            ...     process(snapshot)
+            ...     time.sleep(5)
         """
         batchsize = fetch_batchsize or self._cursor.arraysize
 
