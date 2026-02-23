@@ -26,6 +26,7 @@ from __future__ import annotations
 import abc
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
@@ -159,16 +160,9 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
        no more pages to fetch (distinguished from the initial state by
        `_fetch_next_page_called` being set to `True`)."""
 
-    _results: list[ProcessorOutput]
-    """The accumulated post-from-response-api to Python and processor
-    return type conversion results."""
-
-    _index: int
-    """Index of the next result to return from the local buffer.
-    
-    Starts at 0 and increments after each result is returned. Used to track
-    position in `_results` list during iteration and fetch operations.
-    """
+    _results: deque[ProcessorOutput]
+    """Deque of unconsumed results. Rows are removed via popleft() as they
+    are consumed, freeing memory incrementally."""
 
     _most_recent_results_fetch_time: float | None
     """Timestamp of the most recent results fetch operation, in seconds since epoch.
@@ -196,8 +190,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         self._fetch_next_page_called = False
         self._most_recent_results_fetch_time = None
 
-        self._results = []
-        self._index = 0
+        self._results: deque[ProcessorOutput] = deque()
         self._metrics = FetchMetrics()
 
     @abc.abstractmethod
@@ -272,7 +265,9 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
     def _consume_from_buffer(self, limit: int) -> list[ProcessorOutput]:
         """
-        Consume up to 'limit' results from the internal buffer.
+        Consume up to 'limit' results from the deque buffer.
+
+        Rows are removed from the buffer via popleft(), freeing memory incrementally.
 
         Args:
             limit: Maximum number of results to consume from buffer.
@@ -280,10 +275,11 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         Returns:
             List of up to 'limit' results from the buffer.
         """
-        actual_limit = min(limit, self._remaining)
-        results = self._results[self._index : self._index + actual_limit]
-        self._index += actual_limit
-        return results
+        actual_limit = min(limit, len(self._results))
+        consumed = []
+        for _ in range(actual_limit):
+            consumed.append(self._results.popleft())
+        return consumed
 
     def _get_next_results(self, limit: int | None) -> list[ProcessorOutput]:
         """
@@ -437,42 +433,19 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
         """
-        if self._remaining == 0:
-            if self._results and not self._next_page:
+        if len(self._results) == 0:
+            if self._fetch_next_page_called and not self._next_page:
                 raise StopIteration
             self._fetch_next_page()
-            if self._remaining == 0:
+            if len(self._results) == 0:
                 raise StopIteration
 
-        # Get the row tuple from results
-        res = self._results[self._index]
-        self._index += 1
-
-        return res
+        return self._results.popleft()
 
     @property
     def _remaining(self) -> int:
         """Number of results remaining in current buffer."""
-        remaining = len(self._results) - self._index
-        if remaining < 0:
-            raise InterfaceError("Internal index bigger than results list.")  # pragma: no cover
-        return remaining
-
-    def clear_buffer(self) -> None:
-        """Clear the internal results buffer and reset the index position.
-
-        This frees memory after consuming all buffered results. Useful for
-        long-running streaming queries with changelog compressors that repeatedly
-        fetch batches of events.
-
-        Should only be called when the buffer is exhausted (after fetchmany returns
-        an empty list).
-
-        Note: This does NOT affect the server-side result set or pagination state.
-        Only clears the client-side buffer of already-fetched and consumed events.
-        """
-        self._results.clear()
-        self._index = 0
+        return len(self._results)
 
     def _fetch_next_page(self) -> None:
         """Fetch and process the next page of results."""
