@@ -217,9 +217,6 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         ensures that modifications to the snapshot will not affect the compressor's internal
         state. The caller is free to mutate the yielded snapshots.
 
-        **Memory Management**: The underlying deque-based buffer automatically frees memory
-        as rows are consumed via popleft(). No explicit buffer clearing is needed.
-
         **Termination**: The generator raises exceptions when the statement stops:
         - StatementStoppedError: Raised when cursor.may_have_results becomes False,
           indicating the statement entered a terminal phase (STOPPED, FAILED, COMPLETED).

@@ -154,7 +154,7 @@ class TestFetchMethods:
         result1 = append_only_processor.fetchmany(2)
         assert result1 == [("initial_row1",), ("initial_row2",)]
         assert fetch_tracker["count"] == 0, "Should not have fetched yet"
-        assert append_only_processor._remaining == 0, "Buffer should be empty"
+        assert len(append_only_processor._results) == 0, "Buffer should be empty (no unconsumed rows)"
 
         # Next fetchmany should trigger a fetch since buffer is empty
         result2 = append_only_processor.fetchmany(1)
@@ -164,7 +164,7 @@ class TestFetchMethods:
         # Consume the rest of the current buffer
         result3 = append_only_processor.fetchone()
         assert result3 == ("page1_row2",)
-        assert append_only_processor._remaining == 0, "Buffer should be empty again"
+        assert len(append_only_processor._results) == 0, "Buffer should be empty again (no unconsumed rows)"
 
         # Another fetch should trigger another page fetch
         result4 = append_only_processor.fetchmany(2)

@@ -319,8 +319,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             return list(islice(self, limit))
 
         # Non-blocking behavior for streaming mode or changelog processing
-        # Check if we have buffered results
-        if self._remaining > 0:
+        # Check if we have buffered results (unconsumed rows in deque)
+        if len(self._results) > 0:
             return self._consume_from_buffer(limit)
 
         # Buffer is empty - check if we can fetch more
@@ -331,8 +331,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         # Try to fetch one page of results
         self._fetch_next_page()
 
-        # Return up to 'limit' results from what we just fetched
-        if self._remaining > 0:
+        # Return up to 'limit' results from what we just fetched (check unconsumed rows in deque)
+        if len(self._results) > 0:
             return self._consume_from_buffer(limit)
 
         return []  # Fetched but got no results
@@ -343,8 +343,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         return (
             # We haven't fetched any pages yet to know about results or next page token
             (not self._fetch_next_page_called)
-            # Or we have some remaining results in the local cache
-            or self._remaining > 0
+            # Or we have unconsumed results in the local buffer (deque)
+            or len(self._results) > 0
             # Or we know there are more pages to fetch.
             or self._next_page is not None
         )
@@ -441,11 +441,6 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
                 raise StopIteration
 
         return self._results.popleft()
-
-    @property
-    def _remaining(self) -> int:
-        """Number of results remaining in current buffer."""
-        return len(self._results)
 
     def _fetch_next_page(self) -> None:
         """Fetch and process the next page of results."""
