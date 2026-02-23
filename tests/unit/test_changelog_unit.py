@@ -55,7 +55,8 @@ def test_may_have_results(
 ):
     append_only_processor._fetch_next_page_called = next_page_called
     if remaining is not None:
-        append_only_processor._results = deque([("mock_row",)] * remaining)  # Mock some remaining results
+        # Mock some remaining results
+        append_only_processor._results = deque([("mock_row",)] * remaining)
     append_only_processor._next_page = next_page
 
     assert append_only_processor.may_have_results is expected, (
@@ -154,7 +155,8 @@ class TestFetchMethods:
         result1 = append_only_processor.fetchmany(2)
         assert result1 == [("initial_row1",), ("initial_row2",)]
         assert fetch_tracker["count"] == 0, "Should not have fetched yet"
-        assert len(append_only_processor._results) == 0, "Buffer should be empty (no unconsumed rows)"
+        # Buffer should be empty (no unconsumed rows)
+        assert len(append_only_processor._results) == 0
 
         # Next fetchmany should trigger a fetch since buffer is empty
         result2 = append_only_processor.fetchmany(1)
@@ -164,7 +166,8 @@ class TestFetchMethods:
         # Consume the rest of the current buffer
         result3 = append_only_processor.fetchone()
         assert result3 == ("page1_row2",)
-        assert len(append_only_processor._results) == 0, "Buffer should be empty again (no unconsumed rows)"
+        # Buffer should be empty again (no unconsumed rows)
+        assert len(append_only_processor._results) == 0
 
         # Another fetch should trigger another page fetch
         result4 = append_only_processor.fetchmany(2)
