@@ -267,7 +267,11 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         """
         Consume up to 'limit' results from the deque buffer.
 
-        Rows are removed from the buffer via popleft(), freeing memory incrementally.
+        Uses popleft() to remove rows from the front of the deque. This is destructive
+        consumption: once removed, rows cannot be re-accessed. Memory is released
+        incrementally as deque blocks become empty (approximately every 64 popleft()
+        calls in CPython). This automatic freeing eliminates the need for manual
+        buffer clearing and enables O(page_size) memory usage instead of O(total_rows).
 
         Args:
             limit: Maximum number of results to consume from buffer.
@@ -434,6 +438,10 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         mode, which return immediately with None/empty list if no data is buffered.
         """
         if len(self._results) == 0:
+            # Detect iteration exhaustion: we've fetched before AND there's nowhere
+            # else to fetch from. Using _fetch_next_page_called flag rather than
+            # buffer state because deque's destructive popleft() consumption leaves
+            # an empty deque indistinguishable from "never fetched yet".
             if self._fetch_next_page_called and not self._next_page:
                 raise StopIteration
             self._fetch_next_page()
