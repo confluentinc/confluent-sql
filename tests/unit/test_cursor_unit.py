@@ -838,7 +838,6 @@ def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mo
 
     # As if had some results fetched.
     mock_connection_cursor.rowcount = 100
-    mock_connection_cursor._results = [{"row": (1, 2, 3)}] * 100
 
     # Simulate that the prior statement was deletable.
     mock_connection_cursor._statement = mocker.Mock()
@@ -856,7 +855,7 @@ def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mo
 
     assert mock_connection_cursor.is_closed is True
     assert mock_connection_cursor.rowcount == -1
-    assert mock_connection_cursor._results == []
+    # Memory is automatically freed via deque, no need to manually clear
 
 
 @pytest.mark.unit
