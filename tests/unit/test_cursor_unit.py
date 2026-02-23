@@ -833,30 +833,47 @@ class TestCursorFetching:
 
 
 @pytest.mark.unit
-def test_close_handles_statement_delete_error(mock_connection_cursor: Cursor, mocker):
-    """Test that if deleting the statement on close raises, we log but do not raise."""
+class TestClose:
+    """Unit tests over cursor.close()."""
 
-    # As if had some results fetched.
-    mock_connection_cursor.rowcount = 100
-    mock_connection_cursor._results = [{"row": (1, 2, 3)}] * 100
+    def test_close_handles_statement_delete_error(self, mock_connection_cursor: Cursor, mocker):
+        """Test that if deleting the statement on close raises, we log but do not raise."""
 
-    # Simulate that the prior statement was deletable.
-    mock_connection_cursor._statement = mocker.Mock()
-    mock_connection_cursor._statement.is_deletable = True  # type: ignore
+        # As if had some results fetched.
+        mock_connection_cursor.rowcount = 100
 
-    # Set up that the delete_statement will raise.
-    delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
-    # Make the delete_statement raise an error.
-    delete_statement_spy.side_effect = Exception("Delete failed")
+        # Simulate that the prior statement was deletable.
+        mock_connection_cursor._statement = mocker.Mock()
+        mock_connection_cursor._statement.is_deletable = True  # type: ignore
 
-    # Closing the cursor should not raise despite the delete_statement error.
-    mock_connection_cursor.close()
+        # Set up that the delete_statement will raise.
+        delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
+        # Make the delete_statement raise an error.
+        delete_statement_spy.side_effect = Exception("Delete failed")
 
-    delete_statement_spy.assert_called_once()
+        # Closing the cursor should not raise despite the delete_statement error.
+        mock_connection_cursor.close()
 
-    assert mock_connection_cursor.is_closed is True
-    assert mock_connection_cursor.rowcount == -1
-    assert mock_connection_cursor._results == []
+        delete_statement_spy.assert_called_once()
+
+        assert mock_connection_cursor.is_closed is True
+        assert mock_connection_cursor.rowcount == -1
+
+    def test_close_releases_changelog_processor(self, mock_connection_cursor: Cursor):
+        """Test that closing the cursor releases the changelog processor reference."""
+        # Execute a query to create a changelog processor
+        mock_connection_cursor.execute("SELECT 1 AS col")
+
+        # Verify that a changelog processor exists
+        assert mock_connection_cursor._changelog_processor is not None
+
+        # Close the cursor
+        mock_connection_cursor.close()
+
+        # Verify that the changelog processor reference is dropped for garbage collection
+        # (especially ensures that the changelog processor's reference to the container
+        #  holding any fetched pages can be garbage collected to free memory).
+        assert mock_connection_cursor._changelog_processor is None
 
 
 @pytest.mark.unit
