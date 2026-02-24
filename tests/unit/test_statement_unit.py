@@ -24,6 +24,28 @@ class TestOp:
 
 
 @pytest.mark.unit
+class TestPhaseIsTerminal:
+    """Tests for Phase.is_terminal property."""
+
+    @pytest.mark.parametrize(
+        "phase,expected",
+        [
+            (Phase.COMPLETED, True),
+            (Phase.STOPPED, True),
+            (Phase.FAILED, True),
+            (Phase.DELETED, True),
+            (Phase.RUNNING, False),
+            (Phase.PENDING, False),
+            (Phase.DEGRADED, False),
+            (Phase.STOPPING, False),
+        ],
+    )
+    def test_is_terminal(self, phase: Phase, expected: bool):
+        """Test that is_terminal property returns correct boolean for each phase."""
+        assert phase.is_terminal == expected
+
+
+@pytest.mark.unit
 class TestStatementIsReady:
     """Tests for Statement.is_ready property."""
 
@@ -351,6 +373,49 @@ class TestStatementProperties:
             match="Statement traits are not available.",
         ):
             _ = statement.sql_kind
+
+    @pytest.mark.parametrize(
+        "sql_kind,expected",
+        [
+            ("CREATE_TABLE", True),
+            ("DROP_TABLE", True),
+            ("CREATE_VIEW", True),
+            ("DROP_VIEW", True),
+            ("ALTER_TABLE", True),
+            ("SELECT", False),
+            ("INSERT", False),
+            ("UPDATE", False),
+            ("DELETE", False),
+        ],
+    )
+    def test_is_pure_ddl(
+        self,
+        sql_kind: str,
+        expected: bool,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pure_ddl property correctly identifies pure DDL statements."""
+        statement_json = statement_response_factory(sql_kind=sql_kind)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_pure_ddl == expected
+
+    def test_is_pure_ddl_raises_when_no_traits(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pure_ddl property raises InterfaceError when
+        failed statement traits are missing."""
+
+        statement_json = statement_response_factory(phase="FAILED")
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        with pytest.raises(
+            InterfaceError,
+            match="Statement traits are not available.",
+        ):
+            _ = statement.is_pure_ddl
 
     def test_scaling_status_present(
         self,

@@ -333,6 +333,193 @@ class TestExecute:
         ):
             mock_connection_cursor.execute("SELECT * FROM table", timeout=5)
 
+    def test_streaming_pure_ddl_waits_for_terminal_through_running(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that streaming mode CREATE TABLE waits for terminal phase, not just RUNNING.
+
+        This tests the core behavior fix: pure DDL statements in streaming mode should
+        not return when RUNNING, but should wait until the statement reaches a terminal
+        phase (COMPLETED, STOPPED, FAILED, or DELETED).
+        """
+        # Set execution mode to STREAMING_DDL
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_DDL
+
+        # Simulate statement progressing: RUNNING -> RUNNING -> COMPLETED
+        call_count = [0]
+
+        def get_statement_side_effect(statement_name):  # noqa: ARG001
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                # First two calls: return RUNNING phase
+                return statement_response_factory(
+                    sql_statement="CREATE TABLE new_table (id INT)",
+                    sql_kind="CREATE_TABLE",
+                    phase="RUNNING",
+                    is_append_only=True,
+                )
+            else:
+                # Third call and beyond: return COMPLETED phase
+                return statement_response_factory(
+                    sql_statement="CREATE TABLE new_table (id INT)",
+                    sql_kind="CREATE_TABLE",
+                    phase="COMPLETED",
+                    is_append_only=True,
+                )
+
+        mock_connection_cursor._connection._get_statement.side_effect = (  # type: ignore
+            get_statement_side_effect
+        )
+
+        # Mock time functions to avoid actual waiting
+        mocker.patch("time.sleep", return_value=None)
+        mocker.patch("time.monotonic", return_value=1000000.0)
+
+        # Execute should succeed, waiting through RUNNING until COMPLETED
+        mock_connection_cursor.execute("CREATE TABLE new_table (id INT)")
+
+        # Verify the statement is now in COMPLETED phase
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "COMPLETED"
+
+        # Verify we polled the statement at least 3 times (2 RUNNING + 1 COMPLETED)
+        assert call_count[0] >= 3
+
+    def test_streaming_query_does_not_wait_for_terminal(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that streaming queries return immediately when RUNNING, not waiting for terminal.
+
+        This contrasts with streaming DDL: a SELECT statement should return when RUNNING,
+        while a CREATE TABLE should wait for terminal phase.
+        """
+        # Set execution mode to STREAMING_QUERY
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_QUERY
+
+        call_count = [0]
+
+        def get_statement_side_effect(statement_name):  # noqa: ARG001
+            call_count[0] += 1
+            # Always return RUNNING - should return on first call for non-DDL statements
+            return statement_response_factory(
+                sql_statement="SELECT * FROM table",
+                sql_kind="SELECT",
+                phase="RUNNING",
+                is_append_only=True,
+                is_bounded=False,
+            )
+
+        mock_connection_cursor._connection._get_statement.side_effect = (  # type: ignore
+            get_statement_side_effect
+        )
+
+        # Mock time functions
+        mocker.patch("time.sleep", return_value=None)
+        mocker.patch("time.monotonic", return_value=1000000.0)
+
+        # Execute should succeed immediately (returns on RUNNING for non-DDL)
+        mock_connection_cursor.execute("SELECT * FROM table")
+
+        # Verify the statement is in RUNNING phase
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "RUNNING"
+
+        # Verify we only polled once (should not keep waiting once RUNNING)
+        assert call_count[0] == 1
+
+    def test_streaming_pure_ddl_returns_on_failed_terminal(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that streaming DDL returns immediately on FAILED (terminal) phase.
+
+        Pure DDL statements should return as soon as they reach any terminal phase,
+        including FAILED.
+        """
+        # Set execution mode to STREAMING_DDL
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_DDL
+
+        call_count = [0]
+
+        def get_statement_side_effect(statement_name):  # noqa: ARG001
+            call_count[0] += 1
+            # Always return FAILED
+            return statement_response_factory(
+                sql_statement="CREATE TABLE new_table (id INT)",
+                sql_kind="CREATE_TABLE",
+                phase="FAILED",
+                status_detail="Table already exists",
+            )
+
+        mock_connection_cursor._connection._get_statement.side_effect = (  # type: ignore
+            get_statement_side_effect
+        )
+
+        # Mock time functions
+        mocker.patch("time.sleep", return_value=None)
+        mocker.patch("time.monotonic", return_value=1000000.0)
+
+        # Execute should call _raise_if_statement_is_broken due to FAILED phase
+        with pytest.raises(OperationalError, match="Statement .* failed"):
+            mock_connection_cursor.execute("CREATE TABLE new_table (id INT)")
+
+        # Verify we only polled once (should return on first FAILED check)
+        assert call_count[0] == 1
+
+    def test_streaming_non_ddl_normal_bounded_returns_on_running(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that streaming queries return on RUNNING regardless of boundedness.
+
+        This validates the normal (non-workaround) case where a streaming SELECT
+        statement with normal is_bounded=False returns immediately when RUNNING.
+        """
+        # Set execution mode to STREAMING_QUERY
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_QUERY
+
+        call_count = [0]
+
+        def get_statement_side_effect(statement_name):  # noqa: ARG001
+            call_count[0] += 1
+            # Always return RUNNING with is_bounded=False (normal case)
+            return statement_response_factory(
+                sql_statement="SELECT COUNT(*) FROM users",
+                sql_kind="SELECT",
+                phase="RUNNING",
+                is_append_only=False,  # Non-append-only aggregation query
+                is_bounded=False,  # Normal: streaming query is not bounded
+            )
+
+        mock_connection_cursor._connection._get_statement.side_effect = (  # type: ignore
+            get_statement_side_effect
+        )
+
+        # Mock time functions
+        mocker.patch("time.sleep", return_value=None)
+        mocker.patch("time.monotonic", return_value=1000000.0)
+
+        # Execute should succeed and return immediately
+        mock_connection_cursor.execute("SELECT COUNT(*) FROM users")
+
+        # Verify the statement is in RUNNING phase
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "RUNNING"
+        assert mock_connection_cursor._statement.is_bounded is False
+
+        # Verify we only polled once (should return immediately on RUNNING)
+        assert call_count[0] == 1
+
 
 @pytest.mark.unit
 class TestCursorInterpolatingParameters:

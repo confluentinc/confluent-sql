@@ -30,7 +30,7 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
-from .statement import Phase, Statement
+from .statement import Statement
 from .types import convert_statement_parameters
 
 if TYPE_CHECKING:
@@ -668,16 +668,14 @@ class Cursor:
 
             # Determine if the statement is ready based on execution mode and statement type
             if self._execution_mode.is_streaming:
-                # In streaming mode, statements are ready when RUNNING (or terminal states)
-                # This handles:
-                # - Regular streaming queries
-                # - Streaming DDL (CTAS in streaming mode)
-                # Note: CTAS is currently misreported as bounded due to a server bug
-                statement_ready = statement.is_running or statement.phase in [
-                    Phase.COMPLETED,
-                    Phase.STOPPED,
-                    Phase.FAILED,
-                ]
+                # In streaming mode, readiness depends on statement type:
+                if statement.is_pure_ddl:
+                    # Pure DDL (CREATE TABLE, CREATE VIEW, etc.) must complete fully
+                    # before the created/modified objects are ready for use
+                    statement_ready = statement.phase.is_terminal
+                else:
+                    # Streaming queries and CTAS are ready when RUNNING or in terminal state
+                    statement_ready = statement.is_running or statement.phase.is_terminal
             else:
                 # In snapshot mode, use the statement's is_ready property
                 # which waits for completion for bounded statements

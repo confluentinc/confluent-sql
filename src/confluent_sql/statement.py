@@ -96,6 +96,8 @@ class ChangelogRow:
 
 
 class Phase(Enum):
+    """Statement execution phases with terminal state detection."""
+
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
@@ -111,11 +113,37 @@ class Phase(Enum):
     # never returned by the api.
     DELETED = "DELETED"
 
+    def __init__(self, value: str) -> None:
+        """Initialize Phase enum member."""
+        self._value_ = value
+
+    @property
+    def is_terminal(self) -> bool:
+        """Check if this phase is a terminal state (statement execution has ended).
+
+        Terminal states are those where the statement is no longer executing and will
+        not transition to any other state.
+
+        Returns:
+            True if the phase is COMPLETED, STOPPED, FAILED, or DELETED. False otherwise.
+        """
+        # Terminal phase values defined at class level
+        return self.value in Phase._TERMINAL_PHASES  # type: ignore[attr-defined]
+
+
+# Class-level constant defining terminal phases
+Phase._TERMINAL_PHASES = frozenset({"COMPLETED", "STOPPED", "FAILED", "DELETED"})  # type: ignore[attr-defined]
+
 
 @dataclass
 class Statement:
     """Represents a Confluent SQL statement, including its metadata, spec, status,
     and parsed traits such as schema, sql kind, etc."""
+
+    # SQL kinds that represent pure DDL statements (create/modify schema objects)
+    _PURE_DDL_KINDS = frozenset(
+        {"CREATE_TABLE", "DROP_TABLE", "CREATE_VIEW", "DROP_VIEW", "ALTER_TABLE"}
+    )
 
     # From the cursor that created this statement ...
     connection: Connection
@@ -220,6 +248,19 @@ class Statement:
     @property
     def sql_kind(self) -> str:
         return self._possible_traits().sql_kind
+
+    @property
+    def is_pure_ddl(self) -> bool:
+        """Check if this statement is a pure DDL statement that creates or modifies schema objects.
+
+        Pure DDL statements need to complete fully before the created/modified objects
+        are ready for use, unlike streaming queries or CTAS which are ready when RUNNING.
+
+        Returns:
+            True if the statement is one of: CREATE_TABLE, DROP_TABLE, CREATE_VIEW,
+            DROP_VIEW, ALTER_TABLE. False otherwise.
+        """
+        return self.sql_kind in self._PURE_DDL_KINDS
 
     @property
     def is_append_only(self) -> bool:

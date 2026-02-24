@@ -276,6 +276,47 @@ class TestCursor:
         cursor.delete_statement()
         assert cursor._statement.is_deleted
 
+    @pytest.mark.slow
+    def test_streaming_ddl_create_table_completes(self, connection: Connection):
+        """Test that executing CREATE TABLE in streaming mode waits for completion.
+
+        This validates the fix for streaming DDL statements: pure DDL statements
+        (like CREATE TABLE) in streaming mode should wait for the statement to
+        reach a terminal phase (COMPLETED) before returning to the caller, not
+        just return when RUNNING.
+
+        After the CREATE TABLE completes, the table should be immediately usable.
+        """
+        # Create a unique table name for this test (use underscores instead of hyphens)
+        table_name = f"test_streaming_ddl_{uuid4().hex[:8]}"
+
+        # Create the table using streaming cursor mode
+        # This should wait for the statement to reach COMPLETED phase
+        cursor = connection.streaming_cursor()
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, name STRING)")
+        statement = cursor.statement
+        assert statement is not None
+
+        # Verify the statement has completed (not just RUNNING)
+        assert statement.phase == Phase.COMPLETED
+        assert statement.is_pure_ddl is True
+
+        # Verify the table exists and is usable by querying it
+        verify_cursor = connection.cursor()
+        verify_cursor.execute(f"SELECT COUNT(*) as row_count FROM {table_name}")
+        results = verify_cursor.fetchall()
+        assert len(results) == 1  # Should have one row with count
+        verify_cursor.close()
+        cursor.close()
+
+        # Cleanup: Drop the created table
+        cleanup_cursor = connection.cursor()
+        cleanup_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cleanup_cursor.close()
+
+        # Delete the statement
+        connection.delete_statement(statement)
+
 
 @pytest.mark.integration
 class TestCursorParameterInterpolation:
