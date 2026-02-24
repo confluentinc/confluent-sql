@@ -1,8 +1,24 @@
 """
-Changelog processor module for Confluent SQL DB-API driver.
+Changelog fetching and conversion for Confluent SQL DB-API driver.
 
-This module provides implementations of changelog processing for streaming
-queries in Confluent SQL.
+This module provides low-level changelog processors that fetch statement results
+from the server, handle paging, and convert row data from JSON to Python types.
+
+- AppendOnlyChangelogProcessor: For append-only streaming (or all snapshot mode)
+  queries (returns row data only).
+- RawChangelogProcessor: For non-append-only queries -- a subset of streaming queries
+  (returns ChangeloggedRow with operation + row).
+
+These processors fetch and expose either result rows or changelog events including
+result rows but do NOT apply or interpret them. These implementations back
+the iteration, fetchone/fetchmany/fetchall methods of our Cursor class.
+
+For stateful compression of changelog events into a logical result set, see
+the `changelog_compressor` module, which makes use of the sequence of ChangeloggedRow
+returned by RawChangelogProcessor to produce a compressed result set ("interpreted changelog")
+that applies the changelog operations to maintain the current state of each row in the result
+and the logical result set at large over time. That functionality is exposed from the Cursor
+class's `changelog_compressor()` method (only callable for non-append-only streaming statements).
 """
 
 from __future__ import annotations
@@ -442,10 +458,26 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             raise InterfaceError("Internal index bigger than results list.")  # pragma: no cover
         return remaining
 
+    def clear_buffer(self) -> None:
+        """Clear the internal results buffer and reset the index position.
+
+        This frees memory after consuming all buffered results. Useful for
+        long-running streaming queries with changelog compressors that repeatedly
+        fetch batches of events.
+
+        Should only be called when the buffer is exhausted (after fetchmany returns
+        an empty list).
+
+        Note: This does NOT affect the server-side result set or pagination state.
+        Only clears the client-side buffer of already-fetched and consumed events.
+        """
+        self._results.clear()
+        self._index = 0
+
     def _fetch_next_page(self) -> None:
         """Fetch and process the next page of results."""
 
-        if not self._statement.is_ready:
+        if not self._statement.can_fetch_results(self._execution_mode):
             raise InterfaceError("Statement is not ready for result fetching.")
 
         if not self._statement.schema:

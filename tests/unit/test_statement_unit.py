@@ -6,6 +6,7 @@ import pytest
 from confluent_sql import OperationalError
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
+from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op, Phase, Schema, Statement
 from confluent_sql.types import StatementTypeConverter
 from tests.unit.conftest import StatementResponseFactory
@@ -24,78 +25,25 @@ class TestOp:
 
 
 @pytest.mark.unit
-class TestStatementIsReady:
-    """Tests for Statement.is_ready property."""
+class TestPhaseIsTerminal:
+    """Tests for Phase.is_terminal property."""
 
-    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED"])
-    def test_bounded_is_ready(
-        self,
-        mock_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        phase,
-    ):
-        """Test that a bounded statement in COMPLETED or
-        STOPPED phase is ready."""
-        statement_json = statement_response_factory(
-            phase=phase,
-            is_bounded=True,
-        )
-        statement = Statement.from_response(mock_connection, statement_json)
-        assert statement.is_ready
-
-    def test_bounded_not_ready(
-        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
-    ):
-        """Test that a bounded statement not in COMPLETED or
-        STOPPED phase is not ready."""
-        statement_json = statement_response_factory(
-            phase="RUNNING",
-            is_bounded=True,
-        )
-        statement = Statement.from_response(mock_connection, statement_json)
-        assert not statement.is_ready
-
-    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "RUNNING"])
-    def test_unbounded_is_ready(
-        self,
-        mock_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        phase: str,
-    ):
-        """Test that an unbounded statement in COMPLETED, STOPPED,
-        or RUNNING phase is ready."""
-        statement_json = statement_response_factory(
-            phase=phase,
-            is_bounded=False,
-        )
-        statement = Statement.from_response(mock_connection, statement_json)
-        assert statement.is_ready
-
-    def test_unbounded_pending_not_ready(
-        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
-    ):
-        """Test that an unbounded statement not in PENDING phase is not ready."""
-        statement_json = statement_response_factory(
-            phase="PENDING",
-            is_bounded=False,
-        )
-        statement = Statement.from_response(mock_connection, statement_json)
-        assert not statement.is_ready
-
-    def test_failed_statement_is_ready(
-        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
-    ):
-        """Test that a failed statement is always ready, despite missing status.traits."""
-        statement_json = statement_response_factory(
-            phase="FAILED",
-            is_bounded=True,  # Bounded or unbounded shouldn't matter for failed statements.
-        )
-        # Failed statements won't have traits
-
-        assert statement_json["status"].get("traits") is None
-
-        statement = Statement.from_response(mock_connection, statement_json)
-        assert statement.is_ready
+    @pytest.mark.parametrize(
+        "phase,expected",
+        [
+            (Phase.COMPLETED, True),
+            (Phase.STOPPED, True),
+            (Phase.FAILED, True),
+            (Phase.DELETED, True),
+            (Phase.RUNNING, False),
+            (Phase.PENDING, False),
+            (Phase.DEGRADED, False),
+            (Phase.STOPPING, False),
+        ],
+    )
+    def test_is_terminal(self, phase: Phase, expected: bool):
+        """Test that is_terminal property returns correct boolean for each phase."""
+        assert phase.is_terminal == expected
 
 
 @pytest.mark.unit
@@ -351,6 +299,49 @@ class TestStatementProperties:
             match="Statement traits are not available.",
         ):
             _ = statement.sql_kind
+
+    @pytest.mark.parametrize(
+        "sql_kind,expected",
+        [
+            ("CREATE_TABLE", True),
+            ("DROP_TABLE", True),
+            ("CREATE_VIEW", True),
+            ("DROP_VIEW", True),
+            ("ALTER_TABLE", True),
+            ("SELECT", False),
+            ("INSERT", False),
+            ("UPDATE", False),
+            ("DELETE", False),
+        ],
+    )
+    def test_is_pure_ddl(
+        self,
+        sql_kind: str,
+        expected: bool,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pure_ddl property correctly identifies pure DDL statements."""
+        statement_json = statement_response_factory(sql_kind=sql_kind)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_pure_ddl == expected
+
+    def test_is_pure_ddl_raises_when_no_traits(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that is_pure_ddl property raises InterfaceError when
+        failed statement traits are missing."""
+
+        statement_json = statement_response_factory(phase="FAILED")
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        with pytest.raises(
+            InterfaceError,
+            match="Statement traits are not available.",
+        ):
+            _ = statement.is_pure_ddl
 
     def test_scaling_status_present(
         self,
@@ -697,3 +688,240 @@ class TestStatementEndUserLabels:
         statement = Statement.from_response(mock_connection, statement_json)
         with pytest.raises(InterfaceError):
             _ = statement.end_user_labels
+
+
+@pytest.mark.unit
+class TestStatementCanFetchResults:
+    """Comprehensive tests for Statement.can_fetch_results() method.
+
+    Tests all combinations of:
+    - Execution modes: SNAPSHOT, SNAPSHOT_DDL, STREAMING_QUERY, STREAMING_DDL
+    - Statement types: Pure DDL, Bounded append-only, Bounded non-append-only, Unbounded
+    - Phases: PENDING, RUNNING, COMPLETED, FAILED, STOPPED
+    """
+
+    @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
+    def test_snapshot_mode_bounded_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In snapshot mode, bounded statements are not ready until COMPLETED."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=False,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
+    def test_snapshot_mode_bounded_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In snapshot mode, bounded statements are ready in terminal states."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=False,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
+    def test_streaming_query_bounded_non_append_only_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming mode, bounded non-append-only queries must wait for COMPLETED."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=False,
+            sql_kind="SELECT",
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_query_bounded_non_append_only_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming mode, bounded non-append-only queries are ready in terminal states."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=False,
+            sql_kind="SELECT",
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
+
+    @pytest.mark.parametrize("phase", ["PENDING"])
+    def test_streaming_query_bounded_append_only_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming mode, bounded append-only queries are not ready until RUNNING."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
+
+    @pytest.mark.parametrize("phase", ["RUNNING", "COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_query_bounded_append_only_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming mode, bounded append-only queries are ready when RUNNING or terminal."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
+
+    @pytest.mark.parametrize("phase", ["PENDING"])
+    def test_streaming_query_unbounded_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming mode, unbounded queries are not ready until RUNNING."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=False,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
+
+    @pytest.mark.parametrize("phase", ["RUNNING", "COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_query_unbounded_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming mode, unbounded queries are ready when RUNNING or terminal."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=False,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
+
+    @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
+    def test_streaming_ddl_pure_ddl_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming DDL mode, pure DDL must wait for terminal state."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            sql_kind="CREATE_TABLE",
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_ddl_pure_ddl_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming DDL mode, pure DDL is ready in terminal states."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            sql_kind="CREATE_TABLE",
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
+    def test_streaming_ddl_bounded_non_append_only_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming DDL mode, bounded non-append-only queries must wait for COMPLETED."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=False,
+            sql_kind="SELECT",
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_ddl_bounded_non_append_only_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming DDL mode, bounded non-append-only queries are ready in terminal states."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=False,
+            sql_kind="SELECT",
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize("phase", ["PENDING"])
+    def test_streaming_ddl_unbounded_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming DDL mode, unbounded queries are not ready until RUNNING."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=False,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize("phase", ["RUNNING", "COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_ddl_unbounded_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In streaming DDL mode, unbounded queries are ready when RUNNING or terminal."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=False,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
