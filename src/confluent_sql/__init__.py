@@ -6,6 +6,7 @@ executing SQL queries against Confluent SQL services.
 """
 
 from .changelog import ChangeloggedRow
+from .changelog_compressor import ChangelogCompressor
 from .connection import Connection, connect
 from .cursor import Cursor
 from .exceptions import (
@@ -19,6 +20,8 @@ from .exceptions import (
     NotSupportedError,
     OperationalError,
     ProgrammingError,
+    StatementDeletedError,
+    StatementStoppedError,
     TypeMismatchError,
     Warning,
 )
@@ -36,6 +39,7 @@ __all__ = [
     "Cursor",
     "Op",
     "ChangeloggedRow",
+    "ChangelogCompressor",
     "Warning",
     "Error",
     "InterfaceError",
@@ -43,6 +47,8 @@ __all__ = [
     "DataError",
     "OperationalError",
     "ComputePoolExhaustedError",
+    "StatementStoppedError",
+    "StatementDeletedError",
     "IntegrityError",
     "InternalError",
     "ProgrammingError",
