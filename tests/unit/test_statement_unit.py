@@ -694,8 +694,8 @@ class TestStatementEndUserLabels:
 class TestStatementCanFetchResults:
     """Comprehensive tests for Statement.can_fetch_results() method.
 
-    Tests all combinations of:
-    - Execution modes: SNAPSHOT, SNAPSHOT_DDL, STREAMING_QUERY, STREAMING_DDL
+    Tests combinations of:
+    - Execution modes: SNAPSHOT, STREAMING_QUERY, STREAMING_DDL
     - Statement types: Pure DDL, Bounded append-only, Bounded non-append-only, Unbounded
     - Phases: PENDING, RUNNING, COMPLETED, FAILED, STOPPED
     """
