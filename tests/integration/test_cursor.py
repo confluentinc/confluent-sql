@@ -577,3 +577,81 @@ class TestStreamingChangelogCursor:
     # when we implement an explicit stop_statement() operation. That test will verify that
     # stopping a statement (without deleting it) raises StatementStoppedError with the
     # appropriate phase information, allowing users to inspect why the statement stopped.
+
+    @pytest.mark.slow
+    def test_streaming_bounded_changelog_query(
+        self,
+        connection: Connection,
+    ):
+        """Test submitting a bounded non-append-only query in streaming mode.
+
+        This test verifies that bounded queries submitted in streaming mode with changelog
+        semantics (non-append-only) are properly handled. The query uses aggregation on
+        static data (not from streaming sources), resulting in a bounded statement that
+        must complete before results are available.
+
+        The fix ensures that _wait_for_statement_ready() waits for bounded non-append-only
+        statements to reach a terminal phase before considering them ready, preventing
+        "Statement is not ready for result fetching" race conditions.
+        """
+        cursor: Cursor | None = None
+        try:
+            cursor = connection.streaming_cursor(as_dict=True)
+
+            query = """
+                select
+                    coalesce(sum(failures), 0) as failures,
+                    coalesce(sum(failures), 0) <> 0 as should_warn,
+                    coalesce(sum(failures), 0) <> 0 as should_error
+                from (
+                    select count(*) as failures from (
+                        select * from ( select 1 as id ) as my_subquery where id = 2
+                    ) dbt_internal_test
+                    union all
+                    select cast(0 as bigint) as failures
+                ) dbt_internal_test_with_fallback
+            """
+
+            cursor.execute(query)
+
+            statement = cursor.statement
+            assert statement is not None
+            # Despite being submitted as streaming, this particular query will
+            # complete as a bounded since it doesn't read from any streaming sources.
+            assert statement.is_bounded
+            assert (
+                not statement.is_append_only
+            )  # Will be a retractable changelog due to the count(*) aggregation.
+            assert statement.phase in [Phase.RUNNING, Phase.COMPLETED]
+
+            # Use changelog compressor to get the final result snapshot
+            compressor = cursor.changelog_compressor()
+            max_iterations = 30
+            final_snapshot = None
+
+            for iteration, snapshot in enumerate(compressor.snapshots()):
+                # The query returns a single row with the aggregation result
+                if len(snapshot) == 1:
+                    final_snapshot = snapshot
+                    break
+
+                if iteration >= max_iterations - 1:
+                    break
+                time.sleep(1)
+
+            assert final_snapshot is not None, (
+                "Expected to get a final snapshot from the changelog compressor."
+            )
+            assert len(final_snapshot) == 1, (
+                f"Expected 1 row in snapshot, got {len(final_snapshot)}"
+            )
+            result_row = final_snapshot[0]
+            assert result_row["failures"] == 0, (
+                f"Expected failures == 0, got {result_row['failures']}"
+            )  # type: ignore[index]
+
+        finally:
+            if cursor is not None:
+                # Cleanup
+                cursor.delete_statement()
+                cursor.close()
