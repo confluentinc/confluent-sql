@@ -1,4 +1,5 @@
 import re
+from collections import deque
 from unittest.mock import patch
 
 import pytest
@@ -54,8 +55,8 @@ def test_may_have_results(
 ):
     append_only_processor._fetch_next_page_called = next_page_called
     if remaining is not None:
-        append_only_processor._results = [("mock_row",)] * remaining  # Mock some remaining results
-        append_only_processor._index = 0  # Reset index to start of results
+        # Mock some remaining results
+        append_only_processor._results = deque([("mock_row",)] * remaining)
     append_only_processor._next_page = next_page
 
     assert append_only_processor.may_have_results is expected, (
@@ -68,7 +69,7 @@ def test_may_have_results(
 class TestFetchMethods:
     def test_fetchmany_with_size(self, append_only_processor: AppendOnlyChangelogProcessor):
         # Mock some results in the processor
-        append_only_processor._results = [("row1",), ("row2",), ("row3",)]
+        append_only_processor._results = deque([("row1",), ("row2",), ("row3",)])
 
         # Fetch 2 results
         fetched = append_only_processor.fetchmany(2)
@@ -103,8 +104,7 @@ class TestFetchMethods:
         append_only_processor._fetch_next_page = mock_fetch_next_page
 
         # Set up processor with 2 buffered results and indicate more pages available
-        append_only_processor._results = [("row1",), ("row2",)]
-        append_only_processor._index = 0
+        append_only_processor._results = deque([("row1",), ("row2",)])
         append_only_processor._next_page = "next_page_url"  # More pages available
 
         # Request 5 results - more than buffered
@@ -148,15 +148,15 @@ class TestFetchMethods:
         append_only_processor._fetch_next_page = mock_fetch_next_page
 
         # Start with 2 buffered results
-        append_only_processor._results = [("initial_row1",), ("initial_row2",)]
-        append_only_processor._index = 0
+        append_only_processor._results = deque([("initial_row1",), ("initial_row2",)])
         append_only_processor._next_page = "next_page_url"
 
         # Consume all buffered data
         result1 = append_only_processor.fetchmany(2)
         assert result1 == [("initial_row1",), ("initial_row2",)]
         assert fetch_tracker["count"] == 0, "Should not have fetched yet"
-        assert append_only_processor._remaining == 0, "Buffer should be empty"
+        # Buffer should be empty (no unconsumed rows)
+        assert len(append_only_processor._results) == 0
 
         # Next fetchmany should trigger a fetch since buffer is empty
         result2 = append_only_processor.fetchmany(1)
@@ -166,7 +166,8 @@ class TestFetchMethods:
         # Consume the rest of the current buffer
         result3 = append_only_processor.fetchone()
         assert result3 == ("page1_row2",)
-        assert append_only_processor._remaining == 0, "Buffer should be empty again"
+        # Buffer should be empty again (no unconsumed rows)
+        assert len(append_only_processor._results) == 0
 
         # Another fetch should trigger another page fetch
         result4 = append_only_processor.fetchmany(2)
@@ -188,13 +189,11 @@ class TestFetchMethods:
             nonlocal fetch_count
             fetch_count += 1
             # Only return 3 rows even though more were requested
-            append_only_processor._results = [("row1",), ("row2",), ("row3",)]
-            append_only_processor._index = 0
+            append_only_processor._results = deque([("row1",), ("row2",), ("row3",)])
             append_only_processor._next_page = "more_pages"  # More pages available
 
         append_only_processor._fetch_next_page = mock_fetch_next_page
-        append_only_processor._results = []  # Start with empty buffer
-        append_only_processor._index = 0
+        append_only_processor._results = deque()  # Start with empty buffer
 
         # Request 10 results but only 3 are fetched
         result = append_only_processor.fetchmany(10)
@@ -210,13 +209,11 @@ class TestFetchMethods:
 
         def mock_fetch_next_page():
             # Simulate no results available
-            append_only_processor._results = []
-            append_only_processor._index = 0
+            append_only_processor._results = deque()
             append_only_processor._next_page = None
 
         append_only_processor._fetch_next_page = mock_fetch_next_page
-        append_only_processor._results = []  # Empty buffer
-        append_only_processor._index = 0
+        append_only_processor._results = deque()  # Empty buffer
         append_only_processor._fetch_next_page_called = False
 
         result = append_only_processor.fetchmany(5)
@@ -238,8 +235,7 @@ class TestFetchMethods:
             fetch_count += 1
             if fetch_count == 1:
                 # First fetch returns 2 rows
-                processor._results = [("row1",), ("row2",)]
-                processor._index = 0
+                processor._results = deque([("row1",), ("row2",)])
                 processor._next_page = "page2"
             elif fetch_count == 2:
                 # Second fetch returns 2 more rows
@@ -251,8 +247,7 @@ class TestFetchMethods:
                 processor._next_page = None
 
         processor._fetch_next_page = mock_fetch_next_page
-        processor._results = []
-        processor._index = 0
+        processor._results = deque()
 
         # Request 5 results - should fetch multiple pages to fulfill request
         result = processor.fetchmany(5)
@@ -279,13 +274,11 @@ class TestFetchMethods:
             nonlocal fetch_count
             fetch_count += 1
             # Only return 3 rows even though 5 were requested
-            processor._results = [("row1",), ("row2",), ("row3",)]
-            processor._index = 0
+            processor._results = deque([("row1",), ("row2",), ("row3",)])
             processor._next_page = "more_pages"
 
         processor._fetch_next_page = mock_fetch_next_page
-        processor._results = []
-        processor._index = 0
+        processor._results = deque()
 
         # Request 5 results - should only fetch once in streaming mode
         result = processor.fetchmany(5)
@@ -314,14 +307,12 @@ class TestFetchMethods:
             fetch_count += 1
             if fetch_count == 1:
                 # First fetch: no data yet, but more pages available
-                append_only_processor._results = []
-                append_only_processor._index = 0
+                append_only_processor._results = deque()
                 append_only_processor._next_page = "more_coming"
                 append_only_processor._fetch_next_page_called = True
             elif fetch_count == 2:
                 # Second fetch: some data arrives
-                append_only_processor._results = [("row1",)]
-                append_only_processor._index = 0
+                append_only_processor._results = deque([("row1",)])
                 append_only_processor._next_page = None  # No more pages
 
         append_only_processor._fetch_next_page = mock_fetch_next_page
@@ -361,20 +352,17 @@ class TestFetchMethods:
             fetch_count += 1
             # First fetch returns one row
             if fetch_count == 1:
-                processor._results = [("row1",)]
-                processor._index = 0
+                processor._results = deque([("row1",)])
                 processor._next_page = None  # No more pages
                 processor._fetch_next_page_called = True
             else:
                 # Should not be called more than once per fetchone() call
-                processor._results = []
-                processor._index = 0
+                processor._results = deque()
                 processor._next_page = None
                 processor._fetch_next_page_called = True
 
         processor._fetch_next_page = mock_fetch_next_page
-        processor._results = []  # Start with empty buffer
-        processor._index = 0
+        processor._results = deque()  # Start with empty buffer
 
         # First fetchone() - should fetch once and return row1
         result = processor.fetchone()
@@ -394,8 +382,7 @@ class TestFetchMethods:
         # Test scenario with more pages available
         # Reset for a new scenario
         processor._next_page = "more_pages"  # Simulate more pages
-        processor._results = []
-        processor._index = 0
+        processor._results = deque()
 
         # Create a new mock that tracks this specific call
         third_call_fetch_count = 0
@@ -403,8 +390,7 @@ class TestFetchMethods:
         def mock_fetch_for_third_call():
             nonlocal third_call_fetch_count
             third_call_fetch_count += 1
-            processor._results = []  # Return empty results this time
-            processor._index = 0
+            processor._results = deque()  # Return empty results this time
             processor._next_page = None
             processor._fetch_next_page_called = True
 
@@ -419,7 +405,7 @@ class TestFetchMethods:
 
     def test_fetchone(self, append_only_processor: AppendOnlyChangelogProcessor):
         # Mock some results in the processor
-        append_only_processor._results = [("row1",), ("row2",)]
+        append_only_processor._results = deque([("row1",), ("row2",)])
 
         # Fetch one result
         fetched = append_only_processor.fetchone()
@@ -442,7 +428,7 @@ class TestFetchMethods:
         )
 
         # Mock some results in the processor
-        append_only_processor._results = [("row1",), ("row2",), ("row3",)]
+        append_only_processor._results = deque([("row1",), ("row2",), ("row3",)])
 
         # Fetch all results
         fetched = append_only_processor.fetchall()
@@ -465,82 +451,12 @@ class TestFetchMethods:
 
 
 @pytest.mark.unit
-class TestClearBuffer:
-    """Tests for ChangelogProcessor.clear_buffer() method."""
-
-    def test_clear_buffer_clears_results_and_resets_index(
-        self, append_only_processor: AppendOnlyChangelogProcessor
-    ):
-        """Test that clear_buffer() clears the results list and resets index to 0."""
-        # Populate some results and advance the index
-        append_only_processor._results = [("row1",), ("row2",), ("row3",)]
-        append_only_processor._index = 2  # Simulate having consumed 2 rows
-
-        # Clear the buffer
-        append_only_processor.clear_buffer()
-
-        # Verify results are cleared and index is reset
-        assert append_only_processor._results == [], "Expected _results to be empty after clear"
-        assert append_only_processor._index == 0, "Expected _index to be 0 after clear"
-
-    def test_clear_buffer_when_already_empty(
-        self, append_only_processor: AppendOnlyChangelogProcessor
-    ):
-        """Test that clear_buffer() is safe to call when buffer is already empty."""
-        # Start with empty buffer
-        append_only_processor._results = []
-        append_only_processor._index = 0
-
-        # Clear should be idempotent
-        append_only_processor.clear_buffer()
-
-        assert append_only_processor._results == []
-        assert append_only_processor._index == 0
-
-    def test_clear_buffer_multiple_times(
-        self, append_only_processor: AppendOnlyChangelogProcessor
-    ):
-        """Test that clear_buffer() can be called multiple times safely."""
-        # Populate and clear
-        append_only_processor._results = [("row1",), ("row2",)]
-        append_only_processor._index = 1
-        append_only_processor.clear_buffer()
-
-        # Clear again
-        append_only_processor.clear_buffer()
-
-        assert append_only_processor._results == []
-        assert append_only_processor._index == 0
-
-    def test_clear_buffer_does_not_affect_other_state(
-        self, append_only_processor: AppendOnlyChangelogProcessor
-    ):
-        """Test that clear_buffer() only affects _results and _index, not other state."""
-        # Set up some state
-        append_only_processor._results = [("row1",)]
-        append_only_processor._index = 1
-        append_only_processor._next_page = "some_token"
-        append_only_processor._fetch_next_page_called = True
-
-        # Clear buffer
-        append_only_processor.clear_buffer()
-
-        # Verify only _results and _index are affected
-        assert append_only_processor._results == []
-        assert append_only_processor._index == 0
-        assert append_only_processor._next_page == "some_token", "next_page should not change"
-        assert (
-            append_only_processor._fetch_next_page_called is True
-        ), "fetch_next_page_called should not change"
-
-
-@pytest.mark.unit
 class TestIteration:
     def test_iteration_over_onhand_results(
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
         # Mock some results in the processor
-        append_only_processor._results = [("row1",), ("row2",), ("row3",)]
+        append_only_processor._results = deque([("row1",), ("row2",), ("row3",)])
 
         # Iterate over the processor and collect results
         collected = []
@@ -560,9 +476,9 @@ class TestIteration:
         def mock_fetch_next_page():
             call_tracker["called"] = True
             # Simulate fetching a page of results
-            append_only_processor._results = [("fetched_row1",), ("fetched_row2",)]
-            append_only_processor._index = 0  # Reset index to start of new results
+            append_only_processor._results = deque([("fetched_row1",), ("fetched_row2",)])
             append_only_processor._next_page = None  # No more pages after this
+            append_only_processor._fetch_next_page_called = True  # Mark that fetch was called
 
         append_only_processor._fetch_next_page = mock_fetch_next_page
 
@@ -583,9 +499,9 @@ class TestIteration:
     ):
         # Mock the _fetch_next_page method to simulate no results and no next page
         def mock_fetch_next_page():
-            append_only_processor._results = []
-            append_only_processor._index = 0
+            append_only_processor._results = deque()
             append_only_processor._next_page = None
+            append_only_processor._fetch_next_page_called = True  # Mark that fetch was called
 
         append_only_processor._fetch_next_page = mock_fetch_next_page
 
@@ -608,9 +524,9 @@ class TestIteration:
 
         # Mock the _fetch_next_page method to simulate fetching results
         def mock_fetch_next_page():
-            processor._results = [{"value": "row1"}, {"value": "row2"}]
-            processor._index = 0
+            processor._results = deque([{"value": "row1"}, {"value": "row2"}])
             processor._next_page = None
+            processor._fetch_next_page_called = True  # Mark that fetch was called
 
         processor._fetch_next_page = mock_fetch_next_page
 
@@ -665,20 +581,19 @@ class TestFetchNextPage:
             return [
                 ChangelogRow(0, ["true"]),
                 ChangelogRow(0, ["false"]),
-            ], ""  # Mock some results and no next page
+            ], None  # Mock some results and no next page
 
         append_only_processor._connection._get_statement_results = mock_get_statement_results
 
         # Ensure processor has no on-hand results to trigger fetching
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
         append_only_processor._next_page = None
 
         # Call _fetch_next_page and check that it called the connection method and processed results
         append_only_processor._fetch_next_page()
 
         assert call_tracker["called"], "Expected _get_statement_results to have been called"
-        assert append_only_processor._results == [(True,), (False,)], (
+        assert append_only_processor._results == deque([(True,), (False,)]), (
             "Expected fetched results to be stored in processor"
         )
 
@@ -690,9 +605,9 @@ class TestFetchNextPage:
 
         def mock_fetch_next_page():
             call_tracker["called"] = True
-            append_only_processor._results = [("fetched_row1",), ("fetched_row2",)]
-            append_only_processor._index = 0
+            append_only_processor._results = deque([("fetched_row1",), ("fetched_row2",)])
             append_only_processor._next_page = None
+            append_only_processor._fetch_next_page_called = True  # Mark that fetch was called
 
         append_only_processor._fetch_next_page = mock_fetch_next_page
 
@@ -724,8 +639,7 @@ class TestFetchNextPage:
         append_only_processor._connection._get_statement_results = mock_get_statement_results
 
         # Ensure processor has no on-hand results to trigger fetching
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
         append_only_processor._next_page = None
 
         with pytest.raises(NotSupportedError, match="Non-INSERT op"):
@@ -792,11 +706,10 @@ class TestRawChangelogProcessor:
             fetch_count += 1
             if fetch_count == 1:
                 # First fetch returns 2 changelog rows
-                processor._results = [
+                processor._results = deque([
                     ChangeloggedRow(Op.INSERT, ("row1",)),
                     ChangeloggedRow(Op.UPDATE_BEFORE, ("row2",)),
-                ]
-                processor._index = 0
+                ])
                 processor._next_page = "page2"
             elif fetch_count == 2:
                 # Second fetch returns 2 more changelog rows
@@ -809,8 +722,7 @@ class TestRawChangelogProcessor:
                 processor._next_page = None
 
         processor._fetch_next_page = mock_fetch_next_page
-        processor._results = []
-        processor._index = 0
+        processor._results = deque()
 
         # Request 4 results - should fetch multiple pages to fulfill request
         result = processor.fetchmany(4)
@@ -857,8 +769,7 @@ class TestFetchMetrics:
         append_only_processor._connection._get_statement_results = mock_get_statement_results
 
         # Ensure processor starts with no results
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
 
         # Fetch a page
         # Need 3 time.monotonic() calls: prep_for_fetch, record_fetch_completion,
@@ -887,8 +798,7 @@ class TestFetchMetrics:
         append_only_processor._connection._get_statement_results = mock_get_statement_results
 
         # Set up state as if we had fetched before (to trigger pause logic)
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
         append_only_processor._most_recent_results_fetch_time = 99.0  # Previous fetch time
         append_only_processor._fetch_next_page_called = True
 
@@ -919,8 +829,7 @@ class TestFetchMetrics:
             return [], None  # Empty page
 
         append_only_processor._connection._get_statement_results = mock_get_statement_results
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
 
         with patch("time.monotonic", side_effect=[100.0, 100.2, 100.2]):
             append_only_processor._fetch_next_page()
@@ -963,16 +872,14 @@ class TestFetchMetrics:
         append_only_processor._connection.statement_results_page_fetch_pause_secs = (
             0  # No pausing for this test
         )
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
 
         # Perform three fetches
         with patch("time.monotonic", side_effect=[100.0, 100.1, 100.1]):  # First fetch
             append_only_processor._fetch_next_page()
 
         # Clear results to trigger next fetch
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
         append_only_processor._most_recent_results_fetch_time = 100.1
 
         # Second fetch (check elapsed, prep, complete, set time)
@@ -980,8 +887,7 @@ class TestFetchMetrics:
             append_only_processor._fetch_next_page()
 
         # Clear results to trigger next fetch
-        append_only_processor._results = []
-        append_only_processor._index = 0
+        append_only_processor._results = deque()
         append_only_processor._most_recent_results_fetch_time = 101.2
 
         # Third fetch (empty)
