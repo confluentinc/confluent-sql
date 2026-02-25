@@ -1,11 +1,15 @@
 """Integration test pytest configuration and fixtures."""
 
+import getpass
 import logging
 import os
 from collections.abc import Callable, Generator
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
+from dotenv import load_dotenv
 
 import confluent_sql
 from confluent_sql.connection import Connection
@@ -22,7 +26,23 @@ def pytest_runtest_setup(item):
 
 
 @pytest.fixture(scope="session")
-def connection() -> Generator[Connection, Any, None]:
+def load_env_file():
+    """Load environment variables from .env file if it exists in the current working directory.
+
+    This fixture runs once per test session and loads any environment variables
+    from a .env file before any tests run. This allows developers to store
+    integration test credentials locally without committing them to source control.
+    """
+    env_file = Path.cwd() / ".env"
+    if env_file.exists():
+        logger.info(f"Loading environment variables from {env_file}")
+        load_dotenv(env_file)
+    else:
+        logger.debug(f"No .env file found at {env_file}")
+
+
+@pytest.fixture(scope="session")
+def connection(load_env_file) -> Generator[Connection, Any, None]:
     """
     Create a real connection for test suite run.
 
@@ -96,7 +116,8 @@ def test_table_name():
     """Returns a table name to use for the table to populate for testing."""
     # Returns a fixed name for the test table, but if we have to adopt
     # pytest-xdist, we could include the worker id in the name to avoid collisions.
-    return "pytest_table"
+    suffix = f"_{getpass.getuser()}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
+    return "pytest_table" + suffix
 
 
 @pytest.fixture

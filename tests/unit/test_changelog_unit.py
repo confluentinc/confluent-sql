@@ -465,6 +465,76 @@ class TestFetchMethods:
 
 
 @pytest.mark.unit
+class TestClearBuffer:
+    """Tests for ChangelogProcessor.clear_buffer() method."""
+
+    def test_clear_buffer_clears_results_and_resets_index(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that clear_buffer() clears the results list and resets index to 0."""
+        # Populate some results and advance the index
+        append_only_processor._results = [("row1",), ("row2",), ("row3",)]
+        append_only_processor._index = 2  # Simulate having consumed 2 rows
+
+        # Clear the buffer
+        append_only_processor.clear_buffer()
+
+        # Verify results are cleared and index is reset
+        assert append_only_processor._results == [], "Expected _results to be empty after clear"
+        assert append_only_processor._index == 0, "Expected _index to be 0 after clear"
+
+    def test_clear_buffer_when_already_empty(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that clear_buffer() is safe to call when buffer is already empty."""
+        # Start with empty buffer
+        append_only_processor._results = []
+        append_only_processor._index = 0
+
+        # Clear should be idempotent
+        append_only_processor.clear_buffer()
+
+        assert append_only_processor._results == []
+        assert append_only_processor._index == 0
+
+    def test_clear_buffer_multiple_times(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that clear_buffer() can be called multiple times safely."""
+        # Populate and clear
+        append_only_processor._results = [("row1",), ("row2",)]
+        append_only_processor._index = 1
+        append_only_processor.clear_buffer()
+
+        # Clear again
+        append_only_processor.clear_buffer()
+
+        assert append_only_processor._results == []
+        assert append_only_processor._index == 0
+
+    def test_clear_buffer_does_not_affect_other_state(
+        self, append_only_processor: AppendOnlyChangelogProcessor
+    ):
+        """Test that clear_buffer() only affects _results and _index, not other state."""
+        # Set up some state
+        append_only_processor._results = [("row1",)]
+        append_only_processor._index = 1
+        append_only_processor._next_page = "some_token"
+        append_only_processor._fetch_next_page_called = True
+
+        # Clear buffer
+        append_only_processor.clear_buffer()
+
+        # Verify only _results and _index are affected
+        assert append_only_processor._results == []
+        assert append_only_processor._index == 0
+        assert append_only_processor._next_page == "some_token", "next_page should not change"
+        assert (
+            append_only_processor._fetch_next_page_called is True
+        ), "fetch_next_page_called should not change"
+
+
+@pytest.mark.unit
 class TestIteration:
     def test_iteration_over_onhand_results(
         self, append_only_processor: AppendOnlyChangelogProcessor
@@ -563,9 +633,9 @@ class TestFetchNextPage:
     def test_raises_if_statement_not_ready(
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
-        # Bounded statements are only ready when in terminal states (COMPLETED, STOPPED, FAILED).
-        # Set the statement to RUNNING phase to verify it's not considered ready.
-        append_only_processor._statement._phase = Phase.RUNNING
+        # Append-only statements in streaming mode are ready when RUNNING.
+        # But a statement in PENDING phase is never ready, so test that instead.
+        append_only_processor._statement._phase = Phase.PENDING
 
         with pytest.raises(InterfaceError, match="Statement is not ready"):
             append_only_processor._fetch_next_page()

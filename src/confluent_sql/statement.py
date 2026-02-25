@@ -7,6 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from .exceptions import InterfaceError, OperationalError
+from .execution_mode import ExecutionMode
 from .types import ColumnTypeDefinition, FromResponseTypes, StatementTypeConverter, StrAnyDict
 
 if TYPE_CHECKING:
@@ -96,6 +97,8 @@ class ChangelogRow:
 
 
 class Phase(Enum):
+    """Statement execution phases with terminal state detection."""
+
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
@@ -111,11 +114,37 @@ class Phase(Enum):
     # never returned by the api.
     DELETED = "DELETED"
 
+    def __init__(self, value: str) -> None:
+        """Initialize Phase enum member."""
+        self._value_ = value
+
+    @property
+    def is_terminal(self) -> bool:
+        """Check if this phase is a terminal state (statement execution has ended).
+
+        Terminal states are those where the statement is no longer executing and will
+        not transition to any other state.
+
+        Returns:
+            True if the phase is COMPLETED, STOPPED, FAILED, or DELETED. False otherwise.
+        """
+        # Terminal phase values defined at class level
+        return self.value in Phase._TERMINAL_PHASES  # type: ignore[attr-defined]
+
+
+# Class-level constant defining terminal phases
+Phase._TERMINAL_PHASES = frozenset({"COMPLETED", "STOPPED", "FAILED", "DELETED"})  # type: ignore[attr-defined]
+
 
 @dataclass
 class Statement:
     """Represents a Confluent SQL statement, including its metadata, spec, status,
     and parsed traits such as schema, sql kind, etc."""
+
+    # SQL kinds that represent pure DDL statements (create/modify schema objects)
+    _PURE_DDL_KINDS = frozenset(
+        {"CREATE_TABLE", "DROP_TABLE", "CREATE_VIEW", "DROP_VIEW", "ALTER_TABLE"}
+    )
 
     # From the cursor that created this statement ...
     connection: Connection
@@ -147,25 +176,42 @@ class Statement:
         """
         return self._possible_traits().is_bounded
 
-    _always_ready_states = frozenset({Phase.COMPLETED, Phase.STOPPED, Phase.FAILED})
-    """States in which any statement can be considered ready for consumption/deletion."""
+    def can_fetch_results(self, execution_mode: ExecutionMode) -> bool:
+        """Check if results can be fetched from this statement based on execution mode.
 
-    @property
-    def is_ready(self) -> bool:
-        """Is the statement in a ready state for consumption/deletion?
+        This method encapsulates all the complex readiness logic that depends on both
+        the statement's characteristics and the execution mode in which it was submitted.
 
-        Note: This property only considers the statement's traits (bounded vs unbounded).
-        The actual readiness for cursor operations also depends on the execution mode,
-        which is handled in Cursor._wait_for_statement_ready.
+        Args:
+            execution_mode: The execution mode (snapshot or streaming) the statement was
+                submitted in.
+
+        Returns:
+            True if results can be fetched, False otherwise.
         """
-
-        # Consult _always_ready_states first always, because if statement is FAILED
-        # then traits will not be available and `.is_bounded` will raise an error.
-        if self.phase in self._always_ready_states:
+        # Terminal states are always ready (COMPLETED, FAILED, STOPPED, DELETED)
+        if self.phase.is_terminal:
             return True
+
+        if execution_mode.is_streaming:
+            # In streaming mode, readiness depends on statement type.
+            if self.is_pure_ddl:
+                # Pure DDL must complete fully before the created/modified objects
+                # are ready for use. Since we already checked is_terminal above, return False.
+                return False
+            elif self.is_bounded and not self.is_append_only:
+                # Bounded non-append-only queries (e.g., aggregations without streaming input)
+                # must complete fully before results are available for fetching.
+                # Since we already checked is_terminal above, return False.
+                return False
+            else:
+                # Unbounded streaming queries and append-only bounded queries are ready
+                # when RUNNING (terminal states already handled above)
+                return self.phase == Phase.RUNNING
         else:
-            # Return true if streaming (unbounded) statement is running, otherwise false.
-            return self.phase == Phase.RUNNING and not self.is_bounded
+            # In snapshot mode, statements are only ready for result fetching when they
+            # reach a terminal state. Terminal states are checked above, so return False.
+            return False
 
     @property
     def is_failed(self) -> bool:
@@ -220,6 +266,19 @@ class Statement:
     @property
     def sql_kind(self) -> str:
         return self._possible_traits().sql_kind
+
+    @property
+    def is_pure_ddl(self) -> bool:
+        """Check if this statement is a pure DDL statement that creates or modifies schema objects.
+
+        Pure DDL statements need to complete fully before the created/modified objects
+        are ready for use, unlike streaming queries or CTAS which are ready when RUNNING.
+
+        Returns:
+            True if the statement is one of: CREATE_TABLE, DROP_TABLE, CREATE_VIEW,
+            DROP_VIEW, ALTER_TABLE. False otherwise.
+        """
+        return self.sql_kind in self._PURE_DDL_KINDS
 
     @property
     def is_append_only(self) -> bool:

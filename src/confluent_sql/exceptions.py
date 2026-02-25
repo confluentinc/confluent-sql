@@ -5,7 +5,12 @@ This module defines the standard DB-API v2 exception hierarchy for the
 Confluent SQL driver.
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .statement import Phase, Statement
 
 
 class Warning(Exception):
@@ -107,6 +112,53 @@ class ComputePoolExhaustedError(OperationalError):
         super().__init__(message)
         self.statement_name = statement_name
         self.statement_deleted = statement_deleted
+
+
+class StatementStoppedError(OperationalError):
+    """
+    Exception raised when a streaming statement stops unexpectedly.
+
+    Streaming queries run indefinitely until externally stopped or deleted. When
+    the statement enters a terminal phase (STOPPED, FAILED, COMPLETED), this
+    exception is raised to indicate the unexpected termination.
+
+    This is a subclass of OperationalError.
+
+    Attributes:
+        statement_name: The name of the statement that stopped.
+        statement: The Statement object (if available for inspection).
+        phase: The terminal phase (STOPPED, FAILED, COMPLETED, etc.) if available.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        statement_name: str,
+        statement: Statement | None = None,
+        phase: Phase | None = None,
+    ):
+        super().__init__(message)
+        self.statement_name = statement_name
+        self.statement = statement
+        self.phase = phase
+
+
+class StatementDeletedError(StatementStoppedError):
+    """
+    Exception raised when attempting to access a statement that has been deleted.
+
+    This is a subclass of StatementStoppedError raised specifically when the server
+    returns a 404 status code for a statement that previously existed but has
+    since been deleted (either explicitly or by the server).
+
+    Attributes:
+        statement_name: The name of the statement that was deleted.
+        statement: Always None (deleted statements have no state).
+        phase: Always None (deleted statements have no phase).
+    """
+
+    def __init__(self, message: str, statement_name: str):
+        super().__init__(message, statement_name, statement=None, phase=None)
 
 
 class IntegrityError(DatabaseError):
