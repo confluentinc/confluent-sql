@@ -581,7 +581,7 @@ class TestFetchNextPage:
             return [
                 ChangelogRow(0, ["true"]),
                 ChangelogRow(0, ["false"]),
-            ], ""  # Mock some results and no next page
+            ], None  # Mock some results and no next page
 
         append_only_processor._connection._get_statement_results = mock_get_statement_results
 
