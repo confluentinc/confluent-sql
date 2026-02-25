@@ -68,7 +68,7 @@ def test_may_have_results(
 @pytest.mark.unit
 class TestFetchMethods:
     def test_fetchmany_with_size(self, append_only_reader: AppendOnlyResultReader):
-        # Mock some results in the processor
+        # Mock some results in the reader
         append_only_reader._results = deque([("row1",), ("row2",), ("row3",)])
 
         # Fetch 2 results
@@ -103,7 +103,7 @@ class TestFetchMethods:
 
         append_only_reader._fetch_next_page = mock_fetch_next_page
 
-        # Set up processor with 2 buffered results and indicate more pages available
+        # Set up reader with 2 buffered results and indicate more pages available
         append_only_reader._results = deque([("row1",), ("row2",)])
         append_only_reader._next_page = "next_page_url"  # More pages available
 
@@ -225,7 +225,7 @@ class TestFetchMethods:
         """Test that fetchmany uses blocking behavior in snapshot mode with
         AppendOnlyResultReader."""
         statement = statement_factory(is_append_only=True)
-        # Create processor in SNAPSHOT mode
+        # Create reader in SNAPSHOT mode
         processor = AppendOnlyResultReader(mock_connection, statement, ExecutionMode.SNAPSHOT)
 
         fetch_count = 0
@@ -263,7 +263,7 @@ class TestFetchMethods:
         """Test that fetchmany uses non-blocking behavior in streaming mode even with
         AppendOnlyResultReader."""
         statement = statement_factory(is_append_only=True)
-        # Create processor in STREAMING_QUERY mode
+        # Create reader in STREAMING_QUERY mode
         processor = AppendOnlyResultReader(
             mock_connection, statement, ExecutionMode.STREAMING_QUERY
         )
@@ -340,7 +340,7 @@ class TestFetchMethods:
     ):
         """Test that fetchone() makes at most one fetch per call in streaming mode."""
         statement = statement_factory(is_append_only=True)
-        # Create processor in STREAMING_QUERY mode
+        # Create reader in STREAMING_QUERY mode
         processor = AppendOnlyResultReader(
             mock_connection, statement, ExecutionMode.STREAMING_QUERY
         )
@@ -404,7 +404,7 @@ class TestFetchMethods:
         assert processor.may_have_results is False, "No more results after fetch"
 
     def test_fetchone(self, append_only_reader: AppendOnlyResultReader):
-        # Mock some results in the processor
+        # Mock some results in the reader
         append_only_reader._results = deque([("row1",), ("row2",)])
 
         # Fetch one result
@@ -427,7 +427,7 @@ class TestFetchMethods:
             "Statement should be bounded for this test"
         )
 
-        # Mock some results in the processor
+        # Mock some results in the reader
         append_only_reader._results = deque([("row1",), ("row2",), ("row3",)])
 
         # Fetch all results
@@ -439,7 +439,7 @@ class TestFetchMethods:
     def test_fetchall_vs_streaming_results(
         self, append_only_reader: AppendOnlyResultReader
     ):
-        # Doctor the processor's statement to have come from a streaming query
+        # Doctor the reader's statement to have come from a streaming query
         append_only_reader._statement.traits.is_bounded = False  # type: ignore
 
         # fetchall should raise an error when used against an unbounded/streaming query
@@ -455,10 +455,10 @@ class TestIteration:
     def test_iteration_over_onhand_results(
         self, append_only_reader: AppendOnlyResultReader
     ):
-        # Mock some results in the processor
+        # Mock some results in the reader
         append_only_reader._results = deque([("row1",), ("row2",), ("row3",)])
 
-        # Iterate over the processor and collect results
+        # Iterate over the reader and collect results
         collected = []
         for row in append_only_reader:
             collected.append(row)
@@ -482,7 +482,7 @@ class TestIteration:
 
         append_only_reader._fetch_next_page = mock_fetch_next_page
 
-        # Iterate over the processor to trigger fetching
+        # Iterate over the reader to trigger fetching
         collected = []
         for row in append_only_reader:
             collected.append(row)
@@ -505,7 +505,7 @@ class TestIteration:
 
         append_only_reader._fetch_next_page = mock_fetch_next_page
 
-        # Iterate over the processor and collect results
+        # Iterate over the reader and collect results
         collected = []
         for row in append_only_reader:
             collected.append(row)
@@ -515,7 +515,7 @@ class TestIteration:
     def test_iteration_with_dict_mode(
         self, statement_factory: StatementFactory, mock_connection: Connection
     ):
-        # Create a processor with as_dict=True. By default, the statement factory
+        # Create a reader with as_dict=True. By default, the statement factory
         # creates a statement with a simple schema that has one column named "value".
         statement = statement_factory(is_append_only=True)
         processor = AppendOnlyResultReader(
@@ -530,7 +530,7 @@ class TestIteration:
 
         processor._fetch_next_page = mock_fetch_next_page
 
-        # Iterate over the processor and collect results
+        # Iterate over the reader and collect results
         collected = []
         for row in processor:
             collected.append(row)
@@ -557,7 +557,7 @@ class TestFetchNextPage:
             append_only_reader._fetch_next_page()
 
     def test_raises_if_no_schema(self, append_only_reader: AppendOnlyResultReader):
-        # Doctor the processor's statement to have no schema
+        # Doctor the reader's statement to have no schema
         append_only_reader._statement.traits.schema = None  # type: ignore
 
         with pytest.raises(
@@ -585,7 +585,7 @@ class TestFetchNextPage:
 
         append_only_reader._connection._get_statement_results = mock_get_statement_results
 
-        # Ensure processor has no on-hand results to trigger fetching
+        # Ensure reader has no on-hand results to trigger fetching
         append_only_reader._results = deque()
         append_only_reader._next_page = None
 
@@ -594,7 +594,7 @@ class TestFetchNextPage:
 
         assert call_tracker["called"], "Expected _get_statement_results to have been called"
         assert append_only_reader._results == deque([(True,), (False,)]), (
-            "Expected fetched results to be stored in processor"
+            "Expected fetched results to be stored in reader"
         )
 
     def test_fetch_next_page_called_during_iteration(
@@ -611,7 +611,7 @@ class TestFetchNextPage:
 
         append_only_reader._fetch_next_page = mock_fetch_next_page
 
-        # Iterate over the processor to trigger fetching
+        # Iterate over the reader to trigger fetching
         collected = []
         for row in append_only_reader:
             collected.append(row)
@@ -638,7 +638,7 @@ class TestFetchNextPage:
 
         append_only_reader._connection._get_statement_results = mock_get_statement_results
 
-        # Ensure processor has no on-hand results to trigger fetching
+        # Ensure reader has no on-hand results to trigger fetching
         append_only_reader._results = deque()
         append_only_reader._next_page = None
 
@@ -696,7 +696,7 @@ class TestChangelogEventReader:
     ):
         """Test that ChangelogEventReader also uses blocking behavior in snapshot mode."""
         statement = statement_factory(is_append_only=False)
-        # Create processor in SNAPSHOT mode
+        # Create reader in SNAPSHOT mode
         processor = ChangelogEventReader(mock_connection, statement, ExecutionMode.SNAPSHOT)
 
         fetch_count = 0
@@ -768,7 +768,7 @@ class TestFetchMetrics:
 
         append_only_reader._connection._get_statement_results = mock_get_statement_results
 
-        # Ensure processor starts with no results
+        # Ensure reader starts with no results
         append_only_reader._results = deque()
 
         # Fetch a page

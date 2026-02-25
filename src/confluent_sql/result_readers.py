@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ProcessorOutput = TypeVar("ProcessorOutput")
+ReaderOutput = TypeVar("ReaderOutput")
 """Type that a result reader produces as output from its __iter__ method."""
 
 
@@ -114,7 +114,7 @@ class FetchMetrics:
         self._before_fetch_timestamp = None
 
 
-class ResultReader(Generic[ProcessorOutput], abc.ABC):
+class ResultReader(Generic[ReaderOutput], abc.ABC):
     """Abstract base class for result readers.
 
     Important: Iteration vs Fetch Methods Behavior
@@ -160,7 +160,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
        no more pages to fetch (distinguished from the initial state by
        `_fetch_next_page_called` being set to `True`)."""
 
-    _results: deque[ProcessorOutput]
+    _results: deque[ReaderOutput]
     """Deque of unconsumed results. Rows are removed via popleft() as they
     are consumed, freeing memory incrementally."""
 
@@ -190,7 +190,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
         self._fetch_next_page_called = False
         self._most_recent_results_fetch_time = None
 
-        self._results: deque[ProcessorOutput] = deque()
+        self._results: deque[ReaderOutput] = deque()
         self._metrics = FetchMetrics()
 
     @abc.abstractmethod
@@ -206,7 +206,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
         """
         raise NotImplementedError("Abstract method")  # pragma: no cover
 
-    def __iter__(self) -> ResultReader[ProcessorOutput]:
+    def __iter__(self) -> ResultReader[ReaderOutput]:
         """Returns an iterator over the result reader results.
 
         Important: Iteration always uses blocking behavior, even in streaming mode.
@@ -219,7 +219,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
         """
         return self
 
-    def fetchone(self) -> ProcessorOutput | None:
+    def fetchone(self) -> ReaderOutput | None:
         """
         Fetch the next row from the query result.
 
@@ -263,7 +263,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
             raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover
         return dict(zip([col.name for col in self._statement.schema.columns], row, strict=True))
 
-    def _consume_from_buffer(self, limit: int) -> list[ProcessorOutput]:
+    def _consume_from_buffer(self, limit: int) -> list[ReaderOutput]:
         """
         Consume up to 'limit' results from the deque buffer.
 
@@ -285,7 +285,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
             consumed.append(self._results.popleft())
         return consumed
 
-    def _get_next_results(self, limit: int | None) -> list[ProcessorOutput]:
+    def _get_next_results(self, limit: int | None) -> list[ReaderOutput]:
         """
         Retrieve up to `limit` results, with behavior depending on execution mode.
 
@@ -353,7 +353,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
             or self._next_page is not None
         )
 
-    def fetchmany(self, size: int) -> list[ProcessorOutput]:
+    def fetchmany(self, size: int) -> list[ReaderOutput]:
         """
         Fetch up to 'size' rows from the query result.
 
@@ -394,7 +394,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
 
         return self._get_next_results(size)
 
-    def fetchall(self) -> list[ProcessorOutput]:
+    def fetchall(self) -> list[ReaderOutput]:
         """
         Fetch all remaining rows of a query result.
 
@@ -426,7 +426,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
 
         return self._get_next_results(None)
 
-    def __next__(self) -> ProcessorOutput:
+    def __next__(self) -> ReaderOutput:
         """Implementation of iterator protocol.
 
         This method implements blocking iteration behavior:
