@@ -1,21 +1,21 @@
 """
-Changelog fetching and conversion for Confluent SQL DB-API driver.
+Result reading and buffering for Confluent SQL DB-API driver.
 
-This module provides low-level changelog processors that fetch statement results
+This module provides low-level result readers that fetch statement results
 from the server, handle paging, and convert row data from JSON to Python types.
 
-- AppendOnlyChangelogProcessor: For append-only streaming (or all snapshot mode)
+- AppendOnlyResultReader: For append-only streaming (or all snapshot mode)
   queries (returns row data only).
-- RawChangelogProcessor: For non-append-only queries -- a subset of streaming queries
+- ChangelogEventReader: For non-append-only queries -- a subset of streaming queries
   (returns ChangeloggedRow with operation + row).
 
-These processors fetch and expose either result rows or changelog events including
+These readers fetch and expose either result rows or changelog events including
 result rows but do NOT apply or interpret them. These implementations back
 the iteration, fetchone/fetchmany/fetchall methods of our Cursor class.
 
 For stateful compression of changelog events into a logical result set, see
 the `changelog_compressor` module, which makes use of the sequence of ChangeloggedRow
-returned by RawChangelogProcessor to produce a compressed result set ("interpreted changelog")
+returned by ChangelogEventReader to produce a compressed result set ("interpreted changelog")
 that applies the changelog operations to maintain the current state of each row in the result
 and the logical result set at large over time. That functionality is exposed from the Cursor
 class's `changelog_compressor()` method (only callable for non-append-only streaming statements).
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ProcessorOutput = TypeVar("ProcessorOutput")
-"""Type that a changelog processor produces as output from its __iter__ method."""
+"""Type that a result reader produces as output from its __iter__ method."""
 
 
 StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
@@ -51,12 +51,12 @@ StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
 
 
 ResultTupleOrDict: TypeAlias = StatementResultTuple | StrAnyDict
-"""Output type for AppendOnlyChangelogProcessor fetch methods and iteration."""
+"""Output type for AppendOnlyResultReader fetch methods and iteration."""
 
 
 @dataclass()
 class FetchMetrics:
-    """Holds metrics related to fetch results route operations in ChangelogProcessor."""
+    """Holds metrics related to fetch results route operations in ResultReader."""
 
     total_page_fetches: int = 0
     """Total number of times the processor fetched a page of results from the server."""
@@ -114,12 +114,12 @@ class FetchMetrics:
         self._before_fetch_timestamp = None
 
 
-class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
-    """Abstract base class for changelog processors.
+class ResultReader(Generic[ProcessorOutput], abc.ABC):
+    """Abstract base class for result readers.
 
     Important: Iteration vs Fetch Methods Behavior
     ------------------------------------------------
-    This processor provides two ways to consume results, with different
+    This reader provides two ways to consume results, with different
     blocking behaviors in streaming mode:
 
     1. **Iteration (for row in processor):**
@@ -140,10 +140,10 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     """
 
     _connection: Connection
-    """The connection associated with this changelog processor."""
+    """The connection associated with this result reader."""
 
     _statement: Statement
-    """The statement associated with this changelog processor."""
+    """The statement associated with this result reader."""
 
     _as_dict: bool
     """Whether to return the row portion of results as dicts or tuples."""
@@ -195,10 +195,10 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
     @abc.abstractmethod
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
-        """Retain the changelog row in the processor's internal state.
+        """Retain the changelog row in the reader's internal state.
 
-        This is used by RawChangelogProcessor to retain the full changelog result,
-        and by AppendOnlyChangelogProcessor to retain just the row data (after validating
+        This is used by ChangelogEventReader to retain the full changelog result,
+        and by AppendOnlyResultReader to retain just the row data (after validating
         that the operation is an INSERT if provided by the server).
 
         The exact retention logic is left to the concrete implementations since it may differ
@@ -206,8 +206,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         """
         raise NotImplementedError("Abstract method")  # pragma: no cover
 
-    def __iter__(self) -> ChangelogProcessor[ProcessorOutput]:
-        """Returns an iterator over the processed changelog results.
+    def __iter__(self) -> ResultReader[ProcessorOutput]:
+        """Returns an iterator over the result reader results.
 
         Important: Iteration always uses blocking behavior, even in streaming mode.
         When the buffer is empty, iteration will fetch and wait for more data to
@@ -502,16 +502,16 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         self._most_recent_results_fetch_time = time.monotonic()
 
 
-class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
-    """Append-only changelog processor implementation.
+class AppendOnlyResultReader(ResultReader[ResultTupleOrDict]):
+    """Append-only result reader implementation.
 
     Returns statement result rows as either tuples or dicts based on the `as_dict` flag.
     """
 
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
-        """Retain the changelog row in the processor's internal state.
+        """Retain the changelog row in the reader's internal state.
 
-        For AppendOnlyChangelogProcessor, we only retain the row data (after validating
+        For AppendOnlyResultReader, we only retain the row data (after validating
         that the operation is an INSERT if provided by the server), since we only return
         the row data in fetch and iteration methods.
 
@@ -526,7 +526,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
             # Only expect INSERT operations for append-only
             logger.error(f"Received non-INSERT op {op} in results for append-only statement.")
             raise NotSupportedError(
-                f"Non-INSERT op was received by AppendOnlyChangelogProcessor: {op}. "
+                f"Non-INSERT op was received by AppendOnlyResultReader: {op}. "
             )
 
         self._results.append(decoded)
@@ -534,7 +534,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
 
 class ChangeloggedRow(NamedTuple):
     """Changelog operation and corresponding row data after type conversion from Results API JSON
-    to Python types. Returned by cursors using RawChangelogProcessor for non-append-only statements.
+    to Python types. Returned by cursors using ChangelogEventReader for non-append-only statements.
     """
 
     op: Op
@@ -544,8 +544,8 @@ class ChangeloggedRow(NamedTuple):
     from Results API JSON to Python types."""
 
 
-class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
-    """Non-append-only changelog processor implementation.
+class ChangelogEventReader(ResultReader[ChangeloggedRow]):
+    """Non-append-only changelog event reader implementation.
 
     Returns changelog results as `ChangeloggedRow` namedtuples containing both the operation
     type (op) and the tuple or dict row data (`row`).
@@ -557,9 +557,9 @@ class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
     """
 
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
-        """Retain the changelog row in the processor's internal state.
+        """Retain the changelog row in the reader's internal state.
 
-        For RawChangelogProcessor, we retain both the operation type and the row data
+        For ChangelogEventReader, we retain both the operation type and the row data
 
         Args:
             op: The changelog operation type.

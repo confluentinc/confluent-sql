@@ -5,7 +5,7 @@ This module provides a DB-API v2 compliant interface for connecting to and
 executing SQL queries against Confluent SQL services.
 """
 
-from .changelog import ChangeloggedRow
+from .result_readers import ChangeloggedRow
 from .changelog_compressor import ChangelogCompressor
 from .connection import Connection, connect
 from .cursor import Cursor
