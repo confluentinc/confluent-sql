@@ -59,22 +59,22 @@ class FetchMetrics:
     """Holds metrics related to fetch results route operations in ResultReader."""
 
     total_page_fetches: int = 0
-    """Total number of times the processor fetched a page of results from the server."""
+    """Total number of times the reader fetched a page of results from the server."""
 
     total_changelog_rows_fetched: int = 0
     """Total number of changelog rows fetched from the server across all pages."""
 
     empty_page_fetches: int = 0
-    """Number of times the processor fetched a page of results that contained no rows."""
+    """Number of times the reader fetched a page of results that contained no rows."""
 
     fetch_request_secs: float = 0.0
     """Total elapsed seconds spent on results fetch operations (excluding any pauses)."""
 
     paused_times: int = 0
-    """Number of times the processor paused before fetching the next page of results."""
+    """Number of times the reader paused before fetching the next page of results."""
 
     paused_secs: float = 0.0
-    """Total number of seconds the processor spent paused before fetching pages."""
+    """Total number of seconds the reader spent paused before fetching pages."""
 
     _before_fetch_timestamp: float | None = None
     """Internal timestamp to track when a fetch operation started, used for metrics calculation."""
@@ -87,7 +87,7 @@ class FetchMetrics:
         return self.total_changelog_rows_fetched / self.total_page_fetches
 
     def paused_before_fetch(self, pause_secs: float) -> None:
-        """Record that the processor paused for a some time before fetching results."""
+        """Record that the reader paused for a some time before fetching results."""
         self.paused_times += 1
         self.paused_secs += pause_secs
 
@@ -122,7 +122,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
     This reader provides two ways to consume results, with different
     blocking behaviors in streaming mode:
 
-    1. **Iteration (for row in processor):**
+    1. **Iteration (for row in reader):**
        - Always blocking in both snapshot and streaming modes
        - Waits for data to become available or until definitively complete
        - Suitable for consuming complete result sets
@@ -172,7 +172,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
     """Metrics related to results fetching operations"""
 
     _execution_mode: ExecutionMode
-    """The execution mode for this processor (snapshot vs streaming)."""
+    """The execution mode for this reader (snapshot vs streaming)."""
 
     def __init__(
         self,
@@ -233,13 +233,13 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
             temporary emptiness (more data may come) and end of results.
 
         Note: This non-blocking behavior in streaming mode differs from iteration.
-        When iterating (for row in processor), the processor will block waiting
+        When iterating (for row in reader), the reader will block waiting
         for data. Use fetchone() in a polling loop for non-blocking streaming:
 
         Example:
             # Streaming mode polling pattern
-            while processor.may_have_results:
-                row = processor.fetchone()
+            while reader.may_have_results:
+                row = reader.fetchone()
                 if row is not None:
                     process(row)
                 else:
@@ -304,7 +304,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
 
         Returns:
             A list of result rows (as tuples or dicts based on `as_dict` flag).
-            Behavior depends on mode and processor type.
+            Behavior depends on mode and reader type.
 
         Raises:
             InterfaceError: If limit is None and the statement is unbounded (streaming),
@@ -370,8 +370,8 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
 
         Example:
             # Streaming mode batch polling pattern
-            while processor.may_have_results:
-                batch = processor.fetchmany(100)
+            while reader.may_have_results:
+                batch = reader.fetchmany(100)
                 if batch:
                     for row in batch:
                         process(row)
@@ -495,7 +495,7 @@ class ResultReader(Generic[ProcessorOutput], abc.ABC):
                 if self._as_dict:
                     decoded_row = self._map_row_to_dict(decoded_row)
 
-                # Retain the row (and perhaps also the operation) in the processor's internal state
+                # Retain the row (and perhaps also the operation) in the reader's internal state
                 self._retain(res.op, decoded_row)
 
         self._fetch_next_page_called = True
