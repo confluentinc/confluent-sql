@@ -14,14 +14,6 @@ import warnings
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from .changelog import (
-    AppendOnlyChangelogProcessor,
-    ChangeloggedRow,
-    ChangelogProcessor,
-    FetchMetrics,
-    RawChangelogProcessor,
-    ResultTupleOrDict,
-)
 from .changelog_compressor import ChangelogCompressor, create_changelog_compressor
 from .exceptions import (
     ComputePoolExhaustedError,
@@ -30,6 +22,14 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
+from .result_readers import (
+    AppendOnlyResultReader,
+    ChangelogEventReader,
+    ChangeloggedRow,
+    FetchMetrics,
+    ResultReader,
+    ResultTupleOrDict,
+)
 from .statement import Statement
 from .types import convert_statement_parameters
 
@@ -118,7 +118,7 @@ class Cursor:
 
         # Statement execution state
         self._statement: Statement | None = None
-        self._changelog_processor: AppendOnlyChangelogProcessor | RawChangelogProcessor | None = (
+        self._result_reader: AppendOnlyResultReader | ChangelogEventReader | None = (
             None
         )
 
@@ -198,7 +198,7 @@ class Cursor:
         # Reset internal state
         self._statement = None
         self._statement_handle = None
-        self._changelog_processor = None
+        self._result_reader = None
         self.rowcount = -1
         self._next_page = None
 
@@ -230,17 +230,17 @@ class Cursor:
                 "DDL statements do not produce result sets."
             )
 
-    def _get_changelog_processor(self) -> ChangelogProcessor[Any]:
-        """Raise if changelog processor is not initialized, which should be the case if the
+    def _get_result_reader(self) -> ResultReader[Any]:
+        """Raise if result reader is not initialized, which should be the case if the
         statement is not append-only or if we haven't successfully waited for the statement to
         be ready."""
-        if self._changelog_processor is None:
+        if self._result_reader is None:
             raise InterfaceError(
-                "Changelog processor not initialized. This likely means the statement"
+                "Result reader not initialized. This likely means the statement"
                 " is not ready for fetching results yet."
             )  # pragma: no cover
 
-        return self._changelog_processor
+        return self._result_reader
 
     def fetchone(self) -> ResultRow | None:
         """
@@ -279,7 +279,7 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        return self._get_changelog_processor().fetchone()
+        return self._get_result_reader().fetchone()
 
     def fetchmany(self, size: int | None = None) -> list[ResultRow]:
         """
@@ -323,7 +323,7 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        return self._get_changelog_processor().fetchmany(
+        return self._get_result_reader().fetchmany(
             size if size is not None else self.arraysize
         )
 
@@ -352,7 +352,7 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        return self._get_changelog_processor().fetchall()
+        return self._get_result_reader().fetchall()
 
     def __iter__(self) -> Iterator[ResultRow]:
         """Return the cursor as an iterator, so that our __next__ can ensure .close() checks."""
@@ -361,10 +361,10 @@ class Cursor:
         return self
 
     def __next__(self) -> ResultRow:
-        """Defer to the changelog processor's iterator after proving
+        """Defer to the result reader's iterator after proving
         the cursor is not yet closed."""
         self._raise_if_closed()
-        return self._get_changelog_processor().__next__()
+        return self._get_result_reader().__next__()
 
     def close(self) -> None:
         """
@@ -391,7 +391,7 @@ class Cursor:
 
             self.rowcount = -1
             self._closed = True
-            self._changelog_processor = None
+            self._result_reader = None
 
     def setinputsizes(self, sizes) -> None:
         """
@@ -461,17 +461,17 @@ class Cursor:
         return (
             self._statement is not None
             and self._statement.schema is not None
-            and self._get_changelog_processor().may_have_results
+            and self._get_result_reader().may_have_results
         )
 
     @property
     def metrics(self) -> FetchMetrics:
-        """Return the current fetch metrics from the changelog processor, if available."""
-        if self._changelog_processor is None:
+        """Return the current fetch metrics from the result reader, if available."""
+        if self._result_reader is None:
             raise InterfaceError(
-                "No changelog processor initialized, cannot get metrics."
+                "No result reader initialized, cannot get metrics."
             )  # pragma: no cover
-        return self._changelog_processor.metrics
+        return self._result_reader.metrics
 
     @property
     def as_dict(self) -> bool:
@@ -627,22 +627,22 @@ class Cursor:
             self._raise_if_statement_is_broken(statement)
 
             # If we can fetch results based on execution mode and statement state,
-            # create the changelog processor and exit the polling loop.
+            # create the result reader and exit the polling loop.
             if statement.can_fetch_results(self._execution_mode):
                 if statement.is_append_only:
-                    # Create changelog processor for append-only statements, will
+                    # Create result reader for append-only statements, will
                     # return row tuples or dicts depending on self._results_as_dicts.
-                    self._changelog_processor = AppendOnlyChangelogProcessor(
+                    self._result_reader = AppendOnlyResultReader(
                         self._connection,
                         self._statement,
                         self._execution_mode,
                         as_dict=self._results_as_dicts,
                     )
                 else:
-                    # Use a RawChangelogProcessor that will return pairs of the changelog
+                    # Use a ChangelogEventReader that will return pairs of the changelog
                     # operation and the type-promoted row data as a dict or tuple depending
                     # on self._results_as_dicts.
-                    self._changelog_processor = RawChangelogProcessor(
+                    self._result_reader = ChangelogEventReader(
                         self._connection,
                         self._statement,
                         self._execution_mode,

@@ -19,12 +19,12 @@ Usage:
 
     # Generator exits when query is externally stopped/deleted or fails
 
-Compressors consume raw changelog events from RawChangelogProcessor (via the cursor)
+Compressors consume raw changelog events from ChangelogEventReader (via the cursor)
 and apply operations to maintain the compressed result set. Storage strategies are
 automatically selected based on whether the statement has upsert columns (dict-based
 keyed lookup vs list-based scanning) and whether results are tuples or dicts.
 
-For low-level changelog fetching without state management, see the `changelog` module.
+For low-level changelog fetching without state management, see the `result_readers` module.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ import logging
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
-from .changelog import ChangeloggedRow, ResultTupleOrDict, StatementResultTuple
 from .exceptions import InterfaceError, StatementStoppedError
+from .result_readers import ChangeloggedRow, ResultTupleOrDict, StatementResultTuple
 from .statement import Op, Schema, Statement
 from .types import StrAnyDict
 
