@@ -1,21 +1,21 @@
 """
-Changelog fetching and conversion for Confluent SQL DB-API driver.
+Result reading and buffering for Confluent SQL DB-API driver.
 
-This module provides low-level changelog processors that fetch statement results
+This module provides low-level result readers that fetch statement results
 from the server, handle paging, and convert row data from JSON to Python types.
 
-- AppendOnlyChangelogProcessor: For append-only streaming (or all snapshot mode)
+- AppendOnlyResultReader: For append-only streaming (or all snapshot mode)
   queries (returns row data only).
-- RawChangelogProcessor: For non-append-only queries -- a subset of streaming queries
+- ChangelogEventReader: For non-append-only queries -- a subset of streaming queries
   (returns ChangeloggedRow with operation + row).
 
-These processors fetch and expose either result rows or changelog events including
+These readers fetch and expose either result rows or changelog events including
 result rows but do NOT apply or interpret them. These implementations back
 the iteration, fetchone/fetchmany/fetchall methods of our Cursor class.
 
 For stateful compression of changelog events into a logical result set, see
 the `changelog_compressor` module, which makes use of the sequence of ChangeloggedRow
-returned by RawChangelogProcessor to produce a compressed result set ("interpreted changelog")
+returned by ChangelogEventReader to produce a compressed result set ("interpreted changelog")
 that applies the changelog operations to maintain the current state of each row in the result
 and the logical result set at large over time. That functionality is exposed from the Cursor
 class's `changelog_compressor()` method (only callable for non-append-only streaming statements).
@@ -41,8 +41,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ProcessorOutput = TypeVar("ProcessorOutput")
-"""Type that a changelog processor produces as output from its __iter__ method."""
+ReaderOutput = TypeVar("ReaderOutput")
+"""Type that a result reader produces as output from its __iter__ method."""
 
 
 StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
@@ -51,30 +51,30 @@ StatementResultTuple: TypeAlias = tuple[SupportedPythonTypes, ...]
 
 
 ResultTupleOrDict: TypeAlias = StatementResultTuple | StrAnyDict
-"""Output type for AppendOnlyChangelogProcessor fetch methods and iteration."""
+"""Output type for AppendOnlyResultReader fetch methods and iteration."""
 
 
 @dataclass()
 class FetchMetrics:
-    """Holds metrics related to fetch results route operations in ChangelogProcessor."""
+    """Holds metrics related to fetch results route operations in ResultReader."""
 
     total_page_fetches: int = 0
-    """Total number of times the processor fetched a page of results from the server."""
+    """Total number of times the reader fetched a page of results from the server."""
 
     total_changelog_rows_fetched: int = 0
     """Total number of changelog rows fetched from the server across all pages."""
 
     empty_page_fetches: int = 0
-    """Number of times the processor fetched a page of results that contained no rows."""
+    """Number of times the reader fetched a page of results that contained no rows."""
 
     fetch_request_secs: float = 0.0
     """Total elapsed seconds spent on results fetch operations (excluding any pauses)."""
 
     paused_times: int = 0
-    """Number of times the processor paused before fetching the next page of results."""
+    """Number of times the reader paused before fetching the next page of results."""
 
     paused_secs: float = 0.0
-    """Total number of seconds the processor spent paused before fetching pages."""
+    """Total number of seconds the reader spent paused before fetching pages."""
 
     _before_fetch_timestamp: float | None = None
     """Internal timestamp to track when a fetch operation started, used for metrics calculation."""
@@ -87,7 +87,7 @@ class FetchMetrics:
         return self.total_changelog_rows_fetched / self.total_page_fetches
 
     def paused_before_fetch(self, pause_secs: float) -> None:
-        """Record that the processor paused for a some time before fetching results."""
+        """Record that the reader paused for a some time before fetching results."""
         self.paused_times += 1
         self.paused_secs += pause_secs
 
@@ -114,15 +114,15 @@ class FetchMetrics:
         self._before_fetch_timestamp = None
 
 
-class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
-    """Abstract base class for changelog processors.
+class ResultReader(Generic[ReaderOutput], abc.ABC):
+    """Abstract base class for result readers.
 
     Important: Iteration vs Fetch Methods Behavior
     ------------------------------------------------
-    This processor provides two ways to consume results, with different
+    This reader provides two ways to consume results, with different
     blocking behaviors in streaming mode:
 
-    1. **Iteration (for row in processor):**
+    1. **Iteration (for row in reader):**
        - Always blocking in both snapshot and streaming modes
        - Waits for data to become available or until definitively complete
        - Suitable for consuming complete result sets
@@ -140,10 +140,10 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     """
 
     _connection: Connection
-    """The connection associated with this changelog processor."""
+    """The connection associated with this result reader."""
 
     _statement: Statement
-    """The statement associated with this changelog processor."""
+    """The statement associated with this result reader."""
 
     _as_dict: bool
     """Whether to return the row portion of results as dicts or tuples."""
@@ -160,7 +160,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
        no more pages to fetch (distinguished from the initial state by
        `_fetch_next_page_called` being set to `True`)."""
 
-    _results: deque[ProcessorOutput]
+    _results: deque[ReaderOutput]
     """Deque of unconsumed results. Rows are removed via popleft() as they
     are consumed, freeing memory incrementally."""
 
@@ -172,7 +172,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     """Metrics related to results fetching operations"""
 
     _execution_mode: ExecutionMode
-    """The execution mode for this processor (snapshot vs streaming)."""
+    """The execution mode for this reader (snapshot vs streaming)."""
 
     def __init__(
         self,
@@ -190,15 +190,15 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         self._fetch_next_page_called = False
         self._most_recent_results_fetch_time = None
 
-        self._results: deque[ProcessorOutput] = deque()
+        self._results: deque[ReaderOutput] = deque()
         self._metrics = FetchMetrics()
 
     @abc.abstractmethod
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
-        """Retain the changelog row in the processor's internal state.
+        """Retain the changelog row in the reader's internal state.
 
-        This is used by RawChangelogProcessor to retain the full changelog result,
-        and by AppendOnlyChangelogProcessor to retain just the row data (after validating
+        This is used by ChangelogEventReader to retain the full changelog result,
+        and by AppendOnlyResultReader to retain just the row data (after validating
         that the operation is an INSERT if provided by the server).
 
         The exact retention logic is left to the concrete implementations since it may differ
@@ -206,8 +206,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         """
         raise NotImplementedError("Abstract method")  # pragma: no cover
 
-    def __iter__(self) -> ChangelogProcessor[ProcessorOutput]:
-        """Returns an iterator over the processed changelog results.
+    def __iter__(self) -> ResultReader[ReaderOutput]:
+        """Returns an iterator over the result reader results.
 
         Important: Iteration always uses blocking behavior, even in streaming mode.
         When the buffer is empty, iteration will fetch and wait for more data to
@@ -219,7 +219,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
         """
         return self
 
-    def fetchone(self) -> ProcessorOutput | None:
+    def fetchone(self) -> ReaderOutput | None:
         """
         Fetch the next row from the query result.
 
@@ -233,13 +233,13 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             temporary emptiness (more data may come) and end of results.
 
         Note: This non-blocking behavior in streaming mode differs from iteration.
-        When iterating (for row in processor), the processor will block waiting
+        When iterating (for row in reader), the reader will block waiting
         for data. Use fetchone() in a polling loop for non-blocking streaming:
 
         Example:
             # Streaming mode polling pattern
-            while processor.may_have_results:
-                row = processor.fetchone()
+            while reader.may_have_results:
+                row = reader.fetchone()
                 if row is not None:
                     process(row)
                 else:
@@ -263,7 +263,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover
         return dict(zip([col.name for col in self._statement.schema.columns], row, strict=True))
 
-    def _consume_from_buffer(self, limit: int) -> list[ProcessorOutput]:
+    def _consume_from_buffer(self, limit: int) -> list[ReaderOutput]:
         """
         Consume up to 'limit' results from the deque buffer.
 
@@ -285,7 +285,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             consumed.append(self._results.popleft())
         return consumed
 
-    def _get_next_results(self, limit: int | None) -> list[ProcessorOutput]:
+    def _get_next_results(self, limit: int | None) -> list[ReaderOutput]:
         """
         Retrieve up to `limit` results, with behavior depending on execution mode.
 
@@ -304,7 +304,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         Returns:
             A list of result rows (as tuples or dicts based on `as_dict` flag).
-            Behavior depends on mode and processor type.
+            Behavior depends on mode and reader type.
 
         Raises:
             InterfaceError: If limit is None and the statement is unbounded (streaming),
@@ -353,7 +353,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
             or self._next_page is not None
         )
 
-    def fetchmany(self, size: int) -> list[ProcessorOutput]:
+    def fetchmany(self, size: int) -> list[ReaderOutput]:
         """
         Fetch up to 'size' rows from the query result.
 
@@ -370,8 +370,8 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         Example:
             # Streaming mode batch polling pattern
-            while processor.may_have_results:
-                batch = processor.fetchmany(100)
+            while reader.may_have_results:
+                batch = reader.fetchmany(100)
                 if batch:
                     for row in batch:
                         process(row)
@@ -394,7 +394,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         return self._get_next_results(size)
 
-    def fetchall(self) -> list[ProcessorOutput]:
+    def fetchall(self) -> list[ReaderOutput]:
         """
         Fetch all remaining rows of a query result.
 
@@ -426,7 +426,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
 
         return self._get_next_results(None)
 
-    def __next__(self) -> ProcessorOutput:
+    def __next__(self) -> ReaderOutput:
         """Implementation of iterator protocol.
 
         This method implements blocking iteration behavior:
@@ -495,23 +495,23 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
                 if self._as_dict:
                     decoded_row = self._map_row_to_dict(decoded_row)
 
-                # Retain the row (and perhaps also the operation) in the processor's internal state
+                # Retain the row (and perhaps also the operation) in the reader's internal state
                 self._retain(res.op, decoded_row)
 
         self._fetch_next_page_called = True
         self._most_recent_results_fetch_time = time.monotonic()
 
 
-class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
-    """Append-only changelog processor implementation.
+class AppendOnlyResultReader(ResultReader[ResultTupleOrDict]):
+    """Append-only result reader implementation.
 
     Returns statement result rows as either tuples or dicts based on the `as_dict` flag.
     """
 
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
-        """Retain the changelog row in the processor's internal state.
+        """Retain the changelog row in the reader's internal state.
 
-        For AppendOnlyChangelogProcessor, we only retain the row data (after validating
+        For AppendOnlyResultReader, we only retain the row data (after validating
         that the operation is an INSERT if provided by the server), since we only return
         the row data in fetch and iteration methods.
 
@@ -526,7 +526,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
             # Only expect INSERT operations for append-only
             logger.error(f"Received non-INSERT op {op} in results for append-only statement.")
             raise NotSupportedError(
-                f"Non-INSERT op was received by AppendOnlyChangelogProcessor: {op}. "
+                f"Non-INSERT op was received by AppendOnlyResultReader: {op}. "
             )
 
         self._results.append(decoded)
@@ -534,7 +534,7 @@ class AppendOnlyChangelogProcessor(ChangelogProcessor[ResultTupleOrDict]):
 
 class ChangeloggedRow(NamedTuple):
     """Changelog operation and corresponding row data after type conversion from Results API JSON
-    to Python types. Returned by cursors using RawChangelogProcessor for non-append-only statements.
+    to Python types. Returned by cursors using ChangelogEventReader for non-append-only statements.
     """
 
     op: Op
@@ -544,8 +544,8 @@ class ChangeloggedRow(NamedTuple):
     from Results API JSON to Python types."""
 
 
-class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
-    """Non-append-only changelog processor implementation.
+class ChangelogEventReader(ResultReader[ChangeloggedRow]):
+    """Non-append-only changelog event reader implementation.
 
     Returns changelog results as `ChangeloggedRow` namedtuples containing both the operation
     type (op) and the tuple or dict row data (`row`).
@@ -557,9 +557,9 @@ class RawChangelogProcessor(ChangelogProcessor[ChangeloggedRow]):
     """
 
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
-        """Retain the changelog row in the processor's internal state.
+        """Retain the changelog row in the reader's internal state.
 
-        For RawChangelogProcessor, we retain both the operation type and the row data
+        For ChangelogEventReader, we retain both the operation type and the row data
 
         Args:
             op: The changelog operation type.
