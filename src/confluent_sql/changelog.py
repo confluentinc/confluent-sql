@@ -477,7 +477,7 @@ class ChangelogProcessor(Generic[ProcessorOutput], abc.ABC):
     def _fetch_next_page(self) -> None:
         """Fetch and process the next page of results."""
 
-        if not self._statement.is_ready:
+        if not self._statement.can_fetch_results(self._execution_mode):
             raise InterfaceError("Statement is not ready for result fetching.")
 
         if not self._statement.schema:

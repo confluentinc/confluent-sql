@@ -633,9 +633,9 @@ class TestFetchNextPage:
     def test_raises_if_statement_not_ready(
         self, append_only_processor: AppendOnlyChangelogProcessor
     ):
-        # Bounded statements are only ready when in terminal states (COMPLETED, STOPPED, FAILED).
-        # Set the statement to RUNNING phase to verify it's not considered ready.
-        append_only_processor._statement._phase = Phase.RUNNING
+        # Append-only statements in streaming mode are ready when RUNNING.
+        # But a statement in PENDING phase is never ready, so test that instead.
+        append_only_processor._statement._phase = Phase.PENDING
 
         with pytest.raises(InterfaceError, match="Statement is not ready"):
             append_only_processor._fetch_next_page()
