@@ -87,7 +87,7 @@ class FetchMetrics:
         return self.total_changelog_rows_fetched / self.total_page_fetches
 
     def paused_before_fetch(self, pause_secs: float) -> None:
-        """Record that the reader paused for a some time before fetching results."""
+        """Record that the reader paused for some time before fetching results."""
         self.paused_times += 1
         self.paused_secs += pause_secs
 
