@@ -226,7 +226,7 @@ class TestFetchMethods:
         AppendOnlyResultReader."""
         statement = statement_factory(is_append_only=True)
         # Create reader in SNAPSHOT mode
-        processor = AppendOnlyResultReader(mock_connection, statement, ExecutionMode.SNAPSHOT)
+        reader = AppendOnlyResultReader(mock_connection, statement, ExecutionMode.SNAPSHOT)
 
         fetch_count = 0
 
@@ -235,22 +235,22 @@ class TestFetchMethods:
             fetch_count += 1
             if fetch_count == 1:
                 # First fetch returns 2 rows
-                processor._results = deque([("row1",), ("row2",)])
-                processor._next_page = "page2"
+                reader._results = deque([("row1",), ("row2",)])
+                reader._next_page = "page2"
             elif fetch_count == 2:
                 # Second fetch returns 2 more rows
-                processor._results.extend([("row3",), ("row4",)])
-                processor._next_page = "page3"
+                reader._results.extend([("row3",), ("row4",)])
+                reader._next_page = "page3"
             elif fetch_count == 3:
                 # Third fetch returns 1 row
-                processor._results.extend([("row5",)])
-                processor._next_page = None
+                reader._results.extend([("row5",)])
+                reader._next_page = None
 
-        processor._fetch_next_page = mock_fetch_next_page
-        processor._results = deque()
+        reader._fetch_next_page = mock_fetch_next_page
+        reader._results = deque()
 
         # Request 5 results - should fetch multiple pages to fulfill request
-        result = processor.fetchmany(5)
+        result = reader.fetchmany(5)
 
         # In snapshot mode, it should have fetched 3 times to get 5 rows
         assert fetch_count == 3, f"Should have fetched 3 times in snapshot mode, got {fetch_count}"
@@ -264,7 +264,7 @@ class TestFetchMethods:
         AppendOnlyResultReader."""
         statement = statement_factory(is_append_only=True)
         # Create reader in STREAMING_QUERY mode
-        processor = AppendOnlyResultReader(
+        reader = AppendOnlyResultReader(
             mock_connection, statement, ExecutionMode.STREAMING_QUERY
         )
 
@@ -274,14 +274,14 @@ class TestFetchMethods:
             nonlocal fetch_count
             fetch_count += 1
             # Only return 3 rows even though 5 were requested
-            processor._results = deque([("row1",), ("row2",), ("row3",)])
-            processor._next_page = "more_pages"
+            reader._results = deque([("row1",), ("row2",), ("row3",)])
+            reader._next_page = "more_pages"
 
-        processor._fetch_next_page = mock_fetch_next_page
-        processor._results = deque()
+        reader._fetch_next_page = mock_fetch_next_page
+        reader._results = deque()
 
         # Request 5 results - should only fetch once in streaming mode
-        result = processor.fetchmany(5)
+        result = reader.fetchmany(5)
 
         # In streaming mode, it should fetch only once
         assert fetch_count == 1, (
@@ -341,7 +341,7 @@ class TestFetchMethods:
         """Test that fetchone() makes at most one fetch per call in streaming mode."""
         statement = statement_factory(is_append_only=True)
         # Create reader in STREAMING_QUERY mode
-        processor = AppendOnlyResultReader(
+        reader = AppendOnlyResultReader(
             mock_connection, statement, ExecutionMode.STREAMING_QUERY
         )
 
@@ -352,37 +352,37 @@ class TestFetchMethods:
             fetch_count += 1
             # First fetch returns one row
             if fetch_count == 1:
-                processor._results = deque([("row1",)])
-                processor._next_page = None  # No more pages
-                processor._fetch_next_page_called = True
+                reader._results = deque([("row1",)])
+                reader._next_page = None  # No more pages
+                reader._fetch_next_page_called = True
             else:
                 # Should not be called more than once per fetchone() call
-                processor._results = deque()
-                processor._next_page = None
-                processor._fetch_next_page_called = True
+                reader._results = deque()
+                reader._next_page = None
+                reader._fetch_next_page_called = True
 
-        processor._fetch_next_page = mock_fetch_next_page
-        processor._results = deque()  # Start with empty buffer
+        reader._fetch_next_page = mock_fetch_next_page
+        reader._results = deque()  # Start with empty buffer
 
         # First fetchone() - should fetch once and return row1
-        result = processor.fetchone()
+        result = reader.fetchone()
 
         assert fetch_count == 1, "Should have fetched exactly once"
         assert result == ("row1",), "Should return the fetched row"
-        assert processor.may_have_results is False, "No more results (next_page is None)"
+        assert reader.may_have_results is False, "No more results (next_page is None)"
 
         # Second fetchone() - buffer empty, no next page, should NOT fetch
         fetch_count = 0  # Reset counter to verify no fetch happens
-        result = processor.fetchone()
+        result = reader.fetchone()
 
         assert fetch_count == 0, "Should NOT fetch when no next page available"
         assert result is None, "Should return None when no data"
-        assert processor.may_have_results is False, "Should indicate no more results"
+        assert reader.may_have_results is False, "Should indicate no more results"
 
         # Test scenario with more pages available
         # Reset for a new scenario
-        processor._next_page = "more_pages"  # Simulate more pages
-        processor._results = deque()
+        reader._next_page = "more_pages"  # Simulate more pages
+        reader._results = deque()
 
         # Create a new mock that tracks this specific call
         third_call_fetch_count = 0
@@ -390,18 +390,18 @@ class TestFetchMethods:
         def mock_fetch_for_third_call():
             nonlocal third_call_fetch_count
             third_call_fetch_count += 1
-            processor._results = deque()  # Return empty results this time
-            processor._next_page = None
-            processor._fetch_next_page_called = True
+            reader._results = deque()  # Return empty results this time
+            reader._next_page = None
+            reader._fetch_next_page_called = True
 
-        processor._fetch_next_page = mock_fetch_for_third_call
+        reader._fetch_next_page = mock_fetch_for_third_call
 
         # This fetchone() SHOULD fetch because there are more pages
-        result = processor.fetchone()
+        result = reader.fetchone()
 
         assert third_call_fetch_count == 1, "Should fetch once when more pages are available"
         assert result is None, "Returns None when fetch yields no data"
-        assert processor.may_have_results is False, "No more results after fetch"
+        assert reader.may_have_results is False, "No more results after fetch"
 
     def test_fetchone(self, append_only_reader: AppendOnlyResultReader):
         # Mock some results in the reader
@@ -518,21 +518,21 @@ class TestIteration:
         # Create a reader with as_dict=True. By default, the statement factory
         # creates a statement with a simple schema that has one column named "value".
         statement = statement_factory(is_append_only=True)
-        processor = AppendOnlyResultReader(
+        reader = AppendOnlyResultReader(
             mock_connection, statement, ExecutionMode.STREAMING_QUERY, as_dict=True
         )
 
         # Mock the _fetch_next_page method to simulate fetching results
         def mock_fetch_next_page():
-            processor._results = deque([{"value": "row1"}, {"value": "row2"}])
-            processor._next_page = None
-            processor._fetch_next_page_called = True  # Mark that fetch was called
+            reader._results = deque([{"value": "row1"}, {"value": "row2"}])
+            reader._next_page = None
+            reader._fetch_next_page_called = True  # Mark that fetch was called
 
-        processor._fetch_next_page = mock_fetch_next_page
+        reader._fetch_next_page = mock_fetch_next_page
 
         # Iterate over the reader and collect results
         collected = []
-        for row in processor:
+        for row in reader:
             collected.append(row)
 
         expected_collected = [
@@ -697,7 +697,7 @@ class TestChangelogEventReader:
         """Test that ChangelogEventReader also uses blocking behavior in snapshot mode."""
         statement = statement_factory(is_append_only=False)
         # Create reader in SNAPSHOT mode
-        processor = ChangelogEventReader(mock_connection, statement, ExecutionMode.SNAPSHOT)
+        reader = ChangelogEventReader(mock_connection, statement, ExecutionMode.SNAPSHOT)
 
         fetch_count = 0
 
@@ -706,26 +706,26 @@ class TestChangelogEventReader:
             fetch_count += 1
             if fetch_count == 1:
                 # First fetch returns 2 changelog rows
-                processor._results = deque([
+                reader._results = deque([
                     ChangeloggedRow(Op.INSERT, ("row1",)),
                     ChangeloggedRow(Op.UPDATE_BEFORE, ("row2",)),
                 ])
-                processor._next_page = "page2"
+                reader._next_page = "page2"
             elif fetch_count == 2:
                 # Second fetch returns 2 more changelog rows
-                processor._results.extend(
+                reader._results.extend(
                     [
                         ChangeloggedRow(Op.UPDATE_AFTER, ("row2_updated",)),
                         ChangeloggedRow(Op.DELETE, ("row3",)),
                     ]
                 )
-                processor._next_page = None
+                reader._next_page = None
 
-        processor._fetch_next_page = mock_fetch_next_page
-        processor._results = deque()
+        reader._fetch_next_page = mock_fetch_next_page
+        reader._results = deque()
 
         # Request 4 results - should fetch multiple pages to fulfill request
-        result = processor.fetchmany(4)
+        result = reader.fetchmany(4)
 
         # In snapshot mode, it should have fetched 2 times to get 4 rows
         assert fetch_count == 2, f"Should have fetched 2 times in snapshot mode, got {fetch_count}"
