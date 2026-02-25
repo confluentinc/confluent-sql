@@ -817,7 +817,7 @@ class TestCursorFetching:
 
         # By default, statement_response_factory() will return an append-only
         # statement response, which is what we want for this test. The associated
-        # AppendOnlyChangelogProcessor will raise if it receives non-INSERT ops.
+        # AppendOnlyResultReader will raise if it receives non-INSERT ops.
 
         # Statement columns needs to match the result rows being returned.
         statement_response = statement_response_factory(
