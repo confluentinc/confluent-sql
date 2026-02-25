@@ -3,7 +3,6 @@ import re
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
-from confluent_sql.result_readers import ChangeloggedRow, ChangelogEventReader, FetchMetrics
 from confluent_sql.exceptions import (
     ComputePoolExhaustedError,
     NotSupportedError,
@@ -11,6 +10,7 @@ from confluent_sql.exceptions import (
     ProgrammingError,
 )
 from confluent_sql.execution_mode import ExecutionMode
+from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
 from confluent_sql.statement import ChangelogRow, Op, Statement
 from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
 

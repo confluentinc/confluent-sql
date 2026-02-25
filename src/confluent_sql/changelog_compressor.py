@@ -35,8 +35,8 @@ import logging
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
-from .result_readers import ChangeloggedRow, ResultTupleOrDict, StatementResultTuple
 from .exceptions import InterfaceError, StatementStoppedError
+from .result_readers import ChangeloggedRow, ResultTupleOrDict, StatementResultTuple
 from .statement import Op, Schema, Statement
 from .types import StrAnyDict
 

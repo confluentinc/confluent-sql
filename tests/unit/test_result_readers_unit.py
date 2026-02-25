@@ -4,15 +4,15 @@ from unittest.mock import patch
 
 import pytest
 
-from confluent_sql.result_readers import (
-    AppendOnlyResultReader,
-    ChangeloggedRow,
-    ChangelogEventReader,
-    FetchMetrics,
-)
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError, NotSupportedError
 from confluent_sql.execution_mode import ExecutionMode
+from confluent_sql.result_readers import (
+    AppendOnlyResultReader,
+    ChangelogEventReader,
+    ChangeloggedRow,
+    FetchMetrics,
+)
 from confluent_sql.statement import ChangelogRow, Op, Phase
 from tests.unit.conftest import StatementFactory
 

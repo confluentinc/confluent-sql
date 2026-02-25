@@ -14,14 +14,6 @@ import warnings
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from .result_readers import (
-    AppendOnlyResultReader,
-    ChangeloggedRow,
-    ChangelogEventReader,
-    FetchMetrics,
-    ResultReader,
-    ResultTupleOrDict,
-)
 from .changelog_compressor import ChangelogCompressor, create_changelog_compressor
 from .exceptions import (
     ComputePoolExhaustedError,
@@ -30,6 +22,14 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
+from .result_readers import (
+    AppendOnlyResultReader,
+    ChangelogEventReader,
+    ChangeloggedRow,
+    FetchMetrics,
+    ResultReader,
+    ResultTupleOrDict,
+)
 from .statement import Statement
 from .types import convert_statement_parameters
 

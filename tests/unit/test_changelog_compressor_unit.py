@@ -4,7 +4,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from confluent_sql.result_readers import ChangeloggedRow
 from confluent_sql.changelog_compressor import (
     NoUpsertColumnsDictCompressor,
     NoUpsertColumnsTupleCompressor,
@@ -14,6 +13,7 @@ from confluent_sql.changelog_compressor import (
 )
 from confluent_sql.cursor import Cursor
 from confluent_sql.exceptions import InterfaceError, StatementStoppedError
+from confluent_sql.result_readers import ChangeloggedRow
 from confluent_sql.statement import Op, Schema, Statement, Traits
 
 
