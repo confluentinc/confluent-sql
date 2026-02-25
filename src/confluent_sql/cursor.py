@@ -112,7 +112,6 @@ class Cursor:
         # Cursor state
         self._connection = connection
         self._closed = False
-        self._index = 0
         self._next_page = None
         self._results_as_dicts = as_dict
         self._execution_mode = execution_mode
@@ -200,8 +199,6 @@ class Cursor:
         self._statement = None
         self._statement_handle = None
         self._changelog_processor = None
-        self._results = []
-        self._index = 0
         self.rowcount = -1
         self._next_page = None
 
@@ -394,8 +391,6 @@ class Cursor:
 
             self.rowcount = -1
             self._closed = True
-            self._results = []
-            self._index = 0
             self._changelog_processor = None
 
     def setinputsizes(self, sizes) -> None:
@@ -590,22 +585,6 @@ class Cursor:
             raise InterfaceError("Cannot create changelog compressor without a statement")
 
         return create_changelog_compressor(self, self._statement)
-
-    def clear_changelog_buffer(self) -> None:
-        """Clear the internal changelog event buffer and reset position.
-
-        This is useful when using changelog compressors with long-running streaming
-        queries. After the compressor has consumed all available events (when
-        fetchmany returns []), calling this method frees memory by clearing the
-        internal buffer of already-processed changelog events.
-
-        This should typically be called by ChangelogCompressor implementations after
-        they've finished processing a batch of events, not by end-user code.
-
-        If the cursor does not yet have a changelog processor initialized, this is a no-op.
-        """
-        if self._changelog_processor:
-            self._changelog_processor.clear_buffer()
 
     def _raise_if_closed(self) -> None:
         """Raise InterfaceError if the cursor or connection is closed."""

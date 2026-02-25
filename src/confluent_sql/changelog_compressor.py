@@ -217,10 +217,6 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         ensures that modifications to the snapshot will not affect the compressor's internal
         state. The caller is free to mutate the yielded snapshots.
 
-        **Memory Management**: After consuming all available events, this method automatically
-        calls cursor.clear_changelog_buffer() to free memory by clearing the cursor's internal
-        event buffer. The compressor's accumulated state remains in memory.
-
         **Termination**: The generator raises exceptions when the statement stops:
         - StatementStoppedError: Raised when cursor.may_have_results becomes False,
           indicating the statement entered a terminal phase (STOPPED, FAILED, COMPLETED).
@@ -272,8 +268,6 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
             while True:
                 batch = self._cursor.fetchmany(batchsize)
                 if not batch:
-                    # No more events available in this iteration - clear the buffer to free memory
-                    self._cursor.clear_changelog_buffer()
                     break
 
                 for changelogged_row in batch:
