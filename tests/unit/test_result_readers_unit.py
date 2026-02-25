@@ -691,7 +691,7 @@ class TestChangelogEventReader:
         assert v.op == Op.DELETE, f"Expected op to be Op.DELETE, got {v.op}"
         assert v.row == ("value1", 123, "true"), f"Expected row data to be unchanged, got {v.row}"
 
-    def test_raw_processor_blocking_in_snapshot_mode(
+    def test_changelog_event_reader_blocking_in_snapshot_mode(
         self, statement_factory: StatementFactory, mock_connection: Connection
     ):
         """Test that ChangelogEventReader also uses blocking behavior in snapshot mode."""
