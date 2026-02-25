@@ -22,6 +22,7 @@ from .changelog import (
     RawChangelogProcessor,
     ResultTupleOrDict,
 )
+from .changelog_compressor import ChangelogCompressor, create_changelog_compressor
 from .exceptions import (
     ComputePoolExhaustedError,
     InterfaceError,
@@ -29,7 +30,7 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
-from .statement import Phase, Statement
+from .statement import Statement
 from .types import convert_statement_parameters
 
 if TYPE_CHECKING:
@@ -162,7 +163,8 @@ class Cursor:
         Args:
             statement_text: The SQL statement to execute
             parameters: Parameters for the SQL statement (optional)
-            timeout: Maximum time to wait for statement completion in seconds (default: 3000)
+            timeout: Maximum time to wait for statement completion (snapshot) or initialization
+                    (streaming) in seconds (default: 3000)
             statement_name: Optional name for the statement (defaults to DB-API UUID
                             if not provided)
             statement_label: Optional label for the statement. Labels can be used to
@@ -203,7 +205,7 @@ class Cursor:
         self.rowcount = -1
         self._next_page = None
 
-        # Now submit the statement and wait for it to be ready
+        # Now submit the statement ...
         self._statement = self._submit_statement(
             statement_text, parameters, statement_name, statement_label
         )
@@ -213,6 +215,8 @@ class Cursor:
                 f"Statement submission failed: {self._statement.status.get('detail', '')}"
             )  # pragma: no cover
 
+        # ... and wait for it to be "ready" (either in a terminal state or running) based on
+        # execution mode and statement type.
         self._wait_for_statement_ready(timeout)
 
     def executemany(self, operation: str, seq_of_parameters: list[tuple | list | dict]):
@@ -569,6 +573,40 @@ class Cursor:
         # 2. Query is not append-only (has updates/deletes)
         return self.is_streaming and not self._statement.is_append_only
 
+    def changelog_compressor(self) -> ChangelogCompressor:
+        """Create a changelog compressor for streaming non-append-only results.
+
+        The compressor accumulates and applies changelog operations to maintain
+        a logical result set that changes over time.
+
+        Returns:
+            A ChangelogCompressor instance appropriate for this cursor's configuration.
+
+        Raises:
+            InterfaceError: If the cursor is not configured for changelog results or
+                           if there is no statement.
+        """
+        if not self._statement:
+            raise InterfaceError("Cannot create changelog compressor without a statement")
+
+        return create_changelog_compressor(self, self._statement)
+
+    def clear_changelog_buffer(self) -> None:
+        """Clear the internal changelog event buffer and reset position.
+
+        This is useful when using changelog compressors with long-running streaming
+        queries. After the compressor has consumed all available events (when
+        fetchmany returns []), calling this method frees memory by clearing the
+        internal buffer of already-processed changelog events.
+
+        This should typically be called by ChangelogCompressor implementations after
+        they've finished processing a batch of events, not by end-user code.
+
+        If the cursor does not yet have a changelog processor initialized, this is a no-op.
+        """
+        if self._changelog_processor:
+            self._changelog_processor.clear_buffer()
+
     def _raise_if_closed(self) -> None:
         """Raise InterfaceError if the cursor or connection is closed."""
         if self._closed:
@@ -602,54 +640,38 @@ class Cursor:
 
         while time.monotonic() - start_time < timeout:
             logger.info(f"Checking statement '{self._statement.name}' status...")
+
             response = self._connection._get_statement(self._statement.name)
 
             self._statement = statement = Statement.from_response(self._connection, response)
 
             self._raise_if_statement_is_broken(statement)
 
-            if statement.is_append_only:
-                # Create changelog processor for append-only statements, will
-                # return row tuples or dicts depending on self._results_as_dicts.
-                self._changelog_processor = AppendOnlyChangelogProcessor(
-                    self._connection,
-                    self._statement,
-                    self._execution_mode,
-                    as_dict=self._results_as_dicts,
-                )
-            else:
-                # Use a RawChangelogProcessor that will return pairs of the changelog
-                # operation and the type-promoted row data as a dict or tuple depending
-                # on self._results_as_dicts.
-                self._changelog_processor = RawChangelogProcessor(
-                    self._connection,
-                    self._statement,
-                    self._execution_mode,
-                    as_dict=self._results_as_dicts,
-                )
-
-            # Determine if the statement is ready based on execution mode and statement type
-            if self._execution_mode.is_streaming:
-                # In streaming mode, statements are ready when RUNNING (or terminal states)
-                # This handles:
-                # - Regular streaming queries
-                # - Streaming DDL (CTAS in streaming mode)
-                # Note: CTAS is currently misreported as bounded due to a server bug
-                statement_ready = statement.is_running or statement.phase in [
-                    Phase.COMPLETED,
-                    Phase.STOPPED,
-                    Phase.FAILED,
-                ]
-            else:
-                # In snapshot mode, use the statement's is_ready property
-                # which waits for completion for bounded statements
-                statement_ready = statement.is_ready
-
-            if statement_ready:
-                # Ready to possibly fetch results!
+            # If we can fetch results based on execution mode and statement state,
+            # create the changelog processor and exit the polling loop.
+            if statement.can_fetch_results(self._execution_mode):
+                if statement.is_append_only:
+                    # Create changelog processor for append-only statements, will
+                    # return row tuples or dicts depending on self._results_as_dicts.
+                    self._changelog_processor = AppendOnlyChangelogProcessor(
+                        self._connection,
+                        self._statement,
+                        self._execution_mode,
+                        as_dict=self._results_as_dicts,
+                    )
+                else:
+                    # Use a RawChangelogProcessor that will return pairs of the changelog
+                    # operation and the type-promoted row data as a dict or tuple depending
+                    # on self._results_as_dicts.
+                    self._changelog_processor = RawChangelogProcessor(
+                        self._connection,
+                        self._statement,
+                        self._execution_mode,
+                        as_dict=self._results_as_dicts,
+                    )
                 return
 
-            # Exponential backoff with jitter to prevent thundering herd
+            # Otherwise, exponential backoff with jitter to prevent thundering herd
             jitter = random.uniform(0.75, 1.25)  # ±25% randomness
             actual_delay = current_delay * jitter
             time.sleep(actual_delay)
