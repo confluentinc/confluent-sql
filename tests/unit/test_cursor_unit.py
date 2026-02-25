@@ -83,7 +83,7 @@ class TestExecute:
 
         mock_connection_cursor.execute("SELECT 1 AS col")
 
-        # Prove that we set the changelog processor to a ChangelogEventReader, which can handle
+        # Prove that we set the result reader to a ChangelogEventReader, which can handle
         # non-append-only statements.
         assert isinstance(mock_connection_cursor._result_reader, ChangelogEventReader)
 
@@ -609,45 +609,45 @@ class TestFetchMany:
         expected_arraysize = 5
         mock_connection_cursor.arraysize = expected_arraysize
 
-        changelog_processor_mock = mocker.Mock()
-        changelog_processor_mock.fetchmany.return_value = []
+        result_reader_mock = mocker.Mock()
+        result_reader_mock.fetchmany.return_value = []
         mocker.patch.object(
             mock_connection_cursor,
             "_get_result_reader",
-            return_value=changelog_processor_mock,
+            return_value=result_reader_mock,
         )
 
         mock_connection_cursor.fetchmany()
-        changelog_processor_mock.fetchmany.assert_called_once_with(expected_arraysize)  # type: ignore
+        result_reader_mock.fetchmany.assert_called_once_with(expected_arraysize)  # type: ignore
 
     def test_fetchmany_returns_buffered_rows_even_if_fewer_than_requested(
         self, mock_connection_cursor: Cursor, mocker
     ):
         """Test that fetchmany returns only buffered rows without fetching new pages.
 
-        When the cursor's changelog processor has 3 rows cached and fetchmany(5)
+        When the cursor's result reader has 3 rows cached and fetchmany(5)
         is called, only the 3 cached rows should be returned without triggering
         a new page fetch.
         """
-        # Create mock changelog processor with 3 cached rows
-        changelog_processor_mock = mocker.Mock()
+        # Create mock result reader with 3 cached rows
+        result_reader_mock = mocker.Mock()
 
-        # The processor will return 3 rows when fetchmany(5) is called
+        # The reader will return 3 rows when fetchmany(5) is called
         cached_rows = [("row1",), ("row2",), ("row3",)]
-        changelog_processor_mock.fetchmany.return_value = cached_rows
+        result_reader_mock.fetchmany.return_value = cached_rows
 
-        # Mock the _get_result_reader to return our mock processor
+        # Mock the _get_result_reader to return our mock reader
         mocker.patch.object(
             mock_connection_cursor,
             "_get_result_reader",
-            return_value=changelog_processor_mock,
+            return_value=result_reader_mock,
         )
 
         # Request 5 rows but only 3 are cached
         result = mock_connection_cursor.fetchmany(size=5)
 
-        # Verify that fetchmany was called with size=5 on the processor
-        changelog_processor_mock.fetchmany.assert_called_once_with(5)
+        # Verify that fetchmany was called with size=5 on the reader
+        result_reader_mock.fetchmany.assert_called_once_with(5)
 
         # Verify that only 3 rows were returned (the cached ones)
         assert result == cached_rows, (
@@ -1047,18 +1047,18 @@ class TestClose:
         assert mock_connection_cursor.rowcount == -1
 
     def test_close_releases_result_reader(self, mock_connection_cursor: Cursor):
-        """Test that closing the cursor releases the changelog processor reference."""
-        # Execute a query to create a changelog processor
+        """Test that closing the cursor releases the result reader reference."""
+        # Execute a query to create a result reader
         mock_connection_cursor.execute("SELECT 1 AS col")
 
-        # Verify that a changelog processor exists
+        # Verify that a result reader exists
         assert mock_connection_cursor._result_reader is not None
 
         # Close the cursor
         mock_connection_cursor.close()
 
-        # Verify that the changelog processor reference is dropped for garbage collection
-        # (especially ensures that the changelog processor's reference to the container
+        # Verify that the result reader reference is dropped for garbage collection
+        # (especially ensures that the result reader's reference to the container
         #  holding any fetched pages can be garbage collected to free memory).
         assert mock_connection_cursor._result_reader is None
 

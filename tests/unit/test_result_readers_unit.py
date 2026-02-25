@@ -626,7 +626,7 @@ class TestFetchNextPage:
     def test_raises_if_non_insert_op_in_append_only_results(
         self, append_only_reader: AppendOnlyResultReader
     ):
-        """append-only changelog processor should raise if it encounters a non-INSERT op in results
+        """append-only result reader should raise if it encounters a non-INSERT op in results
         from the server, since that violates the contract of append-only statements."""
 
         def mock_get_statement_results(
@@ -647,7 +647,7 @@ class TestFetchNextPage:
 
 
 @pytest.fixture
-def raw_changelog_processor(
+def changelog_event_reader(
     statement_factory: StatementFactory, mock_connection: Connection
 ) -> ChangelogEventReader:
     """A fixture that returns a ChangelogEventReader instance in streaming mode."""
@@ -665,18 +665,18 @@ class TestChangelogEventReader:
     """
 
     def test_retain_converts_to_changelogged_row(
-        self, raw_changelog_processor: ChangelogEventReader
+        self, changelog_event_reader: ChangelogEventReader
     ):
         # Call _retain a couple of times -- first with an INSERT op, then with a DELETE op.
 
-        raw_changelog_processor._retain(
+        changelog_event_reader._retain(
             Op.INSERT, ("value1", 123, "true")
         )  # Mock an INSERT op with some values
 
-        raw_changelog_processor._retain(Op.DELETE, ("value1", 123, "true"))
+        changelog_event_reader._retain(Op.DELETE, ("value1", 123, "true"))
 
         # Fetch the first retained row and check that it's a ChangeloggedRow with expected values
-        v = raw_changelog_processor.fetchone()
+        v = changelog_event_reader.fetchone()
         assert isinstance(v, ChangeloggedRow), (
             f"Expected fetched row to be a ChangeloggedRow, got {type(v)}"
         )
@@ -684,7 +684,7 @@ class TestChangelogEventReader:
         assert v.row == ("value1", 123, "true"), f"Expected row data to be unchanged, got {v.row}"
 
         # Fetch the second retained row and check that it's a ChangeloggedRow with expected values
-        v = raw_changelog_processor.fetchone()
+        v = changelog_event_reader.fetchone()
         assert isinstance(v, ChangeloggedRow), (
             f"Expected fetched row to be a ChangeloggedRow, got {type(v)}"
         )
