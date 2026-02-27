@@ -130,7 +130,7 @@ class Connection:
         If it has already been at least this long since the most recent fetch of results for the
         statement, then no delay will happen.
 
-        Referenced by the changelog processor when fetching pages of results for individual
+        Referenced by the result reader when fetching pages of results for individual
         statements.
     """
 
@@ -186,7 +186,7 @@ class Connection:
         if statement_results_page_fetch_pause_millis < 0:
             raise InterfaceError("result_page_fetch_pause_millis must be non-negative")
 
-        # Will be referenced by cursor / changelog processor when
+        # Will be referenced by cursor / result reader when
         # fetching pages of results for individual statements.
         self.statement_results_page_fetch_pause_secs = (
             statement_results_page_fetch_pause_millis / 1000.0
