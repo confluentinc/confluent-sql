@@ -288,7 +288,71 @@ class Statement:
 
     @property
     def schema(self) -> Schema | None:
+        """Get the result schema of this statement, if available.
+
+        The schema describes the columns and their types in the statement's result set.
+        It is populated from the server's traits response (status.traits.schema) when traits
+        are present.
+
+        **Return value:**
+        - Returns Schema object for query statements (SELECT, etc.)
+        - Returns None for DDL statements (CREATE TABLE, DROP TABLE, etc.)
+        - Raises InterfaceError if traits unavailable (not polled or FAILED)
+
+        **Why this is not an error for query without schema:**
+        While it's unusual for a query statement to lack schema after traits are present,
+        this method returns None rather than raising. This allows defensive code patterns
+        where schema absence is checked at use time. This is more robust than eager
+        validation because:
+
+        1. Schema may become available between reader creation and row fetch
+        2. Graceful None handling is clearer than exception handling
+        3. Fits the deferred access pattern used throughout the codebase
+
+        Use has_schema() to distinguish legitimate None (DDL) from unexpected None
+        (query statement without schema), then decide if that's acceptable for your use case.
+
+        **Usage Pattern - Why Deferred Access Matters:**
+        Code should NOT assume schema is available during statement initialization or
+        reader setup. Instead:
+
+        - **Defensive approach** (recommended): Code that needs schema should defer access
+          until it's actually required (e.g., during row formatting). This handles all cases:
+          - schema becomes available between reader creation and row fetch
+          - code gracefully handles None schema with clear error messages
+          - no need to predict exact timing of schema availability
+
+        - **Eager checking** (not recommended): Checking schema immediately requires precise
+          knowledge of statement phase and type, is harder to maintain, and breaks if server
+          behavior changes slightly.
+
+        Returns:
+            Schema object describing the result columns, or None if unavailable.
+
+        Raises:
+            InterfaceError: If traits are unavailable (statement not yet polled or failed).
+        """
         return self._possible_traits().schema
+
+    def has_schema(self) -> bool:
+        """Check if this statement can have a result schema.
+
+        A statement can have a schema if it's not a DDL statement. Query statements
+        (SELECT, INSERT, etc.) produce result sets with schemas, while DDL statements
+        (CREATE TABLE, DROP TABLE, etc.) do not.
+
+        This is different from checking if schema is currently populated. Use this to
+        distinguish between:
+        - **Legitimate None schema**: DDL statements (will never have schema)
+        - **Unexpected None schema**: Query statements (should have schema after first poll)
+
+        Returns:
+            True if this statement can produce a schema (non-DDL query), False if it's DDL.
+
+        Raises:
+            InterfaceError: If traits are unavailable (statement not yet polled or failed).
+        """
+        return not self.is_pure_ddl
 
     @property
     def description(self) -> list[tuple] | None:
@@ -367,6 +431,13 @@ class Statement:
                 if "traits" in status and status["traits"] is not None
                 else None
             )
+
+            # Defensive check: non-failed statements should have traits
+            if traits is None and phase != Phase.FAILED:
+                raise OperationalError(
+                    f"Received statement '{name}' in phase {phase} without traits. "
+                    "This is unexpected and likely indicates a server API change or bug."
+                )
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
@@ -410,14 +481,21 @@ class Statement:
 
 @dataclass(kw_only=True)
 class Column:
-    """Fields correspond to statement.traits.schema.columns[] members
-    Describes a projected column in the statement's result set: name, type definition,
-    description (column comment).
+    """Describes a column in a statement's result set.
+
+    Each column represents a projected expression or field in the SELECT clause, including
+    its name, data type, and optional description (from column comments).
+
+    Columns are part of the schema, which is part of the statement's traits. See
+    Statement.schema for notes on when schema information becomes available.
     """
 
     name: str
+    """The column name (may be a user-provided alias or auto-generated expression label)."""
     type: ColumnTypeDefinition
+    """The data type of the column (e.g., INTEGER, VARCHAR, ARRAY<STRING>, ROW(...), etc.)."""
     description: str | None = None
+    """Optional description or comment for this column."""
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> Column:
@@ -427,7 +505,16 @@ class Column:
 
 @dataclass(kw_only=True)
 class Schema:
-    """Fields correspond to statement.traits.schema"""
+    """Schema describing the columns and types of a statement's result set.
+
+    This represents the structure of rows returned by a SQL query, including the
+    column names and their data types. It is used internally for type conversion
+    and for formatting rows as dicts (mapping column names to values).
+
+    Schema is part of the statement's traits, which may not be available in early
+    phases of statement execution. Code that needs to format rows as dicts should
+    be prepared to defer schema access until rows are actually being formatted.
+    """
 
     columns: list[Column]
     """The columns in the schema."""
@@ -444,7 +531,24 @@ class Schema:
 
 @dataclass(kw_only=True)
 class Traits:
-    """Fields correspond to statement.traits, including the statement's schema."""
+    """Parsed statement traits from server response.
+
+    Traits contain metadata about a statement including its schema, SQL kind, and
+    whether it is append-only or bounded. They are populated from status.traits
+    in the server response.
+
+    **Availability:**
+    Traits are typically available in all non-terminal phases (PENDING, RUNNING, etc.)
+    and in terminal success phases (COMPLETED). The server does NOT send traits for
+    FAILED statements. Traits are initially None until the statement is polled from
+    the server for the first time.
+
+    For code that needs the schema (e.g., formatting rows as dicts), defer access
+    until rows are actually being formatted, as schema may not be available during
+    reader initialization (before first server poll).
+
+    See Statement.schema property for additional notes on schema availability.
+    """
 
     connection_refs: list[str] | None
     """The names of connections that the SQL statement references (e.g., in FROM clauses)."""
@@ -455,7 +559,25 @@ class Traits:
     """Does the result set have a bounded number of rows (aka not a streaming result?
        Implies is_append_only.)"""
     schema: Schema | None
-    """The schema of the result set, if any."""
+    """The schema of the result set, describing columns and their types.
+
+    **Lifecycle:**
+    - During statement execution (PENDING → RUNNING → COMPLETED): May be present or absent
+    - DDL statements (CREATE TABLE, DROP TABLE, etc.): Always None (no result set)
+    - Query statements (SELECT, etc.): Present after first server poll (typically by PENDING phase)
+    - FAILED statements: Never populated (traits omitted by server)
+
+    **When it's None:**
+    - Before the statement is first polled from the server
+    - For DDL statements that don't produce result sets
+    - For FAILED statements (traits not sent)
+    - In rare cases where server doesn't include schema (defensive checks warn about this)
+
+    Code that requires schema should check for None and handle gracefully, or use deferred
+    access patterns (e.g., RowFormatter lazy initialization) to access schema only when needed.
+
+    See Statement.schema property for usage guidance.
+    """
     sql_kind: str
     upsert_columns: list[int] | None
     """Zero-based indices of upsert columns, if any."""

@@ -646,9 +646,10 @@ class TestStreamingChangelogCursor:
                 f"Expected 1 row in snapshot, got {len(final_snapshot)}"
             )
             result_row = final_snapshot[0]
+            assert isinstance(result_row, dict)
             assert result_row["failures"] == 0, (
                 f"Expected failures == 0, got {result_row['failures']}"
-            )  # type: ignore[index]
+            )
 
         finally:
             if cursor is not None:
