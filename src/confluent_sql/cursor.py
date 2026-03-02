@@ -452,14 +452,12 @@ class Cursor:
           (no more data will ever arrive)
 
         Returns:
-            True if:
-            - Results are buffered locally, OR
-            - More pages might be available from the server, OR
-            - We haven't fetched any pages yet (initial state)
-            False if we've fetched at least once and know no more results exist.
+            True if the statement can produce results and more data may be available.
+            False if the statement cannot produce results or results are exhausted.
         """
         return (
             self._statement is not None
+            and self._statement.has_schema()
             and self._statement.schema is not None
             and self._get_result_reader().may_have_results
         )
