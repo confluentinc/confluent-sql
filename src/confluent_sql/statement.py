@@ -299,32 +299,21 @@ class Statement:
         - Returns None for DDL statements (CREATE TABLE, DROP TABLE, etc.)
         - Raises InterfaceError if traits unavailable (not polled or FAILED)
 
-        **Why this is not an error for query without schema:**
-        While it's unusual for a query statement to lack schema after traits are present,
-        this method returns None rather than raising. This allows defensive code patterns
-        where schema absence is checked at use time. This is more robust than eager
-        validation because:
+        **Schema Availability Lifecycle:**
+        - Statement initialization: traits may not be available yet (before first poll)
+        - After first poll (any phase): traits populated with schema (except FAILED)
+        - At ResultReader/RowFormatter creation: schema is guaranteed for any reader created,
+          because ResultReader is only instantiated after statement.can_fetch_results()
+          returns True
+        - During row fetch: schema is available for formatting
 
-        1. Schema may become available between reader creation and row fetch
-        2. Graceful None handling is clearer than exception handling
-        3. Fits the deferred access pattern used throughout the codebase
+        Code that needs schema (like RowFormatter) can safely assume it's available at
+        reader creation time because the reader is only created after the statement is
+        ready to fetch results. This enables eager validation of schema requirements
+        during reader initialization.
 
-        Use has_schema() to distinguish legitimate None (DDL) from unexpected None
+        Use has_schema() to distinguish legitimate None (DDL statements) from unexpected None
         (query statement without schema), then decide if that's acceptable for your use case.
-
-        **Usage Pattern - Why Deferred Access Matters:**
-        Code should NOT assume schema is available during statement initialization or
-        reader setup. Instead:
-
-        - **Defensive approach** (recommended): Code that needs schema should defer access
-          until it's actually required (e.g., during row formatting). This handles all cases:
-          - schema becomes available between reader creation and row fetch
-          - code gracefully handles None schema with clear error messages
-          - no need to predict exact timing of schema availability
-
-        - **Eager checking** (not recommended): Checking schema immediately requires precise
-          knowledge of statement phase and type, is harder to maintain, and breaks if server
-          behavior changes slightly.
 
         Returns:
             Schema object describing the result columns, or None if unavailable.
@@ -511,9 +500,11 @@ class Schema:
     column names and their data types. It is used internally for type conversion
     and for formatting rows as dicts (mapping column names to values).
 
-    Schema is part of the statement's traits, which may not be available in early
-    phases of statement execution. Code that needs to format rows as dicts should
-    be prepared to defer schema access until rows are actually being formatted.
+    Schema is part of the statement's traits. Once traits are polled (typically after
+    the first statement.describe() call), schema is available for the remainder of the
+    statement's lifecycle. ResultReader and RowFormatter are only created after the
+    statement is ready to fetch results, so they can safely assume schema is available
+    for validation and formatting.
     """
 
     columns: list[Column]
@@ -543,9 +534,10 @@ class Traits:
     FAILED statements. Traits are initially None until the statement is polled from
     the server for the first time.
 
-    For code that needs the schema (e.g., formatting rows as dicts), defer access
-    until rows are actually being formatted, as schema may not be available during
-    reader initialization (before first server poll).
+    Once available (after first server poll), traits are persistent for the lifetime
+    of the statement object. Code that creates readers or formatters can safely access
+    traits during initialization because readers are only created after the statement
+    is ready to fetch results (via statement.can_fetch_results()).
 
     See Statement.schema property for additional notes on schema availability.
     """
@@ -562,7 +554,8 @@ class Traits:
     """The schema of the result set, describing columns and their types.
 
     **Lifecycle:**
-    - During statement execution (PENDING → RUNNING → COMPLETED): May be present or absent
+    - Before first poll: None (traits not yet populated)
+    - During statement execution (PENDING → RUNNING → COMPLETED): Present with schema
     - DDL statements (CREATE TABLE, DROP TABLE, etc.): Always None (no result set)
     - Query statements (SELECT, etc.): Present after first server poll (typically by PENDING phase)
     - FAILED statements: Never populated (traits omitted by server)
@@ -571,10 +564,10 @@ class Traits:
     - Before the statement is first polled from the server
     - For DDL statements that don't produce result sets
     - For FAILED statements (traits not sent)
-    - In rare cases where server doesn't include schema (defensive checks warn about this)
 
-    Code that requires schema should check for None and handle gracefully, or use deferred
-    access patterns (e.g., RowFormatter lazy initialization) to access schema only when needed.
+    Code that creates readers or formatters can safely access schema during initialization
+    because those components are only instantiated after statement.can_fetch_results() returns True,
+    at which point schema is guaranteed to be available.
 
     See Statement.schema property for usage guidance.
     """

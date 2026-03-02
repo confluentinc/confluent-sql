@@ -22,7 +22,7 @@ Usage:
 Compressors consume raw changelog events from ChangelogEventReader (via the cursor)
 and apply operations to maintain the compressed result set. Storage strategies are
 automatically selected based on whether the statement has upsert columns (dict-based
-keyed lookup vs list-based scanning) and whether results are tuples or dicts.
+keyed lookup vs list-based scanning).
 
 For low-level changelog fetching without state management, see the `result_readers` module.
 """

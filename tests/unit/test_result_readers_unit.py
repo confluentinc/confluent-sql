@@ -405,18 +405,8 @@ class TestCompressorValidation:
         ):
             UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        with pytest.raises(
-            InterfaceError, match="ChangelogCompressor requires a statement with a schema"
-        ):
-            UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
         # Test without upsert columns
         mock_cursor._statement.traits.upsert_columns = None
-
-        with pytest.raises(
-            InterfaceError, match="ChangelogCompressor requires a statement with a schema"
-        ):
-            NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
         with pytest.raises(
             InterfaceError, match="ChangelogCompressor requires a statement with a schema"
@@ -503,6 +493,7 @@ class TestChangelogCompressorCreation:
             InterfaceError, match="Cannot create changelog compressor without a statement"
         ):
             mock_cursor.changelog_compressor()
+
 
 @pytest.mark.unit
 class TestBatchSize:
