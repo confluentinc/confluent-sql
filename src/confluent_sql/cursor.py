@@ -454,6 +454,10 @@ class Cursor:
         Returns:
             True if the statement can produce results and more data may be available.
             False if the statement cannot produce results or results are exhausted.
+
+        Raises:
+            InterfaceError: If statement.has_schema() raises (e.g., FAILED statements
+                without traits, or before statement is first polled).
         """
         return (
             self._statement is not None

@@ -223,9 +223,6 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
     _statement: Statement
     """The statement associated with this result reader."""
 
-    _as_dict: bool
-    """Whether to return the row portion of results as dicts or tuples."""
-
     _fetch_next_page_called: bool
     """Whether _fetch_next_page has been called at least once.
         TODO: discard in favor of _most_recent_results_fetch_time
@@ -262,7 +259,6 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         self._connection = connection
         self._statement = statement
         self._execution_mode = execution_mode
-        self._as_dict = as_dict
 
         self._next_page = None
         self._fetch_next_page_called = False
