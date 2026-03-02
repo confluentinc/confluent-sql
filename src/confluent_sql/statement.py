@@ -291,32 +291,17 @@ class Statement:
         """Get the result schema of this statement, if available.
 
         The schema describes the columns and their types in the statement's result set.
-        It is populated from the server's traits response (status.traits.schema) when traits
-        are present.
 
-        **Return value:**
-        - Returns Schema object for query statements (SELECT, etc.)
-        - Returns None for DDL statements (CREATE TABLE, DROP TABLE, etc.)
-        - Raises InterfaceError if traits unavailable (not polled or FAILED)
+        **Availability:**
+        - Query statements: Schema available after first server poll (None before)
+        - DDL statements: Always None (no result set)
+        - FAILED statements: None (traits not sent)
 
-        **Schema Availability Lifecycle:**
-        - Statement initialization: traits may not be available yet (before first poll)
-        - After first poll (any phase): traits populated with schema (except FAILED)
-        - At ResultReader/RowFormatter creation: schema is guaranteed for any reader created,
-          because ResultReader is only instantiated after statement.can_fetch_results()
-          returns True
-        - During row fetch: schema is available for formatting
-
-        Code that needs schema (like RowFormatter) can safely assume it's available at
-        reader creation time because the reader is only created after the statement is
-        ready to fetch results. This enables eager validation of schema requirements
-        during reader initialization.
-
-        Use has_schema() to distinguish legitimate None (DDL statements) from unexpected None
-        (query statement without schema), then decide if that's acceptable for your use case.
+        Code creating readers (after can_fetch_results() returns True) can assume schema
+        is available for query statements, but must check for None with DDL statements.
 
         Returns:
-            Schema object describing the result columns, or None if unavailable.
+            Schema object, or None for DDL statements or before first poll.
 
         Raises:
             InterfaceError: If traits are unavailable (statement not yet polled or failed).
@@ -496,15 +481,8 @@ class Column:
 class Schema:
     """Schema describing the columns and types of a statement's result set.
 
-    This represents the structure of rows returned by a SQL query, including the
-    column names and their data types. It is used internally for type conversion
-    and for formatting rows as dicts (mapping column names to values).
-
-    Schema is part of the statement's traits. Once traits are polled (typically after
-    the first statement.describe() call), schema is available for the remainder of the
-    statement's lifecycle. ResultReader and RowFormatter are only created after the
-    statement is ready to fetch results, so they can safely assume schema is available
-    for validation and formatting.
+    Used for type conversion and formatting rows as dicts. Only present for query
+    statements; always None for DDL statements.
     """
 
     columns: list[Column]
@@ -529,17 +507,11 @@ class Traits:
     in the server response.
 
     **Availability:**
-    Traits are typically available in all non-terminal phases (PENDING, RUNNING, etc.)
-    and in terminal success phases (COMPLETED). The server does NOT send traits for
-    FAILED statements. Traits are initially None until the statement is polled from
-    the server for the first time.
+    Traits are None until the statement is polled from the server for the first time.
+    The server does NOT send traits for FAILED statements. Once available, traits
+    persist for the statement's lifetime.
 
-    Once available (after first server poll), traits are persistent for the lifetime
-    of the statement object. Code that creates readers or formatters can safely access
-    traits during initialization because readers are only created after the statement
-    is ready to fetch results (via statement.can_fetch_results()).
-
-    See Statement.schema property for additional notes on schema availability.
+    See Statement.schema property for schema availability notes.
     """
 
     connection_refs: list[str] | None
@@ -553,23 +525,11 @@ class Traits:
     schema: Schema | None
     """The schema of the result set, describing columns and their types.
 
-    **Lifecycle:**
-    - Before first poll: None (traits not yet populated)
-    - During statement execution (PENDING → RUNNING → COMPLETED): Present with schema
-    - DDL statements (CREATE TABLE, DROP TABLE, etc.): Always None (no result set)
-    - Query statements (SELECT, etc.): Present after first server poll (typically by PENDING phase)
-    - FAILED statements: Never populated (traits omitted by server)
+    None for: DDL statements (no result set), FAILED statements (traits not sent),
+    or before first server poll. Schema is guaranteed available for query statements
+    after the first poll.
 
-    **When it's None:**
-    - Before the statement is first polled from the server
-    - For DDL statements that don't produce result sets
-    - For FAILED statements (traits not sent)
-
-    Code that creates readers or formatters can safely access schema during initialization
-    because those components are only instantiated after statement.can_fetch_results() returns True,
-    at which point schema is guaranteed to be available.
-
-    See Statement.schema property for usage guidance.
+    See Statement.schema property for usage notes.
     """
     sql_kind: str
     upsert_columns: list[int] | None
