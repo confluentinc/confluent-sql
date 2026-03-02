@@ -458,6 +458,7 @@ class Cursor:
         return (
             self._statement is not None
             and self._statement.has_schema()
+            and self._statement.schema is not None
             and self._get_result_reader().may_have_results
         )
 

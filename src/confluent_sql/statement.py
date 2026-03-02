@@ -479,8 +479,8 @@ class Column:
 class Schema:
     """Schema describing the columns and types of a statement's result set.
 
-    Used for type conversion and formatting rows as dicts. Only present for query
-    statements; always None for DDL statements.
+    Used for type conversion and formatting rows as dicts. Present in Traits.schema
+    for query statements; always None for DDL statements.
     """
 
     columns: list[Column]
