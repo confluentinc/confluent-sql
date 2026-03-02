@@ -291,17 +291,15 @@ class Statement:
         """Get the result schema of this statement, if available.
 
         The schema describes the columns and their types in the statement's result set.
+        Use has_schema() to check if this statement can produce a result set.
 
         **Availability:**
         - Query statements: Schema available after first server poll (None before)
         - DDL statements: Always None (no result set)
         - FAILED statements: None (traits not sent)
 
-        Code creating readers (after can_fetch_results() returns True) can assume schema
-        is available for query statements, but must check for None with DDL statements.
-
         Returns:
-            Schema object, or None for DDL statements or before first poll.
+            Schema object, or None if this statement cannot produce a result set.
 
         Raises:
             InterfaceError: If traits are unavailable (statement not yet polled or failed).
