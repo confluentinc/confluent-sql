@@ -147,9 +147,7 @@ class Statement:
     )
 
     # SQL kinds that represent impure DDL (produce no result set but may stream)
-    _IMPURE_DDL_KINDS = frozenset(
-        {"CREATE_TABLE_AS"}
-    )
+    _IMPURE_DDL_KINDS = frozenset({"CREATE_TABLE_AS"})
 
     # From the cursor that created this statement ...
     connection: Connection
@@ -298,7 +296,8 @@ class Statement:
         Raises:
             InterfaceError: If traits are unavailable (statement not yet polled or failed).
         """
-        return self.sql_kind in self._PURE_DDL_KINDS or self.sql_kind in self._IMPURE_DDL_KINDS
+        kind = self.sql_kind  # derefence once to avoid multiple trait lookups in the sets below.
+        return kind in self._PURE_DDL_KINDS or kind in self._IMPURE_DDL_KINDS
 
     @property
     def is_append_only(self) -> bool:
