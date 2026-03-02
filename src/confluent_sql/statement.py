@@ -146,6 +146,11 @@ class Statement:
         {"CREATE_TABLE", "DROP_TABLE", "CREATE_VIEW", "DROP_VIEW", "ALTER_TABLE"}
     )
 
+    # SQL kinds that represent impure DDL (produce no result set but may stream)
+    _IMPURE_DDL_KINDS = frozenset(
+        {"CREATE_TABLE_AS"}
+    )
+
     # From the cursor that created this statement ...
     connection: Connection
 
@@ -281,6 +286,21 @@ class Statement:
         return self.sql_kind in self._PURE_DDL_KINDS
 
     @property
+    def is_ddl(self) -> bool:
+        """Check if this statement is any form of DDL (pure or impure).
+
+        This includes pure DDL statements (must complete fully) and impure DDL like CTAS
+        (can stream but produce no result set). Use is_pure_ddl to check completion requirements.
+
+        Returns:
+            True if the statement is pure DDL or impure DDL, False otherwise.
+
+        Raises:
+            InterfaceError: If traits are unavailable (statement not yet polled or failed).
+        """
+        return self.sql_kind in self._PURE_DDL_KINDS or self.sql_kind in self._IMPURE_DDL_KINDS
+
+    @property
     def is_append_only(self) -> bool:
         """Will this statement's results changelog only have insert/append rows?"""
 
@@ -311,7 +331,7 @@ class Statement:
 
         A statement can have a schema if it's not a DDL statement. Query statements
         (SELECT, INSERT, etc.) produce result sets with schemas, while DDL statements
-        (CREATE TABLE, DROP TABLE, etc.) do not.
+        (including CTAS) do not.
 
         This is different from checking if schema is currently populated. Use this to
         distinguish between:
@@ -324,7 +344,7 @@ class Statement:
         Raises:
             InterfaceError: If traits are unavailable (statement not yet polled or failed).
         """
-        return not self.is_pure_ddl
+        return not self.is_ddl
 
     @property
     def description(self) -> list[tuple] | None:
