@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
 from .exceptions import InterfaceError, NotSupportedError
 from .execution_mode import ExecutionMode
-from .statement import Op, Statement
+from .statement import Op, Schema, Statement
 from .types import StrAnyDict, SupportedPythonTypes
 
 if TYPE_CHECKING:
@@ -114,6 +114,84 @@ class FetchMetrics:
         self._before_fetch_timestamp = None
 
 
+class RowFormatter(abc.ABC):
+    """Base class for row formatters that convert statement result tuples to requested format.
+
+    This abstraction encapsulates the logic for formatting rows based on the cursor's
+    `as_dict` configuration. It centralizes the format decision in the result reader layer,
+    ensuring that compressors work with already-formatted rows.
+    """
+
+    @abc.abstractmethod
+    def format(self, row: StatementResultTuple) -> ResultTupleOrDict:
+        """Convert a tuple row to the configured format.
+
+        Args:
+            row: A tuple of values representing a result row.
+
+        Returns:
+            A row in the appropriate format for this formatter.
+        """
+
+    @staticmethod
+    def create(as_dict: bool, schema: Schema | None) -> RowFormatter:
+        """Factory method to create the appropriate formatter.
+
+        Args:
+            as_dict: If True, create a dict formatter; if False, create a tuple formatter.
+            schema: The statement schema for column names (required if as_dict=True).
+
+        Returns:
+            A RowFormatter instance configured for the requested format.
+
+        Raises:
+            InterfaceError: If as_dict is True but schema is not available.
+        """
+        if as_dict:
+            if not schema:
+                raise InterfaceError("Schema required to format rows as dicts")
+            return DictRowFormatter(schema)
+        return TupleRowFormatter()
+
+
+class TupleRowFormatter(RowFormatter):
+    """Formatter that returns rows as tuples (pass-through, no conversion)."""
+
+    def format(self, row: StatementResultTuple) -> StatementResultTuple:
+        """Return the row unchanged as a tuple.
+
+        Args:
+            row: A tuple of values representing a result row.
+
+        Returns:
+            The input row as-is.
+        """
+        return row
+
+
+class DictRowFormatter(RowFormatter):
+    """Formatter that converts result tuples to dictionaries using column names."""
+
+    def __init__(self, schema: Schema):
+        """Initialize the dict formatter with column names from schema.
+
+        Args:
+            schema: The statement schema containing column definitions.
+        """
+        self._column_names = [col.name for col in schema.columns]
+
+    def format(self, row: StatementResultTuple) -> StrAnyDict:
+        """Convert a tuple row to a dictionary using column names.
+
+        Args:
+            row: A tuple of values representing a result row.
+
+        Returns:
+            A dictionary mapping column names to values.
+        """
+        return dict(zip(self._column_names, row, strict=True))
+
+
 class ResultReader(Generic[ReaderOutput], abc.ABC):
     """Abstract base class for result readers.
 
@@ -192,6 +270,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
 
         self._results: deque[ReaderOutput] = deque()
         self._metrics = FetchMetrics()
+        self._row_formatter = RowFormatter.create(as_dict, statement.schema)
 
     @abc.abstractmethod
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
@@ -256,12 +335,6 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
     def metrics(self) -> FetchMetrics:
         """Return the current metrics over results fetching activity."""
         return self._metrics
-
-    def _map_row_to_dict(self, row: StatementResultTuple) -> StrAnyDict:
-        """Map tuple row to dict using statement schema."""
-        if not self._statement.schema:
-            raise InterfaceError("Cannot map row to dict without schema")  # pragma: no cover
-        return dict(zip([col.name for col in self._statement.schema.columns], row, strict=True))
 
     def _consume_from_buffer(self, limit: int) -> list[ReaderOutput]:
         """
@@ -491,12 +564,11 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
                 # Convert row to Python types
                 decoded_row = type_converter.to_python_row(res.row)
 
-                # Promote from tuple -> dict if requested
-                if self._as_dict:
-                    decoded_row = self._map_row_to_dict(decoded_row)
+                # Format row according to cursor's as_dict setting (tuple or dict)
+                formatted_row = self._row_formatter.format(decoded_row)
 
                 # Retain the row (and perhaps also the operation) in the reader's internal state
-                self._retain(res.op, decoded_row)
+                self._retain(res.op, formatted_row)
 
         self._fetch_next_page_called = True
         self._most_recent_results_fetch_time = time.monotonic()
