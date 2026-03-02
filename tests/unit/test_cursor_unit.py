@@ -1519,6 +1519,21 @@ class TestMayHaveResults:
         # Verify has_schema was checked
         mock_statement.has_schema.assert_called()
 
+    def test_may_have_results_raises_when_has_schema_raises(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that may_have_results propagates InterfaceError from has_schema()."""
+        # Mock a statement where has_schema() raises (e.g., FAILED statement)
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.side_effect = InterfaceError(
+            "Statement traits are not available"
+        )
+        mock_connection_cursor._statement = mock_statement
+
+        # may_have_results should propagate the exception
+        with pytest.raises(InterfaceError, match="Statement traits are not available"):
+            _ = mock_connection_cursor.may_have_results
+
     def test_may_have_results_false_when_schema_is_none(
         self, mock_connection_cursor: Cursor, mocker
     ):

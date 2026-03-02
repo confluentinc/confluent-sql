@@ -186,6 +186,19 @@ class TestStatementProperties:
         assert statement.has_schema() is False
         assert statement.schema is None  # Legitimate None for DDL
 
+    def test_has_schema_raises_when_traits_unavailable(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() raises InterfaceError when traits are unavailable."""
+        # FAILED statements have no traits
+        statement_json = statement_response_factory(phase="FAILED")
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        # has_schema() should raise InterfaceError because it needs to check sql_kind
+        # which requires traits to be available
+        with pytest.raises(InterfaceError, match="Statement traits are not available"):
+            statement.has_schema()
+
     @pytest.mark.parametrize(
         "phase,expected",
         [
