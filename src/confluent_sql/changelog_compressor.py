@@ -91,9 +91,6 @@ class ChangelogCompressor(abc.ABC):
     _statement: Statement
     """The statement associated with the cursor."""
 
-    _as_dict: bool
-    """Whether the cursor returns results as dicts (True) or tuples (False)."""
-
     _upsert_columns: list[int] | None
     """Zero-based indices of upsert columns from the statement traits, if any."""
 
@@ -125,7 +122,6 @@ class ChangelogCompressor(abc.ABC):
             raise InterfaceError("ChangelogCompressor requires a statement with a schema")
 
         # Get statement info we need
-        self._as_dict = cursor.as_dict
         self._upsert_columns = statement.traits.upsert_columns if statement.traits else None
         self._schema = statement.schema
 
