@@ -656,6 +656,32 @@ class TestExecuteDDL:
                 with suppress(Exception):
                     connection.delete_statement(statement)
 
+    def test_ctas_statement_properties(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Prove that CTAS statement is DDL but not pure DDL, with no schema.
+
+        CTAS (CREATE TABLE AS SELECT) is a hybrid DDL:
+        - is_ddl=True: It's DDL-like (creates a table)
+        - is_pure_ddl=False: Can stream (not purely DDL)
+        - has_schema()=False: Produces no result set (no schema)
+        """
+        # Create a simple CTAS selecting from VALUES
+        statement_text = f"""
+            CREATE TABLE `{auto_dropped_table_name}` AS
+            SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c'))
+            AS t(id, name)
+        """
+
+        statement = connection.execute_snapshot_ddl(statement_text)
+
+        # Verify CTAS statement properties
+        assert statement.is_ddl is True, "CTAS should be detected as DDL"
+        assert statement.is_pure_ddl is False, "CTAS is impure DDL, not pure"
+        assert statement.has_schema() is False, "CTAS produces no result schema"
+        assert statement.schema is None, "CTAS schema should be None"
+        assert statement.is_deleted, "Snapshot DDL statement should be auto-deleted"
+
 
 @pytest.mark.integration
 class TestArrayStatements:

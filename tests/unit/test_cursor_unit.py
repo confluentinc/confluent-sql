@@ -1490,3 +1490,133 @@ class TestRaiseIfStatementIsBroken:
         assert exc2.statement_name == "test-stmt-456"
         assert exc2.statement_deleted is False
         assert "Test message - not deleted" in str(exc2)
+
+
+@pytest.mark.unit
+class TestMayHaveResults:
+    """Tests for Cursor.may_have_results property covering all subconditions."""
+
+    def test_may_have_results_false_when_no_statement(self, mock_connection_cursor: Cursor, mocker):
+        """Test condition 1: returns False when _statement is None."""
+        # Initially, no statement is executed
+        assert mock_connection_cursor._statement is None
+
+        # may_have_results should return False
+        assert mock_connection_cursor.may_have_results is False
+
+    def test_may_have_results_false_when_ddl_statement(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test condition 2: returns False when has_schema() is False (DDL statement)."""
+        # Mock a DDL statement
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.return_value = False  # DDL
+        mock_connection_cursor._statement = mock_statement
+
+        # may_have_results should return False even if other conditions are met
+        assert mock_connection_cursor.may_have_results is False
+
+        # Verify has_schema was checked
+        mock_statement.has_schema.assert_called()
+
+    def test_may_have_results_raises_when_has_schema_raises(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that may_have_results propagates InterfaceError from has_schema()."""
+        # Mock a statement where has_schema() raises (e.g., FAILED statement)
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.side_effect = InterfaceError(
+            "Statement traits are not available"
+        )
+        mock_connection_cursor._statement = mock_statement
+
+        # may_have_results should propagate the exception
+        with pytest.raises(InterfaceError, match="Statement traits are not available"):
+            _ = mock_connection_cursor.may_have_results
+
+    def test_may_have_results_false_when_schema_is_none(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test condition 3: returns False when schema is None (defensive guard)."""
+        # Mock a query statement but with None schema (server bug scenario)
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.return_value = True  # Query statement
+        mock_statement.schema = None  # But schema is unexpectedly None
+        mock_connection_cursor._statement = mock_statement
+
+        # may_have_results should return False (defensive guard)
+        assert mock_connection_cursor.may_have_results is False
+
+    def test_may_have_results_false_when_reader_has_no_results(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test condition 4: returns False when reader.may_have_results is False."""
+        # Mock a query statement with schema
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.return_value = True
+        mock_statement.schema = mocker.Mock()  # Non-None schema
+        mock_connection_cursor._statement = mock_statement
+
+        # Mock result reader that reports no more results
+        mock_reader = mocker.Mock()
+        mock_reader.may_have_results = False
+        mock_connection_cursor._result_reader = mock_reader
+
+        # may_have_results should return False
+        assert mock_connection_cursor.may_have_results is False
+
+    def test_may_have_results_true_when_all_conditions_met(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test all conditions True: returns True when all subconditions are satisfied."""
+        # Mock a query statement with schema
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.return_value = True
+        mock_statement.schema = mocker.Mock()  # Non-None schema
+        mock_connection_cursor._statement = mock_statement
+
+        # Mock result reader that reports results available
+        mock_reader = mocker.Mock()
+        mock_reader.may_have_results = True
+        mock_connection_cursor._result_reader = mock_reader
+
+        # may_have_results should return True
+        assert mock_connection_cursor.may_have_results is True
+
+    def test_may_have_results_evaluates_all_conditions_in_sequence(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that all conditions are evaluated (short-circuit on first False)."""
+        # This test verifies the property uses 'and' operators correctly
+
+        # Setup: missing statement, has_schema False, schema None, reader False
+        # Only the first False should be evaluated due to short-circuiting
+
+        assert mock_connection_cursor._statement is None
+        assert mock_connection_cursor.may_have_results is False
+
+        # Now set statement but make has_schema False
+        mock_statement = mocker.Mock()
+        mock_statement.has_schema.return_value = False
+        mock_connection_cursor._statement = mock_statement
+
+        assert mock_connection_cursor.may_have_results is False
+
+        # Now make has_schema True but schema None
+        mock_statement.has_schema.return_value = True
+        mock_statement.schema = None
+
+        assert mock_connection_cursor.may_have_results is False
+
+        # Now make schema non-None but reader says no results
+        mock_statement.schema = mocker.Mock()
+        mock_reader = mocker.Mock()
+        mock_reader.may_have_results = False
+        mock_connection_cursor._result_reader = mock_reader
+
+        assert mock_connection_cursor.may_have_results is False
+
+        # Finally all True
+        mock_reader.may_have_results = True
+
+        assert mock_connection_cursor.may_have_results is True

@@ -146,6 +146,9 @@ class Statement:
         {"CREATE_TABLE", "DROP_TABLE", "CREATE_VIEW", "DROP_VIEW", "ALTER_TABLE"}
     )
 
+    # SQL kinds that represent impure DDL (produce no result set but may stream)
+    _IMPURE_DDL_KINDS = frozenset({"CREATE_TABLE_AS"})
+
     # From the cursor that created this statement ...
     connection: Connection
 
@@ -281,6 +284,22 @@ class Statement:
         return self.sql_kind in self._PURE_DDL_KINDS
 
     @property
+    def is_ddl(self) -> bool:
+        """Check if this statement is any form of DDL (pure or impure).
+
+        This includes pure DDL statements (must complete fully) and impure DDL like CTAS
+        (can stream but produce no result set). Use is_pure_ddl to check completion requirements.
+
+        Returns:
+            True if the statement is pure DDL or impure DDL, False otherwise.
+
+        Raises:
+            InterfaceError: If traits are unavailable (statement not yet polled or failed).
+        """
+        kind = self.sql_kind  # derefence once to avoid multiple trait lookups in the sets below.
+        return kind in self._PURE_DDL_KINDS or kind in self._IMPURE_DDL_KINDS
+
+    @property
     def is_append_only(self) -> bool:
         """Will this statement's results changelog only have insert/append rows?"""
 
@@ -288,7 +307,43 @@ class Statement:
 
     @property
     def schema(self) -> Schema | None:
+        """Get the result schema of this statement, if available.
+
+        The schema describes the columns and their types in the statement's result set.
+        Use has_schema() to check if this statement can produce a result set.
+
+        **Availability:**
+        - Query statements: Schema available after first server poll (None before)
+        - DDL statements: Always None (no result set)
+        - FAILED statements: None (traits not sent)
+
+        Returns:
+            Schema object, or None if this statement cannot produce a result set.
+
+        Raises:
+            InterfaceError: If traits are unavailable (statement not yet polled or failed).
+        """
         return self._possible_traits().schema
+
+    def has_schema(self) -> bool:
+        """Check if this statement can have a result schema.
+
+        A statement can have a schema if it's not a DDL statement. Query statements
+        (SELECT, INSERT, etc.) produce result sets with schemas, while DDL statements
+        (including CTAS) do not.
+
+        This is different from checking if schema is currently populated. Use this to
+        distinguish between:
+        - **Legitimate None schema**: DDL statements (will never have schema)
+        - **Unexpected None schema**: Query statements (should have schema after first poll)
+
+        Returns:
+            True if this statement can produce a schema (non-DDL query), False if it's DDL.
+
+        Raises:
+            InterfaceError: If traits are unavailable (statement not yet polled or failed).
+        """
+        return not self.is_ddl
 
     @property
     def description(self) -> list[tuple] | None:
@@ -367,6 +422,13 @@ class Statement:
                 if "traits" in status and status["traits"] is not None
                 else None
             )
+
+            # Defensive check: non-failed statements should have traits
+            if traits is None and phase != Phase.FAILED:
+                raise OperationalError(
+                    f"Received statement '{name}' in phase {phase} without traits. "
+                    "This is unexpected and likely indicates a server API change or bug."
+                )
         except KeyError as e:
             raise OperationalError(f"Error parsing statement response, missing {e}.") from e
 
@@ -410,14 +472,21 @@ class Statement:
 
 @dataclass(kw_only=True)
 class Column:
-    """Fields correspond to statement.traits.schema.columns[] members
-    Describes a projected column in the statement's result set: name, type definition,
-    description (column comment).
+    """Describes a column in a statement's result set.
+
+    Each column represents a projected expression or field in the SELECT clause, including
+    its name, data type, and optional description (from column comments).
+
+    Columns are part of the schema, which is part of the statement's traits. See
+    Statement.schema for notes on when schema information becomes available.
     """
 
     name: str
+    """The column name (may be a user-provided alias or auto-generated expression label)."""
     type: ColumnTypeDefinition
+    """The data type of the column (e.g., INTEGER, VARCHAR, ARRAY<STRING>, ROW(...), etc.)."""
     description: str | None = None
+    """Optional description or comment for this column."""
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> Column:
@@ -427,7 +496,11 @@ class Column:
 
 @dataclass(kw_only=True)
 class Schema:
-    """Fields correspond to statement.traits.schema"""
+    """Schema describing the columns and types of a statement's result set.
+
+    Used for type conversion and formatting rows as dicts. Present in Traits.schema
+    for query statements; always None for DDL statements.
+    """
 
     columns: list[Column]
     """The columns in the schema."""
@@ -444,7 +517,19 @@ class Schema:
 
 @dataclass(kw_only=True)
 class Traits:
-    """Fields correspond to statement.traits, including the statement's schema."""
+    """Parsed statement traits from server response.
+
+    Traits contain metadata about a statement including its schema, SQL kind, and
+    whether it is append-only or bounded. They are populated from status.traits
+    in the server response.
+
+    **Availability:**
+    Traits are None until the statement is polled from the server for the first time.
+    The server does NOT send traits for FAILED statements. Once available, traits
+    persist for the statement's lifetime.
+
+    See Statement.schema property for schema availability notes.
+    """
 
     connection_refs: list[str] | None
     """The names of connections that the SQL statement references (e.g., in FROM clauses)."""
@@ -455,7 +540,14 @@ class Traits:
     """Does the result set have a bounded number of rows (aka not a streaming result?
        Implies is_append_only.)"""
     schema: Schema | None
-    """The schema of the result set, if any."""
+    """The schema of the result set, describing columns and their types.
+
+    None for: DDL statements (no result set), FAILED statements (traits not sent),
+    or before first server poll. Schema is guaranteed available for query statements
+    after the first poll.
+
+    See Statement.schema property for usage notes.
+    """
     sql_kind: str
     upsert_columns: list[int] | None
     """Zero-based indices of upsert columns, if any."""

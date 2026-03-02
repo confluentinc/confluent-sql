@@ -166,6 +166,91 @@ class TestStatementProperties:
         type_converter = statement.type_converter
         assert isinstance(type_converter, StatementTypeConverter)
 
+    def test_has_schema_for_query_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() returns True for query statements (SELECT, etc.)."""
+        # SELECT is the default sql_kind in the factory
+        statement_json = statement_response_factory(sql_kind="SELECT")
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.has_schema() is True
+        assert statement.schema is not None
+
+    def test_has_schema_for_ddl_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() returns False for DDL statements (CREATE TABLE, etc.)."""
+        # DDL statements have null_schema=True (no result set)
+        statement_json = statement_response_factory(sql_kind="CREATE_TABLE", null_schema=True)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.has_schema() is False
+        assert statement.schema is None  # Legitimate None for DDL
+
+    def test_has_schema_raises_when_traits_unavailable(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() raises InterfaceError when traits are unavailable."""
+        # FAILED statements have no traits
+        statement_json = statement_response_factory(phase="FAILED")
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        # has_schema() should raise InterfaceError because it needs to check sql_kind
+        # which requires traits to be available
+        with pytest.raises(InterfaceError, match="Statement traits are not available"):
+            statement.has_schema()
+
+    def test_is_ddl_for_pure_ddl_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that is_ddl() returns True for pure DDL statements."""
+        statement_json = statement_response_factory(sql_kind="CREATE_TABLE", null_schema=True)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_ddl is True
+
+    def test_is_ddl_for_impure_ddl_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that is_ddl() returns True for impure DDL (CTAS)."""
+        statement_json = statement_response_factory(
+            sql_kind="CREATE_TABLE_AS", null_schema=True
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_ddl is True
+        assert statement.has_schema() is False  # CTAS has no schema
+
+    def test_is_ddl_for_query_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that is_ddl() returns False for query statements."""
+        statement_json = statement_response_factory(sql_kind="SELECT")
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_ddl is False
+
+    def test_has_schema_for_ctas_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() returns False for CTAS statements."""
+        statement_json = statement_response_factory(
+            sql_kind="CREATE_TABLE_AS", null_schema=True
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.has_schema() is False
+        assert statement.schema is None
+
+    def test_ctas_is_impure_ddl(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that CTAS is DDL but not pure DDL (impure DDL that can stream)."""
+        statement_json = statement_response_factory(
+            sql_kind="CREATE_TABLE_AS", null_schema=True
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        # CTAS is impure DDL: is_ddl=True, is_pure_ddl=False
+        assert statement.is_ddl is True, "CTAS should be detected as DDL"
+        assert statement.is_pure_ddl is False, "CTAS is impure DDL, not pure DDL"
+        assert statement.has_schema() is False, "CTAS produces no result schema"
+
     @pytest.mark.parametrize(
         "phase,expected",
         [
@@ -462,6 +547,24 @@ class TestStatementFromResponse:
             OperationalError, match="Error parsing statement response, missing 'spec'"
         ):
             Statement.from_response(mock_connection, incomplete_json)
+
+    def test_hates_non_failed_statement_without_traits(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that from_response raises defensively if a non-FAILED statement lacks traits.
+
+        This is a defensive check that catches unexpected server API changes or bugs.
+        FAILED statements should not have traits, but other phases should.
+        """
+        # Create a RUNNING statement without traits (this shouldn't happen)
+        response = statement_response_factory(phase="RUNNING")
+        response["status"]["traits"] = None
+
+        with pytest.raises(
+            OperationalError,
+            match="Received statement .* in phase .* without traits.*unexpected",
+        ):
+            Statement.from_response(mock_connection, response)
 
     def test_parses_row_result_schema(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
