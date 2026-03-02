@@ -22,7 +22,7 @@ Usage:
 Compressors consume raw changelog events from ChangelogEventReader (via the cursor)
 and apply operations to maintain the compressed result set. Storage strategies are
 automatically selected based on whether the statement has upsert columns (dict-based
-keyed lookup vs list-based scanning) and whether results are tuples or dicts.
+keyed lookup vs list-based scanning).
 
 For low-level changelog fetching without state management, see the `result_readers` module.
 """
@@ -33,28 +33,24 @@ import abc
 import copy
 import logging
 from collections.abc import Generator
-from typing import TYPE_CHECKING, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, cast
 
 from .exceptions import InterfaceError, StatementStoppedError
-from .result_readers import ChangeloggedRow, ResultTupleOrDict, StatementResultTuple
+from .result_readers import ChangeloggedRow, ResultTupleOrDict
 from .statement import Op, Schema, Statement
-from .types import StrAnyDict
 
 if TYPE_CHECKING:
     from .cursor import Cursor
 
 logger = logging.getLogger(__name__)
 
-# Type variable for the output type (either tuple or dict)
-T = TypeVar("T", bound=ResultTupleOrDict)
-
 
 def create_changelog_compressor(cursor: Cursor, statement: Statement) -> ChangelogCompressor:
     """Factory function to create the appropriate changelog compressor.
 
-    This function determines which concrete compressor class to instantiate based on:
-    - Whether the statement has upsert columns
-    - Whether the cursor is configured for dict or tuple results
+    This function determines which concrete compressor class to instantiate based on
+    whether the statement has upsert columns. The decision of whether to return tuple or
+    dict rows is made by the result reader layer and is transparent to the compressor.
 
     Args:
         cursor: The cursor to fetch changelog data from.
@@ -75,19 +71,14 @@ def create_changelog_compressor(cursor: Cursor, statement: Statement) -> Changel
     # Determine if we have upsert columns
     has_upsert_columns = bool(statement.traits and statement.traits.upsert_columns)
 
-    # Select the appropriate concrete compressor class
+    # Select the appropriate concrete compressor class based on upsert columns only
     if has_upsert_columns:
-        if cursor.as_dict:
-            return UpsertColumnsDictCompressor(cursor, statement)
-        else:
-            return UpsertColumnsTupleCompressor(cursor, statement)
-    elif cursor.as_dict:
-        return NoUpsertColumnsDictCompressor(cursor, statement)
+        return UpsertColumnsCompressor(cursor, statement)
     else:
-        return NoUpsertColumnsTupleCompressor(cursor, statement)
+        return NoUpsertColumnsCompressor(cursor, statement)
 
 
-class ChangelogCompressor(abc.ABC, Generic[T]):
+class ChangelogCompressor(abc.ABC):
     """Abstract base class for changelog compressors.
 
     Compressors accumulate changelog operations and maintain a logical result set
@@ -139,7 +130,7 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         self._schema = statement.schema
 
     @abc.abstractmethod
-    def _apply_operation(self, op: Op, row: T) -> None:
+    def _apply_operation(self, op: Op, row: ResultTupleOrDict) -> None:
         """Apply a changelog operation to the internal state.
 
         Args:
@@ -149,7 +140,7 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         ...
 
     @abc.abstractmethod
-    def _copy_accumulated_rows(self) -> list[T]:
+    def _copy_accumulated_rows(self) -> list[ResultTupleOrDict]:
         """Return a deep copy of the accumulated rows from internal storage.
 
         Returns:
@@ -176,7 +167,7 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         """Clear pending update tracking state."""
         ...
 
-    def _validate_no_pending_update(self, op: Op, row: T) -> None:
+    def _validate_no_pending_update(self, op: Op, row: ResultTupleOrDict) -> None:
         """Raise if we have a pending update and aren't processing UPDATE_AFTER.
 
         Args:
@@ -190,7 +181,9 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         if op != Op.UPDATE_AFTER and self._has_pending_update():
             raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
 
-    def snapshots(self, fetch_batchsize: int | None = None) -> Generator[list[T], None, None]:
+    def snapshots(
+        self, fetch_batchsize: int | None = None
+    ) -> Generator[list[ResultTupleOrDict], None, None]:
         """Generator that yields snapshots of the accumulated result set until the query stops.
 
         This generator continuously polls for new changelog events, applies them to the internal
@@ -273,9 +266,9 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
                 for changelogged_row in batch:
                     # Must cast because cursor.fetchmany() returns list[ResultRow],
                     # but if using a ChangelogCompressor, we know the rows are actually
-                    # ChangeloggedRow consisting of (Op, T).
+                    # ChangeloggedRow consisting of (Op, ResultTupleOrDict).
                     op, row = cast(ChangeloggedRow, changelogged_row)
-                    self._apply_operation(op, cast(T, row))
+                    self._apply_operation(op, cast(ResultTupleOrDict, row))
 
             # Yield current snapshot after processing all available events
             yield self._copy_accumulated_rows()
@@ -291,19 +284,26 @@ class ChangelogCompressor(abc.ABC, Generic[T]):
         self._cursor.close()
 
 
-class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
-    """Abstract base class for compressors handling statements with upsert columns.
+class UpsertColumnsCompressor(ChangelogCompressor):
+    """Compressor for statements with upsert columns, handling both tuple and dict rows.
 
     Uses dict-based storage for fast O(1) key-based lookups.
 
     Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
     Only one pending update is tracked at a time.
+
+    Rows can be either tuples or dicts (as determined by cursor.as_dict). The row format
+    decision is made by the result reader layer, and this compressor works transparently
+    with either format.
     """
 
     _upsert_column_indices: list[int]
     """Zero-based indices of columns that form the upsert key."""
 
-    _rows_by_key: dict[tuple, T]
+    _upsert_key_column_names: list[str]
+    """Column names corresponding to upsert column indices, for dict row access."""
+
+    _rows_by_key: dict[tuple, ResultTupleOrDict]
     """Dictionary mapping key tuples to row data. Dict maintains insertion order in Python 3.7+."""
 
     _expecting_update_after: bool
@@ -325,20 +325,33 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             raise InterfaceError("UpsertColumnsCompressor requires a statement with upsert columns")
 
         self._upsert_column_indices = statement.traits.upsert_columns
+
+        # Precompute column names for dict access (used if rows are dicts)
+        self._upsert_key_column_names = [
+            self._schema.columns[i].name for i in self._upsert_column_indices
+        ]
+
         self._rows_by_key = {}
         self._expecting_update_after = False
 
-    @abc.abstractmethod
-    def _extract_key(self, row: T) -> tuple:
+    def _extract_key(self, row: ResultTupleOrDict) -> tuple:
         """Extract the key tuple from a row based on upsert columns.
 
+        Handles both tuple and dict row formats. The row format (tuple or dict) is determined
+        by cursor.as_dict and guaranteed by the result reader layer.
+
         Args:
-            row: The row data (tuple or dict).
+            row: The row data, either a tuple (if cursor.as_dict=False) or dict (if as_dict=True).
 
         Returns:
-            A tuple of the key values.
+            A tuple of the key values in column order.
         """
-        ...
+        if isinstance(row, dict):
+            # Dict case: use precomputed column names
+            return tuple(row[col_name] for col_name in self._upsert_key_column_names)
+        else:
+            # Tuple case: use direct index access
+            return tuple(row[i] for i in self._upsert_column_indices)
 
     def _has_pending_update(self) -> bool:
         """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
@@ -356,7 +369,7 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         """Clear pending update tracking state."""
         self._expecting_update_after = False
 
-    def _apply_operation(self, op: Op, row: T) -> None:
+    def _apply_operation(self, op: Op, row: ResultTupleOrDict) -> None:
         """Apply a changelog operation to the internal state.
 
         Args:
@@ -400,7 +413,7 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
                 )
             del self._rows_by_key[key]
 
-    def _copy_accumulated_rows(self) -> list[T]:
+    def _copy_accumulated_rows(self) -> list[ResultTupleOrDict]:
         """Return deep copy of rows from dict storage in insertion order.
 
         Returns:
@@ -409,16 +422,19 @@ class UpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         return [copy.deepcopy(row) for row in self._rows_by_key.values()]
 
 
-class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
-    """Abstract base class for compressors handling statements without upsert columns.
+class NoUpsertColumnsCompressor(ChangelogCompressor):
+    """Compressor for statements without upsert columns, handling both tuple and dict rows.
 
     Uses list-based storage with linear scan for row matching.
 
     Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
     Only one pending update is tracked at a time.
+
+    Rows can be either tuples or dicts (as determined by cursor.as_dict). Row matching
+    is performed by equality comparison, which works identically for both tuple and dict.
     """
 
-    _rows: list[T]
+    _rows: list[ResultTupleOrDict]
     """List of rows maintaining insertion order. Scanned linearly for matching."""
 
     _pending_update_position: int | None
@@ -452,7 +468,7 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
         """Clear pending update tracking state."""
         self._pending_update_position = None
 
-    def _find_row_position(self, row: T, operation: Op) -> int:
+    def _find_row_position(self, row: ResultTupleOrDict, operation: Op) -> int:
         """Find the position of a matching row by scanning backwards.
 
         Args:
@@ -475,7 +491,7 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             f"Received {operation.name} for a row that does not exist in current state: {row}"
         )
 
-    def _apply_operation(self, op: Op, row: T) -> None:
+    def _apply_operation(self, op: Op, row: ResultTupleOrDict) -> None:
         """Apply a changelog operation to the internal state.
 
         Args:
@@ -510,75 +526,10 @@ class NoUpsertColumnsCompressor(ChangelogCompressor[T], abc.ABC):
             pos = self._find_row_position(row, Op.DELETE)
             del self._rows[pos]
 
-    def _copy_accumulated_rows(self) -> list[T]:
+    def _copy_accumulated_rows(self) -> list[ResultTupleOrDict]:
         """Return deep copy of rows from list storage.
 
         Returns:
             A deep copy of the list of rows.
         """
         return copy.deepcopy(self._rows)
-
-
-class UpsertColumnsTupleCompressor(UpsertColumnsCompressor[StatementResultTuple]):
-    """Concrete compressor for statements with upsert columns returning tuples.
-
-    Optimized for tuple row access with direct indexing.
-    """
-
-    def _extract_key(self, row: StatementResultTuple) -> tuple:
-        """Extract the key tuple from a tuple row using direct index access.
-
-        Args:
-            row: The row data as a tuple.
-
-        Returns:
-            A tuple of the key values.
-        """
-        return tuple(row[i] for i in self._upsert_column_indices)
-
-
-class UpsertColumnsDictCompressor(UpsertColumnsCompressor[StrAnyDict]):
-    """Concrete compressor for statements with upsert columns returning dicts.
-
-    Optimized for dict row access with precomputed column names for upsert key fields.
-    """
-
-    _upsert_key_column_names: list[str]
-    """Precomputed list of column names corresponding to upsert column indices."""
-
-    def __init__(self, cursor: Cursor, statement: Statement):
-        """Initialize the compressor with precomputed column names for upsert keys.
-
-        Args:
-            cursor: The cursor to fetch changelog data from.
-            statement: The statement associated with the cursor.
-        """
-        super().__init__(cursor, statement)
-
-        # Precompute the column names for upsert key fields
-        self._upsert_key_column_names = [
-            self._schema.columns[i].name for i in self._upsert_column_indices
-        ]
-
-    def _extract_key(self, row: StrAnyDict) -> tuple:
-        """Extract the key tuple from a dict row using precomputed column names.
-
-        Args:
-            row: The row data as a dict.
-
-        Returns:
-            A tuple of the key values.
-        """
-        return tuple(row[col_name] for col_name in self._upsert_key_column_names)
-
-
-class NoUpsertColumnsTupleCompressor(NoUpsertColumnsCompressor[StatementResultTuple]):
-    """Concrete compressor for statements without upsert columns returning tuples."""
-
-    pass
-
-
-class NoUpsertColumnsDictCompressor(NoUpsertColumnsCompressor[StrAnyDict]):
-    """Concrete compressor for statements without upsert columns returning dicts."""
-
-    pass

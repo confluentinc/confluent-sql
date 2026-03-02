@@ -166,6 +166,26 @@ class TestStatementProperties:
         type_converter = statement.type_converter
         assert isinstance(type_converter, StatementTypeConverter)
 
+    def test_has_schema_for_query_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() returns True for query statements (SELECT, etc.)."""
+        # SELECT is the default sql_kind in the factory
+        statement_json = statement_response_factory(sql_kind="SELECT")
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.has_schema() is True
+        assert statement.schema is not None
+
+    def test_has_schema_for_ddl_statement(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that has_schema() returns False for DDL statements (CREATE TABLE, etc.)."""
+        # DDL statements have null_schema=True (no result set)
+        statement_json = statement_response_factory(sql_kind="CREATE_TABLE", null_schema=True)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.has_schema() is False
+        assert statement.schema is None  # Legitimate None for DDL
+
     @pytest.mark.parametrize(
         "phase,expected",
         [
@@ -462,6 +482,24 @@ class TestStatementFromResponse:
             OperationalError, match="Error parsing statement response, missing 'spec'"
         ):
             Statement.from_response(mock_connection, incomplete_json)
+
+    def test_hates_non_failed_statement_without_traits(
+        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+    ):
+        """Test that from_response raises defensively if a non-FAILED statement lacks traits.
+
+        This is a defensive check that catches unexpected server API changes or bugs.
+        FAILED statements should not have traits, but other phases should.
+        """
+        # Create a RUNNING statement without traits (this shouldn't happen)
+        response = statement_response_factory(phase="RUNNING")
+        response["status"]["traits"] = None
+
+        with pytest.raises(
+            OperationalError,
+            match="Received statement .* in phase .* without traits.*unexpected",
+        ):
+            Statement.from_response(mock_connection, response)
 
     def test_parses_row_result_schema(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
