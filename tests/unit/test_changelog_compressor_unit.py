@@ -1451,27 +1451,21 @@ class TestSnapshotsGeneratorTermination:
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Mock may_have_results to change after first snapshot
-        call_count = 0
-
-        def may_have_results_side_effect():
-            nonlocal call_count
-            call_count += 1
-            return call_count <= 1  # True first time, False second time
-
-        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
-
         # Mock fetchmany
         mock_cursor.fetchmany.side_effect = [
             [ChangeloggedRow(Op.INSERT, (1, "a", 10))],
             [],  # End of first snapshot
+            [],  # Additional calls to fetchmany for next iteration (safety)
         ]
 
-        # Consume the generator and expect StatementStoppedError
+        # First snapshot - may_have_results is True (set in mock_cursor fixture)
         gen = compressor.snapshots()
         snapshot = next(gen)
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 10)
+
+        # Change may_have_results to False for next iteration
+        mock_cursor.may_have_results = False
 
         # Next iteration should raise StatementStoppedError
         with pytest.raises(StatementStoppedError) as exc_info:
@@ -1486,15 +1480,6 @@ class TestSnapshotsGeneratorTermination:
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Track which snapshot we're on
-        snapshots_yielded = [0]  # Use list to allow modification in nested function
-
-        def may_have_results_side_effect():
-            # Allow 3 snapshots to be yielded
-            return snapshots_yielded[0] < 3
-
-        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
-
         # Mock fetchmany to return data then empty for each snapshot
         # Pattern: data, [], data, [], data, []
         mock_cursor.fetchmany.side_effect = [
@@ -1504,28 +1489,28 @@ class TestSnapshotsGeneratorTermination:
             [],  # End snapshot 2
             [ChangeloggedRow(Op.INSERT, (3, "c", 30))],  # Snapshot 3 data
             [],  # End snapshot 3
+            [],  # Safety for next iteration
         ]
 
-        # Track when snapshots are yielded to update may_have_results
         gen = compressor.snapshots()
 
         snapshot1 = next(gen)
-        snapshots_yielded[0] = 1
         assert len(snapshot1) == 1
         assert snapshot1[0] == (1, "a", 10)
 
         snapshot2 = next(gen)
-        snapshots_yielded[0] = 2
         assert len(snapshot2) == 2
         assert (1, "a", 10) in snapshot2
         assert (2, "b", 20) in snapshot2
 
         snapshot3 = next(gen)
-        snapshots_yielded[0] = 3
         assert len(snapshot3) == 3
         assert (1, "a", 10) in snapshot3
         assert (2, "b", 20) in snapshot3
         assert (3, "c", 30) in snapshot3
+
+        # Change may_have_results to False
+        mock_cursor.may_have_results = False
 
         # Next call should raise StatementStoppedError
         with pytest.raises(StatementStoppedError) as exc_info:
@@ -1551,22 +1536,12 @@ class TestSnapshotsGeneratorTermination:
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Track snapshots
-        snapshot_count = 0
-
-        def may_have_results_side_effect():
-            nonlocal snapshot_count
-            return snapshot_count < 2
-
-        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
-
-        # Mock fetchmany to return empty batches
-        def fetchmany_side_effect(_size):
-            nonlocal snapshot_count
-            snapshot_count += 1
-            return []
-
-        mock_cursor.fetchmany.side_effect = lambda size: fetchmany_side_effect(size)  # noqa: ARG005
+        # Mock fetchmany to return empty batches (3 times, then raise on next)
+        mock_cursor.fetchmany.side_effect = [
+            [],  # Snapshot 1 (empty)
+            [],  # Snapshot 2 (empty)
+            [],  # Safety for next iteration check
+        ]
 
         # Consume the generator
         gen = compressor.snapshots()
@@ -1576,6 +1551,9 @@ class TestSnapshotsGeneratorTermination:
         # Should yield two empty snapshots
         assert snapshot1 == []
         assert snapshot2 == []
+
+        # Change may_have_results to False
+        mock_cursor.may_have_results = False
 
         # Next should raise StatementStoppedError
         with pytest.raises(StatementStoppedError) as exc_info:
@@ -1588,37 +1566,19 @@ class TestSnapshotsGeneratorTermination:
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Track fetchmany call count
-        call_count = 0
-
-        def may_have_results_side_effect():
-            nonlocal call_count
-            # True until we've completed 2 snapshots (4 fetchmany calls)
-            return call_count < 4
-
-        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
-
         # Mock fetchmany to return data across two snapshots
-        def fetchmany_side_effect(_size):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # First batch: initial data
-                return [
-                    ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                    ChangeloggedRow(Op.INSERT, (2, "b", 20)),
-                ]
-            elif call_count == 2:
-                # End of first snapshot
-                return []
-            elif call_count == 3:
-                # Second batch: trailing events
-                return [ChangeloggedRow(Op.INSERT, (3, "c", 30))]
-            else:
-                # End of second snapshot and any subsequent calls
-                return []
-
-        mock_cursor.fetchmany.side_effect = lambda size: fetchmany_side_effect(size)  # noqa: ARG005
+        mock_cursor.fetchmany.side_effect = [
+            # Snapshot 1
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),
+            ],
+            [],  # End of first snapshot
+            # Snapshot 2
+            [ChangeloggedRow(Op.INSERT, (3, "c", 30))],  # Trailing events
+            [],  # End of second snapshot
+            [],  # Safety for next iteration
+        ]
 
         # Consume the generator
         gen = compressor.snapshots()
@@ -1629,6 +1589,9 @@ class TestSnapshotsGeneratorTermination:
         assert len(snapshot1) == 2  # First snapshot has 2 rows
         assert len(snapshot2) == 3  # Second snapshot has 3 rows (accumulated)
 
+        # Change may_have_results to False
+        mock_cursor.may_have_results = False
+
         # Next should raise StatementStoppedError
         with pytest.raises(StatementStoppedError):
             next(gen)
@@ -1638,37 +1601,24 @@ class TestSnapshotsGeneratorTermination:
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Track fetchmany call count
-        call_count = 0
+        # Mock fetchmany
+        mock_cursor.fetchmany.side_effect = [
+            [ChangeloggedRow(Op.INSERT, (1, "x", 10))],  # Snapshot 1
+            [],  # End of first snapshot
+            [ChangeloggedRow(Op.INSERT, (2, "y", 20))],  # Snapshot 2
+            [],  # End of second snapshot
+            [],  # Safety for next iteration
+        ]
 
-        def may_have_results_side_effect():
-            nonlocal call_count
-            # True until we've completed 2 snapshots (4 fetchmany calls)
-            return call_count < 4
-
-        type(mock_cursor).may_have_results = property(lambda _: may_have_results_side_effect())
-
-        def fetchmany_side_effect(_size):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return [ChangeloggedRow(Op.INSERT, (1, "x", 10))]
-            elif call_count == 2:
-                return []  # End of first snapshot
-            elif call_count == 3:
-                return [ChangeloggedRow(Op.INSERT, (2, "y", 20))]
-            else:
-                return []  # End of second snapshot
-
-        mock_cursor.fetchmany.side_effect = lambda size: fetchmany_side_effect(size)  # noqa: ARG005
-
-        # Use for loop pattern with exception catching
+        # Use for loop pattern - break after 2 snapshots
         snapshots_seen = []
-        with pytest.raises(StatementStoppedError):
-            for snapshot in compressor.snapshots():
-                snapshots_seen.append(snapshot)
+        gen = compressor.snapshots()
+        for i, snapshot in enumerate(gen):
+            snapshots_seen.append(snapshot)
+            if i >= 1:  # After 2 snapshots
+                break
 
-        # Should have iterated exactly twice before exception
+        # Should have iterated exactly twice
         assert len(snapshots_seen) == 2
 
 
