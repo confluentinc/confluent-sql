@@ -136,7 +136,7 @@ class TestUpsertColumnsCompressor:
         assert (2, "a", 30) in snapshot
 
     def test_deep_copy_returned(self, mock_cursor):
-        """Test that get_snapshot returns a deep copy."""
+        """Test that snapshots() returns a deep copy across calls."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
@@ -1863,4 +1863,85 @@ class TestGetCurrentSnapshot:
         mock_cursor.fetchmany.assert_called_with(200)
         assert len(snapshot) == 1
 
+    def test_snapshots_captures_batchsize_once(self, mock_cursor):
+        """Test that snapshots() captures batch size once, not per-yield.
+
+        This test verifies backward compatibility: if fetch_batchsize is None,
+        snapshots() should resolve cursor.arraysize once at the start and use
+        that value consistently across all yields, even if cursor.arraysize
+        is mutated between yields by the caller.
+        """
+        mock_cursor._statement.traits.upsert_columns = [0]
+        mock_cursor.arraysize = 50  # Initial batch size
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        # Track which batch sizes were used in each fetchmany call
+        batch_sizes_used = []
+
+        def track_fetchmany(size):
+            batch_sizes_used.append(size)
+            # Return data on first call, empty on subsequent calls
+            if len(batch_sizes_used) == 1:
+                return [ChangeloggedRow(Op.INSERT, (1, "a", 10))]
+            return []
+
+        mock_cursor.fetchmany.side_effect = track_fetchmany
+
+        # Get first snapshot
+        gen = compressor.snapshots()
+        first_snapshot = next(gen)
+        assert len(first_snapshot) == 1
+
+        # Now mutate cursor.arraysize - this should NOT affect the generator
+        mock_cursor.arraysize = 999
+
+        # Reset side_effect for next iteration
+        batch_sizes_used.clear()
+        mock_cursor.fetchmany.side_effect = track_fetchmany
+
+        # Get second snapshot - it should still use the original batch size (50)
+        next(gen)
+        assert batch_sizes_used[0] == 50, (
+            f"Expected batch size 50 (original), got {batch_sizes_used[0]}. "
+            "snapshots() must capture batch size once, not per-yield."
+        )
+
+    def test_snapshots_explicit_batchsize_param(self, mock_cursor):
+        """Test that snapshots() with explicit fetch_batchsize uses it consistently.
+
+        When an explicit fetch_batchsize is provided, it should be used for all
+        yields regardless of cursor.arraysize mutations.
+        """
+        mock_cursor._statement.traits.upsert_columns = [0]
+        mock_cursor.arraysize = 100
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        batch_sizes_used = []
+
+        def track_fetchmany(size):
+            batch_sizes_used.append(size)
+            if len(batch_sizes_used) <= 2:
+                return [ChangeloggedRow(Op.INSERT, (1, "a", 10))]
+            return []
+
+        mock_cursor.fetchmany.side_effect = track_fetchmany
+
+        gen = compressor.snapshots(fetch_batchsize=75)
+
+        # First yield
+        next(gen)
+        first_yield_batch_size = batch_sizes_used[-1]
+
+        # Mutate arraysize
+        mock_cursor.arraysize = 200
+
+        # Second yield should still use explicit batchsize (75)
+        next(gen)
+        second_yield_batch_size = batch_sizes_used[-1]
+
+        assert first_yield_batch_size == 75
+        assert second_yield_batch_size == 75
+        assert (
+            first_yield_batch_size == second_yield_batch_size
+        ), "Explicit fetch_batchsize should be used consistently across all yields"
 

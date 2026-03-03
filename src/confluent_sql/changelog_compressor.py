@@ -232,6 +232,9 @@ class ChangelogCompressor(abc.ABC):
             >>> # Generator exits when query is stopped/deleted or fails
             >>> print("Streaming query stopped")
         """
+        # Resolve batch size once to ensure consistent behavior across yields
+        batchsize = fetch_batchsize or self._cursor.arraysize
+
         while True:
             if not self._cursor.may_have_results:
                 # Statement stopped unexpectedly - raise exception with context
@@ -252,7 +255,7 @@ class ChangelogCompressor(abc.ABC):
                 )
 
             # Fetch and apply all available events, then yield snapshot
-            yield self.get_current_snapshot(fetch_batchsize)
+            yield self.get_current_snapshot(batchsize)
 
     def get_current_snapshot(self, fetch_batchsize: int | None = None) -> list[ResultTupleOrDict]:
         """Fetch all currently available changelog events and return current snapshot.
