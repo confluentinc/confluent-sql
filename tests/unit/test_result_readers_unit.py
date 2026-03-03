@@ -13,6 +13,7 @@ from confluent_sql.cursor import Cursor
 from confluent_sql.exceptions import InterfaceError, StatementStoppedError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import (
+    AppendOnlyResultReader,
     ChangeloggedRow,
     DictRowFormatter,
     RowFormatter,
@@ -1795,8 +1796,6 @@ class TestAppendOnlyResultReader:
         too early in __init__(), before statement.schema was available.
         """
         # This should NOT raise an error, even though as_dict=True and schema=None
-        from confluent_sql.result_readers import AppendOnlyResultReader
-
         reader = AppendOnlyResultReader(
             connection=mock_connection,
             statement=mock_statement_without_schema,
@@ -1816,8 +1815,6 @@ class TestAppendOnlyResultReader:
         The formatter should be created on the first call to _fetch_next_page(),
         at which point statement.schema is guaranteed to be available.
         """
-        from confluent_sql.result_readers import AppendOnlyResultReader, ChangeloggedRow
-
         # Setup mock to simulate results fetching
         mock_statement_with_schema.can_fetch_results.return_value = True
         mock_statement_with_schema.type_converter.to_python_row.return_value = (1, "test", 3.14)
@@ -1848,8 +1845,6 @@ class TestAppendOnlyResultReader:
         self, mock_connection, mock_statement_with_schema
     ):
         """Test that TupleRowFormatter is created when as_dict=False."""
-        from confluent_sql.result_readers import AppendOnlyResultReader, ChangeloggedRow
-
         mock_statement_with_schema.can_fetch_results.return_value = True
         mock_statement_with_schema.type_converter.to_python_row.return_value = (1, "test", 3.14)
 
