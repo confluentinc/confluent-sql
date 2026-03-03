@@ -232,7 +232,12 @@ class ChangelogCompressor(abc.ABC):
             >>> # Generator exits when query is stopped/deleted or fails
             >>> print("Streaming query stopped")
         """
-        batchsize = fetch_batchsize or self._cursor.arraysize
+        # Validate explicit batch size parameter (don't validate arraysize - trust the driver)
+        if fetch_batchsize is not None and fetch_batchsize <= 0:
+            raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+
+        # Resolve batch size once to ensure consistent behavior across yields
+        batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
 
         while True:
             if not self._cursor.may_have_results:
@@ -253,21 +258,69 @@ class ChangelogCompressor(abc.ABC):
                     phase=phase_info,
                 )
 
-            # Fetch all currently available events
-            while True:
-                batch = self._cursor.fetchmany(batchsize)
-                if not batch:
-                    break
+            # Fetch and apply all available events, then yield snapshot
+            yield self.get_current_snapshot(batchsize)
 
-                for changelogged_row in batch:
-                    # Must cast because cursor.fetchmany() returns list[ResultRow],
-                    # but if using a ChangelogCompressor, we know the rows are actually
-                    # ChangeloggedRow consisting of (Op, ResultTupleOrDict).
-                    op, row = cast(ChangeloggedRow, changelogged_row)
-                    self._apply_operation(op, cast(ResultTupleOrDict, row))
+    def get_current_snapshot(self, fetch_batchsize: int | None = None) -> list[ResultTupleOrDict]:
+        """Fetch all currently available changelog events and return current snapshot.
 
-            # Yield current snapshot after processing all available events
-            yield self._copy_accumulated_rows()
+        This method fetches ALL currently available changelog events from the cursor (until
+        fetchmany returns an empty list), applies them to the internal state via
+        _apply_operation(), and returns a deep copy of the accumulated result set.
+
+        Unlike snapshots(), this method:
+        - Does NOT check cursor.may_have_results (caller's responsibility)
+        - Does NOT raise StatementStoppedError
+        - Returns a single snapshot rather than yielding indefinitely
+        - Is non-blocking - returns immediately after consuming available events
+
+        **Self-Consistency**: The returned snapshot is self-consistent, meaning all currently
+        available changelog events have been consumed and applied. No pending UPDATE_BEFORE
+        operations remain without their matching UPDATE_AFTER.
+
+        **Deep Copy**: The returned snapshot is a deep copy. Mutations will not affect the
+        compressor's internal state.
+
+        **Idempotency**: If called when no new events are available, returns the current
+        state unchanged. Multiple consecutive calls with no new events will return
+        logically identical snapshots.
+
+        Args:
+            fetch_batchsize: The batch size for fetching, or None to use cursor.arraysize.
+
+        Returns:
+            A deep copy of the accumulated result set after consuming all currently
+            available changelog events.
+
+        Example:
+            >>> compressor = cursor.changelog_compressor()
+            >>> while cursor.may_have_results:
+            ...     snapshot = compressor.get_current_snapshot()
+            ...     process(snapshot)
+            ...     time.sleep(5)
+        """
+        # Validate explicit batch size parameter (don't validate arraysize - trust the driver)
+        if fetch_batchsize is not None and fetch_batchsize <= 0:
+            raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+
+        # Resolve batch size once using explicit None check
+        batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
+
+        # Fetch all currently available events
+        while True:
+            batch = self._cursor.fetchmany(batchsize)
+            if not batch:
+                break
+
+            for changelogged_row in batch:
+                # Must cast because cursor.fetchmany() returns list[ResultRow],
+                # but if using a ChangelogCompressor, we know the rows are actually
+                # ChangeloggedRow consisting of (Op, ResultTupleOrDict).
+                op, row = cast(ChangeloggedRow, changelogged_row)
+                self._apply_operation(op, cast(ResultTupleOrDict, row))
+
+        # Return current snapshot
+        return self._copy_accumulated_rows()
 
     def close(self) -> None:
         """Close the compressor and release resources.
