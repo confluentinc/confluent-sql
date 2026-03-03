@@ -1597,7 +1597,7 @@ class TestSnapshotsGeneratorTermination:
             next(gen)
 
     def test_generator_terminates_cleanly_on_for_loop(self, mock_cursor):
-        """Test that for loop over snapshots() raises StatementStoppedError."""
+        """Test that for loop over snapshots() supports client-controlled early termination."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
@@ -1610,15 +1610,15 @@ class TestSnapshotsGeneratorTermination:
             [],  # Safety for next iteration
         ]
 
-        # Use for loop pattern - break after 2 snapshots
+        # Use for loop pattern - break after 2 snapshots (client can stop whenever it wants)
         snapshots_seen = []
         gen = compressor.snapshots()
         for i, snapshot in enumerate(gen):
             snapshots_seen.append(snapshot)
-            if i >= 1:  # After 2 snapshots
+            if i >= 1:  # After 2 snapshots, client breaks
                 break
 
-        # Should have iterated exactly twice
+        # Should have iterated exactly twice before break
         assert len(snapshots_seen) == 2
 
 
@@ -1675,27 +1675,39 @@ class TestGetCurrentSnapshot:
         assert mock_cursor.fetchmany.call_count == 1
 
     def test_deep_copy_verification(self, mock_cursor):
-        """Test that returned snapshot is a deep copy."""
+        """Test that returned snapshot is a deep copy (including nested mutable structures)."""
+        mock_cursor.as_dict = True
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Insert initial row
+        # Insert row with mutable dict structure
         mock_cursor.fetchmany.side_effect = [
-            [ChangeloggedRow(Op.INSERT, (1, "a", 10))],
+            [ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "metadata": {"count": 10}})],
             [],
         ]
 
         snapshot1 = compressor.get_current_snapshot()
+        assert isinstance(snapshot1[0], dict)
 
-        # Mutate the snapshot
-        snapshot1[0] = (999, "mutated", 999)
+        # Mutate nested structure in returned snapshot
+        row1 = snapshot1[0]
+        metadata = row1["metadata"]
+        assert isinstance(metadata, dict)
+        metadata["count"] = 999
 
-        # Get another snapshot - should be unaffected
+        # Get another snapshot - should be unaffected by mutation
         mock_cursor.fetchmany.side_effect = [[]]
         snapshot2 = compressor.get_current_snapshot()
 
-        assert snapshot2[0] == (1, "a", 10)  # Original unchanged
-        assert snapshot1[0] == (999, "mutated", 999)  # Mutation preserved
+        # Verify snapshot2 is unaffected by mutations to snapshot1
+        row2 = snapshot2[0]
+        assert isinstance(row2, dict)
+        assert row2["metadata"]["count"] == 10  # Original unchanged
+        assert row1["metadata"]["count"] == 999  # Mutation in snapshot1 preserved
+
+        # Also verify list/dict replacement works
+        snapshot1.append({"id": 2})
+        assert len(snapshot2) == 1  # snapshot2 unaffected by append
 
     def test_idempotency_no_new_events(self, mock_cursor):
         """Test calling get_current_snapshot multiple times with no new events."""
