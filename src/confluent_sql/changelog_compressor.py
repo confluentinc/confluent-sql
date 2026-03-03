@@ -232,12 +232,16 @@ class ChangelogCompressor(abc.ABC):
             >>> # Generator exits when query is stopped/deleted or fails
             >>> print("Streaming query stopped")
         """
-        # Validate explicit batch size parameter (don't validate arraysize - trust the driver)
+        # Validate and resolve batch size once to ensure consistent behavior across yields
         if fetch_batchsize is not None and fetch_batchsize <= 0:
             raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
 
-        # Resolve batch size once to ensure consistent behavior across yields
         batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
+
+        # Validate the resolved batch size (from either parameter or cursor.arraysize)
+        if batchsize <= 0:
+            source = "cursor.arraysize" if fetch_batchsize is None else "fetch_batchsize"
+            raise ValueError(f"batch size must be positive, got {batchsize} (from {source})")
 
         while True:
             if not self._cursor.may_have_results:
@@ -299,12 +303,17 @@ class ChangelogCompressor(abc.ABC):
             ...     process(snapshot)
             ...     time.sleep(5)
         """
-        # Validate explicit batch size parameter (don't validate arraysize - trust the driver)
+        # Validate explicit batch size parameter
         if fetch_batchsize is not None and fetch_batchsize <= 0:
             raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
 
         # Resolve batch size once using explicit None check
         batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
+
+        # Validate the resolved batch size (from either parameter or cursor.arraysize)
+        if batchsize <= 0:
+            source = "cursor.arraysize" if fetch_batchsize is None else "fetch_batchsize"
+            raise ValueError(f"batch size must be positive, got {batchsize} (from {source})")
 
         # Fetch all currently available events
         while True:
