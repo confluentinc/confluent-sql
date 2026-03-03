@@ -232,8 +232,12 @@ class ChangelogCompressor(abc.ABC):
             >>> # Generator exits when query is stopped/deleted or fails
             >>> print("Streaming query stopped")
         """
+        # Validate explicit batch size parameter (don't validate arraysize - trust the driver)
+        if fetch_batchsize is not None and fetch_batchsize <= 0:
+            raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+
         # Resolve batch size once to ensure consistent behavior across yields
-        batchsize = fetch_batchsize or self._cursor.arraysize
+        batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
 
         while True:
             if not self._cursor.may_have_results:
@@ -295,7 +299,12 @@ class ChangelogCompressor(abc.ABC):
             ...     process(snapshot)
             ...     time.sleep(5)
         """
-        batchsize = fetch_batchsize or self._cursor.arraysize
+        # Validate explicit batch size parameter (don't validate arraysize - trust the driver)
+        if fetch_batchsize is not None and fetch_batchsize <= 0:
+            raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+
+        # Resolve batch size once using explicit None check
+        batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
 
         # Fetch all currently available events
         while True:
