@@ -1315,6 +1315,73 @@ class TestCursorResultTypeProperties:
 
 
 @pytest.mark.unit
+class TestArraysizeProperty:
+    """Test the cursor arraysize property getter and setter with validation."""
+
+    def test_arraysize_default_value(self, mock_connection_cursor: Cursor):
+        """Test that arraysize defaults to 1."""
+        assert mock_connection_cursor.arraysize == 1
+
+    def test_arraysize_getter(self, mock_connection_cursor: Cursor):
+        """Test that arraysize getter returns the current value."""
+        mock_connection_cursor._arraysize = 42
+        assert mock_connection_cursor.arraysize == 42
+
+    def test_arraysize_setter_valid_positive_int(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter accepts valid positive integers."""
+        mock_connection_cursor.arraysize = 5
+        assert mock_connection_cursor.arraysize == 5
+
+        mock_connection_cursor.arraysize = 100
+        assert mock_connection_cursor.arraysize == 100
+
+        mock_connection_cursor.arraysize = 1
+        assert mock_connection_cursor.arraysize == 1
+
+    def test_arraysize_setter_rejects_zero(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects zero."""
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got 0"):
+            mock_connection_cursor.arraysize = 0
+
+    def test_arraysize_setter_rejects_negative(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects negative integers."""
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got -1"):
+            mock_connection_cursor.arraysize = -1
+
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got -100"):
+            mock_connection_cursor.arraysize = -100
+
+    def test_arraysize_setter_rejects_non_int_float(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects float values."""
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got float"):
+            mock_connection_cursor.arraysize = 3.14  # type: ignore
+
+    def test_arraysize_setter_rejects_non_int_string(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects string values."""
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got str"):
+            mock_connection_cursor.arraysize = "5"  # type: ignore
+
+    def test_arraysize_setter_rejects_non_int_list(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects list values."""
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got list"):
+            mock_connection_cursor.arraysize = [5]  # type: ignore
+
+    def test_arraysize_setter_rejects_bool(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects boolean values (which are ints in Python)."""
+        # Note: In Python, bool is a subclass of int, so we explicitly reject it
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got bool"):
+            mock_connection_cursor.arraysize = True  # type: ignore
+
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got bool"):
+            mock_connection_cursor.arraysize = False  # type: ignore
+
+    def test_arraysize_setter_rejects_none(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter rejects None."""
+        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got NoneType"):
+            mock_connection_cursor.arraysize = None  # type: ignore
+
+
+@pytest.mark.unit
 class TestRaiseIfStatementIsBroken:
     """Unit tests for Cursor._raise_if_statement_is_broken()."""
 
