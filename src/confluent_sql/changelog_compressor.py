@@ -184,17 +184,31 @@ class ChangelogCompressor(abc.ABC):
             fetch_batchsize: Explicit batch size, or None to use cursor.arraysize.
 
         Returns:
-            The resolved batch size (guaranteed positive).
+            The resolved batch size as a positive integer.
 
         Raises:
-            InterfaceError: If fetch_batchsize is provided and not positive.
+            InterfaceError: If fetch_batchsize or cursor.arraysize is not a positive int.
         """
         # Validate explicit batch size parameter if provided
-        if fetch_batchsize is not None and fetch_batchsize <= 0:
-            raise InterfaceError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+        if fetch_batchsize is not None:
+            # Reject non-int values (including bool) even if they happen to compare or cast
+            if isinstance(fetch_batchsize, bool) or not isinstance(fetch_batchsize, int):
+                raise InterfaceError(
+                    f"fetch_batchsize must be an int, got {type(fetch_batchsize).__name__}"
+                )
+            if fetch_batchsize <= 0:
+                raise InterfaceError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+            return fetch_batchsize
 
-        # Return explicit value or cursor.arraysize (which is guaranteed positive by property)
-        return fetch_batchsize if fetch_batchsize is not None else self._cursor.arraysize
+        # Fall back to cursor.arraysize and validate it as well
+        arraysize = self._cursor.arraysize
+        if isinstance(arraysize, bool) or not isinstance(arraysize, int):
+            raise InterfaceError(
+                f"cursor.arraysize must be an int, got {type(arraysize).__name__}"
+            )
+        if arraysize <= 0:
+            raise InterfaceError(f"cursor.arraysize must be positive, got {arraysize}")
+        return arraysize
 
     def snapshots(
         self, fetch_batchsize: int | None = None
@@ -274,7 +288,7 @@ class ChangelogCompressor(abc.ABC):
                 )
 
             # Fetch and apply all available events, then yield snapshot
-            # Pass resolved batchsize (int) which won't re-resolve in get_current_snapshot
+            # Pass resolved batchsize (int) so get_current_snapshot() won't re-read cursor.arraysize
             yield self.get_current_snapshot(batchsize)
 
     def get_current_snapshot(self, fetch_batchsize: int | None = None) -> list[ResultTupleOrDict]:

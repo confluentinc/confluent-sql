@@ -1324,7 +1324,7 @@ class TestArraysizeProperty:
 
     def test_arraysize_getter(self, mock_connection_cursor: Cursor):
         """Test that arraysize getter returns the current value."""
-        mock_connection_cursor._arraysize = 42
+        mock_connection_cursor.arraysize = 42
         assert mock_connection_cursor.arraysize == 42
 
     def test_arraysize_setter_valid_positive_int(self, mock_connection_cursor: Cursor):
