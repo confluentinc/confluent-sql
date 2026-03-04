@@ -1338,18 +1338,13 @@ class TestArraysizeProperty:
         mock_connection_cursor.arraysize = 1
         assert mock_connection_cursor.arraysize == 1
 
-    def test_arraysize_setter_rejects_zero(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects zero."""
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got 0"):
-            mock_connection_cursor.arraysize = 0
-
-    def test_arraysize_setter_rejects_negative(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects negative integers."""
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got -1"):
-            mock_connection_cursor.arraysize = -1
-
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got -100"):
-            mock_connection_cursor.arraysize = -100
+    @pytest.mark.parametrize("non_positive_value", [0, -1, -100])
+    def test_arraysize_setter_rejects_non_positive(self, mock_connection_cursor: Cursor, non_positive_value):
+        """Test that arraysize setter rejects zero and negative integers."""
+        with pytest.raises(
+            InterfaceError, match=f"arraysize must be a positive integer, got {non_positive_value}"
+        ):
+            mock_connection_cursor.arraysize = non_positive_value
 
     @pytest.mark.parametrize(
         "invalid_value,expected_type_name",
