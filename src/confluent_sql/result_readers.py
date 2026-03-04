@@ -259,6 +259,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         self._connection = connection
         self._statement = statement
         self._execution_mode = execution_mode
+        self._as_dict = as_dict
 
         self._next_page = None
         self._fetch_next_page_called = False
@@ -266,7 +267,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
 
         self._results: deque[ReaderOutput] = deque()
         self._metrics = FetchMetrics()
-        self._row_formatter = RowFormatter.create(as_dict, statement.schema)
+        self._row_formatter: RowFormatter | None = None
 
     @abc.abstractmethod
     def _retain(self, op: Op, decoded: ResultTupleOrDict) -> None:
@@ -556,6 +557,11 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
 
             # Process each changelog row just fetched
             type_converter = self._statement.type_converter
+            # Lazily initialize formatter when we first need it (ensures schema is available)
+            if self._row_formatter is None:
+                self._row_formatter = RowFormatter.create(
+                    self._as_dict, self._statement.schema
+                )
             for res in results:
                 # Convert row to Python types
                 decoded_row = type_converter.to_python_row(res.row)
