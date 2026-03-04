@@ -33,23 +33,79 @@ def invalid_credential_connection() -> Connection:
     )
 
 
-def raise_not_found():
-    """Mock function that raises an HTTPStatusError with a mocked 404 response."""
+def _create_http_error_404():
+    """Helper function that raises an HTTPStatusError with a mocked 404 response."""
     mock_response = Mock()
     mock_response.status_code = 404
     raise httpx.HTTPStatusError("Statement not found", request=Mock(), response=mock_response)
 
 
 @pytest.mark.unit
-def test_connection_error(invalid_credential_connection, mocker):
-    """Test that we get meaningful error message when a response returns an error."""
+class TestHTTPStatusErrorHandling:
+    """Tests for enhanced error handling in Connection._request method."""
 
-    request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
-    response_mock = Mock()
-    response_mock.raise_for_status = raise_not_found
-    request_mock.return_value = response_mock
-    with pytest.raises(OperationalError, match="Error sending request 404"):
-        invalid_credential_connection._get_statement("test-name")
+    def test_connection_error_with_valid_error_details(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        """Test error message formatting when response contains valid error JSON with details.
+
+        When the API returns a structured error response with multiple error objects,
+        the exception message should include all error details joined by semicolons.
+        """
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+
+        # Create mock response with valid JSON error structure
+        response_mock = Mock()
+        response_mock.status_code = 404
+        response_mock.json.return_value = {
+            "errors": [
+                {"detail": "Statement not found"},
+                {"detail": "Please check statement name"},
+            ]
+        }
+
+        def raise_http_error():
+            raise httpx.HTTPStatusError(
+                "Not Found", request=Mock(), response=response_mock
+            )
+
+        response_mock.raise_for_status = raise_http_error
+        request_mock.return_value = response_mock
+
+        with pytest.raises(
+            OperationalError,
+            match="error sending request '404' - Statement not found; Please check statement name",
+        ):
+            invalid_credential_connection._get_statement("test-name")
+
+    def test_connection_error_with_invalid_json(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        """Test error message fallback when response JSON is invalid or unparseable.
+
+        When the API returns a non-JSON response or the JSON parsing fails,
+        the exception message should include a "no more details" fallback.
+        """
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+
+        # Create mock response that raises when .json() is called
+        response_mock = Mock()
+        response_mock.status_code = 500
+        response_mock.json.side_effect = ValueError("Invalid JSON")
+
+        def raise_http_error():
+            raise httpx.HTTPStatusError(
+                "Server Error", request=Mock(), response=response_mock
+            )
+
+        response_mock.raise_for_status = raise_http_error
+        request_mock.return_value = response_mock
+
+        with pytest.raises(
+            OperationalError,
+            match="error sending request '500' - no more details",
+        ):
+            invalid_credential_connection._get_statement("test-name")
 
 
 @pytest.mark.unit
@@ -77,7 +133,7 @@ class TestConnectionDeleteStatementErrors:
         """Test that deleting a non-existent statement raises the appropriate error."""
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         response_mock = Mock()
-        response_mock.raise_for_status = raise_not_found
+        response_mock.raise_for_status = _create_http_error_404
         request_mock.return_value = response_mock
 
         # Will not raise since we ignore 404s in delete_statement
