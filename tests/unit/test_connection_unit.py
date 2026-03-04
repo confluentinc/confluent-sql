@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError
+from confluent_sql.__version__ import VERSION
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
 from confluent_sql.connection import logger as connection_module_logger
 from confluent_sql.execution_mode import ExecutionMode
@@ -65,9 +66,7 @@ class TestHTTPStatusErrorHandling:
         }
 
         def raise_http_error():
-            raise httpx.HTTPStatusError(
-                "Not Found", request=Mock(), response=response_mock
-            )
+            raise httpx.HTTPStatusError("Not Found", request=Mock(), response=response_mock)
 
         response_mock.raise_for_status = raise_http_error
         request_mock.return_value = response_mock
@@ -94,9 +93,7 @@ class TestHTTPStatusErrorHandling:
         response_mock.json.side_effect = ValueError("Invalid JSON")
 
         def raise_http_error():
-            raise httpx.HTTPStatusError(
-                "Server Error", request=Mock(), response=response_mock
-            )
+            raise httpx.HTTPStatusError("Server Error", request=Mock(), response=response_mock)
 
         response_mock.raise_for_status = raise_http_error
         request_mock.return_value = response_mock
@@ -722,3 +719,109 @@ class TestExecuteStatement:
         assert double_prefixed not in payload["metadata"]["labels"], (
             "Label should not be double-prefixed"
         )
+
+
+@pytest.fixture()
+def http_agent_connection_factory(
+    connection_factory: ConnectionFactory,
+) -> ConnectionFactory:
+    """Factory fixture that creates connections with custom http_user_agent.
+
+    Returns a function that accepts an optional http_user_agent string and creates
+    a connection with that agent (or default if None).
+    """
+
+    def _create_with_agent(http_user_agent: str | None = None) -> Connection:
+        return connection_factory(
+            environment="test-env",
+            compute_pool_id="test-pool",
+            organization_id="test-org",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="test-key",
+            flink_api_secret="test-secret",
+            http_user_agent=http_user_agent,
+        )
+
+    return _create_with_agent
+
+
+@pytest.mark.unit
+class TestHttpUserAgentProperty:
+    """Tests for the http_user_agent property getter/setter."""
+
+    def test_default_user_agent(self, invalid_credential_connection: Connection):
+        """Test that the default user agent is set correctly."""
+        expected = f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
+        assert invalid_credential_connection.http_user_agent == expected
+        assert invalid_credential_connection.http_user_agent == Connection.DEFAULT_USER_AGENT
+        # Verify the header is applied to the httpx client
+        assert invalid_credential_connection._client.headers.get("User-Agent") == expected
+
+    def test_custom_user_agent_via_constructor(
+        self, http_agent_connection_factory: ConnectionFactory
+    ):
+        """Test that a custom user agent can be set via constructor."""
+        custom_agent = "my-app/1.0.0"
+        conn = http_agent_connection_factory(http_user_agent=custom_agent)
+        assert conn.http_user_agent == custom_agent
+        # Verify the header is applied to the httpx client at construction time
+        assert conn._client.headers.get("User-Agent") == custom_agent
+
+    def test_set_user_agent_via_property(self, invalid_credential_connection: Connection):
+        """Test that user agent can be set via property setter."""
+        new_agent = "updated-app/2.0"
+        invalid_credential_connection.http_user_agent = new_agent
+        assert invalid_credential_connection.http_user_agent == new_agent
+        # Verify the header is updated in the httpx client when property is set
+        assert invalid_credential_connection._client.headers.get("User-Agent") == new_agent
+
+    def test_set_user_agent_accepts_boundary_values(
+        self, invalid_credential_connection: Connection
+    ):
+        """Test that user agent accepts values at length boundaries."""
+        # Exactly 1 character (minimum valid)
+        invalid_credential_connection.http_user_agent = "a"
+        assert invalid_credential_connection.http_user_agent == "a"
+
+        # Exactly 100 characters (maximum valid)
+        max_length = "a" * 100
+        invalid_credential_connection.http_user_agent = max_length
+        assert invalid_credential_connection.http_user_agent == max_length
+
+    @pytest.mark.parametrize(
+        "invalid_value,expected_error",
+        [
+            (123, "http_user_agent must be a string, got int"),
+            (None, "http_user_agent must be a string, got NoneType"),
+            (["list"], "http_user_agent must be a string, got list"),
+            ({"dict": "value"}, "http_user_agent must be a string, got dict"),
+            ("", "http_user_agent length must be between 1 and 100 characters, got 0"),
+            ("a" * 101, "http_user_agent length must be between 1 and 100 characters, got 101"),
+            ("a" * 200, "http_user_agent length must be between 1 and 100 characters, got 200"),
+        ],
+    )
+    def test_set_user_agent_rejects_invalid_values(
+        self,
+        invalid_credential_connection: Connection,
+        invalid_value,
+        expected_error,
+    ):
+        """Test that setting user agent to invalid type or length raises InterfaceError."""
+        with pytest.raises(InterfaceError, match=expected_error):
+            invalid_credential_connection.http_user_agent = invalid_value
+
+    @pytest.mark.parametrize(
+        "invalid_value,expected_error",
+        [
+            (123, "http_user_agent must be a string, got int"),
+            ("", "http_user_agent length must be between 1 and 100 characters, got 0"),
+            ("a" * 101, "http_user_agent length must be between 1 and 100 characters, got 101"),
+        ],
+    )
+    def test_constructor_validation(
+        self, http_agent_connection_factory: ConnectionFactory, invalid_value, expected_error
+    ):
+        """Test that constructor validates user agent type and length."""
+        with pytest.raises(InterfaceError, match=expected_error):
+            http_agent_connection_factory(http_user_agent=invalid_value)
