@@ -1351,34 +1351,25 @@ class TestArraysizeProperty:
         with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got -100"):
             mock_connection_cursor.arraysize = -100
 
-    def test_arraysize_setter_rejects_non_int_float(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects float values."""
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got float"):
-            mock_connection_cursor.arraysize = 3.14  # type: ignore
-
-    def test_arraysize_setter_rejects_non_int_string(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects string values."""
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got str"):
-            mock_connection_cursor.arraysize = "5"  # type: ignore
-
-    def test_arraysize_setter_rejects_non_int_list(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects list values."""
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got list"):
-            mock_connection_cursor.arraysize = [5]  # type: ignore
-
-    def test_arraysize_setter_rejects_bool(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects boolean values (which are ints in Python)."""
-        # Note: In Python, bool is a subclass of int, so we explicitly reject it
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got bool"):
-            mock_connection_cursor.arraysize = True  # type: ignore
-
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got bool"):
-            mock_connection_cursor.arraysize = False  # type: ignore
-
-    def test_arraysize_setter_rejects_none(self, mock_connection_cursor: Cursor):
-        """Test that arraysize setter rejects None."""
-        with pytest.raises(InterfaceError, match="arraysize must be a positive integer, got NoneType"):
-            mock_connection_cursor.arraysize = None  # type: ignore
+    @pytest.mark.parametrize(
+        "invalid_value,expected_type_name",
+        [
+            (3.14, "float"),
+            ("5", "str"),
+            ([5], "list"),
+            (True, "bool"),
+            (False, "bool"),
+            (None, "NoneType"),
+        ],
+    )
+    def test_arraysize_setter_rejects_invalid_types(
+        self, mock_connection_cursor: Cursor, invalid_value, expected_type_name
+    ):
+        """Test that arraysize setter rejects non-integer types."""
+        with pytest.raises(
+            InterfaceError, match=f"arraysize must be a positive integer, got {expected_type_name}"
+        ):
+            mock_connection_cursor.arraysize = invalid_value  # type: ignore
 
 
 @pytest.mark.unit
