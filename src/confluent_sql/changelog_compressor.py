@@ -187,7 +187,7 @@ class ChangelogCompressor(abc.ABC):
             The resolved batch size as a positive integer.
 
         Raises:
-            InterfaceError: If fetch_batchsize or cursor.arraysize is not a positive int.
+            InterfaceError: If fetch_batchsize is not a positive int.
         """
         # Validate explicit batch size parameter if provided
         if fetch_batchsize is not None:
@@ -200,15 +200,8 @@ class ChangelogCompressor(abc.ABC):
                 raise InterfaceError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
             return fetch_batchsize
 
-        # Fall back to cursor.arraysize and validate it as well
-        arraysize = self._cursor.arraysize
-        if isinstance(arraysize, bool) or not isinstance(arraysize, int):
-            raise InterfaceError(
-                f"cursor.arraysize must be an int, got {type(arraysize).__name__}"
-            )
-        if arraysize <= 0:
-            raise InterfaceError(f"cursor.arraysize must be positive, got {arraysize}")
-        return arraysize
+        # Fall back to cursor.arraysize (which is guaranteed valid by its property setter)
+        return self._cursor.arraysize
 
     def snapshots(
         self, fetch_batchsize: int | None = None
