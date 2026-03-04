@@ -189,7 +189,8 @@ class Connection:
             host: The base URL for Confluent Cloud API (optional)
             dbname: The name of the database to use (optional)
             http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
-                           Defaults to "Confluent-SQL-Dbapi/v<version>"
+                           Defaults to the value of DEFAULT_USER_AGENT, which includes the
+                           driver name/version, documentation URL, and support email.
         """
         self.environment = environment
         self.compute_pool_id = compute_pool_id
