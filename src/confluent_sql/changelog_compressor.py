@@ -274,6 +274,7 @@ class ChangelogCompressor(abc.ABC):
                 )
 
             # Fetch and apply all available events, then yield snapshot
+            # Pass resolved batchsize (int) which won't re-resolve in get_current_snapshot
             yield self.get_current_snapshot(batchsize)
 
     def get_current_snapshot(self, fetch_batchsize: int | None = None) -> list[ResultTupleOrDict]:
