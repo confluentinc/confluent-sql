@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from .__version__ import VERSION
 from .cursor import Cursor
 from .exceptions import InterfaceError, OperationalError, StatementDeletedError
 from .execution_mode import ExecutionMode
@@ -39,6 +40,7 @@ def connect(  # noqa: PLR0913
     api_secret: str | None = None,
     dbname: str | None = None,
     result_page_fetch_pause_millis: int = 100,
+    http_user_agent: str | None = None,
 ) -> Connection:
     """
     Create a connection to a Confluent SQL service.
@@ -63,6 +65,10 @@ def connect(  # noqa: PLR0913
 
             If it has already been at least this long since the most recent fetch of results for the
             statement, then no delay will happen.
+        http_user_agent: User-Agent header value for HTTP requests. Must be a string
+                       between 1-100 characters. Defaults to
+                       "Confluent-SQL-Dbapi/v<version> (https://confluent.io; support@confluent.io)"
+                       where version is from __version__.py
 
     Returns:
         A Connection object representing the database connection
@@ -102,6 +108,7 @@ def connect(  # noqa: PLR0913
         api_secret=api_secret,
         dbname=dbname,
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
+        http_user_agent=http_user_agent,
     )
 
 
@@ -112,6 +119,10 @@ class Connection:
     This class represents a connection to a Confluent SQL service and provides
     methods for creating cursors and managing the connection lifecycle.
     """
+
+    DEFAULT_USER_AGENT = (
+        f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
+    )
 
     environment: str
     organization_id: str
@@ -137,6 +148,7 @@ class Connection:
     _closed: bool
     _dbname: str | None
     _client: httpx.Client
+    _http_user_agent: str
 
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
@@ -155,6 +167,7 @@ class Connection:
         host: str | None = None,
         dbname: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
+        http_user_agent: str | None = None,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -175,6 +188,8 @@ class Connection:
             api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
             host: The base URL for Confluent Cloud API (optional)
             dbname: The name of the database to use (optional)
+            http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
+                           Defaults to "Confluent-SQL-Dbapi/v<version>"
         """
         self.environment = environment
         self.compute_pool_id = compute_pool_id
@@ -196,6 +211,11 @@ class Connection:
         self._closed = False
         self._dbname = dbname
 
+        # Set user agent (validation happens in setter, default if None)
+        self.http_user_agent = (
+            http_user_agent if http_user_agent is not None else self.DEFAULT_USER_AGENT
+        )
+
         # Create httpx client for making API calls
         if self.host is None:
             self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
@@ -206,7 +226,10 @@ class Connection:
         self._client = httpx.Client(
             auth=basic_auth,
             base_url=base_url,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": self._http_user_agent,
+            },
         )
 
         self._row_type_registry = RowTypeRegistry()
@@ -592,6 +615,48 @@ class Connection:
             True if the connection is closed, False otherwise
         """
         return self._closed
+
+    @property
+    def http_user_agent(self) -> str:
+        """
+        Get the User-Agent header value sent with all HTTP requests.
+
+        Returns:
+            The current User-Agent string
+        """
+        return self._http_user_agent
+
+    @http_user_agent.setter
+    def http_user_agent(self, value: str) -> None:
+        """
+        Set the User-Agent header value for all HTTP requests made by this connection.
+
+        The User-Agent identifies the client software making requests to Confluent Cloud.
+        This is useful for tracking, debugging, and analytics purposes.
+
+        Args:
+            value: The User-Agent string to use. Must be a non-empty string between
+                   1 and 100 characters in length.
+
+        Raises:
+            InterfaceError: If value is not a string, is empty, or exceeds 100 characters
+
+        Example:
+            conn.http_user_agent = "my-app/1.0"
+        """
+        if not isinstance(value, str):
+            raise InterfaceError(f"http_user_agent must be a string, got {type(value).__name__}")
+
+        if len(value) < 1 or len(value) > 100:
+            raise InterfaceError(
+                f"http_user_agent length must be between 1 and 100 characters, got {len(value)}"
+            )
+
+        self._http_user_agent = value
+
+        # Update the httpx client headers if client is already initialized
+        if hasattr(self, "_client"):
+            self._client.headers["User-Agent"] = value
 
     def register_row_type(self, class_for_flink_row: type[RowPythonTypes]) -> None:
         """Register a user-defined namedtuple, NamedTuple, or @dataclass class to be used

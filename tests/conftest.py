@@ -58,6 +58,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         cloud_region: str | None = None,
         dbname: str | None = None,
         result_page_fetch_pause_millis: int = 100,
+        http_user_agent: str | None = None,
     ) -> Connection:
         if flink_api_key is None:
             flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
@@ -86,6 +87,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             cloud_provider=cloud_provider,
             dbname=dbname,
             result_page_fetch_pause_millis=result_page_fetch_pause_millis,
+            http_user_agent=http_user_agent,
         )
 
         connections.append(connection)
