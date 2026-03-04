@@ -755,6 +755,8 @@ class TestHttpUserAgentProperty:
         expected = f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
         assert invalid_credential_connection.http_user_agent == expected
         assert invalid_credential_connection.http_user_agent == Connection.DEFAULT_USER_AGENT
+        # Verify the header is applied to the httpx client
+        assert invalid_credential_connection._client.headers.get("User-Agent") == expected
 
     def test_custom_user_agent_via_constructor(
         self, http_agent_connection_factory: ConnectionFactory
@@ -763,12 +765,16 @@ class TestHttpUserAgentProperty:
         custom_agent = "my-app/1.0.0"
         conn = http_agent_connection_factory(http_user_agent=custom_agent)
         assert conn.http_user_agent == custom_agent
+        # Verify the header is applied to the httpx client at construction time
+        assert conn._client.headers.get("User-Agent") == custom_agent
 
     def test_set_user_agent_via_property(self, invalid_credential_connection: Connection):
         """Test that user agent can be set via property setter."""
         new_agent = "updated-app/2.0"
         invalid_credential_connection.http_user_agent = new_agent
         assert invalid_credential_connection.http_user_agent == new_agent
+        # Verify the header is updated in the httpx client when property is set
+        assert invalid_credential_connection._client.headers.get("User-Agent") == new_agent
 
     def test_set_user_agent_accepts_boundary_values(
         self, invalid_credential_connection: Connection
