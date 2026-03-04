@@ -768,7 +768,16 @@ class Connection:
                 response.raise_for_status()
             return response
         except httpx.HTTPStatusError as e:
-            raise OperationalError(f"Error sending request {e.response.status_code}") from e
+            try:
+                res = e.response.json()
+                errors = res.get("errors", [])
+                details = "; ".join([err["detail"] for err in errors])
+            except Exception:
+                details = "no more details"
+
+            raise OperationalError(
+                f"error sending request '{e.response.status_code}' - {details}"
+            ) from e
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
         """Extract the next page token from the next_url, if present."""
