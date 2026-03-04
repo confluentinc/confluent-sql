@@ -343,15 +343,32 @@ class TestCursorParameterInterpolation:
 
 @pytest.mark.integration
 class TestStreamingChangelogCursor:
+    @staticmethod
+    def get_even_odd(row, as_dict: bool):
+        """Common utility shared between test_changelog_compressor_with_upsert_columns and
+        test_changelog_compressor_get_current_snapshot_with_upsert_columns"""
+        return row["even_odd"] if as_dict else row[0]  # type: ignore[index]
+
+    @staticmethod
+    def get_count(row, as_dict: bool):
+        """Common utility ..."""
+        return row["cnt"] if as_dict else row[1]  # type: ignore[index]
+
+    @staticmethod
+    def make_expected(eo: int, cnt: int, as_dict: bool):
+        """Common utility ..."""
+        return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
+
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
-    def test_changelog_compressor_with_upsert_columns(
+    def test_changelog_compressor_snapshots_generator_with_upsert_columns(
         self,
         populated_table_connection: Connection,
         test_table_name: str,
         as_dict: bool,
     ):
-        """Test changelog compressor with a GROUP BY query that has upsert columns.
+        """Test changelog compressor + snapshots() generator with a GROUP BY query that has
+        upsert columns.
 
         The query will ultimately produce two rows:
         - (0, 5) or {"even_odd": 0, "cnt": 5} for even values (2, 4, 6, 8, 10)
@@ -362,16 +379,6 @@ class TestStreamingChangelogCursor:
 
         Tests both tuple and dict result modes.
         """
-
-        # Define accessors based on result mode
-        def get_even_odd(row):
-            return row["even_odd"] if as_dict else row[0]  # type: ignore[index]
-
-        def get_count(row):
-            return row["cnt"] if as_dict else row[1]  # type: ignore[index]
-
-        def make_expected(eo, cnt):
-            return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
 
         cursor = populated_table_connection.streaming_cursor(as_dict=as_dict)
 
@@ -407,12 +414,12 @@ class TestStreamingChangelogCursor:
 
             if len(snapshot) == 2:
                 # Sort by even_odd value for consistent ordering
-                snapshot_sorted = sorted(snapshot, key=get_even_odd)
+                snapshot_sorted = sorted(snapshot, key=lambda row: self.get_even_odd(row, as_dict))
 
-                even_odd_0 = get_even_odd(snapshot_sorted[0])
-                count_0 = get_count(snapshot_sorted[0])
-                even_odd_1 = get_even_odd(snapshot_sorted[1])
-                count_1 = get_count(snapshot_sorted[1])
+                even_odd_0 = self.get_even_odd(snapshot_sorted[0], as_dict)
+                count_0 = self.get_count(snapshot_sorted[0], as_dict)
+                even_odd_1 = self.get_even_odd(snapshot_sorted[1], as_dict)
+                count_1 = self.get_count(snapshot_sorted[1], as_dict)
 
                 assert even_odd_0 == 0, "First row should be for even values (0)"
                 assert even_odd_1 == 1, "Second row should be for odd values (1)"
@@ -429,8 +436,8 @@ class TestStreamingChangelogCursor:
             f"Expected to reach final state with counts (5, 5) within {max_iterations} iterations"
         )
         assert len(final_snapshot) == 2
-        assert final_snapshot[0] == make_expected(0, 5)
-        assert final_snapshot[1] == make_expected(1, 5)
+        assert final_snapshot[0] == self.make_expected(0, 5, as_dict)
+        assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
 
         # Cleanup
         cursor.delete_statement()
@@ -458,16 +465,6 @@ class TestStreamingChangelogCursor:
 
         Tests both tuple and dict result modes.
         """
-
-        # Define accessors based on result mode
-        def get_even_odd(row):
-            return row["even_odd"] if as_dict else row[0]  # type: ignore[index]
-
-        def get_count(row):
-            return row["cnt"] if as_dict else row[1]  # type: ignore[index]
-
-        def make_expected(eo, cnt):
-            return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
 
         cursor = populated_table_connection.streaming_cursor(as_dict=as_dict)
 
@@ -508,12 +505,12 @@ class TestStreamingChangelogCursor:
 
             if len(snapshot) == 2:
                 # Sort by even_odd value for consistent ordering
-                snapshot_sorted = sorted(snapshot, key=get_even_odd)
+                snapshot_sorted = sorted(snapshot, key=lambda row: self.get_even_odd(row, as_dict))
 
-                even_odd_0 = get_even_odd(snapshot_sorted[0])
-                count_0 = get_count(snapshot_sorted[0])
-                even_odd_1 = get_even_odd(snapshot_sorted[1])
-                count_1 = get_count(snapshot_sorted[1])
+                even_odd_0 = self.get_even_odd(snapshot_sorted[0], as_dict)
+                count_0 = self.get_count(snapshot_sorted[0], as_dict)
+                even_odd_1 = self.get_even_odd(snapshot_sorted[1], as_dict)
+                count_1 = self.get_count(snapshot_sorted[1], as_dict)
 
                 assert even_odd_0 == 0, "First row should be for even values (0)"
                 assert even_odd_1 == 1, "Second row should be for odd values (1)"
@@ -529,8 +526,8 @@ class TestStreamingChangelogCursor:
             f"Expected to reach final state with counts (5, 5) within {max_iterations} iterations"
         )
         assert len(final_snapshot) == 2
-        assert final_snapshot[0] == make_expected(0, 5)
-        assert final_snapshot[1] == make_expected(1, 5)
+        assert final_snapshot[0] == self.make_expected(0, 5, as_dict)
+        assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
 
         # Cleanup
         cursor.delete_statement()
@@ -543,7 +540,8 @@ class TestStreamingChangelogCursor:
         test_table_name: str,
         as_dict: bool,
     ):
-        """Test changelog compressor with global aggregation query without upsert columns.
+        """Test changelog compressor + snapshots() generator with global aggregation query
+        without upsert columns.
 
         The query will ultimately produce a single row:
         - (1, 10, 10) or {"min_val": 1, "max_val": 10, "cnt": 10}
