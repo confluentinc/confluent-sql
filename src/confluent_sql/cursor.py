@@ -107,7 +107,7 @@ class Cursor:
             as_dict: If True, fetch results as dictionaries; otherwise, as tuples.
         """
         self.rowcount = -1
-        self.arraysize = 1
+        self._arraysize = 1
 
         # Cursor state
         self._connection = connection
@@ -131,6 +131,37 @@ class Cursor:
             return None
         else:
             return self._statement.description
+
+    @property
+    def arraysize(self) -> int:
+        """
+        Get the number of rows to fetch in a single fetchmany() call.
+
+        Returns:
+            The current arraysize value (default: 1).
+        """
+        return self._arraysize
+
+    @arraysize.setter
+    def arraysize(self, value: int) -> None:
+        """
+        Set the number of rows to fetch in a single fetchmany() call.
+
+        Args:
+            value: A positive integer representing the number of rows to fetch.
+
+        Raises:
+            InterfaceError: If value is not an integer, or is not a positive number.
+        """
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise InterfaceError(
+                f"arraysize must be a positive integer, got {type(value).__name__}"
+            )
+        if value <= 0:
+            raise InterfaceError(
+                f"arraysize must be a positive integer, got {value}"
+            )
+        self._arraysize = value
 
     @property
     def statement(self) -> Statement:

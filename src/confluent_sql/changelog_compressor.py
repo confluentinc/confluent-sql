@@ -177,6 +177,32 @@ class ChangelogCompressor(abc.ABC):
         if op != Op.UPDATE_AFTER and self._has_pending_update():
             raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
 
+    def _resolve_batchsize(self, fetch_batchsize: int | None) -> int:
+        """Resolve and validate the batch size to use for fetching.
+
+        Args:
+            fetch_batchsize: Explicit batch size, or None to use cursor.arraysize.
+
+        Returns:
+            The resolved batch size as a positive integer.
+
+        Raises:
+            InterfaceError: If fetch_batchsize is not a positive int.
+        """
+        # Validate explicit batch size parameter if provided
+        if fetch_batchsize is not None:
+            # Reject non-int values (including bool) even if they happen to compare or cast
+            if isinstance(fetch_batchsize, bool) or not isinstance(fetch_batchsize, int):
+                raise InterfaceError(
+                    f"fetch_batchsize must be an int, got {type(fetch_batchsize).__name__}"
+                )
+            if fetch_batchsize <= 0:
+                raise InterfaceError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
+            return fetch_batchsize
+
+        # Fall back to cursor.arraysize (which is guaranteed valid by its property setter)
+        return self._cursor.arraysize
+
     def snapshots(
         self, fetch_batchsize: int | None = None
     ) -> Generator[list[ResultTupleOrDict], None, None]:
@@ -232,16 +258,8 @@ class ChangelogCompressor(abc.ABC):
             >>> # Generator exits when query is stopped/deleted or fails
             >>> print("Streaming query stopped")
         """
-        # Validate and resolve batch size once to ensure consistent behavior across yields
-        if fetch_batchsize is not None and fetch_batchsize <= 0:
-            raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
-
-        batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
-
-        # Validate the resolved batch size (from either parameter or cursor.arraysize)
-        if batchsize <= 0:
-            source = "cursor.arraysize" if fetch_batchsize is None else "fetch_batchsize"
-            raise ValueError(f"batch size must be positive, got {batchsize} (from {source})")
+        # Resolve batch size once to ensure consistent behavior across yields
+        batchsize = self._resolve_batchsize(fetch_batchsize)
 
         while True:
             if not self._cursor.may_have_results:
@@ -263,6 +281,7 @@ class ChangelogCompressor(abc.ABC):
                 )
 
             # Fetch and apply all available events, then yield snapshot
+            # Pass resolved batchsize (int) so get_current_snapshot() won't re-read cursor.arraysize
             yield self.get_current_snapshot(batchsize)
 
     def get_current_snapshot(self, fetch_batchsize: int | None = None) -> list[ResultTupleOrDict]:
@@ -303,17 +322,8 @@ class ChangelogCompressor(abc.ABC):
             ...     process(snapshot)
             ...     time.sleep(5)
         """
-        # Validate explicit batch size parameter
-        if fetch_batchsize is not None and fetch_batchsize <= 0:
-            raise ValueError(f"fetch_batchsize must be positive, got {fetch_batchsize}")
-
-        # Resolve batch size once using explicit None check
-        batchsize = self._cursor.arraysize if fetch_batchsize is None else fetch_batchsize
-
-        # Validate the resolved batch size (from either parameter or cursor.arraysize)
-        if batchsize <= 0:
-            source = "cursor.arraysize" if fetch_batchsize is None else "fetch_batchsize"
-            raise ValueError(f"batch size must be positive, got {batchsize} (from {source})")
+        # Resolve batch size
+        batchsize = self._resolve_batchsize(fetch_batchsize)
 
         # Fetch all currently available events
         while True:
