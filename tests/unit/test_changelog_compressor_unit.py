@@ -1907,78 +1907,62 @@ class TestGetCurrentSnapshot:
             "Explicit fetch_batchsize should be used consistently across all yields"
         )
 
-    def test_snapshots_rejects_zero_batchsize(self, mock_cursor):
-        """Test that snapshots() rejects fetch_batchsize=0."""
+    @pytest.mark.parametrize("invalid_batchsize", [0, -1, -10])
+    def test_snapshots_rejects_invalid_batchsize(self, mock_cursor, invalid_batchsize):
+        """Test that snapshots() rejects non-positive fetch_batchsize."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        with pytest.raises(ValueError, match="fetch_batchsize must be positive"):
-            next(compressor.snapshots(fetch_batchsize=0))
+        with pytest.raises(InterfaceError, match="fetch_batchsize must be positive"):
+            next(compressor.snapshots(fetch_batchsize=invalid_batchsize))
 
-    def test_snapshots_rejects_negative_batchsize(self, mock_cursor):
-        """Test that snapshots() rejects negative fetch_batchsize."""
+    @pytest.mark.parametrize("invalid_batchsize", [0, -1, -5])
+    def test_get_current_snapshot_rejects_invalid_batchsize(self, mock_cursor, invalid_batchsize):
+        """Test that get_current_snapshot() rejects non-positive fetch_batchsize."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        with pytest.raises(ValueError, match="fetch_batchsize must be positive"):
-            next(compressor.snapshots(fetch_batchsize=-10))
+        with pytest.raises(InterfaceError, match="fetch_batchsize must be positive"):
+            compressor.get_current_snapshot(fetch_batchsize=invalid_batchsize)
 
-    def test_get_current_snapshot_rejects_zero_batchsize(self, mock_cursor):
-        """Test that get_current_snapshot() rejects fetch_batchsize=0."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        with pytest.raises(ValueError, match="fetch_batchsize must be positive"):
-            compressor.get_current_snapshot(fetch_batchsize=0)
-
-    def test_get_current_snapshot_rejects_negative_batchsize(self, mock_cursor):
-        """Test that get_current_snapshot() rejects negative fetch_batchsize."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        with pytest.raises(ValueError, match="fetch_batchsize must be positive"):
-            compressor.get_current_snapshot(fetch_batchsize=-5)
-
-    def test_snapshots_rejects_zero_cursor_arraysize(self, mock_cursor):
-        """Test that snapshots() rejects when cursor.arraysize is zero."""
-        mock_cursor.arraysize = 0
+    @pytest.mark.parametrize(
+        "invalid_type_value,expected_type_name",
+        [
+            (3.14, "float"),
+            ("50", "str"),
+            ([50], "list"),
+            (True, "bool"),
+        ],
+    )
+    def test_snapshots_rejects_non_int_batchsize(
+        self, mock_cursor, invalid_type_value, expected_type_name
+    ):
+        """Test that snapshots() rejects non-integer fetch_batchsize types."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
         with pytest.raises(
-            ValueError, match="batch size must be positive, got 0.*cursor.arraysize"
+            InterfaceError, match=f"fetch_batchsize must be an int, got {expected_type_name}"
         ):
-            next(compressor.snapshots())
+            next(compressor.snapshots(fetch_batchsize=invalid_type_value))
 
-    def test_snapshots_rejects_negative_cursor_arraysize(self, mock_cursor):
-        """Test that snapshots() rejects when cursor.arraysize is negative."""
-        mock_cursor.arraysize = -5
+    @pytest.mark.parametrize(
+        "invalid_type_value,expected_type_name",
+        [
+            (3.14, "float"),
+            ("50", "str"),
+            ([50], "list"),
+            (True, "bool"),
+        ],
+    )
+    def test_get_current_snapshot_rejects_non_int_batchsize(
+        self, mock_cursor, invalid_type_value, expected_type_name
+    ):
+        """Test that get_current_snapshot() rejects non-integer fetch_batchsize types."""
         mock_cursor._statement.traits.upsert_columns = [0]
         compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
         with pytest.raises(
-            ValueError, match="batch size must be positive, got -5.*cursor.arraysize"
+            InterfaceError, match=f"fetch_batchsize must be an int, got {expected_type_name}"
         ):
-            next(compressor.snapshots())
-
-    def test_get_current_snapshot_rejects_zero_cursor_arraysize(self, mock_cursor):
-        """Test that get_current_snapshot() rejects when cursor.arraysize is zero."""
-        mock_cursor.arraysize = 0
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        with pytest.raises(
-            ValueError, match="batch size must be positive, got 0.*cursor.arraysize"
-        ):
-            compressor.get_current_snapshot()
-
-    def test_get_current_snapshot_rejects_negative_cursor_arraysize(self, mock_cursor):
-        """Test that get_current_snapshot() rejects when cursor.arraysize is negative."""
-        mock_cursor.arraysize = -10
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        with pytest.raises(
-            ValueError, match="batch size must be positive, got -10.*cursor.arraysize"
-        ):
-            compressor.get_current_snapshot()
+            compressor.get_current_snapshot(fetch_batchsize=invalid_type_value)

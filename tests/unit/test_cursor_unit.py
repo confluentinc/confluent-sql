@@ -1315,6 +1315,61 @@ class TestCursorResultTypeProperties:
 
 
 @pytest.mark.unit
+class TestArraysizeProperty:
+    """Test the cursor arraysize property getter and setter with validation."""
+
+    def test_arraysize_default_value(self, mock_connection_cursor: Cursor):
+        """Test that arraysize defaults to 1."""
+        assert mock_connection_cursor.arraysize == 1
+
+    def test_arraysize_getter(self, mock_connection_cursor: Cursor):
+        """Test that arraysize getter returns the current value."""
+        mock_connection_cursor.arraysize = 42
+        assert mock_connection_cursor.arraysize == 42
+
+    def test_arraysize_setter_valid_positive_int(self, mock_connection_cursor: Cursor):
+        """Test that arraysize setter accepts valid positive integers."""
+        mock_connection_cursor.arraysize = 5
+        assert mock_connection_cursor.arraysize == 5
+
+        mock_connection_cursor.arraysize = 100
+        assert mock_connection_cursor.arraysize == 100
+
+        mock_connection_cursor.arraysize = 1
+        assert mock_connection_cursor.arraysize == 1
+
+    @pytest.mark.parametrize("non_positive_value", [0, -1, -100])
+    def test_arraysize_setter_rejects_non_positive(
+        self, mock_connection_cursor: Cursor, non_positive_value
+    ):
+        """Test that arraysize setter rejects zero and negative integers."""
+        with pytest.raises(
+            InterfaceError, match=f"arraysize must be a positive integer, got {non_positive_value}"
+        ):
+            mock_connection_cursor.arraysize = non_positive_value
+
+    @pytest.mark.parametrize(
+        "invalid_value,expected_type_name",
+        [
+            (3.14, "float"),
+            ("5", "str"),
+            ([5], "list"),
+            (True, "bool"),
+            (False, "bool"),
+            (None, "NoneType"),
+        ],
+    )
+    def test_arraysize_setter_rejects_invalid_types(
+        self, mock_connection_cursor: Cursor, invalid_value, expected_type_name
+    ):
+        """Test that arraysize setter rejects non-integer types."""
+        with pytest.raises(
+            InterfaceError, match=f"arraysize must be a positive integer, got {expected_type_name}"
+        ):
+            mock_connection_cursor.arraysize = invalid_value  # type: ignore
+
+
+@pytest.mark.unit
 class TestRaiseIfStatementIsBroken:
     """Unit tests for Cursor._raise_if_statement_is_broken()."""
 
