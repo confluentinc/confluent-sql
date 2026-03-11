@@ -747,6 +747,136 @@ def http_agent_connection_factory(
 
 
 @pytest.mark.unit
+class TestClosingCursor:
+    """Tests for the closing_cursor context manager."""
+
+    def test_closing_cursor_creates_cursor(self, invalid_credential_connection):
+        """Test that closing_cursor creates a cursor with specified parameters."""
+        with invalid_credential_connection.closing_cursor(as_dict=False) as cursor:
+            assert cursor is not None
+            assert cursor.execution_mode == ExecutionMode.SNAPSHOT  # Default mode
+
+    def test_closing_cursor_respects_as_dict_parameter(self, invalid_credential_connection):
+        """Test that closing_cursor respects the as_dict parameter."""
+        # Test with as_dict=False (default)
+        with invalid_credential_connection.closing_cursor(as_dict=False) as cursor:
+            assert cursor is not None
+            assert cursor.as_dict is False
+
+        # Test with as_dict=True
+        with invalid_credential_connection.closing_cursor(as_dict=True) as cursor:
+            assert cursor is not None
+            assert cursor.as_dict is True
+
+    def test_closing_cursor_respects_mode_parameter(self, invalid_credential_connection):
+        """Test that closing_cursor respects the mode parameter."""
+        # Test with SNAPSHOT mode (default)
+        with invalid_credential_connection.closing_cursor(
+            mode=ExecutionMode.SNAPSHOT
+        ) as cursor:
+            assert cursor is not None
+            assert cursor.execution_mode == ExecutionMode.SNAPSHOT
+
+        # Test with STREAMING_QUERY mode
+        with invalid_credential_connection.closing_cursor(
+            mode=ExecutionMode.STREAMING_QUERY
+        ) as cursor:
+            assert cursor is not None
+            assert cursor.execution_mode == ExecutionMode.STREAMING_QUERY
+
+    def test_closing_cursor_closes_cursor_on_exit(self, invalid_credential_connection):
+        """Test that cursor is properly closed after exiting context manager."""
+        cursor = None
+        with invalid_credential_connection.closing_cursor() as c:
+            cursor = c
+            assert cursor.is_closed is False
+
+        # Verify cursor is closed after context manager exits
+        assert cursor is not None
+        assert cursor.is_closed is True
+
+    def test_closing_cursor_closes_even_on_exception(self, invalid_credential_connection):
+        """Test that cursor is closed even if an exception is raised in the context."""
+        cursor = None
+        with pytest.raises(ValueError), invalid_credential_connection.closing_cursor() as c:  # noqa: SIM117,E501
+            cursor = c
+            assert cursor.is_closed is False
+            raise ValueError("Test exception")
+
+        # Verify cursor is closed even after exception
+        assert cursor is not None
+        assert cursor.is_closed is True
+
+
+@pytest.mark.unit
+class TestClosingStreamingCursor:
+    """Tests for the closing_streaming_cursor context manager."""
+
+    def test_closing_streaming_cursor_creates_streaming_cursor(self, invalid_credential_connection):
+        """Test that closing_streaming_cursor creates a cursor in STREAMING_QUERY mode."""
+        with invalid_credential_connection.closing_streaming_cursor() as cursor:
+            assert cursor is not None
+            assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
+            assert cursor.execution_mode == ExecutionMode.STREAMING_QUERY
+
+    def test_closing_streaming_cursor_respects_as_dict_parameter(
+        self, invalid_credential_connection
+    ):
+        """Test that closing_streaming_cursor respects the as_dict parameter."""
+        # Test with as_dict=False (default)
+        with invalid_credential_connection.closing_streaming_cursor(as_dict=False) as cursor:
+            assert cursor is not None
+            assert cursor.as_dict is False
+
+        # Test with as_dict=True
+        with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor:
+            assert cursor is not None
+            assert cursor.as_dict is True
+
+    def test_closing_streaming_cursor_closes_cursor_on_exit(self, invalid_credential_connection):
+        """Test that cursor is properly closed after exiting context manager."""
+        cursor = None
+        with invalid_credential_connection.closing_streaming_cursor() as c:
+            cursor = c
+            assert cursor.is_closed is False
+
+        # Verify cursor is closed after context manager exits
+        assert cursor is not None
+        assert cursor.is_closed is True
+
+    def test_closing_streaming_cursor_closes_even_on_exception(
+        self, invalid_credential_connection
+    ):
+        """Test that cursor is closed even if an exception is raised in the context."""
+        cursor = None
+        with pytest.raises(ValueError), invalid_credential_connection.closing_streaming_cursor() as c:  # noqa: SIM117,E501
+            cursor = c
+            assert cursor.is_closed is False
+            raise ValueError("Test exception")
+
+        # Verify cursor is closed even after exception
+        assert cursor is not None
+        assert cursor.is_closed is True
+
+    def test_closing_streaming_cursor_equivalent_to_closing_cursor_with_mode(
+        self, invalid_credential_connection
+    ):
+        """Test that closing_streaming_cursor is equivalent to closing_cursor.
+
+        Verifies equivalence to closing_cursor(mode=ExecutionMode.STREAMING_QUERY).
+        """
+        # Create two cursors - one with closing_streaming_cursor, one with closing_cursor
+        with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1, \
+             invalid_credential_connection.closing_cursor(
+                as_dict=True, mode=ExecutionMode.STREAMING_QUERY
+            ) as cursor2:
+            # Both should have the same execution mode
+            assert cursor1.execution_mode == cursor2.execution_mode
+            assert cursor1.is_streaming == cursor2.is_streaming
+            assert cursor1.as_dict == cursor2.as_dict
+
+
+@pytest.mark.unit
 class TestHttpUserAgentProperty:
     """Tests for the http_user_agent property getter/setter."""
 

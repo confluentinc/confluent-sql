@@ -405,3 +405,9 @@ with connection.closing_cursor(as_dict=True) as cursor:
     assert isinstance(second_row_value, DataclassRow)
     assert second_row_value.b == 'from a tuple'
 ```
+
+## See Also
+
+- [DB-API Extensions](DBAPI_EXTENSIONS.md) - Comprehensive extension reference
+- [Streaming Queries](STREAMING.md) - Streaming query guide
+- [README.md](README.md) - Quick start guide
