@@ -656,26 +656,8 @@ print(f"Bytes fetched: {metrics.bytes_received}")
 print(f"Rows fetched: {metrics.rows_returned}")
 ```
 
-### Custom Row Type Registration
-
-For ROW columns, you can register custom types:
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class OrderRow:
-    order_id: int
-    customer_id: int
-
-connection.register_row_type(OrderRow)
-
-cursor = connection.streaming_cursor()
-cursor.execute("SELECT nested_row_column FROM orders WHERE status = %s", ("active",))
-# Results will use OrderRow instances for ROW columns
-```
-
 ## See Also
 
+- [DB-API Extensions](DBAPI_EXTENSIONS.md) - Comprehensive extension reference
 - [Type Support](TYPES.md) - Comprehensive Flink type reference
 - [README.md](README.md) - Quick start guide

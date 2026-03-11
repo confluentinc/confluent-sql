@@ -75,73 +75,50 @@ connection.close()
 
 ## DB-API Extensions
 
-This driver extends the standard DB-API v2 interface with several powerful features designed for stream processing:
+This driver extends the standard DB-API v2 interface with powerful features designed for stream processing:
 
-### Dictionary Result Rows
+- **Dictionary result rows** - Access columns by name instead of position
+- **Streaming cursors** - Non-blocking result consumption from continuous queries
+- **Changelog compression** - Automatic state management for aggregations and joins
+- **Statement lifecycle** - Named statements, labels, and resource management
+- **Type system** - Full support for all Flink SQL types including streaming-specific types
+- **Performance monitoring** - Built-in fetch metrics and introspection
 
-Return results as dictionaries with column names as keys instead of tuples:
+### Quick Examples
+
+**Dictionary Result Rows:**
 
 ```python
 cursor = connection.cursor(as_dict=True)
 cursor.execute("SELECT customer_id, name, email FROM customers WHERE customer_id = %s", (123,))
 row = cursor.fetchone()
 print(row["customer_id"])  # Access by column name
-print(row["name"])
 ```
 
-### Streaming Queries
-
-By default, queries execute in **snapshot mode**, returning a finite point-in-time result set. However, Confluent Cloud Flink is fundamentally a streaming event database — the driver offers streaming execution mode to interact with open-ended result sets that continuously produce new rows:
+**Streaming Queries:**
 
 ```python
 import time
 
-# Create a streaming cursor for unbounded queries
 cursor = connection.streaming_cursor()
-# Start a statement which produces an open-ended append-only result set.
 cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
 
-# Poll for results as they arrive (non-blocking)
 while cursor.may_have_results:
     rows = cursor.fetchmany(10)
     if rows:
         for row in rows:
             print(row)
     else:
-        time.sleep(0.1)  # Wait before next poll
-    ...
-
-cursor.close()
+        time.sleep(0.1)
 ```
 
-Unlike snapshot queries that block until all results are retrieved, streaming queries are **non-blocking**—they return immediately with any currently available data, allowing you to poll at your own pace or integrate with async patterns.
+### Complete Documentation
 
-### Changelog Streams with State Management
+For comprehensive documentation of all DB-API extensions, see **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)**.
 
-For stateful queries (GROUP BY, JOIN, aggregations), the driver provides automatic changelog state compression through its `changelog_compressor` class, available from a streaming cursor:
+For detailed streaming query guidance, see **[STREAMING.md](STREAMING.md)**.
 
-```python
-import time
-
-cursor = connection.streaming_cursor(as_dict=True)
-# Execute a streaming query whose result set changes over time --
-# result set rows may be added / removed / rewritten as new events
-# are encountered.
-cursor.execute("SELECT product_id, COUNT(*) as sales FROM orders GROUP BY product_id")
-
-# Automatically maintain current state from changelog events
-compressor = cursor.changelog_compressor()
-for snapshot in compressor.snapshots():
-    # Each snapshot is the current aggregated state
-    for row in snapshot:
-        print(f"Product {row['product_id']}: {row['sales']} sales")
-    time.sleep(5)
-    ....
-
-cursor.close()
-```
-
-For comprehensive documentation on streaming queries, changelog processing, and advanced patterns, see [STREAMING.md](STREAMING.md).
+For type support and examples, see **[TYPES.md](TYPES.md)**.
 
 ## Parameterized Statement and Flink to Python Value Support
 
