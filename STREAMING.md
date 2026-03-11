@@ -693,3 +693,4 @@ print(f"Rows fetched: {metrics.rows_returned}")
 - [DB-API Extensions](DBAPI_EXTENSIONS.md) - Comprehensive extension reference
 - [Type Support](TYPES.md) - Comprehensive Flink type reference
 - [README.md](README.md) - Quick start guide
+- [Architecture & How It Works](ARCHITECTURE.md) - HTTP architecture and statement lifecycle

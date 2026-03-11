@@ -687,3 +687,4 @@ cursor.execute(
 - [README.md](README.md) - Quick start and overview
 - [STREAMING.md](STREAMING.md) - Comprehensive streaming query guide
 - [TYPES.md](TYPES.md) - Complete type support reference
+- [ARCHITECTURE.md](ARCHITECTURE.md) - HTTP architecture and statement lifecycle

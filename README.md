@@ -8,6 +8,19 @@ The `confluent-sql` library provides a standard DB-API v2 interface for connecti
 executing SQL queries against Confluent Cloud Flink SQL services. This allows you to use
 familiar database programming patterns with Confluent's streaming SQL capabilities.
 
+## Architecture & How It Works
+
+The `confluent-sql` driver communicates with Confluent Cloud Flink SQL through HTTP-based
+APIs. Statements are **first-class entities** on the server with their own lifecycle,
+allowing features like:
+
+- **Named statements** - Identify and recover queries across connections
+- **Persistent execution** - Statements survive connection close and can be resumed
+- **Batch management** - Label related statements for group operations
+
+For an in-depth explanation of the HTTP architecture and statement lifecycle,
+see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment
