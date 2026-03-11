@@ -11,8 +11,8 @@ familiar database programming patterns with Confluent's streaming SQL capabiliti
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment
-- **Active compute pool** (must be pre-created)
-- **API credentials** for Flink SQL API access
+- **Active Flink compute pool** (must be pre-created)
+- **Flink Compute Pool API credentials** for Flink SQL API access: a user or service account API key and secret for the compute pool (used as HTTP Basic Auth, for example via `flink_api_key` and `flink_api_secret`).
 
 ## Installation
 
@@ -33,13 +33,13 @@ import confluent_sql
 
 # Connect to Confluent Cloud Flink SQL
 connection = confluent_sql.connect(
-    api_key="your-flink-api-key",
-    api_secret="your-flink-api-secret",
+    flink_api_key="your-flink-api-key",
+    flink_api_secret="your-flink-api-secret",
+    organization_id="org-123456",
     environment="env-123456",
     compute_pool_id="lfcp-789012",
-    region="us-east-2",
-    organization_id="org-123456",
     cloud_provider="aws",
+    cloud_region="us-east-2",
     dbname="your-database-name"
 )
 ```
@@ -69,12 +69,84 @@ for row in cursor:
 Clean up:
 
 ```python
-connection.close() # This will also close all the cursors
+cursor.close()
+connection.close()
 ```
 
 ## Parameterized Statement and Flink to Python Value Support
 
 This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
+
+## DB-API Extensions
+
+This driver extends the standard DB-API v2 interface with powerful features designed for stream processing:
+
+- **Dictionary result rows** - Access columns by name instead of position
+- **Streaming cursors** - Non-blocking result consumption from continuous queries
+- **Changelog compression** - Automatic state management for aggregations and joins
+- **Statement lifecycle** - Named statements, labels, and resource management
+- **Type system** - Full support for all Flink SQL types including streaming-specific types
+- **Performance monitoring** - Built-in fetch metrics and introspection
+
+See **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)** for more details.
+
+### Quick Examples
+
+**Dictionary Result Rows:**
+
+```python
+cursor = connection.cursor(as_dict=True)
+cursor.execute("SELECT customer_id, name, email FROM customers WHERE customer_id = %s", (123,))
+row = cursor.fetchone()
+print(row["customer_id"])  # Access by column name
+```
+
+**Streaming Queries:**
+
+```python
+import time
+
+cursor = connection.streaming_cursor()
+cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
+
+while cursor.may_have_results:
+    rows = cursor.fetchmany(10)
+    if rows:
+        for row in rows:
+            print(row)
+    else:
+        time.sleep(0.1)
+```
+
+**Note:** The streaming query example uses `connection.streaming_cursor()` which doesn't require additional imports. If you need to use the lower-level `cursor()` method with a specific execution mode, you'll need to import `ExecutionMode`:
+
+```python
+from confluent_sql.execution_mode import ExecutionMode
+
+cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+```
+
+See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md) for more details on execution modes and cursor creation.
+
+## Architecture & How It Works
+
+The `confluent-sql` driver communicates with Confluent Cloud Flink SQL through HTTP-based APIs. Unlike in traditional databases, statements are **first-class entities** on the server with their own lifecycle,
+allowing features like:
+
+- **Named statements** - Identify and recover queries across connections
+- **Persistent execution** - Statements survive connection close and can be resumed
+- **Batch management** - Label related statements for group operations
+
+For an in-depth explanation of the HTTP architecture and statement lifecycle,
+see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+### Complete Documentation
+
+For comprehensive documentation of all DB-API extensions, see **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)**.
+
+For detailed streaming query guidance, see **[STREAMING.md](STREAMING.md)**.
+
+For type support and examples, see **[TYPES.md](TYPES.md)**.
 
 ## Development
 
