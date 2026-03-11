@@ -18,14 +18,13 @@ The driver communicates with Confluent Cloud Flink SQL through REST API endpoint
 - Each logical operation (execute, fetch, delete) involves one or more HTTP requests
 - Network latency affects execution timing—snapshot queries block until the server returns results
 - Statements are **persistent server-side entities**, not temporary request/response pairs
-- Results can be fetched even after the client disconnects (if you save the statement name)
 
 **API Documentation:**
 
 For technical details on the underlying HTTP endpoints, see the Confluent Cloud API Reference:
 
-- [Statements API](https://docs.confluent.io/cloud/current/api.html#tag/Statements-(sqlv1)) - Submit and manage statements
-- [Statement Results API](https://docs.confluent.io/cloud/current/api.html#tag/Statement-Results-(sqlv1)) - Fetch query results
+- [Statements API](<https://docs.confluent.io/cloud/current/api.html#tag/Statements-(sqlv1)>) - Submit and manage statements
+- [Statement Results API](<https://docs.confluent.io/cloud/current/api.html#tag/Statement-Results-(sqlv1)>) - Fetch query results
 
 ## Statement Lifecycle
 
@@ -35,22 +34,24 @@ When you submit a statement (query, DDL, or data ingestion job), it becomes a fi
 
 Every statement progresses through these phases:
 
-| Phase       | Meaning                                      | Can Fetch Results? | Typical Duration     |
-|-------------|----------------------------------------------|--------------------|----------------------|
-| **PENDING** | Queued on server, not yet started            | No                 | Usually < 100ms      |
-| **RUNNING** | Actively executing                           | Yes (if unbounded) | Seconds to indefinite|
+| Phase         | Meaning                                      | Can Fetch Results? | Typical Duration           |
+| ------------- | -------------------------------------------- | ------------------ | -------------------------- |
+| **PENDING**   | Queued on server, not yet started            | No                 | Usually < 100ms            |
+| **RUNNING**   | Actively executing                           | Yes (if unbounded) | Seconds to indefinite      |
 | **COMPLETED** | Finished successfully                        | Yes                | Indefinite (until deleted) |
-| **FAILED** | Error during execution                      | No                 | Indefinite (until deleted) |
-| **STOPPED** | User requested stop via `delete_statement()` | No                 | Indefinite (until deleted) |
+| **FAILED**    | Error during execution                       | No                 | Indefinite (until deleted) |
+| **STOPPED**   | User requested stop via `delete_statement()` | No                 | Indefinite (until deleted) |
 
 ### How Phases Progress
 
 **Snapshot queries (the default):**
+
 ```
 PENDING (< 100ms) → RUNNING → COMPLETED (seconds)
 ```
 
 When you call `cursor.execute()` for a snapshot query, the driver:
+
 1. Submits the statement (HTTP POST)
 2. Polls the server until it reaches COMPLETED phase
 3. Fetches the entire result set
@@ -59,6 +60,7 @@ When you call `cursor.execute()` for a snapshot query, the driver:
 This is blocking—your code pauses until the server finishes.
 
 **Streaming queries:**
+
 ```
 PENDING (< 100ms) → RUNNING (indefinite)
 ```
@@ -80,6 +82,7 @@ while cursor.may_have_results:
 ```
 
 **DDL statements (CREATE TABLE, etc.):**
+
 ```
 PENDING (< 100ms) → RUNNING → COMPLETED (usually instant)
 ```
@@ -91,6 +94,7 @@ DDL executes and completes quickly. Note: `execute_snapshot_ddl()` waits for COM
 Statements persist on the server independently of your client connection. You can:
 
 1. **Create a statement with a name** for recovery:
+
    ```python
    statement = connection.execute_snapshot_ddl(
        "CREATE TABLE daily_summary AS SELECT * FROM events WHERE date > %s",
@@ -116,11 +120,47 @@ This enables patterns like:
 - **Batch management** - Group related statements with labels for group operations
 - **Job recovery** - Resume work without resubmitting if the client crashes
 
+### Important: Statement Result Retention and Lifetime
+
+Understanding statement lifetime is critical for production applications:
+
+**Result Availability:**
+- Results are only retained server-side **while you are actively fetching them**
+- Once you have fetched all results from a statement via `fetchone()`, `fetchmany()`, or `fetchall()`, the server **does not retain those results**
+- If you need to access results again, you must re-execute the query (submit a new statement)
+
+**Automatic Cleanup:**
+- Statements that produce results (e.g., SELECT queries) will be automatically **STOPPED** by the server if results are not fetched within a reasonable amount of time (typically minutes to hours)
+- STOPPED statements can no longer be polled or fetched from
+- STOPPED statements are eventually garbage collected by the server after a generous retention period (~weeks), after which they become unrecoverable
+
+**Best Practices:**
+
+```python
+# ✅ Good: Fetch results immediately after execute()
+cursor = connection.cursor()
+cursor.execute("SELECT * FROM large_table")
+for row in cursor:  # Start fetching right away
+    process(row)
+
+# ❌ Problematic: Long delay between execute() and fetch
+cursor = connection.cursor()
+cursor.execute("SELECT * FROM large_table")
+time.sleep(3600)  # ← If server timeout is < 1 hour, statement may be STOPPED
+rows = cursor.fetchall()  # May fail—statement was auto-deleted
+```
+
+**For Streaming Queries:**
+- Keep your polling loop active and responsive
+- If you need to pause processing, use appropriate timeouts on `fetchmany()`—don't abandon the statement for extended periods
+- Use named statements sparingly for streaming queries; they're designed for DDL/job management, not long-lived result sets
+
 ### Statement Properties and Metadata
 
 Each statement includes metadata available via the `Statement` object:
 
 **From cursor.statement after execute():**
+
 ```python
 cursor = connection.streaming_cursor()
 cursor.execute("SELECT customer_id, COUNT(*) FROM events GROUP BY customer_id")
@@ -157,6 +197,7 @@ rows = cursor.fetchall()
 ```
 
 Network latency directly impacts execution time:
+
 - POST (submit) ~50-200ms
 - GET (check status) ~50-200ms × N times until COMPLETED
 - GET (fetch results) ~50-200ms × N times for N result pages
