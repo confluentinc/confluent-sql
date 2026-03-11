@@ -418,10 +418,16 @@ class Connection:
         with automatic cleanup. Streaming cursors return data as it arrives without
         blocking or collecting all results into memory.
 
-        Note: The context manager's cleanup (cursor.close()) only deletes statements
-        that are in terminal phases (COMPLETED/FAILED/STOPPED). Long-running streaming
-        queries that remain RUNNING on the server after exiting the context manager
-        must be explicitly stopped using delete_statement().
+        Statement Lifecycle Management:
+            The context manager automatically closes the cursor via cursor.close(),
+            which deletes statements that are already in terminal phases
+            (COMPLETED/FAILED/STOPPED). However, long-running streaming queries that
+            remain RUNNING on the server after exiting the context manager are NOT
+            automatically stopped or deleted server-side.
+
+            To explicitly stop a RUNNING streaming statement, call
+            cursor.delete_statement() or connection.delete_statement(statement_id)
+            before exiting the context manager.
 
         Args:
             as_dict: If True, fetch results as dictionaries, otherwise as tuples
