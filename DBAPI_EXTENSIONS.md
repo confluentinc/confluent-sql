@@ -108,13 +108,11 @@ with connection.closing_cursor(as_dict=False, mode=ExecutionMode.SNAPSHOT) as cu
 **Equivalent to:**
 
 ```python
-cursor = connection.cursor(as_dict=False, mode=ExecutionMode.SNAPSHOT)
-try:
+with connection.cursor(as_dict=False, mode=ExecutionMode.SNAPSHOT) as cursor:
     cursor.execute("SELECT * FROM users")
     for row in cursor:
         print(row)
-finally:
-    cursor.close()
+# cursor is automatically closed
 ```
 
 **Benefits:**
@@ -176,7 +174,7 @@ with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY)
 
 **Benefits:**
 
-- ✅ More concise than `closing_cursor()` with explicit mode parameter
+- ✅ More concise than using `closing_cursor()` with an explicit mode parameter
 - ✅ Intent is immediately clear: "streaming cursor"
 - ✅ No need to import `ExecutionMode`
 - ✅ Guarantees cursor cleanup even if exceptions occur

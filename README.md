@@ -118,6 +118,16 @@ while cursor.may_have_results:
         time.sleep(0.1)
 ```
 
+**Note:** The streaming query example uses `connection.streaming_cursor()` which doesn't require additional imports. If you need to use the lower-level `cursor()` method with a specific execution mode, you'll need to import `ExecutionMode`:
+
+```python
+from confluent_sql.execution_mode import ExecutionMode
+
+cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+```
+
+See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md) for more details on execution modes and cursor creation.
+
 ## Architecture & How It Works
 
 The `confluent-sql` driver communicates with Confluent Cloud Flink SQL through HTTP-based APIs. Unlike in traditional databases, statements are **first-class entities** on the server with their own lifecycle,
