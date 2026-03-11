@@ -237,9 +237,12 @@ Use for DDL operations that complete after processing finite data:
 - `ALTER TABLE`
 - `CREATE VIEW`
 
-**`execute_streaming_ddl()` - Unbounded DDL**
+**`execute_streaming_ddl()` - Unbounded/Open-Ended Statements**
+
+Despite the name, this method is not limited to DDL statements. Use it for any open-ended statement that produces no results back to the client and runs indefinitely—including DDL operations and data ingestion/transformation jobs.
 
 ```python
+# Create a table from streaming source
 statement = connection.execute_streaming_ddl(
     "CREATE TABLE orders_stream AS SELECT * FROM kafka_orders",
     timeout=3000  # Wait for job to start (doesn't wait for completion)
@@ -247,10 +250,26 @@ statement = connection.execute_streaming_ddl(
 print(f"Started streaming job: {statement.name}")
 ```
 
-Use for DDL operations that produce unbounded/continuous results:
+```python
+# Continuously ingest and transform data
+statement = connection.execute_streaming_ddl(
+    """
+    INSERT INTO filtered_orders
+    SELECT order_id, customer_id, amount
+    FROM orders_kafka_source
+    WHERE amount > %s
+    """,
+    (100,),
+    timeout=3000
+)
+print(f"Started data pipeline: {statement.name}")
+```
 
-- `CREATE TABLE AS SELECT` (unbounded/streaming sources)
-- Any DDL producing indefinitely running Flink jobs
+Use for statements that produce unbounded/continuous results:
+
+- `CREATE TABLE AS SELECT` from streaming sources
+- `INSERT INTO ... SELECT` from continuous sources (data pipelines)
+- Any DDL or DML producing indefinitely running Flink jobs
 
 **Benefits vs manual cursor approach:**
 
