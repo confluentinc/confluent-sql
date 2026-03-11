@@ -169,7 +169,7 @@ Labels allow you to organize statements logically without requiring unique names
 
 ### Statement Persistence and Recovery
 
-Statements persist on the server independently of your client connection. You can:
+Statements persist on the server independently of your client connection, but are **scoped to the compute pool** where they were submitted. Statements can only be found, monitored, and recovered within the same compute pool:
 
 1. **Create a statement with a name** for recovery:
 
@@ -181,9 +181,9 @@ Statements persist on the server independently of your client connection. You ca
    )
    ```
 
-2. **Recover it from another connection:**
+2. **Recover it from another connection in the same compute pool:**
    ```python
-   # In a different Python process or session
+   # In a different Python process or session (same compute pool)
    statements = connection.list_statements(label="daily-jobs")
    for stmt in statements:
        if stmt.name == "daily-summary-job":
@@ -191,9 +191,11 @@ Statements persist on the server independently of your client connection. You ca
            # Can delete when done: connection.delete_statement(stmt.name)
    ```
 
+**Important:** Statements are only visible to connections using the same compute pool. If you connect to a different compute pool, you cannot access statements created in another pool, even if they have the same name.
+
 This enables patterns like:
 
-- **Job monitoring** - Check status of long-running queries from a different process
+- **Job monitoring** - Check status of long-running queries from a different process (within the same compute pool)
 - **Graceful shutdown** - Find and delete statements before closing your application
 - **Batch management** - Group related statements with labels for group operations
 - **Job recovery** - Resume work without resubmitting if the client crashes
