@@ -540,80 +540,11 @@ while cursor.may_have_results:
 
 ### When Does `may_have_results` Become False?
 
-The cursor's `may_have_results` property becomes `False` when **any** of these conditions are met:
+For **streaming queries**, `may_have_results` stays `True` as long as the statement is running and can produce results. It becomes `False` only when the statement reaches a **terminal phase** due to external stoppage:
 
-#### 1. **No Statement Executed**
-`may_have_results` is `False` before you call `cursor.execute()` since no statement exists.
-
-```python
-cursor = connection.streaming_cursor()
-assert cursor.may_have_results is False  # No statement yet
-
-cursor.execute("SELECT * FROM events")
-# Now may_have_results could be True (depending on other conditions)
-```
-
-#### 2. **DDL Statement**
-`may_have_results` is always `False` for DDL statements (CREATE, ALTER, DROP) since they don't produce result rows.
-
-```python
-cursor = connection.streaming_cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS events AS SELECT * FROM source")
-assert cursor.may_have_results is False  # DDL doesn't produce results
-```
-
-#### 3. **Statement in Terminal Phase**
-When the statement reaches a terminal phase, `may_have_results` becomes `False`. Terminal phases include:
-
-- **`COMPLETED`**: Snapshot query finished normally
-- **`STOPPED`**: Streaming query was manually stopped
+- **`STOPPED`**: Query was manually stopped (e.g., via `cursor.close()`)
 - **`FAILED`**: Statement encountered an error
-- **`DELETED`**: Statement was cleaned up by the server
-
-```python
-# Example: Query that completes
-cursor = connection.cursor(mode=ExecutionMode.SNAPSHOT)
-cursor.execute("SELECT COUNT(*) FROM orders")
-row = cursor.fetchone()
-# After fetching results, statement is COMPLETED
-assert cursor.may_have_results is False
-```
-
-#### 4. **All Result Pages Exhausted**
-When you've fetched all available pages and the server indicates "no more pages available," `may_have_results` becomes `False`.
-
-This happens when:
-- A fetch request returns a page with no "next page" indicator from the server
-- You've consumed all data from the final page
-
-```python
-cursor = connection.streaming_cursor()
-cursor.execute("SELECT * FROM bounded_stream LIMIT 100")
-
-while cursor.may_have_results:
-    rows = cursor.fetchmany(10)
-    if not rows:
-        # No data now, but may_have_results could still be True
-        # if more will arrive (streaming)
-        time.sleep(0.1)
-    else:
-        for row in rows:
-            process(row)
-
-# Once all pages fetched and no next page available,
-# may_have_results is False
-assert cursor.may_have_results is False
-```
-
-**Key Insight:** The server's result response includes a "next page" indicator. When the server returns a page without a next page token, the result reader knows there are no more pages, and `may_have_results` becomes `False`.
-
-#### 5. **Streaming Query Waiting for Data**
-For **streaming queries**, `may_have_results` is `True` while the query is active and waiting for new data, even if:
-- The current fetch returned no rows
-- No pages are buffered locally
-- The query hasn't reached a terminal phase yet
-
-This is the normal polling pattern:
+- **`COMPLETED`**: Query finished (only for snapshot mode or bounded streaming queries)
 
 ```python
 cursor = connection.streaming_cursor()
@@ -625,25 +556,18 @@ while cursor.may_have_results:
         for row in rows:
             process(row)
     else:
-        # No rows available RIGHT NOW, but the streaming
-        # query is still running - more data may arrive
-        assert cursor.may_have_results is True
+        # No data available RIGHT NOW, but the streaming
+        # query is still running and may_have_results is True
         time.sleep(0.1)  # Poll again later
+
+# may_have_results becomes False when the query is stopped or fails
 ```
 
-In this scenario:
-- `may_have_results == True` means "the statement is still producing results"
-- `rows` being empty means "nothing arrived since last poll"
-- They are separate conditions: truth of one doesn't imply truth of the other
+**Key Points:**
 
-### Summary: The Four Paths to `may_have_results == False`
-
-| Condition                  | Example                                         | What to Do                                        |
-|--------------------------|-----------------------------------------------|--------------------------------------------------|
-| No statement executed     | Before calling `cursor.execute()`              | Call `cursor.execute()`                          |
-| DDL statement             | `CREATE TABLE`, `ALTER`, `DROP`                | Use a query statement instead if you need results |
-| Terminal phase reached    | Statement is COMPLETED, STOPPED, FAILED       | Statement is done; close and create new one      |
-| All pages fetched         | Server returns page with no "next page"        | Normal result exhaustion; stream ended           |
+- `may_have_results == True` doesn't mean data is available now; it means the query is still active
+- Empty fetch results during a `may_have_results == True` loop means "no data arrived in this poll" (not "stream ended")
+- The query will remain `may_have_results == True` indefinitely (for unbounded streaming queries) until you explicitly stop it or it fails
 
 ### Snapshot vs Streaming Blocking Behavior
 
