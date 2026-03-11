@@ -33,6 +33,30 @@ from confluent_sql.execution_mode import ExecutionMode
 cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
 ```
 
+### Method 3: Using `closing_streaming_cursor()` (Recommended for automatic cleanup)
+
+For streaming cursors with automatic resource cleanup via context manager:
+
+```python
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
+    cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
+    while cursor.may_have_results:
+        rows = cursor.fetchmany(10)
+        if rows:
+            for row in rows:
+                print(row)
+# cursor automatically closed
+```
+
+This is the **preferred pattern for streaming queries** because it:
+
+- ✅ Automatically closes the cursor and cleans up the statement
+- ✅ Works correctly even if exceptions occur
+- ✅ Makes intent clear: "I'm creating a streaming cursor with auto-cleanup"
+- ✅ No need to import `ExecutionMode`
+
+See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md#auto-closing-streaming-cursor-closing_streaming_cursor) for more details on context managers.
+
 ## Cursor Properties for Streaming Queries
 
 When working with streaming cursors, several properties help you understand and control query behavior:
