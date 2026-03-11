@@ -535,9 +535,9 @@ while cursor.may_have_results:
 ### ✅ Use Context Managers for Cleanup
 
 ```python
-from confluent_sql.execution_mode import ExecutionMode
+import confluent_sql
 
-with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("SELECT * FROM stream WHERE active = %s", (True,))
     for row in cursor:
         process(row)
@@ -552,12 +552,11 @@ with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY)
 import time
 
 import confluent_sql
-from confluent_sql.execution_mode import ExecutionMode
 
 connection = confluent_sql.connect(...)
 
 min_amount = 1000
-with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("""
         SELECT order_id, customer_id, amount FROM orders
         WHERE amount > %s
@@ -585,12 +584,11 @@ from datetime import datetime
 import time
 
 import confluent_sql
-from confluent_sql.execution_mode import ExecutionMode
 
 connection = confluent_sql.connect(...)
 
 min_order_date = datetime(2024, 1, 1)
-with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("""
         SELECT product_id, product_name, COUNT(*) as sales_count
         FROM orders
@@ -621,12 +619,11 @@ import time
 from datetime import datetime
 
 import confluent_sql
-from confluent_sql.execution_mode import ExecutionMode
 
 connection = confluent_sql.connect(...)
 
 min_timestamp = datetime(2024, 1, 1)
-with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("""
         SELECT
             CAST(event_time / %s AS BIGINT) as hour,
