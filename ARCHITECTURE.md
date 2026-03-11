@@ -17,7 +17,7 @@ The driver communicates with Confluent Cloud Flink SQL through REST API endpoint
 
 - Each logical operation (execute, fetch, delete) involves one or more HTTP requests
 - Network latency affects execution timing—snapshot queries block until the server returns results
-- Statements are **persistent server-side entities**, not temporary request/response pairs
+- Statements are **semi-persistent server-side entities**, not temporary request/response pairs
 
 **API Documentation:**
 
@@ -137,15 +137,6 @@ cursor1.execute("SELECT * FROM table1", statement_name="my-query")
 cursor2 = connection.cursor()
 cursor2.execute("SELECT * FROM table2", statement_name="my-query")  # ❌ Error: name already exists
 ```
-
-**Use cases for explicit naming:**
-
-- **Recovery across connections** - Use a meaningful name so you can find and recover the statement from another process
-- **Job monitoring** - Name statements for your batch jobs, then list and check their status
-- **Resource cleanup** - Use names to organize statements for batch deletion
-- **Debugging** - Human-readable names make logs and monitoring dashboards clearer
-
-Auto-generated names are unique but difficult to remember, so explicit names are recommended for any statement you might need to access later. Just ensure they're unique within your compute pool.
 
 ### Statement Persistence and Recovery
 
