@@ -515,8 +515,18 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             if self._fetch_next_page_called and not self._next_page:
                 raise StopIteration
             self._fetch_next_page()
-            if len(self._results) == 0:
+            # After fetching a page, if we got results, return one
+            if len(self._results) > 0:
+                return self._results.popleft()
+            # If we got an empty page, check if more pages are available.
+            # Only raise StopIteration if we know there are no more pages.
+            # Otherwise, keep trying (recursive call will eventually get results
+            # or confirm exhaustion).
+            if self._fetch_next_page_called and not self._next_page:
                 raise StopIteration
+            # More pages may be available but empty right now (streaming scenario).
+            # Keep trying to fetch.
+            return self.__next__()
 
         return self._results.popleft()
 

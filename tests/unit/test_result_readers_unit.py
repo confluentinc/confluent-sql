@@ -202,3 +202,69 @@ class TestAppendOnlyResultReader:
         # Now formatter should be created and be a TupleRowFormatter
         assert reader._row_formatter is not None
         assert isinstance(reader._row_formatter, TupleRowFormatter)
+
+    def test_iteration_handles_empty_first_page_with_next_page_available(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        """Test that iteration doesn't short-circuit when the first page is empty but more pages exist.
+
+        This test reproduces the bug where iteration would raise StopIteration immediately
+        after fetching an empty page, even though _next_page indicates more pages are available.
+
+        In streaming mode, the server may return an empty initial page while data is still arriving.
+        The iterator should keep trying to fetch data instead of giving up prematurely.
+
+        Scenario:
+        1. First __next__() call fetches page 1: empty results, but _next_page="page_2_token"
+        2. Second __next__() call should fetch page 2: has actual row data
+        3. Iterator should return rows, not raise StopIteration after empty page
+        """
+        # Setup: Mock the server to return empty first page, then results on second page
+        mock_statement_with_schema.can_fetch_results.return_value = True
+        mock_statement_with_schema.type_converter.to_python_row.side_effect = [
+            # Second fetch will return actual rows
+            (1, "alice", 100),
+            (2, "bob", 200),
+        ]
+
+        # Mock the connection's pause configuration (no pause between fetches)
+        mock_connection.statement_results_page_fetch_pause_secs = 0.0
+
+        # First call to _get_statement_results returns empty page with next_page token
+        # Second call returns actual rows with no next page
+        mock_connection._get_statement_results.side_effect = [
+            ([], "page_2_token"),  # Empty first page, but more to come
+            (
+                [
+                    ChangeloggedRow(Op.INSERT, (1, "alice", 100)),
+                    ChangeloggedRow(Op.INSERT, (2, "bob", 200)),
+                ],
+                None,
+            ),  # Rows on second page, no more after
+        ]
+
+        reader = AppendOnlyResultReader(
+            connection=mock_connection,
+            statement=mock_statement_with_schema,
+            execution_mode=ExecutionMode.STREAMING_QUERY,
+            as_dict=False,
+        )
+
+        # Attempt to iterate and collect all rows
+        collected_rows = []
+        try:
+            for row in reader:
+                collected_rows.append(row)
+        except StopIteration:
+            # If we get StopIteration before collecting rows, the bug is present
+            pass
+
+        # EXPECTED: Should have collected both rows (1, "alice", 100) and (2, "bob", 200)
+        # ACTUAL WITH BUG: Iterator raises StopIteration after empty first page, never fetching page 2
+        assert len(collected_rows) == 2, (
+            f"Expected 2 rows but got {len(collected_rows)}. "
+            "Bug present: __next__() raises StopIteration after empty page, "
+            "even though _next_page indicates more pages are available."
+        )
+        assert collected_rows[0] == (1, "alice", 100)
+        assert collected_rows[1] == (2, "bob", 200)
