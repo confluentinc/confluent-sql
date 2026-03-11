@@ -436,7 +436,7 @@ Both approaches are valid—choose based on your application's latency and throu
 
 ### Implementation
 
-The changelog compressor retains a collection of the result set rows based on the sum of changelog events recieved since the start of staetment execution. Each returned snapshot of those rows is a deepcopy of the compressor's internal state.
+The changelog compressor retains a collection of the result set rows based on the sum of changelog events received since the start of statement execution. Each returned snapshot of those rows is a deepcopy of the compressor's internal state.
 
 ---
 

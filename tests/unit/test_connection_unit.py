@@ -798,11 +798,10 @@ class TestClosingCursor:
     def test_closing_cursor_closes_even_on_exception(self, invalid_credential_connection):
         """Test that cursor is closed even if an exception is raised in the context."""
         cursor = None
-        with pytest.raises(ValueError):
-            with invalid_credential_connection.closing_cursor() as c:
-                cursor = c
-                assert cursor.is_closed is False
-                raise ValueError("Test exception")
+        with pytest.raises(ValueError), invalid_credential_connection.closing_cursor() as c:  # noqa: SIM117,E501
+            cursor = c
+            assert cursor.is_closed is False
+            raise ValueError("Test exception")
 
         # Verify cursor is closed even after exception
         assert cursor is not None
@@ -845,14 +844,15 @@ class TestClosingStreamingCursor:
         assert cursor is not None
         assert cursor.is_closed is True
 
-    def test_closing_streaming_cursor_closes_even_on_exception(self, invalid_credential_connection):
+    def test_closing_streaming_cursor_closes_even_on_exception(
+        self, invalid_credential_connection
+    ):
         """Test that cursor is closed even if an exception is raised in the context."""
         cursor = None
-        with pytest.raises(ValueError):
-            with invalid_credential_connection.closing_streaming_cursor() as c:
-                cursor = c
-                assert cursor.is_closed is False
-                raise ValueError("Test exception")
+        with pytest.raises(ValueError), invalid_credential_connection.closing_streaming_cursor() as c:  # noqa: SIM117,E501
+            cursor = c
+            assert cursor.is_closed is False
+            raise ValueError("Test exception")
 
         # Verify cursor is closed even after exception
         assert cursor is not None
