@@ -185,9 +185,7 @@ A **snapshot of results** is a self-consistent, complete result set showing the 
 - **Current State of All Rows**: Built from all INSERT/UPDATE/DELETE operations processed so far
 - **Point-in-Time View**: Represents state after consuming all available changelog events at that moment
 - **Self-Consistent**: No pending operations awaiting completion (all UPDATE_BEFORE/UPDATE_AFTER pairs have been applied)
-- **Complete Result Set, Not Incremental**: Each snapshot is the full accumulated result set, not just the changes since the last snapshot
-
-### Key Insight: Complete Result Set vs Individual Events
+- **Complete Result Set, Not Incremental**: Each snapshot is the full accumulated result set at this moment in time, not just the changes since the last snapshot
 
 Don't think of snapshots of results as collections of individual changelog events. Instead, think of them as complete result sets:
 
@@ -211,11 +209,10 @@ In this example, each snapshot of results is a complete list of all products and
 
 ### When Snapshots of Results Are Identical
 
-If no new orders arrive between two polling intervals, consecutive snapshots of results will be identical. This is completely normal and expected. Your application can choose to:
+If no new changelog events are fetchable from the results API between two polling intervals, consecutive snapshots of results will be identical. This is completely normal and expected. Your application can choose to:
 
-- Process every snapshot of results regardless (simple approach)
-- Skip processing if snapshot hasn't changed (optimize for unchanged data)
-- Use delta detection to understand what actually changed
+- Process all rows within every snapshot regardless (simple approach)
+- Use delta detection to understand what actually changed. If this is needed, it may be simpler to consume the changelog events directly from the cursor and not use the compressor API.
 
 ### How Snapshot Boundaries Are Inferred
 
@@ -542,9 +539,9 @@ while cursor.may_have_results:
 
 For **streaming queries**, `may_have_results` stays `True` as long as the statement is running and can produce results. It becomes `False` only when the statement reaches a **terminal phase** due to external stoppage:
 
-- **`STOPPED`**: Query was manually stopped (e.g., via `cursor.close()`)
-- **`FAILED`**: Statement encountered an error
-- **`COMPLETED`**: Query finished (only for snapshot mode or bounded streaming queries)
+- **`STOPPED`**: Query was manually stopped (external means)
+- **`FAILED`**: Statement encountered an error during execution
+- **`COMPLETED`**: Query finished naturally (usually only for snapshot mode execution)
 
 ```python
 cursor = connection.streaming_cursor()
@@ -599,78 +596,6 @@ row = cursor.fetchone()  # Could be None even if more data arrives later
 | `fetchmany(size)`   | Blocking      | Non-blocking        | Batch processing         |
 | `fetchall()`        | Blocking      | Raises if unbounded | Only for bounded queries |
 | `for row in cursor` | Blocking      | Blocking            | Continuous consumption   |
-
-## Common Pitfalls and Best Practices
-
-### ❌ Don't Use `fetchall()` on Unbounded Streams
-
-```python
-# ❌ WRONG - Will raise NotSupportedError on unbounded queries
-cursor = connection.streaming_cursor()
-cursor.execute("SELECT * FROM unbounded_stream WHERE timestamp > %s", (datetime.now(),))
-cursor.fetchall()  # Raises!
-```
-
-✅ Use iteration or polling patterns instead.
-
-### ❌ Don't Ignore `may_have_results` in Polling Loops
-
-```python
-# ❌ WRONG - Thinks stream ended when temporarily empty
-while row := cursor.fetchone():
-    process(row)
-
-# ✅ RIGHT - Distinguishes temporary vs permanent emptiness
-while cursor.may_have_results:
-    row = cursor.fetchone()
-    if row:
-        process(row)
-    else:
-        time.sleep(0.1)
-```
-
-### ❌ Don't Manually Process Changelog Events
-
-```python
-# ❌ WRONG - Complex manual UPDATE_BEFORE/AFTER matching
-for row in cursor:
-    if is_update_before:
-        store_previous()
-    elif is_update_after:
-        match_with_previous()
-        update_state()
-
-# ✅ RIGHT - Use changelog compressor
-compressor = cursor.changelog_compressor()
-for snapshot in compressor.snapshots():
-    # All updates automatically applied
-    for row in snapshot:
-        process(row)
-```
-
-### ✅ Always Import `time` for Polling Loops
-
-```python
-import time
-
-while cursor.may_have_results:
-    rows = cursor.fetchmany(10)
-    if rows:
-        for row in rows:
-            process(row)
-    else:
-        time.sleep(0.1)  # Prevent busy-waiting
-```
-
-### ✅ Use Context Managers for Cleanup
-
-```python
-with connection.closing_streaming_cursor(as_dict=True) as cursor:
-    cursor.execute("SELECT * FROM stream WHERE active = %s", (True,))
-    for row in cursor:
-        process(row)
-# Cursor automatically closed
-```
 
 ## Complete Examples
 
