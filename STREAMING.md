@@ -217,6 +217,34 @@ If no new orders arrive between two polling intervals, consecutive snapshots of 
 - Skip processing if snapshot hasn't changed (optimize for unchanged data)
 - Use delta detection to understand what actually changed
 
+### How Snapshot Boundaries Are Inferred
+
+The changelog compressor infers snapshot boundaries based on the statement's result route indicator. A **snapshot capstone** (the point marking the end of a snapshot) is inferred when the result route indicates "no more changelog rows available at this time." This signals that all pending changelog events have been processed and the current state is self-consistent.
+
+**Important Limitation:** Flink SQL does not include explicit markers in the changelog stream that say "the changelog is self-consistent at this time." This means:
+
+- **Explicit Boundaries Only**: The compressor can only reliably identify snapshot boundaries when polling returns no new rows
+- **Interior Points Missed**: Self-consistent points in time that occur between changelog rows may not be captured as explicit snapshots
+- **Partial Coverage**: The `snapshots()` interface provides some of the self-consistent result set points in time, but not necessarily all of them
+
+In practice, this means your application will capture snapshots when you poll and receive no new changelog events, ensuring you have a reliable periodic view of the complete accumulated state. However, if additional self-consistent points occur between your polling intervals (within the incoming changelog stream), those intermediate points won't be explicitly available as separate snapshots.
+
+**Polling Pattern Impact:**
+
+The frequency and timing of your polling directly affects which self-consistent points you capture:
+
+```python
+# Frequent polling: More likely to capture intermediate self-consistent points
+for snapshot in compressor.snapshots():
+    time.sleep(0.1)  # Poll every 100ms
+
+# Infrequent polling: May miss interior self-consistent points
+for snapshot in compressor.snapshots():
+    time.sleep(5)  # Poll every 5 seconds
+```
+
+Both approaches are valid—choose based on your application's latency and throughput requirements.
+
 ---
 
 ## Changelog Streaming Queries
