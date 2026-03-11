@@ -8,19 +8,6 @@ The `confluent-sql` library provides a standard DB-API v2 interface for connecti
 executing SQL queries against Confluent Cloud Flink SQL services. This allows you to use
 familiar database programming patterns with Confluent's streaming SQL capabilities.
 
-## Architecture & How It Works
-
-The `confluent-sql` driver communicates with Confluent Cloud Flink SQL through HTTP-based
-APIs. Statements are **first-class entities** on the server with their own lifecycle,
-allowing features like:
-
-- **Named statements** - Identify and recover queries across connections
-- **Persistent execution** - Statements survive connection close and can be resumed
-- **Batch management** - Label related statements for group operations
-
-For an in-depth explanation of the HTTP architecture and statement lifecycle,
-see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
-
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment
@@ -86,6 +73,10 @@ cusor.close()
 connection.close()
 ```
 
+## Parameterized Statement and Flink to Python Value Support
+
+This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
+
 ## DB-API Extensions
 
 This driver extends the standard DB-API v2 interface with powerful features designed for stream processing:
@@ -96,6 +87,8 @@ This driver extends the standard DB-API v2 interface with powerful features desi
 - **Statement lifecycle** - Named statements, labels, and resource management
 - **Type system** - Full support for all Flink SQL types including streaming-specific types
 - **Performance monitoring** - Built-in fetch metrics and introspection
+
+See **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)** for more details.
 
 ### Quick Examples
 
@@ -125,6 +118,18 @@ while cursor.may_have_results:
         time.sleep(0.1)
 ```
 
+## Architecture & How It Works
+
+The `confluent-sql` driver communicates with Confluent Cloud Flink SQL through HTTP-based APIs. Unlike in traditional databases, statements are **first-class entities** on the server with their own lifecycle,
+allowing features like:
+
+- **Named statements** - Identify and recover queries across connections
+- **Persistent execution** - Statements survive connection close and can be resumed
+- **Batch management** - Label related statements for group operations
+
+For an in-depth explanation of the HTTP architecture and statement lifecycle,
+see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ### Complete Documentation
 
 For comprehensive documentation of all DB-API extensions, see **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)**.
@@ -132,10 +137,6 @@ For comprehensive documentation of all DB-API extensions, see **[DBAPI_EXTENSION
 For detailed streaming query guidance, see **[STREAMING.md](STREAMING.md)**.
 
 For type support and examples, see **[TYPES.md](TYPES.md)**.
-
-## Parameterized Statement and Flink to Python Value Support
-
-This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
 
 ## Development
 

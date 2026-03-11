@@ -125,13 +125,14 @@ This enables patterns like:
 Understanding statement lifetime is critical for production applications:
 
 **Result Availability:**
+
 - Results are only retained server-side **while you are actively fetching them**
 - Once you have fetched all results from a statement via `fetchone()`, `fetchmany()`, or `fetchall()`, the server **does not retain those results**
 - If you need to access results again, you must re-execute the query (submit a new statement)
 
 **Automatic Cleanup:**
-- Statements that produce results (e.g., SELECT queries) will be automatically **STOPPED** by the server if results are not fetched within a reasonable amount of time (typically minutes to hours)
-- STOPPED statements can no longer be polled or fetched from
+
+- Statements that produce results (e.g., SELECT queries) will be automatically **STOPPED** by the server if results are not fetched within a reasonable amount of time (typically minutes)
 - STOPPED statements are eventually garbage collected by the server after a generous retention period (~weeks), after which they become unrecoverable
 
 **Best Practices:**
@@ -151,6 +152,7 @@ rows = cursor.fetchall()  # May fail—statement was auto-deleted
 ```
 
 **For Streaming Queries:**
+
 - Keep your polling loop active and responsive
 - If you need to pause processing, use appropriate timeouts on `fetchmany()`—don't abandon the statement for extended periods
 - Use named statements sparingly for streaming queries; they're designed for DDL/job management, not long-lived result sets
