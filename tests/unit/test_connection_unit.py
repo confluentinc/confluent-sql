@@ -870,14 +870,14 @@ class TestClosingStreamingCursor:
         Verifies equivalence to closing_cursor(mode=ExecutionMode.STREAMING_QUERY).
         """
         # Create two cursors - one with closing_streaming_cursor, one with closing_cursor
-        with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1:
-            with invalid_credential_connection.closing_cursor(
+        with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1, \
+             invalid_credential_connection.closing_cursor(
                 as_dict=True, mode=ExecutionMode.STREAMING_QUERY
             ) as cursor2:
-                # Both should have the same execution mode
-                assert cursor1.execution_mode == cursor2.execution_mode
-                assert cursor1.is_streaming == cursor2.is_streaming
-                assert cursor1.as_dict == cursor2.as_dict
+            # Both should have the same execution mode
+            assert cursor1.execution_mode == cursor2.execution_mode
+            assert cursor1.is_streaming == cursor2.is_streaming
+            assert cursor1.as_dict == cursor2.as_dict
 
 
 @pytest.mark.unit

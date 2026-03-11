@@ -69,7 +69,7 @@ for row in cursor:
 Clean up:
 
 ```python
-cusor.close()
+cursor.close()
 connection.close()
 ```
 
