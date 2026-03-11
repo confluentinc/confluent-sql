@@ -138,6 +138,35 @@ cursor2 = connection.cursor()
 cursor2.execute("SELECT * FROM table2", statement_name="my-query")  # ❌ Error: name already exists
 ```
 
+**Grouping Statements with Labels:**
+
+In addition to individual statement names, you can use statement labels to group related statements together for batch operations:
+
+```python
+# Group multiple statements with a label
+cursor1 = connection.cursor()
+cursor1.execute(
+    "SELECT COUNT(*) FROM events",
+    statement_label="hourly-metrics"
+)
+
+cursor2 = connection.cursor()
+cursor2.execute(
+    "SELECT * FROM users",
+    statement_label="hourly-metrics"
+)
+
+# Later, find all statements with that label
+statements = connection.list_statements(label="hourly-metrics")
+for stmt in statements:
+    print(f"{stmt.name}: {stmt.phase}")
+
+# Delete all statements with that label
+connection.delete_statement(label="hourly-metrics")
+```
+
+Labels allow you to organize statements logically without requiring unique names per statement—multiple statements can share the same label.
+
 ### Statement Persistence and Recovery
 
 Statements persist on the server independently of your client connection. You can:
