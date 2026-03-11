@@ -11,8 +11,8 @@ familiar database programming patterns with Confluent's streaming SQL capabiliti
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment
-- **Active compute pool** (must be pre-created)
-- **API credentials** for Flink SQL API access
+- **Active Flink compute pool** (must be pre-created)
+- **Flink Compute Pool API credentials** for Flink SQL API access, either user or service account API token for the compute pool.
 
 ## Installation
 
@@ -33,14 +33,13 @@ import confluent_sql
 
 # Connect to Confluent Cloud Flink SQL
 connection = confluent_sql.connect(
-    api_key="your-flink-api-key",
-    api_secret="your-flink-api-secret",
+    flink_api_key="your-flink-api-key",
+    flink_api_secret="your-flink-api-secret",
     environment="env-123456",
     compute_pool_id="lfcp-789012",
-    region="us-east-2",
+    cloud_region="us-east-2",
     organization_id="org-123456",
-    cloud_provider="aws",
-    dbname="your-database-name"
+    cloud_provider="aws"
 )
 ```
 
