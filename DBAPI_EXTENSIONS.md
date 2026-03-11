@@ -55,6 +55,7 @@ By default, cursors return rows as tuples (standard DB-API). Use `as_dict=True` 
 - `connection.cursor(as_dict=True)`
 - `connection.streaming_cursor(as_dict=True)`
 - `connection.closing_cursor(as_dict=True)`
+- `connection.closing_streaming_cursor(as_dict=True)`
 
 **Example:**
 
@@ -140,6 +141,88 @@ with connection.closing_cursor(mode=ExecutionMode.STREAMING_QUERY, as_dict=True)
             time.sleep(0.1)
 # cursor automatically closed, statement cleanup handled
 ```
+
+---
+
+### Auto-Closing Streaming Cursor (`closing_streaming_cursor()`)
+
+Convenience context manager specifically for streaming cursors—equivalent to `closing_cursor(mode=ExecutionMode.STREAMING_QUERY, as_dict=as_dict)`. This is the recommended way to create auto-closing streaming cursors.
+
+**Signature:**
+
+```python
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
+    cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
+    while cursor.may_have_results:
+        rows = cursor.fetchmany(10)
+        if rows:
+            for row in rows:
+                process(row)
+# cursor automatically closed
+```
+
+**Equivalent to:**
+
+```python
+import confluent_sql
+
+cursor = connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY)
+try:
+    cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
+    while cursor.may_have_results:
+        rows = cursor.fetchmany(10)
+        if rows:
+            for row in rows:
+                process(row)
+finally:
+    cursor.close()
+```
+
+**Benefits:**
+
+- ✅ More concise than `closing_cursor()` with explicit mode parameter
+- ✅ Intent is immediately clear: "streaming cursor"
+- ✅ No need to import `ExecutionMode`
+- ✅ Guarantees cursor cleanup even if exceptions occur
+
+**Complete Example:**
+
+```python
+import time
+import confluent_sql
+
+connection = confluent_sql.connect(...)
+
+min_amount = 1000
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
+    cursor.execute("""
+        SELECT order_id, customer_id, amount FROM orders
+        WHERE amount > %s
+    """, (min_amount,))
+
+    start_time = time.time()
+    timeout_seconds = 60
+
+    while cursor.may_have_results:
+        rows = cursor.fetchmany(10)
+        if rows:
+            for row in rows:
+                print(f"Order {row['order_id']}: ${row['amount']} from customer {row['customer_id']}")
+        else:
+            if time.time() - start_time > timeout_seconds:
+                print("No new orders for 60 seconds, exiting")
+                break
+            time.sleep(0.5)
+# cursor automatically closed, statement cleanup handled
+```
+
+**When to use:**
+
+- ✅ Preferred for all streaming cursor usage (cleaner than `closing_cursor()`)
+- ✅ Processing continuous data from Flink SQL
+- ✅ Non-blocking event consumption with automatic resource cleanup
+
+For detailed streaming query patterns and examples, see [STREAMING.md](STREAMING.md).
 
 ---
 
