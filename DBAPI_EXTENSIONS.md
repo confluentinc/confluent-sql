@@ -571,6 +571,57 @@ print(f"Bounded: {stmt.is_bounded}")
 
 ---
 
+## Understanding Changelog Snapshots
+
+When working with streaming non-append-only queries (aggregations, joins), the changelog compressor yields "snapshots" of the accumulated result set. It's important to understand what a snapshot represents.
+
+### What is a Snapshot?
+
+A **snapshot** is a self-consistent view of the accumulated result set at a point in time. It represents the complete state of all rows that exist at that moment, built from the entire history of INSERT, UPDATE, and DELETE operations processed so far.
+
+**Key Characteristics:**
+
+- **Complete State**: Contains all rows that exist at that moment (accumulated from all INSERT/UPDATE/DELETE operations processed since the query started)
+- **Self-Consistent**: All currently available changelog events have been consumed and applied. No pending operations are awaiting completion
+- **Point-in-Time**: Represents the state after processing all events up to that moment
+- **May Be Identical**: Two consecutive snapshots can be the same if no new events arrived between them. This is normal and expected
+
+### Important: Snapshot vs Snapshot Query
+
+Do not confuse a snapshot from the changelog compressor with a **snapshot query** (an execution mode):
+
+- **Snapshot Query** (execution mode): A bounded point-in-time query that returns finite results and completes
+- **Snapshot** (from compressor): The accumulated state of an ongoing streaming query showing the current state
+
+### Example: Understanding Snapshots
+
+Consider a streaming GROUP BY query counting users by first letter:
+
+```python
+cursor = connection.streaming_cursor()
+cursor.execute("SELECT first_letter, COUNT(*) as user_count FROM users GROUP BY first_letter")
+compressor = cursor.changelog_compressor()
+
+# Each snapshot is the COMPLETE count of users by first letter at that moment
+for snapshot in compressor.snapshots():
+    # snapshot[0] might be: ('A', 5)  - 5 users with first letter A
+    # snapshot[1] might be: ('B', 3)  - 3 users with first letter B
+    # snapshot[2] might be: ('C', 2)  - 2 users with first letter C
+    print(f"Current user counts: {snapshot}")
+    time.sleep(5)
+```
+
+As users are added, updated, or deleted, each new snapshot shows the updated complete count:
+
+- **Snapshot 1**: `[('A', 5), ('B', 3), ('C', 2)]`
+- **Snapshot 2**: `[('A', 5), ('B', 4), ('C', 2)]` (B count increased due to new user)
+- **Snapshot 3**: `[('A', 5), ('B', 4), ('C', 2)]` (No change, no new events arrived)
+- **Snapshot 4**: `[('A', 6), ('B', 4), ('C', 2)]` (A count increased)
+
+Each snapshot is a complete view of the aggregated results at that moment—not just the rows that changed.
+
+---
+
 ## Performance Monitoring
 
 ### Fetch Metrics
