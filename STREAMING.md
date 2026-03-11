@@ -30,11 +30,11 @@ with connection.closing_streaming_cursor(as_dict=True) as cursor:
 
 This is the **preferred pattern for streaming queries** because it:
 
-- ✅ Automatically closes the cursor and cleans up the statement when it reaches a terminal phase
+- ✅ Automatically closes the cursor on context exit (client-side cleanup)
 - ✅ Works correctly even if exceptions occur
 - ✅ Makes intent clear: "I'm creating a streaming cursor with auto-cleanup"
 - ✅ No need to import `ExecutionMode`
-- ℹ️ For long-running streaming jobs that remain RUNNING on the server after leaving the context manager, explicitly shut them down with `delete_statement()` (or the equivalent API) if needed
+- ℹ️ For long-running streaming jobs that remain RUNNING on the server, explicitly stop them with `delete_statement()` before exiting the context manager to avoid resource leaks
 
 See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md#auto-closing-streaming-cursor-closing_streaming_cursor) for more details on context managers.
 
