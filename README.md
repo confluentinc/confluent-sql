@@ -12,7 +12,7 @@ familiar database programming patterns with Confluent's streaming SQL capabiliti
 
 - **Confluent Cloud account** with Flink environment
 - **Active Flink compute pool** (must be pre-created)
-- **Flink Compute Pool API credentials** for Flink SQL API access, either user or service account API token for the compute pool.
+- **Flink Compute Pool API credentials** for Flink SQL API access: a user or service account API key and secret for the compute pool (used as HTTP Basic Auth, for example via `flink_api_key` and `flink_api_secret`).
 
 ## Installation
 
