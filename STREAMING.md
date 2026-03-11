@@ -30,10 +30,11 @@ with connection.closing_streaming_cursor(as_dict=True) as cursor:
 
 This is the **preferred pattern for streaming queries** because it:
 
-- ✅ Automatically closes the cursor and cleans up the statement
+- ✅ Automatically closes the cursor and cleans up the statement when it reaches a terminal phase
 - ✅ Works correctly even if exceptions occur
 - ✅ Makes intent clear: "I'm creating a streaming cursor with auto-cleanup"
 - ✅ No need to import `ExecutionMode`
+- ℹ️ For long-running streaming jobs that remain RUNNING on the server after leaving the context manager, explicitly shut them down with `delete_statement()` (or the equivalent API) if needed
 
 See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md#auto-closing-streaming-cursor-closing_streaming_cursor) for more details on context managers.
 
@@ -236,6 +237,8 @@ for snapshot in compressor.snapshots():
 After executing a streaming query, use `cursor.returns_changelog` to determine which API to use for processing results:
 
 ```python
+from datetime import datetime
+
 cursor = connection.streaming_cursor()
 cursor.execute("""
     SELECT product_id, COUNT(*) as sales FROM orders
@@ -262,6 +265,8 @@ This flexible approach allows you to write generic streaming code that automatic
 ### Creating a Changelog Compressor
 
 ```python
+from datetime import datetime
+
 cursor = connection.streaming_cursor(as_dict=True)
 cursor.execute("""
     SELECT product_id, COUNT(*) as sales FROM orders
@@ -279,6 +284,7 @@ The `snapshots()` method yields a sequence of snapshots, automatically consuming
 
 ```python
 import time
+from datetime import datetime
 
 cursor = connection.streaming_cursor(as_dict=True)
 cursor.execute("""
@@ -318,6 +324,7 @@ The `get_current_snapshot()` method fetches available events and returns a singl
 
 ```python
 import time
+from datetime import datetime
 
 cursor = connection.streaming_cursor(as_dict=True)
 cursor.execute("""
@@ -438,6 +445,8 @@ The changelog compressor retains a collection of the result set rows based on th
 When executing a changelog query, results include operation metadata indicating how each row changed:
 
 ```python
+from datetime import datetime
+
 from confluent_sql.statement import Op
 
 cursor = connection.streaming_cursor()
@@ -476,6 +485,8 @@ elif op == Op.DELETE:
 ### Detecting Changelog Results
 
 ```python
+from datetime import datetime
+
 cursor = connection.streaming_cursor()
 cursor.execute("""
     SELECT user_id, COUNT(*) FROM orders
@@ -494,6 +505,9 @@ else:
 
 ```python
 import time
+from datetime import datetime
+
+from confluent_sql.statement import Op
 
 cursor = connection.streaming_cursor(as_dict=True)
 cursor.execute("""

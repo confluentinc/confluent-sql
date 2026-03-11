@@ -418,6 +418,11 @@ class Connection:
         with automatic cleanup. Streaming cursors return data as it arrives without
         blocking or collecting all results into memory.
 
+        Note: The context manager's cleanup (cursor.close()) only deletes statements
+        that are in terminal phases (COMPLETED/FAILED/STOPPED). Long-running streaming
+        queries that remain RUNNING on the server after exiting the context manager
+        must be explicitly stopped using delete_statement().
+
         Args:
             as_dict: If True, fetch results as dictionaries, otherwise as tuples
 

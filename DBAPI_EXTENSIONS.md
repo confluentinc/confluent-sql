@@ -108,11 +108,14 @@ with connection.closing_cursor(as_dict=False, mode=ExecutionMode.SNAPSHOT) as cu
 **Equivalent to:**
 
 ```python
-with connection.cursor(as_dict=False, mode=ExecutionMode.SNAPSHOT) as cursor:
+cursor = connection.cursor(as_dict=False, mode=ExecutionMode.SNAPSHOT)
+try:
     cursor.execute("SELECT * FROM users")
     for row in cursor:
         print(row)
-# cursor is automatically closed
+finally:
+    cursor.close()
+# cursor is explicitly closed even if an error occurs
 ```
 
 **Benefits:**
@@ -137,7 +140,8 @@ with connection.closing_cursor(mode=ExecutionMode.STREAMING_QUERY, as_dict=True)
                 print(f"Order: {row['order_id']}, Total: {row['total']}")
         else:
             time.sleep(0.1)
-# cursor automatically closed, statement cleanup handled
+# cursor automatically closed; cleanup for terminal phases only
+# For RUNNING streaming queries, explicitly call delete_statement() to stop them
 ```
 
 ---
@@ -207,7 +211,8 @@ with connection.closing_streaming_cursor(as_dict=True) as cursor:
                 print("No new orders for 60 seconds, exiting")
                 break
             time.sleep(0.5)
-# cursor automatically closed, statement cleanup handled
+# cursor automatically closed; statement cleanup happens for terminal phases
+# For long-running queries still RUNNING on the server, use delete_statement() to stop them
 ```
 
 **When to use:**
@@ -502,8 +507,8 @@ connection.http_user_agent = "MyApp/1.0 (custom agent)"
 | `statement`         | `Statement`     | After `execute()`        | Full statement metadata and lifecycle info             |
 | `may_have_results`  | `bool`          | After `execute()`        | More data may arrive (streaming), or results exhausted |
 | `is_closed`         | `bool`          | Always                   | Check if cursor is closed                              |
-| `execution_mode`    | `ExecutionMode` | After `execute()`        | `SNAPSHOT` or `STREAMING_QUERY`                        |
-| `is_streaming`      | `bool`          | After `execute()`        | Convenience: `execution_mode == STREAMING_QUERY`       |
+| `execution_mode`    | `ExecutionMode` | Always                   | `SNAPSHOT` or `STREAMING_QUERY` (from cursor config)   |
+| `is_streaming`      | `bool`          | Always                   | Convenience: `execution_mode == STREAMING_QUERY`       |
 | `returns_changelog` | `bool`          | After `execute()`        | Results are ChangeloggedRow with operations            |
 | `as_dict`           | `bool`          | Always                   | Rows returned as dicts vs tuples                       |
 | `metrics`           | `FetchMetrics`  | After first fetch call   | Accumulated fetch performance statistics               |
