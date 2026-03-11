@@ -404,6 +404,49 @@ class Connection:
         finally:
             cursor.close()
 
+    @contextmanager
+    def closing_streaming_cursor(
+        self, *, as_dict: bool = False
+    ) -> Generator[Cursor, None, None]:
+        """
+        Context manager for creating and automatically closing a streaming cursor.
+
+        Convenience method equivalent to:
+            closing_cursor(as_dict=as_dict, mode=ExecutionMode.STREAMING_QUERY)
+
+        Creates a streaming cursor that processes continuous data from Flink SQL
+        with automatic cleanup. Streaming cursors return data as it arrives without
+        blocking or collecting all results into memory.
+
+        Note: The context manager's cleanup (cursor.close()) only deletes statements
+        that are in terminal phases (COMPLETED/FAILED/STOPPED). Long-running streaming
+        queries that remain RUNNING on the server after exiting the context manager
+        must be explicitly stopped using delete_statement().
+
+        Args:
+            as_dict: If True, fetch results as dictionaries, otherwise as tuples
+
+        Yields:
+            A new streaming Cursor object associated with this connection
+
+        Raises:
+            InterfaceError: If the connection is closed
+
+        Example:
+            with conn.closing_streaming_cursor(as_dict=True) as cursor:
+                cursor.execute("SELECT * FROM orders WHERE amount > %s", (1000,))
+                while cursor.may_have_results:
+                    rows = cursor.fetchmany(10)
+                    if rows:
+                        for row in rows:
+                            process(row)
+                    else:
+                        time.sleep(0.1)
+            # cursor is automatically closed after the with block
+        """
+        with self.closing_cursor(as_dict=as_dict, mode=ExecutionMode.STREAMING_QUERY) as cursor:
+            yield cursor
+
     def execute_snapshot_ddl(
         self,
         statement_text: str,
