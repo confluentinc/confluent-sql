@@ -164,18 +164,14 @@ with connection.closing_streaming_cursor(as_dict=True) as cursor:
 **Equivalent to:**
 
 ```python
-import confluent_sql
-
-cursor = connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY)
-try:
+with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
     while cursor.may_have_results:
         rows = cursor.fetchmany(10)
         if rows:
             for row in rows:
                 process(row)
-finally:
-    cursor.close()
+# cursor is automatically closed
 ```
 
 **Benefits:**
