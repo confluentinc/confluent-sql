@@ -37,11 +37,11 @@ cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
 
 When working with streaming cursors, several properties help you understand and control query behavior:
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `cursor.may_have_results` | `bool` | Check if more data may arrive later (vs permanently exhausted). Essential for polling loops—distinguishes temporary emptiness from stream completion. |
-| `cursor.returns_changelog` | `bool` | Detect whether results include changelog operations (INSERT/UPDATE/DELETE) or are append-only. Use to determine if you need a changelog compressor. |
-| `cursor.is_streaming` | `bool` | Convenience check for streaming mode (`execution_mode == ExecutionMode.STREAMING_QUERY`). |
+| Property                   | Type   | Description                                                                                                                                           |
+| -------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cursor.may_have_results`  | `bool` | Check if more data may arrive later (vs permanently exhausted). Essential for polling loops—distinguishes temporary emptiness from stream completion. |
+| `cursor.returns_changelog` | `bool` | Detect whether results include changelog operations (INSERT/UPDATE/DELETE) or are append-only. Use to determine if you need a changelog compressor.   |
+| `cursor.is_streaming`      | `bool` | Convenience check for streaming mode (`execution_mode == ExecutionMode.STREAMING_QUERY`).                                                             |
 
 **Example:**
 
@@ -535,9 +535,9 @@ while cursor.may_have_results:
 ### ✅ Use Context Managers for Cleanup
 
 ```python
-from contextlib import closing
+from confluent_sql.execution_mode import ExecutionMode
 
-with closing(connection.streaming_cursor()) as cursor:
+with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("SELECT * FROM stream WHERE active = %s", (True,))
     for row in cursor:
         process(row)
@@ -550,12 +550,14 @@ with closing(connection.streaming_cursor()) as cursor:
 
 ```python
 import time
-from contextlib import closing
+
+import confluent_sql
+from confluent_sql.execution_mode import ExecutionMode
 
 connection = confluent_sql.connect(...)
 
 min_amount = 1000
-with closing(connection.streaming_cursor(as_dict=True)) as cursor:
+with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("""
         SELECT order_id, customer_id, amount FROM orders
         WHERE amount > %s
@@ -579,13 +581,16 @@ with closing(connection.streaming_cursor(as_dict=True)) as cursor:
 ### Example 2: Changelog Stream with Compressor
 
 ```python
+from datetime import datetime
 import time
-from contextlib import closing
+
+import confluent_sql
+from confluent_sql.execution_mode import ExecutionMode
 
 connection = confluent_sql.connect(...)
 
 min_order_date = datetime(2024, 1, 1)
-with closing(connection.streaming_cursor(as_dict=True)) as cursor:
+with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("""
         SELECT product_id, product_name, COUNT(*) as sales_count
         FROM orders
@@ -613,12 +618,15 @@ with closing(connection.streaming_cursor(as_dict=True)) as cursor:
 
 ```python
 import time
-from contextlib import closing
+from datetime import datetime
+
+import confluent_sql
+from confluent_sql.execution_mode import ExecutionMode
 
 connection = confluent_sql.connect(...)
 
 min_timestamp = datetime(2024, 1, 1)
-with closing(connection.streaming_cursor(as_dict=True)) as cursor:
+with connection.closing_cursor(as_dict=True, mode=ExecutionMode.STREAMING_QUERY) as cursor:
     cursor.execute("""
         SELECT
             CAST(event_time / %s AS BIGINT) as hour,
