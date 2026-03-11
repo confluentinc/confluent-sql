@@ -361,6 +361,70 @@ for stmt in statements:
 
 Streaming mode is opt-in (via `streaming_cursor()`) for applications that explicitly need continuous data.
 
+## Caveats
+
+### Parameter Handling and String Interpolation
+
+The Confluent Cloud Flink SQL HTTP API does not natively support supplying query parameters separately from the statement SQL text. As a result, the `confluent-sql` driver is responsible for performing client-side parameter interpolation.
+
+**How it works:**
+
+When you use parameterized queries with `%s` placeholders:
+
+```python
+cursor.execute(
+    "SELECT * FROM users WHERE age > %s AND status = %s",
+    (18, 'active')
+)
+```
+
+The driver:
+
+1. Takes your SQL template and parameter tuple
+2. Converts parameters to appropriate SQL literals
+3. Interpolates them into the SQL string
+4. Submits the complete SQL to the server
+
+The resulting SQL sent to Flink would be:
+
+```sql
+SELECT * FROM users WHERE age > 18 AND status = 'active'
+```
+
+**String Escaping:**
+
+Every effort is made to properly escape string parameters to prevent SQL injection:
+
+- Single quotes in string values are escaped (e.g., `'it''s'` for the string `it's`)
+- String values are wrapped in single quotes
+- Complex types listed in [TYPES.md](TYPES.md) are converted to their text representation properly.
+
+**Limitations and Best Practices:**
+
+1. **Client-side interpolation only** - Because Flink's API doesn't support server-side parameter binding, the driver cannot use prepared statements or parameterized queries at the server level
+2. **String escaping is defensive** - While string escaping is carefully implemented, avoid constructing queries with user input directly when possible
+3. **Use parameterized queries for safety** - Always use `%s` placeholders with the parameter tuple, never concatenate user input directly into SQL strings:
+
+   ```python
+   # ✅ Good: Use parameterized queries
+   cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+
+   # ❌ Avoid: String concatenation (vulnerable to injection)
+   cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
+   ```
+
+4. **Special SQL values** - If you need to use SQL keywords or identifiers, you may need to quote them in the SQL template, not as parameters:
+
+   ```python
+   # Parameterize values, but use quoted identifiers for column names
+   cursor.execute(
+       'SELECT "user_id", "email" FROM users WHERE age > %s',
+       (18,)
+   )
+   ```
+
+This design reflects the current capabilities of the Confluent Cloud Flink SQL API and prioritizes security through proper escaping while providing a familiar DB-API v2 interface.
+
 ## See Also
 
 - [README.md](README.md) - Quick start and installation
