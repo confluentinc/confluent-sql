@@ -822,7 +822,9 @@ class TestClosingStreamingCursor:
             assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
             assert cursor.execution_mode == ExecutionMode.STREAMING_QUERY
 
-    def test_closing_streaming_cursor_respects_as_dict_parameter(self, invalid_credential_connection):
+    def test_closing_streaming_cursor_respects_as_dict_parameter(
+        self, invalid_credential_connection
+    ):
         """Test that closing_streaming_cursor respects the as_dict parameter."""
         # Test with as_dict=False (default)
         with invalid_credential_connection.closing_streaming_cursor(as_dict=False) as cursor:
@@ -863,7 +865,10 @@ class TestClosingStreamingCursor:
     def test_closing_streaming_cursor_equivalent_to_closing_cursor_with_mode(
         self, invalid_credential_connection
     ):
-        """Test that closing_streaming_cursor is equivalent to closing_cursor with STREAMING_QUERY mode."""
+        """Test that closing_streaming_cursor is equivalent to closing_cursor.
+
+        Verifies equivalence to closing_cursor(mode=ExecutionMode.STREAMING_QUERY).
+        """
         # Create two cursors - one with closing_streaming_cursor, one with closing_cursor
         with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1:
             with invalid_credential_connection.closing_cursor(
