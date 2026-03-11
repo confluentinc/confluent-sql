@@ -699,18 +699,20 @@ cursor = connection.streaming_cursor()
 
 try:
     cursor.execute("SELECT * FROM streaming_orders")
+except ComputePoolExhaustedError:
+    # Raised at submission time if compute pool has no resources
+    print("Compute pool exhausted, cannot submit query")
+    raise
 
+try:
     while cursor.may_have_results:
-        try:
-            row = cursor.fetchone()
-            if row:
-                process(row)
-            else:
-                time.sleep(0.1)
-        except ComputePoolExhaustedError:
-            print("Compute pool exhausted, backing off")
-            time.sleep(30)
+        row = cursor.fetchone()
+        if row:
+            process(row)
+        else:
+            time.sleep(0.1)
 except StatementStoppedError as e:
+    # Raised during result processing if statement stops unexpectedly
     print(f"Query stopped: {e.statement_name}")
     print(f"Final phase: {e.phase}")
 ```
