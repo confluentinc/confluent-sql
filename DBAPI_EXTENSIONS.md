@@ -376,6 +376,28 @@ Use for statements that produce unbounded/continuous results:
 - ✅ No need to create/manage cursor for one-off DDL
 - ✅ Returns Statement object for management
 
+**Extended Parameters for DDL Methods**
+
+Both `execute_snapshot_ddl()` and `execute_streaming_ddl()` also accept these parameters for controlling statement identity and lifecycle:
+
+- `statement_name` (str | None): Custom statement identifier (defaults to auto-generated UUID)
+- `statement_label` (str | None): Label for grouping related statements
+
+Example with statement naming and labeling:
+
+```python
+statement = connection.execute_streaming_ddl(
+    "CREATE TABLE orders_stream AS SELECT * FROM kafka_orders",
+    statement_name="orders-stream-job",
+    statement_label="data-pipelines"
+)
+
+# Later, find all statements with this label
+statements = connection.list_statements(label="data-pipelines")
+```
+
+For more details on managing named and labeled statements, see the [Statement Naming and Labeling](#statement-naming-and-labeling) section.
+
 ---
 
 ### Statement Naming and Labeling
@@ -477,15 +499,16 @@ connection.http_user_agent = "MyApp/1.0 (custom agent)"
 
 ### Cursor Properties
 
-| Property            | Type            | When Available    | Description                                            |
-| ------------------- | --------------- | ----------------- | ------------------------------------------------------ |
-| `statement`         | `Statement`     | After `execute()` | Full statement metadata and lifecycle info             |
-| `may_have_results`  | `bool`          | After `execute()` | More data may arrive (streaming), or results exhausted |
-| `is_closed`         | `bool`          | Always            | Check if cursor is closed                              |
-| `execution_mode`    | `ExecutionMode` | After `execute()` | `SNAPSHOT` or `STREAMING_QUERY`                        |
-| `is_streaming`      | `bool`          | After `execute()` | Convenience: `execution_mode == STREAMING_QUERY`       |
-| `returns_changelog` | `bool`          | After `execute()` | Results are ChangeloggedRow with operations            |
-| `as_dict`           | `bool`          | Always            | Rows returned as dicts vs tuples                       |
+| Property            | Type            | When Available           | Description                                            |
+| ------------------- | --------------- | ------------------------ | ------------------------------------------------------ |
+| `statement`         | `Statement`     | After `execute()`        | Full statement metadata and lifecycle info             |
+| `may_have_results`  | `bool`          | After `execute()`        | More data may arrive (streaming), or results exhausted |
+| `is_closed`         | `bool`          | Always                   | Check if cursor is closed                              |
+| `execution_mode`    | `ExecutionMode` | After `execute()`        | `SNAPSHOT` or `STREAMING_QUERY`                        |
+| `is_streaming`      | `bool`          | After `execute()`        | Convenience: `execution_mode == STREAMING_QUERY`       |
+| `returns_changelog` | `bool`          | After `execute()`        | Results are ChangeloggedRow with operations            |
+| `as_dict`           | `bool`          | Always                   | Rows returned as dicts vs tuples                       |
+| `metrics`           | `FetchMetrics`  | After first fetch call   | Accumulated fetch performance statistics               |
 
 **Usage Examples:**
 
