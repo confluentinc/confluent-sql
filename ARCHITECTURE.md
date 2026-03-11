@@ -191,24 +191,14 @@ Statements persist on the server independently of your client connection, but ar
            # Can delete when done: connection.delete_statement(stmt.name)
    ```
 
-**Important:** Statements are only visible to connections using the same compute pool. If you connect to a different compute pool, you cannot access statements created in another pool, even if they have the same name.
-
-This enables patterns like:
-
-- **Job monitoring** - Check status of long-running queries from a different process (within the same compute pool)
-- **Graceful shutdown** - Find and delete statements before closing your application
-- **Batch management** - Group related statements with labels for group operations
-- **Job recovery** - Resume work without resubmitting if the client crashes
-
-### Important: Statement Result Retention and Lifetime
-
-Understanding statement lifetime is critical for production applications:
+### Statement Result Retention and Lifetime
 
 **Result Availability:**
 
 - Results are only retained server-side **while you are actively fetching them**
 - Once you have fetched all results from a statement via `fetchone()`, `fetchmany()`, or `fetchall()`, the server **does not retain those results**
 - If you need to access results again, you must re-execute the query (submit a new statement)
+- The statement results API acts like a single, forward-only cursor.
 
 **Automatic Cleanup:**
 
