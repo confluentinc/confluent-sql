@@ -122,6 +122,25 @@ finally:
 - ✅ Cleaner, more Pythonic code
 - ✅ Works with streaming and snapshot cursors
 
+**Example with Streaming Cursor:**
+
+```python
+import time
+from confluent_sql.execution_mode import ExecutionMode
+
+with connection.closing_cursor(mode=ExecutionMode.STREAMING_QUERY, as_dict=True) as cursor:
+    cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
+
+    while cursor.may_have_results:
+        rows = cursor.fetchmany(10)
+        if rows:
+            for row in rows:
+                print(f"Order: {row['order_id']}, Total: {row['total']}")
+        else:
+            time.sleep(0.1)
+# cursor automatically closed, statement cleanup handled
+```
+
 ---
 
 ### Custom ROW Type Mapping (`register_row_type()`)
