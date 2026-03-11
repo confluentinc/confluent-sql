@@ -172,24 +172,24 @@ for row in cursor:
     # Iterates continuously until statement stops
 ```
 
-## Understanding Snapshots from Changelog Compressor
+## Understanding Snapshots of Results from Changelog Compressor
 
-When you use a changelog compressor to process results from a streaming aggregation or join query, you work with snapshots—not individual changelog events.
+When you use a changelog compressor to process results from a streaming aggregation or join query, you work with **snapshots of results**—not individual changelog events. Each snapshot is a complete accumulated result set at a specific point in time.
 
-### What is a Snapshot?
+### What is a Snapshot of Results?
 
-A **snapshot** is a self-consistent view of the accumulated result set showing the complete state of your data at a specific point in time.
+A **snapshot of results** is a self-consistent, complete result set showing the accumulated state of your data at a specific point in time.
 
-**Key Characteristics:**
+**Key Characteristics of a Snapshot of Results:**
 
 - **Current State of All Rows**: Built from all INSERT/UPDATE/DELETE operations processed so far
 - **Point-in-Time View**: Represents state after consuming all available changelog events at that moment
 - **Self-Consistent**: No pending operations awaiting completion (all UPDATE_BEFORE/UPDATE_AFTER pairs have been applied)
-- **Complete, Not Incremental**: Each snapshot is the full accumulated state, not just the changes since the last snapshot
+- **Complete Result Set, Not Incremental**: Each snapshot is the full accumulated result set, not just the changes since the last snapshot
 
-### Key Insight: Accumulated State vs Individual Events
+### Key Insight: Complete Result Set vs Individual Events
 
-Don't think of snapshots as collections of individual changelog events. Instead, think of them as complete result sets:
+Don't think of snapshots of results as collections of individual changelog events. Instead, think of them as complete result sets:
 
 ```python
 cursor = connection.streaming_cursor()
@@ -197,7 +197,7 @@ cursor.execute("SELECT product_id, SUM(amount) FROM orders GROUP BY product_id")
 compressor = cursor.changelog_compressor()
 
 for snapshot in compressor.snapshots():
-    # snapshot contains the COMPLETE current totals by product
+    # Each snapshot of results contains the COMPLETE current totals by product
     # NOT just the rows that changed since the last snapshot
     # e.g., [(1, 1000), (2, 2500), (3, 500)]
 
@@ -207,13 +207,13 @@ for snapshot in compressor.snapshots():
     time.sleep(5)  # Wait for more orders to arrive
 ```
 
-In this example, each snapshot is a complete list of all products and their current totals—not a list of what changed.
+In this example, each snapshot of results is a complete list of all products and their current totals—not a list of what changed.
 
-### When Snapshots Are Identical
+### When Snapshots of Results Are Identical
 
-If no new orders arrive between two polling intervals, consecutive snapshots will be identical. This is completely normal and expected. Your application can choose to:
+If no new orders arrive between two polling intervals, consecutive snapshots of results will be identical. This is completely normal and expected. Your application can choose to:
 
-- Process every snapshot regardless (simple approach)
+- Process every snapshot of results regardless (simple approach)
 - Skip processing if snapshot hasn't changed (optimize for unchanged data)
 - Use delta detection to understand what actually changed
 
