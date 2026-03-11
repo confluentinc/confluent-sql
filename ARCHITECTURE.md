@@ -89,6 +89,33 @@ PENDING (< 100ms) → RUNNING → COMPLETED (usually instant)
 
 DDL executes and completes quickly. Note: `execute_snapshot_ddl()` waits for COMPLETED, while `execute_streaming_ddl()` returns as soon as the job starts (RUNNING phase for continuous jobs).
 
+### Statement Names and Identification
+
+**Every statement automatically receives a name** when submitted to the server. This happens whether you explicitly set one or not:
+
+```python
+# Without explicit name: server generates one automatically
+cursor = connection.cursor()
+cursor.execute("SELECT * FROM users")
+print(cursor.statement.name)  # e.g., "stmt-a1b2c3d4e5f6" (auto-generated)
+
+# With explicit name: you control the name
+statement = connection.execute_snapshot_ddl(
+    "CREATE TABLE summary AS SELECT * FROM events",
+    statement_name="create-summary-table"
+)
+print(statement.name)  # "create-summary-table"
+```
+
+**Use cases for explicit naming:**
+
+- **Recovery across connections** - Use a meaningful name so you can find and recover the statement from another process
+- **Job monitoring** - Name statements for your batch jobs, then list and check their status
+- **Resource cleanup** - Use names to organize statements for batch deletion
+- **Debugging** - Human-readable names make logs and monitoring dashboards clearer
+
+Auto-generated names are unique but difficult to remember, so explicit names are recommended for any statement you might need to access later.
+
 ### Statement Persistence and Recovery
 
 Statements persist on the server independently of your client connection. You can:
