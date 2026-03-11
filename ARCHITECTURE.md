@@ -155,7 +155,6 @@ rows = cursor.fetchall()  # May fail—statement was auto-deleted
 
 - Keep your polling loop active and responsive
 - If you need to pause processing, use appropriate timeouts on `fetchmany()`—don't abandon the statement for extended periods
-- Use named statements sparingly for streaming queries; they're designed for DDL/job management, not long-lived result sets
 
 ### Statement Properties and Metadata
 
@@ -282,22 +281,6 @@ for stmt in statements:
 ```
 
 ## Design Trade-Offs
-
-### Why HTTP and Not Direct TCP?
-
-1. **Accessibility** - HTTP is firewall-friendly and works across cloud boundaries
-2. **Auditability** - All requests are logged and can be monitored
-3. **Scalability** - HTTP load balancing spreads requests across servers
-4. **Compatibility** - Any language/tool with HTTP support can use the API
-5. **Statelessness** - Servers don't maintain client state, allowing easy failover
-
-### Why Statements Are Persistent
-
-1. **Resilience** - Statements survive client disconnection; no need to resubmit on reconnect
-2. **Monitoring** - You can check status from any client without original context
-3. **Resource Management** - Explicit deletion prevents "zombie" queries accumulating on server
-4. **Batch Operations** - Group related statements for coordinated management
-5. **Auditability** - Every statement is independently trackable and auditable
 
 ### Why Snapshot Mode Is Default
 
