@@ -39,7 +39,8 @@ connection = confluent_sql.connect(
     compute_pool_id="lfcp-789012",
     cloud_region="us-east-2",
     organization_id="org-123456",
-    cloud_provider="aws"
+    cloud_provider="aws",
+    dbname="your-database-name"
 )
 ```
 
