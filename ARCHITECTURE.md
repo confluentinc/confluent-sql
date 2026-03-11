@@ -107,6 +107,37 @@ statement = connection.execute_snapshot_ddl(
 print(statement.name)  # "create-summary-table"
 ```
 
+**Name Uniqueness:**
+
+Statement names **must be unique within the compute pool** they are submitted to. If you attempt to submit a statement with a name that already exists in the same compute pool, the server will reject it with an error. This means:
+
+- Auto-generated names are guaranteed unique per compute pool
+- If using explicit names, you must ensure they don't conflict with existing statements
+- After deleting a statement, its name becomes available for reuse
+- Names are scoped to the compute pool, not globally—different compute pools can have statements with the same name
+
+```python
+# This will work: same name in different compute pools
+pool_a_cursor = connection_pool_a.cursor()
+pool_a_cursor.execute(
+    "SELECT * FROM data",
+    statement_name="my-query"  # OK in pool A
+)
+
+pool_b_cursor = connection_pool_b.cursor()
+pool_b_cursor.execute(
+    "SELECT * FROM data",
+    statement_name="my-query"  # OK in pool B (different pool)
+)
+
+# This will fail: same name in the same compute pool
+cursor1 = connection.cursor()
+cursor1.execute("SELECT * FROM table1", statement_name="my-query")
+
+cursor2 = connection.cursor()
+cursor2.execute("SELECT * FROM table2", statement_name="my-query")  # ❌ Error: name already exists
+```
+
 **Use cases for explicit naming:**
 
 - **Recovery across connections** - Use a meaningful name so you can find and recover the statement from another process
@@ -114,7 +145,7 @@ print(statement.name)  # "create-summary-table"
 - **Resource cleanup** - Use names to organize statements for batch deletion
 - **Debugging** - Human-readable names make logs and monitoring dashboards clearer
 
-Auto-generated names are unique but difficult to remember, so explicit names are recommended for any statement you might need to access later.
+Auto-generated names are unique but difficult to remember, so explicit names are recommended for any statement you might need to access later. Just ensure they're unique within your compute pool.
 
 ### Statement Persistence and Recovery
 
