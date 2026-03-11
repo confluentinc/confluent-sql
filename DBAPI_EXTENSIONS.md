@@ -9,6 +9,7 @@ The `confluent-sql` driver extends the standard [DB-API v2](https://peps.python.
 - Queries execute and block until complete
 - Results are finite (complete as of query start time)
 - Standard DB-API methods (`fetchone()`, `fetchall()`, iteration) work as expected
+- Perfect for ad-hoc data exploration and analysis
 - No special streaming knowledge required for simple queries
 
 **However, Confluent Cloud Flink is fundamentally a streaming database.** The driver provides optional **streaming mode** for applications that need to work with continuous, unbounded data:
@@ -207,25 +208,7 @@ while cursor.may_have_results:
 
 ### Complete Streaming Documentation
 
-For comprehensive documentation of streaming queries, see **[STREAMING.md](STREAMING.md)**:
-
-- **Creating streaming cursors** - Two methods (builder vs convenience)
-- **Append-only vs changelog queries** - Understanding result types
-- **Changelog Compressor API** - Automatic state management
-  - `snapshots()` generator - Automatic polling
-  - `get_current_snapshot()` - Custom loop control
-- **Polling patterns** - Single row, batch, blocking iteration
-- **Best practices** - Common pitfalls and how to avoid them
-- **Complete working examples** - From simple to advanced scenarios
-- **Performance considerations** - Tuning for your workload
-
-### Key Cursor Properties for Streaming
-
-| Property                   | Type   | Purpose                                                        |
-| -------------------------- | ------ | -------------------------------------------------------------- |
-| `cursor.may_have_results`  | `bool` | Check if more data may arrive later (vs permanently exhausted) |
-| `cursor.returns_changelog` | `bool` | Detect changelog vs append-only results                        |
-| `cursor.is_streaming`      | `bool` | Check if cursor is in streaming mode                           |
+For comprehensive documentation of streaming queries, see **[STREAMING.md](STREAMING.md)**.
 
 ---
 

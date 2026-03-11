@@ -33,6 +33,38 @@ from confluent_sql.execution_mode import ExecutionMode
 cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
 ```
 
+## Cursor Properties for Streaming Queries
+
+When working with streaming cursors, several properties help you understand and control query behavior:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `cursor.may_have_results` | `bool` | Check if more data may arrive later (vs permanently exhausted). Essential for polling loops—distinguishes temporary emptiness from stream completion. |
+| `cursor.returns_changelog` | `bool` | Detect whether results include changelog operations (INSERT/UPDATE/DELETE) or are append-only. Use to determine if you need a changelog compressor. |
+| `cursor.is_streaming` | `bool` | Convenience check for streaming mode (`execution_mode == ExecutionMode.STREAMING_QUERY`). |
+
+**Example:**
+
+```python
+cursor = connection.streaming_cursor()
+cursor.execute("SELECT product_id, COUNT(*) FROM orders GROUP BY product_id")
+
+# Check query characteristics
+if cursor.returns_changelog:
+    # Results are ChangeloggedRow with operations
+    compressor = cursor.changelog_compressor()
+    for snapshot in compressor.snapshots():
+        process(snapshot)
+else:
+    # Results are plain rows (append-only)
+    while cursor.may_have_results:
+        rows = cursor.fetchmany(10)
+        if rows:
+            process(rows)
+        else:
+            time.sleep(0.1)
+```
+
 ## Append-Only Streaming Queries
 
 ### What Are Append-Only Streaming Queries?
