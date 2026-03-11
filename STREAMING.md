@@ -447,7 +447,7 @@ When executing a changelog query, results include operation metadata indicating 
 ```python
 from datetime import datetime
 
-from confluent_sql.statement import Op
+from confluent_sql import Op
 
 cursor = connection.streaming_cursor()
 cursor.execute("""
@@ -507,7 +507,7 @@ else:
 import time
 from datetime import datetime
 
-from confluent_sql.statement import Op
+from confluent_sql import Op
 
 cursor = connection.streaming_cursor(as_dict=True)
 cursor.execute("""
