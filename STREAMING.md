@@ -172,76 +172,6 @@ for row in cursor:
     # Iterates continuously until statement stops
 ```
 
-## Understanding Snapshots of Results from Changelog Compressor
-
-When you use a changelog compressor to process results from a streaming aggregation or join query, you work with **snapshots of results**—not individual changelog events. Each snapshot is a complete accumulated result set at a specific point in time.
-
-### What is a Snapshot of Results?
-
-A **snapshot of results** is a self-consistent, complete result set showing the accumulated state of your data at a specific point in time.
-
-**Key Characteristics of a Snapshot of Results:**
-
-- **Current State of All Rows**: Built from all INSERT/UPDATE/DELETE operations processed so far
-- **Point-in-Time View**: Represents state after consuming all available changelog events at that moment
-- **Self-Consistent**: No pending operations awaiting completion (all UPDATE_BEFORE/UPDATE_AFTER pairs have been applied)
-- **Complete Result Set, Not Incremental**: Each snapshot is the full accumulated result set at this moment in time, not just the changes since the last snapshot
-
-Don't think of snapshots of results as collections of individual changelog events. Instead, think of them as complete result sets:
-
-```python
-cursor = connection.streaming_cursor()
-cursor.execute("SELECT product_id, SUM(amount) FROM orders GROUP BY product_id")
-compressor = cursor.changelog_compressor()
-
-for snapshot in compressor.snapshots():
-    # Each snapshot of results contains the COMPLETE current totals by product
-    # NOT just the rows that changed since the last snapshot
-    # e.g., [(1, 1000), (2, 2500), (3, 500)]
-
-    for product_id, total_amount in snapshot:
-        update_dashboard(product_id, total_amount)
-
-    time.sleep(5)  # Wait for more orders to arrive
-```
-
-In this example, each snapshot of results is a complete list of all products and their current totals—not a list of what changed.
-
-### When Snapshots of Results Are Identical
-
-If no new changelog events are fetchable from the results API between two polling intervals, consecutive snapshots of results will be identical. This is completely normal and expected. Your application can choose to:
-
-- Process all rows within every snapshot regardless (simple approach)
-- Use delta detection to understand what actually changed. If this is needed, it may be simpler to consume the changelog events directly from the cursor and not use the compressor API.
-
-### How Snapshot Boundaries Are Inferred
-
-The changelog compressor infers snapshot boundaries based on the statement's result route indicator. A **snapshot capstone** (the point marking the end of a snapshot) is inferred when the result route indicates "no more changelog rows available at this time." This signals that all pending changelog events have been processed and the current state is self-consistent.
-
-**Important Limitation:** Flink SQL does not include explicit markers in the changelog stream that say "the changelog is self-consistent at this time." This means:
-
-- **Explicit Boundaries Only**: The compressor can only reliably identify snapshot boundaries when polling returns no new rows
-- **Interior Points Missed**: Self-consistent points in time that occur between changelog rows may not be captured as explicit snapshots
-- **Partial Coverage**: The `snapshots()` interface provides some of the self-consistent result set points in time, but not necessarily all of them
-
-In practice, this means your application will capture snapshots when you poll and receive no new changelog events, ensuring you have a reliable periodic view of the complete accumulated state. However, if additional self-consistent points occur between your polling intervals (within the incoming changelog stream), those intermediate points won't be explicitly available as separate snapshots.
-
-**Polling Pattern Impact:**
-
-The frequency and timing of your polling directly affects which self-consistent points you capture:
-
-```python
-# Frequent polling: More likely to capture intermediate self-consistent points
-for snapshot in compressor.snapshots():
-    time.sleep(0.1)  # Poll every 100ms
-
-# Infrequent polling: May miss interior self-consistent points
-for snapshot in compressor.snapshots():
-    time.sleep(5)  # Poll every 5 seconds
-```
-
-Both approaches are valid—choose based on your application's latency and throughput requirements.
-
 ---
 
 ## Changelog Streaming Queries
@@ -295,7 +225,8 @@ for row in cursor:
 # ✅ Using compressor (simple, correct)
 compressor = cursor.changelog_compressor()
 for snapshot in compressor.snapshots():
-    # snapshot is the current aggregated state
+    # the 'snapshot' is the currently self-consistent
+    # aggregated state of the result set tuples or dicts.
     for row in snapshot:
         process(row)
 ```
@@ -425,6 +356,82 @@ for iteration in range(max_iterations):
 - Returns deep copy of internal state
 - Caller must check `cursor.may_have_results`
 - Does not raise `StatementStoppedError`
+
+## Understanding Snapshots of Results from Changelog Compressor
+
+When you use a changelog compressor to process results from a streaming aggregation or join query, you work with **snapshots of results**—not individual changelog events. Each snapshot is a complete accumulated result set at a specific point in time.
+
+### What is a Snapshot of Results?
+
+A **snapshot of results** is a self-consistent, complete result set showing the accumulated state of your data at a specific point in time.
+
+**Key Characteristics of a Snapshot of Results:**
+
+- **Current State of All Rows**: Built from all INSERT/UPDATE/DELETE operations processed so far
+- **Point-in-Time View**: Represents state after consuming all available changelog events at that moment
+- **Self-Consistent**: No pending operations awaiting completion (all UPDATE_BEFORE/UPDATE_AFTER pairs have been applied)
+- **Complete Result Set, Not Incremental**: Each snapshot is the full accumulated result set at this moment in time, not just the changes since the last snapshot
+
+Don't think of snapshots of results as collections of individual changelog events. Instead, think of them as complete result sets:
+
+```python
+cursor = connection.streaming_cursor()
+cursor.execute("SELECT product_id, SUM(amount) FROM orders GROUP BY product_id")
+compressor = cursor.changelog_compressor()
+
+for snapshot in compressor.snapshots():
+    # Each snapshot of results contains the COMPLETE current totals by product
+    # NOT just the rows that changed since the last snapshot
+    # e.g., [(1, 1000), (2, 2500), (3, 500)]
+
+    for product_id, total_amount in snapshot:
+        update_dashboard(product_id, total_amount)
+
+    time.sleep(5)  # Wait for more orders to arrive
+```
+
+In this example, each snapshot of results is a complete list of all products and their current totals—not a list of what changed.
+
+### When Snapshots of Results Are Identical
+
+If no new changelog events are fetchable from the results API between two polling intervals, consecutive snapshots of results will be identical. This is completely normal and expected. Your application can choose to:
+
+- Process all rows within every snapshot regardless (simple approach)
+- Use delta detection to understand what actually changed. If this is needed, it may be simpler to consume the changelog events directly from the cursor and not use the compressor API.
+
+### How Snapshot Boundaries Are Inferred
+
+The changelog compressor infers snapshot boundaries based on the statement's result route indicator. A **snapshot capstone** (the point marking the end of a snapshot) is inferred when the result route indicates "no more changelog rows available at this time." This signals that all pending changelog events have been processed and the current state is self-consistent.
+
+**Important Limitation:** Flink SQL does not include explicit markers in the changelog stream that say "the changelog is self-consistent at this time." This means:
+
+- **Explicit Boundaries Only**: The compressor can only reliably identify snapshot boundaries when polling returns no new rows
+- **Interior Points Missed**: Self-consistent points in time that occur between changelog rows may not be captured as explicit snapshots
+- **Partial Coverage**: The `snapshots()` interface provides some of the self-consistent result set points in time, but not necessarily all of them
+
+In practice, this means your application will capture snapshots when you poll and receive no new changelog events, ensuring you have a reliable periodic view of the complete accumulated state. However, if additional self-consistent points occur between your polling intervals (within the incoming changelog stream), those intermediate points won't be explicitly available as separate snapshots.
+
+**Polling Pattern Impact:**
+
+The frequency and timing of your polling directly affects which self-consistent points you capture:
+
+```python
+# Frequent polling: More likely to capture intermediate self-consistent points
+for snapshot in compressor.snapshots():
+    time.sleep(0.1)  # Poll every 100ms
+
+# Infrequent polling: May miss interior self-consistent points
+for snapshot in compressor.snapshots():
+    time.sleep(5)  # Poll every 5 seconds
+```
+
+Both approaches are valid—choose based on your application's latency and throughput requirements.
+
+### Implementation
+
+The changelog compressor retains a collection of the result set rows based on the sum of changelog events recieved since the start of staetment execution. Each returned snapshot of those rows is a deepcopy of the compressor's internal state.
+
+---
 
 ## Understanding Changelog Operations (Low-Level Details)
 
