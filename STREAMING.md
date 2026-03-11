@@ -13,27 +13,7 @@ This driver supports two primary execution modes:
 
 ## Creating Streaming Cursors
 
-### Method 1: Using `streaming_cursor()` (Recommended)
-
-The simplest way to create a streaming cursor:
-
-```python
-cursor = connection.streaming_cursor()
-```
-
-Note: You can also use the optional `as_dict=True` parameter to return rows as dictionaries with column names as keys instead of tuples (available for both snapshot and streaming queries).
-
-### Method 2: Using `cursor()` with mode parameter
-
-For more control over execution mode:
-
-```python
-from confluent_sql.execution_mode import ExecutionMode
-
-cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
-```
-
-### Method 3: Using `closing_streaming_cursor()` (Recommended for automatic cleanup)
+### Method 1: Using `closing_streaming_cursor()` (Recommended)
 
 For streaming cursors with automatic resource cleanup via context manager:
 
@@ -56,6 +36,26 @@ This is the **preferred pattern for streaming queries** because it:
 - ✅ No need to import `ExecutionMode`
 
 See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md#auto-closing-streaming-cursor-closing_streaming_cursor) for more details on context managers.
+
+### Method 2: Using `streaming_cursor()`
+
+The simplest way to create a streaming cursor without context manager cleanup:
+
+```python
+cursor = connection.streaming_cursor()
+```
+
+Note: You can also use the optional `as_dict=True` parameter to return rows as dictionaries with column names as keys instead of tuples (available for both snapshot and streaming queries).
+
+### Method 3: Using `cursor()` with mode parameter
+
+For more control over execution mode:
+
+```python
+from confluent_sql.execution_mode import ExecutionMode
+
+cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+```
 
 ## Cursor Properties for Streaming Queries
 
