@@ -535,9 +535,7 @@ while cursor.may_have_results:
 ### ✅ Use Context Managers for Cleanup
 
 ```python
-import confluent_sql
-
-with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
     cursor.execute("SELECT * FROM stream WHERE active = %s", (True,))
     for row in cursor:
         process(row)
@@ -556,7 +554,7 @@ import confluent_sql
 connection = confluent_sql.connect(...)
 
 min_amount = 1000
-with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
     cursor.execute("""
         SELECT order_id, customer_id, amount FROM orders
         WHERE amount > %s
@@ -588,7 +586,7 @@ import confluent_sql
 connection = confluent_sql.connect(...)
 
 min_order_date = datetime(2024, 1, 1)
-with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
     cursor.execute("""
         SELECT product_id, product_name, COUNT(*) as sales_count
         FROM orders
@@ -623,7 +621,7 @@ import confluent_sql
 connection = confluent_sql.connect(...)
 
 min_timestamp = datetime(2024, 1, 1)
-with connection.closing_cursor(as_dict=True, mode=confluent_sql.ExecutionMode.STREAMING_QUERY) as cursor:
+with connection.closing_streaming_cursor(as_dict=True) as cursor:
     cursor.execute("""
         SELECT
             CAST(event_time / %s AS BIGINT) as hour,
