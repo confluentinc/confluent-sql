@@ -206,7 +206,8 @@ class TestAppendOnlyResultReader:
     def test_iteration_handles_empty_first_page_with_next_page_available(
         self, mock_connection, mock_statement_with_schema
     ):
-        """Test that iteration doesn't short-circuit when the first page is empty but more pages exist.
+        """Test that iteration doesn't short-circuit when the first page is empty but more pages
+        exist.
 
         This test reproduces the bug where iteration would raise StopIteration immediately
         after fetching an empty page, even though _next_page indicates more pages are available.
@@ -260,7 +261,8 @@ class TestAppendOnlyResultReader:
             pass
 
         # EXPECTED: Should have collected both rows (1, "alice", 100) and (2, "bob", 200)
-        # ACTUAL WITH BUG: Iterator raises StopIteration after empty first page, never fetching page 2
+        # ACTUAL WITH BUG: Iterator raises StopIteration after empty first page, never fetching
+        # page 2
         assert len(collected_rows) == 2, (
             f"Expected 2 rows but got {len(collected_rows)}. "
             "Bug present: __next__() raises StopIteration after empty page, "
