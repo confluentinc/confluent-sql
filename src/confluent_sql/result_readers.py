@@ -397,9 +397,11 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         if len(self._results) > 0:
             return self._consume_from_buffer(limit)
 
-        # Buffer is empty - check if we can fetch more
-        if self._fetch_next_page_called and self._next_page is None:
-            # We've already fetched before and there are no more pages
+        # Buffer is empty.
+
+        # Check if we can fetch more
+        if self._is_exhausted():
+            # We've already fetched all available pages
             return []
 
         # Try to fetch one page of results
@@ -422,6 +424,10 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             # Or we know there are more pages to fetch.
             or self._next_page is not None
         )
+
+    def _is_exhausted(self) -> bool:
+        """Whether we've fetched all available pages (no more pages to fetch)."""
+        return self._fetch_next_page_called and not self._next_page
 
     def fetchmany(self, size: int) -> list[ReaderOutput]:
         """
@@ -499,29 +505,43 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
     def __next__(self) -> ReaderOutput:
         """Implementation of iterator protocol.
 
+        If there are buffered results in the deque, return the next one immediately.
+
         This method implements blocking iteration behavior:
-        - When the buffer is empty, it calls _fetch_next_page() to get more data
+        - When the buffer is empty and we know there may be more data, it calls
+          _fetch_next_page() to (try) to get it.
         - Raises StopIteration only when no more results will ever be available
         - In streaming mode, this means iteration will block/wait for new data
 
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
         """
-        if len(self._results) == 0:
-            # Detect iteration exhaustion: we've fetched before AND there's nowhere
-            # else to fetch from. Using _fetch_next_page_called flag rather than
-            # buffer state because deque's destructive popleft() consumption leaves
-            # an empty deque indistinguishable from "never fetched yet".
-            if self._fetch_next_page_called and not self._next_page:
-                raise StopIteration
-            self._fetch_next_page()
-            if len(self._results) == 0:
+        while True:
+            # If buffer has results, return one immediately
+            if len(self._results) > 0:
+                return self._results.popleft()
+
+            # Buffer is empty. Check if we've exhausted all available pages.
+            # Using _fetch_next_page_called flag rather than buffer state because
+            # deque's destructive popleft() consumption leaves an empty deque
+            # indistinguishable from "never fetched yet".
+            if self._is_exhausted():
                 raise StopIteration
 
-        return self._results.popleft()
+            # Try to fetch the next page. In streaming scenarios, this may return
+            # an empty page if data hasn't arrived yet (and self._results will remain empty).
+            # Keep looping to retry.
+            #
+            # (This is not a completely hard loop because _fetch_next_page() internally
+            # pauses to avoid hammering the server with requests when data currently available.)
+            self._fetch_next_page()
 
     def _fetch_next_page(self) -> None:
-        """Fetch and process the next page of results."""
+        """Try to fetch and process the next page of results.
+
+        Pauses momentarily periodically if configured to avoid hard loops
+        and possible rate limiting when data isn't available yet in streaming scenarios.
+        """
 
         if not self._statement.can_fetch_results(self._execution_mode):
             raise InterfaceError("Statement is not ready for result fetching.")
@@ -529,51 +549,52 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
-        if not self._results or self._next_page is not None:
-            if self._most_recent_results_fetch_time is not None:
-                # Should we pause before fetching the next page?
-                elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
-                if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
-                    # Sleep the difference between when we last fetched results
-                    # and the configured pause time so that we ensure to not
-                    # hit the endpoint for this statement more often than
-                    # the configured pause time.
-                    pause_secs = (
-                        self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
-                    )
-                    time.sleep(pause_secs)
-                    self._metrics.paused_before_fetch(pause_secs)
+        if self._most_recent_results_fetch_time is not None:
+            # Should we pause before fetching the next page?
+            elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
+            if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
+                # Sleep the difference between when we last fetched results
+                # and the configured pause time so that we ensure to not
+                # hit the endpoint for this statement more often than
+                # the configured pause time.
+                pause_secs = self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
+                time.sleep(pause_secs)
+                self._metrics.paused_before_fetch(pause_secs)
 
-            self._metrics.prep_for_fetch()
+        self._metrics.prep_for_fetch()
 
-            # Get raw ChangelogRow results from connection
-            results, next_page = self._connection._get_statement_results(
-                self._statement.name, self._next_page
-            )
+        # Get (possibly empty) list of ChangelogRow results from the server and the next page link,
+        # if any, for the next fetch.
+        results, next_page_link = self._connection._get_statement_results(
+            self._statement.name, self._next_page
+        )
 
-            self._metrics.record_fetch_completion(len(results))
-
-            self._next_page = next_page
-
-            # Process each changelog row just fetched
-            type_converter = self._statement.type_converter
-            # Lazily initialize formatter when we first need it (ensures schema is available)
-            if self._row_formatter is None:
-                self._row_formatter = RowFormatter.create(
-                    self._as_dict, self._statement.schema
-                )
-            for res in results:
-                # Convert row to Python types
-                decoded_row = type_converter.to_python_row(res.row)
-
-                # Format row according to cursor's as_dict setting (tuple or dict)
-                formatted_row = self._row_formatter.format(decoded_row)
-
-                # Retain the row (and perhaps also the operation) in the reader's internal state
-                self._retain(res.op, formatted_row)
-
+        # Do the accounting that we did just fetch results
         self._fetch_next_page_called = True
         self._most_recent_results_fetch_time = time.monotonic()
+        self._metrics.record_fetch_completion(len(results))
+        self._next_page = next_page_link
+
+        if len(results) == 0:
+            return  # No results to process, but we did just fetch and update metrics, so return
+
+        # Process each changelog row just fetched ...
+
+        # Capture the needed parts into local variables for faster access in the per-result-row loop
+        type_converter_to_python_row = self._statement.type_converter.to_python_row
+        if self._row_formatter is None:
+            # Lazily initialize formatter when we first need it (ensures schema is available)
+            self._row_formatter = RowFormatter.create(self._as_dict, self._statement.schema)
+        row_formatter_format = self._row_formatter.format
+        retain = self._retain
+
+        for res in results:
+            # Promote row members from their JSON encoding to Python types
+            decoded_row = type_converter_to_python_row(res.row)
+            # Format row according to cursor's as_dict setting (tuple or dict)
+            formatted_row = row_formatter_format(decoded_row)
+            # Retain the row (and perhaps also the operation) in the reader's internal state
+            retain(res.op, formatted_row)
 
 
 class AppendOnlyResultReader(ResultReader[ResultTupleOrDict]):
@@ -599,9 +620,7 @@ class AppendOnlyResultReader(ResultReader[ResultTupleOrDict]):
         if op is not None and op != Op.INSERT:
             # Only expect INSERT operations for append-only
             logger.error(f"Received non-INSERT op {op} in results for append-only statement.")
-            raise NotSupportedError(
-                f"Non-INSERT op was received by AppendOnlyResultReader: {op}. "
-            )
+            raise NotSupportedError(f"Non-INSERT op was received by AppendOnlyResultReader: {op}. ")
 
         self._results.append(decoded)
 
