@@ -507,28 +507,21 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
         """
-        if len(self._results) == 0:
-            # Detect iteration exhaustion: we've fetched before AND there's nowhere
-            # else to fetch from. Using _fetch_next_page_called flag rather than
-            # buffer state because deque's destructive popleft() consumption leaves
-            # an empty deque indistinguishable from "never fetched yet".
-            if self._fetch_next_page_called and not self._next_page:
-                raise StopIteration
-            self._fetch_next_page()
-            # After fetching a page, if we got results, return one
+        while True:
+            # If buffer has results, return one immediately
             if len(self._results) > 0:
                 return self._results.popleft()
-            # If we got an empty page, check if more pages are available.
-            # Only raise StopIteration if we know there are no more pages.
-            # Otherwise, keep trying (recursive call will eventually get results
-            # or confirm exhaustion).
+
+            # Buffer is empty. Check if we've exhausted all available pages.
+            # Using _fetch_next_page_called flag rather than buffer state because
+            # deque's destructive popleft() consumption leaves an empty deque
+            # indistinguishable from "never fetched yet".
             if self._fetch_next_page_called and not self._next_page:
                 raise StopIteration
-            # More pages may be available but empty right now (streaming scenario).
-            # Keep trying to fetch.
-            return self.__next__()
 
-        return self._results.popleft()
+            # Try to fetch the next page. In streaming scenarios, this may return
+            # an empty page if data hasn't arrived yet. Keep looping to retry.
+            self._fetch_next_page()
 
     def _fetch_next_page(self) -> None:
         """Fetch and process the next page of results."""
