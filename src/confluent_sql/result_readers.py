@@ -398,8 +398,8 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             return self._consume_from_buffer(limit)
 
         # Buffer is empty - check if we can fetch more
-        if self._fetch_next_page_called and self._next_page is None:
-            # We've already fetched before and there are no more pages
+        if self._is_exhausted():
+            # We've already fetched all available pages
             return []
 
         # Try to fetch one page of results
@@ -422,6 +422,10 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             # Or we know there are more pages to fetch.
             or self._next_page is not None
         )
+
+    def _is_exhausted(self) -> bool:
+        """Whether we've fetched all available pages and have no buffered results."""
+        return self._fetch_next_page_called and not self._next_page
 
     def fetchmany(self, size: int) -> list[ReaderOutput]:
         """
@@ -516,7 +520,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             # Using _fetch_next_page_called flag rather than buffer state because
             # deque's destructive popleft() consumption leaves an empty deque
             # indistinguishable from "never fetched yet".
-            if self._fetch_next_page_called and not self._next_page:
+            if self._is_exhausted():
                 raise StopIteration
 
             # Try to fetch the next page. In streaming scenarios, this may return
