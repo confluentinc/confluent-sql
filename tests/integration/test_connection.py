@@ -6,11 +6,38 @@ Credentials must be provided via environment variables.
 """
 
 import os
+import time
 
 import pytest
 
 import confluent_sql
 from confluent_sql.connection import Connection
+
+
+def _wait_for_row(cursor, timeout_seconds=5):
+    """Poll fetchone() until a row arrives or timeout.
+
+    In streaming mode, fetchone() is non-blocking and may return None even when
+    more data will arrive shortly. This helper polls with a short delay until
+    a row is available or the timeout is exceeded.
+
+    Args:
+        cursor: The cursor to fetch from
+        timeout_seconds: Maximum time to poll (default 5 seconds)
+
+    Returns:
+        The first non-None row returned by fetchone()
+
+    Raises:
+        TimeoutError: If no row is available after timeout
+    """
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        row = cursor.fetchone()
+        if row is not None:
+            return row
+        time.sleep(0.1)
+    raise TimeoutError(f"No row available after polling for {timeout_seconds} seconds")
 
 
 @pytest.mark.integration
@@ -111,7 +138,7 @@ class TestConnection:
             assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
             delete_statement_spy = mocker.spy(cursor, "delete_statement")
             cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
-            row = cursor.fetchone()
+            row = _wait_for_row(cursor)
             assert isinstance(row, tuple), "Expected row to be a tuple"
             assert row == (1,)
 
@@ -129,7 +156,7 @@ class TestConnection:
             assert cursor.is_closed is False
             assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
             cursor.execute("SELECT 1 AS answer from `INFORMATION_SCHEMA`.`TABLES`")
-            row = cursor.fetchone()
+            row = _wait_for_row(cursor)
             assert isinstance(row, dict), "Expected row to be a dict when as_dict=True"
             assert row["answer"] == 1
 
