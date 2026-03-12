@@ -418,10 +418,12 @@ class Connection:
 
         Statement Lifecycle Management:
             The context manager automatically closes the cursor via cursor.close(),
-            which deletes statements that are already in terminal phases
-            (COMPLETED/FAILED/STOPPED). However, long-running streaming queries that
-            remain RUNNING on the server after exiting the context manager are NOT
-            automatically stopped or deleted server-side.
+            which makes a best-effort attempt to delete statements that are already
+            in terminal phases (COMPLETED/FAILED/STOPPED). Deletion errors are
+            logged and suppressed, so server-side cleanup is not strictly
+            guaranteed. Long-running streaming queries that remain RUNNING on the
+            server after exiting the context manager are NOT automatically stopped
+            or deleted server-side.
 
             To explicitly stop a RUNNING streaming statement, call
             cursor.delete_statement() or connection.delete_statement(statement_id)
