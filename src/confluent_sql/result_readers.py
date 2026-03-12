@@ -521,10 +521,17 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
 
             # Try to fetch the next page. In streaming scenarios, this may return
             # an empty page if data hasn't arrived yet. Keep looping to retry.
+            #
+            # (This is not a completely hard loop because _fetch_next_page() internally
+            # pauses to avoid hammering the server with requests when data isn't available yet.)
             self._fetch_next_page()
 
     def _fetch_next_page(self) -> None:
-        """Fetch and process the next page of results."""
+        """Fetch and process the next page of results.
+
+        Pauses momentarily periodically if configured to avoid hard loops
+        and possible rate limiting when data isn't available yet in streaming scenarios.
+        """
 
         if not self._statement.can_fetch_results(self._execution_mode):
             raise InterfaceError("Statement is not ready for result fetching.")
@@ -532,49 +539,54 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
-        if not self._results or self._next_page is not None:
-            if self._most_recent_results_fetch_time is not None:
-                # Should we pause before fetching the next page?
-                elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
-                if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
-                    # Sleep the difference between when we last fetched results
-                    # and the configured pause time so that we ensure to not
-                    # hit the endpoint for this statement more often than
-                    # the configured pause time.
-                    pause_secs = (
-                        self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
-                    )
-                    time.sleep(pause_secs)
-                    self._metrics.paused_before_fetch(pause_secs)
-
-            self._metrics.prep_for_fetch()
-
-            # Get raw ChangelogRow results from connection
-            results, next_page = self._connection._get_statement_results(
-                self._statement.name, self._next_page
-            )
-
-            self._metrics.record_fetch_completion(len(results))
-
-            self._next_page = next_page
-
-            # Process each changelog row just fetched
-            type_converter = self._statement.type_converter
-            # Lazily initialize formatter when we first need it (ensures schema is available)
-            if self._row_formatter is None:
-                self._row_formatter = RowFormatter.create(
-                    self._as_dict, self._statement.schema
+        if self._most_recent_results_fetch_time is not None:
+            # Should we pause before fetching the next page?
+            elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
+            if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
+                # Sleep the difference between when we last fetched results
+                # and the configured pause time so that we ensure to not
+                # hit the endpoint for this statement more often than
+                # the configured pause time.
+                pause_secs = (
+                    self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
                 )
-            for res in results:
-                # Convert row to Python types
-                decoded_row = type_converter.to_python_row(res.row)
+                time.sleep(pause_secs)
+                self._metrics.paused_before_fetch(pause_secs)
 
-                # Format row according to cursor's as_dict setting (tuple or dict)
-                formatted_row = self._row_formatter.format(decoded_row)
+        self._metrics.prep_for_fetch()
 
-                # Retain the row (and perhaps also the operation) in the reader's internal state
-                self._retain(res.op, formatted_row)
+        # Get raw ChangelogRow results from connection
+        results, next_page = self._connection._get_statement_results(
+            self._statement.name, self._next_page
+        )
 
+        self._metrics.record_fetch_completion(len(results))
+
+        self._next_page = next_page
+
+        # Process each changelog row just fetched ...
+
+        # capture the needed parts into local variables for faster access in loop
+        type_converter = self._statement.type_converter
+
+        # Lazily initialize formatter when we first need it (ensures schema is available)
+        if self._row_formatter is None:
+            self._row_formatter = RowFormatter.create(self._as_dict, self._statement.schema)
+        row_formatter = self._row_formatter
+
+        retain = self._retain
+
+        for res in results:
+            # Convert row to Python types
+            decoded_row = type_converter.to_python_row(res.row)
+
+            # Format row according to cursor's as_dict setting (tuple or dict)
+            formatted_row = row_formatter.format(decoded_row)
+
+            # Retain the row (and perhaps also the operation) in the reader's internal state
+            retain(res.op, formatted_row)
+
+        # Do the accounting that we did just fetch results
         self._fetch_next_page_called = True
         self._most_recent_results_fetch_time = time.monotonic()
 
@@ -602,9 +614,7 @@ class AppendOnlyResultReader(ResultReader[ResultTupleOrDict]):
         if op is not None and op != Op.INSERT:
             # Only expect INSERT operations for append-only
             logger.error(f"Received non-INSERT op {op} in results for append-only statement.")
-            raise NotSupportedError(
-                f"Non-INSERT op was received by AppendOnlyResultReader: {op}. "
-            )
+            raise NotSupportedError(f"Non-INSERT op was received by AppendOnlyResultReader: {op}. ")
 
         self._results.append(decoded)
 
