@@ -424,7 +424,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         )
 
     def _is_exhausted(self) -> bool:
-        """Whether we've fetched all available pages and have no buffered results."""
+        """Whether we've fetched all available pages (no more pages to fetch)."""
         return self._fetch_next_page_called and not self._next_page
 
     def fetchmany(self, size: int) -> list[ReaderOutput]:
