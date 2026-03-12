@@ -30,6 +30,22 @@ def schema_fixture():
     return schema
 
 
+@pytest.fixture
+def mock_connection():
+    """Create a mock connection for testing."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_statement_with_schema(schema_fixture):
+    """Create a mock statement with schema."""
+    statement = MagicMock(spec=Statement)
+    statement.name = "test-query"
+    statement.schema = schema_fixture
+    statement.type_converter = MagicMock()
+    return statement
+
+
 @pytest.mark.unit
 class TestRowFormatter:
     """Tests for RowFormatter family (RowFormatter, TupleRowFormatter, DictRowFormatter)."""
@@ -270,3 +286,72 @@ class TestAppendOnlyResultReader:
         )
         assert collected_rows[0] == (1, "alice", 100)
         assert collected_rows[1] == (2, "bob", 200)
+
+
+@pytest.mark.unit
+class TestIsExhausted:
+    """Tests for the _is_exhausted() helper method."""
+
+    def test_is_exhausted_when_fetch_called_and_no_next_page(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        """Test that _is_exhausted() returns True when we've fetched and there's no next page."""
+        mock_statement_with_schema.can_fetch_results.return_value = True
+        mock_statement_with_schema.type_converter.to_python_row.return_value = (1, "test", 3.14)
+
+        mock_connection._get_statement_results.return_value = (
+            [ChangeloggedRow(Op.INSERT, (1, "test", 3.14))],
+            None,  # No next page
+        )
+
+        reader = AppendOnlyResultReader(
+            connection=mock_connection,
+            statement=mock_statement_with_schema,
+            execution_mode=ExecutionMode.SNAPSHOT,
+            as_dict=False,
+        )
+
+        # Fetch once, which sets _fetch_next_page_called=True and _next_page=None
+        reader._fetch_next_page()
+
+        # Should be exhausted
+        assert reader._is_exhausted() is True
+
+    def test_is_exhausted_false_when_never_fetched(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        """Test that _is_exhausted() returns False when we've never fetched yet."""
+        reader = AppendOnlyResultReader(
+            connection=mock_connection,
+            statement=mock_statement_with_schema,
+            execution_mode=ExecutionMode.SNAPSHOT,
+            as_dict=False,
+        )
+
+        # Should not be exhausted (we haven't fetched yet)
+        assert reader._is_exhausted() is False
+
+    def test_is_exhausted_false_when_next_page_available(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        """Test that _is_exhausted() returns False when there's a next page available."""
+        mock_statement_with_schema.can_fetch_results.return_value = True
+        mock_statement_with_schema.type_converter.to_python_row.return_value = (1, "test", 3.14)
+
+        mock_connection._get_statement_results.return_value = (
+            [ChangeloggedRow(Op.INSERT, (1, "test", 3.14))],
+            "next_page_token",  # Next page available
+        )
+
+        reader = AppendOnlyResultReader(
+            connection=mock_connection,
+            statement=mock_statement_with_schema,
+            execution_mode=ExecutionMode.SNAPSHOT,
+            as_dict=False,
+        )
+
+        # Fetch once, which sets _fetch_next_page_called=True and _next_page="next_page_token"
+        reader._fetch_next_page()
+
+        # Should not be exhausted (more pages available)
+        assert reader._is_exhausted() is False
