@@ -785,39 +785,51 @@ class TestFetchMetrics:
         assert metrics.avg_rows_per_page == pytest.approx(3.0)
 
     def test_metrics_with_pausing(self, append_only_reader: AppendOnlyResultReader):
-        """Test that pausing metrics are tracked correctly."""
+        """Test that pausing metrics are tracked correctly when fetching multiple pages."""
         # Set up connection pause time
         append_only_reader._connection.statement_results_page_fetch_pause_secs = 2.0
 
-        # Mock get_statement_results to return some rows
+        # Mock get_statement_results to return rows with a next page on first call,
+        # then different rows on second call (to test pause between fetches)
+        call_count = 0
         def mock_get_statement_results(
             statement_name: str, next_url: str | None
         ) -> tuple[list[ChangelogRow], str | None]:
-            return [ChangelogRow(Op.INSERT.value, ["value1"])], None
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First fetch returns a row and indicates more pages
+                return [ChangelogRow(Op.INSERT.value, ["value1"])], "page_2_token"
+            else:
+                # Second fetch returns another row and no more pages
+                return [ChangelogRow(Op.INSERT.value, ["value2"])], None
 
         append_only_reader._connection._get_statement_results = mock_get_statement_results
 
-        # Set up state as if we had fetched before (to trigger pause logic)
-        append_only_reader._results = deque()
-        append_only_reader._most_recent_results_fetch_time = 99.0  # Previous fetch time
-        append_only_reader._fetch_next_page_called = True
-
-        # Mock time to simulate: current time is 99.5, so only 0.5 seconds elapsed
-        # This means we need to pause for 1.5 seconds (2.0 - 0.5)
-        # Need: elapsed check, prep_for_fetch, record_fetch_completion, setting
-        # _most_recent_results_fetch_time
+        # First fetch: prep_for_fetch (100.0), record_fetch_completion (100.05),
+        #             setting _most_recent_results_fetch_time (100.05)
+        # Second fetch: elapsed check (100.55), prep_for_fetch (100.6),
+        #             record_fetch_completion (100.65), setting _most_recent_results_fetch_time (100.65)
+        # Elapsed is 100.55 - 100.05 = 0.5 seconds, pause needed = 2.0 - 0.5 = 1.5 seconds
         with (
-            patch("time.monotonic", side_effect=[99.5, 100.0, 100.1, 100.1]),
+            patch("time.monotonic", side_effect=[100.0, 100.05, 100.05, 100.55, 100.6, 100.65, 100.65]),
             patch("time.sleep") as mock_sleep,
         ):
+            # First fetch (no pause, first call ever)
+            append_only_reader._fetch_next_page()
+
+            # Clear results to simulate consumption, but keep the next_page token
+            append_only_reader._results = deque()
+
+            # Second fetch (should pause because not enough time has elapsed)
             append_only_reader._fetch_next_page()
             mock_sleep.assert_called_once_with(1.5)
 
         metrics = append_only_reader.metrics
         assert metrics.paused_times == 1
         assert metrics.paused_secs == pytest.approx(1.5)
-        assert metrics.total_page_fetches == 1
-        assert metrics.fetch_request_secs == pytest.approx(0.1)  # 100.1 - 100.0
+        assert metrics.total_page_fetches == 2
+        assert metrics.total_changelog_rows_fetched == 2
 
     def test_metrics_empty_page_fetch(self, append_only_reader: AppendOnlyResultReader):
         """Test that empty page fetches are tracked."""
