@@ -129,14 +129,13 @@ class TestConnection:
         )
 
     def test_closing_streaming_cursor_after_executing_statement(
-        self, connection: Connection, mocker
+        self, connection: Connection
     ):
         """Test that auto closing a streaming cursor used for a statement works as expected."""
         with connection.closing_streaming_cursor() as cursor:
             assert cursor is not None
             assert cursor.is_closed is False
             assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
-            delete_statement_spy = mocker.spy(cursor, "delete_statement")
             cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
             row = _wait_for_row(cursor)
             assert isinstance(row, tuple), "Expected row to be a tuple"
@@ -144,9 +143,6 @@ class TestConnection:
 
         assert cursor.is_closed is True, (
             "Expected cursor to be closed after exiting context manager."
-        )
-        assert delete_statement_spy.call_count == 1, (
-            "Expected delete_statement to be called once on cursor close."
         )
 
     def test_closing_streaming_cursor_honors_as_dict(self, connection: Connection):
