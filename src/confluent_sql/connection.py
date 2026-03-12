@@ -404,6 +404,53 @@ class Connection:
         finally:
             cursor.close()
 
+    @contextmanager
+    def closing_streaming_cursor(self, *, as_dict: bool = False) -> Generator[Cursor, None, None]:
+        """
+        Context manager for creating and automatically closing a streaming cursor.
+
+        Convenience method equivalent to:
+            closing_cursor(as_dict=as_dict, mode=ExecutionMode.STREAMING_QUERY)
+
+        Creates a streaming cursor that processes continuous data from Flink SQL
+        with automatic cleanup. Streaming cursors return data as it arrives without
+        blocking or collecting all results into memory.
+
+        Statement Lifecycle Management:
+            The context manager automatically closes the cursor via cursor.close(),
+            which deletes statements that are already in terminal phases
+            (COMPLETED/FAILED/STOPPED). However, long-running streaming queries that
+            remain RUNNING on the server after exiting the context manager are NOT
+            automatically stopped or deleted server-side.
+
+            To explicitly stop a RUNNING streaming statement, call
+            cursor.delete_statement() or connection.delete_statement(statement_id)
+            before exiting the context manager.
+
+        Args:
+            as_dict: If True, fetch results as dictionaries, otherwise as tuples
+
+        Yields:
+            A new streaming Cursor object associated with this connection
+
+        Raises:
+            InterfaceError: If the connection is closed
+
+        Example:
+            with conn.closing_streaming_cursor(as_dict=True) as cursor:
+                cursor.execute("SELECT * FROM orders WHERE amount > %s", (1000,))
+                while cursor.may_have_results:
+                    rows = cursor.fetchmany(10)
+                    if rows:
+                        for row in rows:
+                            process(row)
+                    else:
+                        time.sleep(0.1)
+            # cursor is automatically closed after the with block
+        """
+        with self.closing_cursor(as_dict=as_dict, mode=ExecutionMode.STREAMING_QUERY) as cursor:
+            yield cursor
+
     def execute_snapshot_ddl(
         self,
         statement_text: str,
@@ -758,7 +805,7 @@ class Connection:
         self, statement_name: str, next_url: str | None
     ) -> tuple[list[ChangelogRow], str | None]:
         """
-        Get a page of results for a statement.
+        Try to get a page of results for a statement.
 
         Args:
             statement_name: The name of the statement
@@ -812,6 +859,9 @@ class Connection:
                 statement_name,
             )
 
+        # Promote to ChangelogRow namedtuples, which include the 'op' field for changelog queries,
+        # defaulting to 0 (INSERT) if not present. If no (new) results are currently available, this
+        # will be an empty list.
         results: list[ChangelogRow] = [
             # 'op' may be omitted, in which case we assume 0 (INSERT)
             ChangelogRow(r.get("op", 0), r["row"])
