@@ -505,8 +505,11 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
     def __next__(self) -> ReaderOutput:
         """Implementation of iterator protocol.
 
+        If there are buffered results in the deque, return the next one immediately.
+
         This method implements blocking iteration behavior:
-        - When the buffer is empty, it calls _fetch_next_page() to get more data
+        - When the buffer is empty and we know there may be more data, it calls
+          _fetch_next_page() to (try) to get it.
         - Raises StopIteration only when no more results will ever be available
         - In streaming mode, this means iteration will block/wait for new data
 
@@ -526,14 +529,15 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
                 raise StopIteration
 
             # Try to fetch the next page. In streaming scenarios, this may return
-            # an empty page if data hasn't arrived yet. Keep looping to retry.
+            # an empty page if data hasn't arrived yet (and self._results will remain empty).
+            # Keep looping to retry.
             #
             # (This is not a completely hard loop because _fetch_next_page() internally
-            # pauses to avoid hammering the server with requests when data isn't available yet.)
+            # pauses to avoid hammering the server with requests when data currently available.)
             self._fetch_next_page()
 
     def _fetch_next_page(self) -> None:
-        """Fetch and process the next page of results.
+        """Try to fetch and process the next page of results.
 
         Pauses momentarily periodically if configured to avoid hard loops
         and possible rate limiting when data isn't available yet in streaming scenarios.
@@ -559,40 +563,38 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
 
         self._metrics.prep_for_fetch()
 
-        # Get raw ChangelogRow results from connection
-        results, next_page = self._connection._get_statement_results(
+        # Get (possibly empty) list of ChangelogRow results from the server and the next page link,
+        # if any, for the next fetch.
+        results, next_page_link = self._connection._get_statement_results(
             self._statement.name, self._next_page
         )
-
-        self._metrics.record_fetch_completion(len(results))
-
-        self._next_page = next_page
-
-        # Process each changelog row just fetched ...
-
-        # capture the needed parts into local variables for faster access in loop
-        type_converter = self._statement.type_converter
-
-        # Lazily initialize formatter when we first need it (ensures schema is available)
-        if self._row_formatter is None:
-            self._row_formatter = RowFormatter.create(self._as_dict, self._statement.schema)
-        row_formatter = self._row_formatter
-
-        retain = self._retain
-
-        for res in results:
-            # Convert row to Python types
-            decoded_row = type_converter.to_python_row(res.row)
-
-            # Format row according to cursor's as_dict setting (tuple or dict)
-            formatted_row = row_formatter.format(decoded_row)
-
-            # Retain the row (and perhaps also the operation) in the reader's internal state
-            retain(res.op, formatted_row)
 
         # Do the accounting that we did just fetch results
         self._fetch_next_page_called = True
         self._most_recent_results_fetch_time = time.monotonic()
+        self._metrics.record_fetch_completion(len(results))
+        self._next_page = next_page_link
+
+        if len(results) == 0:
+            return  # No results to process, but we did just fetch and update metrics, so return
+
+        # Process each changelog row just fetched ...
+
+        # Capture the needed parts into local variables for faster access in the per-result-row loop
+        type_converter_to_python_row = self._statement.type_converter.to_python_row
+        if self._row_formatter is None:
+            # Lazily initialize formatter when we first need it (ensures schema is available)
+            self._row_formatter = RowFormatter.create(self._as_dict, self._statement.schema)
+        row_formatter_format = self._row_formatter.format
+        retain = self._retain
+
+        for res in results:
+            # Promote row members from their JSON encoding to Python types
+            decoded_row = type_converter_to_python_row(res.row)
+            # Format row according to cursor's as_dict setting (tuple or dict)
+            formatted_row = row_formatter_format(decoded_row)
+            # Retain the row (and perhaps also the operation) in the reader's internal state
+            retain(res.op, formatted_row)
 
 
 class AppendOnlyResultReader(ResultReader[ResultTupleOrDict]):

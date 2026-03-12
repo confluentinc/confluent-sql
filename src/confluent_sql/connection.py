@@ -405,9 +405,7 @@ class Connection:
             cursor.close()
 
     @contextmanager
-    def closing_streaming_cursor(
-        self, *, as_dict: bool = False
-    ) -> Generator[Cursor, None, None]:
+    def closing_streaming_cursor(self, *, as_dict: bool = False) -> Generator[Cursor, None, None]:
         """
         Context manager for creating and automatically closing a streaming cursor.
 
@@ -807,7 +805,7 @@ class Connection:
         self, statement_name: str, next_url: str | None
     ) -> tuple[list[ChangelogRow], str | None]:
         """
-        Get a page of results for a statement.
+        Try to get a page of results for a statement.
 
         Args:
             statement_name: The name of the statement
@@ -861,6 +859,9 @@ class Connection:
                 statement_name,
             )
 
+        # Promote to ChangelogRow namedtuples, which include the 'op' field for changelog queries,
+        # defaulting to 0 (INSERT) if not present. If no (new) results are currently available, this
+        # will be an empty list.
         results: list[ChangelogRow] = [
             # 'op' may be omitted, in which case we assume 0 (INSERT)
             ChangelogRow(r.get("op", 0), r["row"])

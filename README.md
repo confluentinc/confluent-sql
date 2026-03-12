@@ -8,6 +8,11 @@ The `confluent-sql` library provides a standard DB-API v2 interface for connecti
 executing SQL queries against Confluent Cloud Flink SQL services. This allows you to use
 familiar database programming patterns with Confluent's streaming SQL capabilities.
 
+## Status
+
+This is pre-production code mainly developed as the lower level portion of a dbt adaptor for Confluent Cloud Flink,
+but is aimed to also be a reasonable standalone dbapi+ driver for python programs to interact with Confluent Flink SQL.
+
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment
