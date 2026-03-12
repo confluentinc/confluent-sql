@@ -31,11 +31,15 @@ def _wait_for_row(cursor, timeout_seconds=5):
     Raises:
         TimeoutError: If no row is available after timeout
     """
-    start = time.time()
-    while time.time() - start < timeout_seconds:
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_seconds:
         row = cursor.fetchone()
         if row is not None:
             return row
+        # Exit early if the cursor indicates there will be no more results.
+        may_have_results = getattr(cursor, "may_have_results", None)
+        if may_have_results is False:
+            break
         time.sleep(0.1)
     raise TimeoutError(f"No row available after polling for {timeout_seconds} seconds")
 
