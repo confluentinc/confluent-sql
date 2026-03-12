@@ -397,7 +397,9 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         if len(self._results) > 0:
             return self._consume_from_buffer(limit)
 
-        # Buffer is empty - check if we can fetch more
+        # Buffer is empty.
+
+        # Check if we can fetch more
         if self._is_exhausted():
             # We've already fetched all available pages
             return []
@@ -551,9 +553,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
                 # and the configured pause time so that we ensure to not
                 # hit the endpoint for this statement more often than
                 # the configured pause time.
-                pause_secs = (
-                    self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
-                )
+                pause_secs = self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
                 time.sleep(pause_secs)
                 self._metrics.paused_before_fetch(pause_secs)
 
