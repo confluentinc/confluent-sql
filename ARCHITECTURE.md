@@ -1,6 +1,7 @@
 # Architecture
 
-The `confluent-sql` driver is built on top of Confluent Cloud's HTTP-based Flink SQL API. Understanding the architecture helps explain key design decisions and enables advanced usage patterns.
+The `confluent-sql` driver is built on top of Confluent Cloud's HTTP-based Flink SQL API. Understanding the architecture of
+both Confluent Cloud Flink and this driver helps explain key design decisions and enables advanced usage patterns.
 
 ## HTTP-Based Design
 
@@ -8,10 +9,10 @@ The driver communicates with Confluent Cloud Flink SQL through REST API endpoint
 
 **How it works:**
 
-1. When you call `cursor.execute()` or `connection.execute_snapshot_ddl()`, the driver sends an HTTP POST request to create a statement on the server
+1. When you call `cursor.execute*()`, the driver sends an HTTP POST request to create a statement on the server
 2. The server returns a unique statement ID and initial metadata
-3. The driver then polls the server (HTTP GET requests) to fetch results and check statement status
-4. Results are fetched in pages, allowing control over memory usage and backpressure
+3. The driver then polls the server (HTTP GET requests) to fetch both the statement state and/or its results
+4. Results are fetched in pages, internally buffering, allowing control over memory usage and backpressure
 
 **Key implications:**
 
@@ -34,38 +35,37 @@ When you submit a statement (query, DDL, or data ingestion job), it becomes a fi
 
 Every statement progresses through these phases:
 
-| Phase         | Meaning                                      | Can Fetch Results? | Typical Duration           |
-| ------------- | -------------------------------------------- | ------------------ | -------------------------- |
-| **PENDING**   | Queued on server, not yet started            | No                 | Usually < 100ms            |
-| **RUNNING**   | Actively executing                           | Yes (if unbounded) | Seconds to indefinite      |
-| **COMPLETED** | Finished successfully                        | Yes                | Indefinite (until deleted) |
-| **FAILED**    | Error during execution                       | No                 | Indefinite (until deleted) |
-| **STOPPED**   | User requested stop via `delete_statement()` | No                 | Indefinite (until deleted) |
+| Phase         | Meaning                           | Can Fetch Results Through This Driver?               |
+| ------------- | --------------------------------- | ---------------------------------------------------- |
+| **PENDING**   | Queued on server, not yet started | No                                                   |
+| **RUNNING**   | Actively executing                | No if snapshot query/cursor, Yes if streaming cursor |
+| **COMPLETED** | Finished successfully             | Yes (for both query/cursor types)                    |
+| **FAILED**    | Error during execution            | No                                                   |
+| **STOPPED**   | Explicitly stopped through API.   | No                                                   |
 
 ### How Phases Progress
 
 **Snapshot queries (the default):**
 
 ```
-PENDING (< 100ms) → RUNNING → COMPLETED (seconds)
+PENDING  → RUNNING → COMPLETED
 ```
 
-When you call `cursor.execute()` for a snapshot query, the driver:
+When you call `cursor.execute()` for a snapshot query / default cursor, the driver:
 
 1. Submits the statement (HTTP POST)
 2. Polls the server until it reaches COMPLETED phase
-3. Fetches the entire result set
-4. Returns results to your code
+3. Returns from `.execute()` to let you begin to interact with the cursor / results.
 
-This is blocking—your code pauses until the server finishes.
+This is blocking—your code pauses until the server finishes statement execution and result set calculation.
+
+_NOTE_: This behavior may change in future releases, moving to have `.execute()` return once RUNNING phase is entered,
+moving the additional blocking to the fetching results interactions.
 
 **Streaming queries:**
 
-```
-PENDING (< 100ms) → RUNNING (indefinite)
-```
-
-When you use `connection.streaming_cursor()`, the statement stays in RUNNING phase. Your code polls for results:
+When you use `connection.streaming_cursor()`, the statement will stay in `RUNNING` phase indefinitely.
+Your code polls for results:
 
 ```python
 cursor = connection.streaming_cursor()
@@ -78,16 +78,16 @@ while cursor.may_have_results:
     if rows:
         process(rows)
     else:
-        time.sleep(0.1)  # Brief pause, check again soon
+        # Brief pause, check again soon.
+        # Sleep time based on your knowledge of the nature of the query and its source topics.
+        time.sleep(0.5)
 ```
+
+See the [Streaming Mode](#streaming-mode) section for more details on controlling .
 
 **DDL statements (CREATE TABLE, etc.):**
 
-```
-PENDING (< 100ms) → RUNNING → COMPLETED (usually instant)
-```
-
-DDL executes and completes quickly. Note: `execute_snapshot_ddl()` waits for COMPLETED, while `execute_streaming_ddl()` returns as soon as the job starts (RUNNING phase for continuous jobs).
+DDL executes and completes quickly. Note: `execute_snapshot_ddl()` waits for COMPLETED, while `execute_streaming_ddl()` returns as soon as the job starts (RUNNING phase for continuous jobs, such as streaming `CREATE TABLE AS SELECT` or streaming `INSERT AS SELECT` statements).
 
 ### Statement Names and Identification
 
@@ -196,35 +196,14 @@ Statements persist on the server independently of your client connection, but ar
 **Result Availability:**
 
 - Results are only retained server-side **while you are actively fetching them**
-- Once you have fetched all results from a statement via `fetchone()`, `fetchmany()`, or `fetchall()`, the server **does not retain those results**
+- Once you have fetched a page of results from a statement via `fetchone()`, `fetchmany()`, `fetchall()`, or cursor iteration, the server **does not retain those results**
 - If you need to access results again, you must re-execute the query (submit a new statement)
 - The statement results API acts like a single, forward-only cursor.
 
 **Automatic Cleanup:**
 
 - Statements that produce results (e.g., SELECT queries) will be automatically **STOPPED** by the server if results are not fetched within a reasonable amount of time (typically minutes)
-- STOPPED statements are eventually garbage collected by the server after a generous retention period (~weeks), after which they become unrecoverable
-
-**Best Practices:**
-
-```python
-# ✅ Good: Fetch results immediately after execute()
-cursor = connection.cursor()
-cursor.execute("SELECT * FROM large_table")
-for row in cursor:  # Start fetching right away
-    process(row)
-
-# ❌ Problematic: Long delay between execute() and fetch
-cursor = connection.cursor()
-cursor.execute("SELECT * FROM large_table")
-time.sleep(3600)  # ← If server timeout is < 1 hour, statement may be STOPPED
-rows = cursor.fetchall()  # May fail—statement was auto-deleted
-```
-
-**For Streaming Queries:**
-
-- Keep your polling loop active and responsive
-- If you need to pause processing, use appropriate timeouts on `fetchmany()`—don't abandon the statement for extended periods
+- STOPPED statements are eventually garbage collected by the server after a generous retention period (~weeks).
 
 ### Statement Properties and Metadata
 
@@ -237,105 +216,74 @@ cursor = connection.streaming_cursor()
 cursor.execute("SELECT customer_id, COUNT(*) FROM events GROUP BY customer_id")
 
 stmt = cursor.statement
-print(f"ID: {stmt.statement_id}")           # Unique server-side ID
-print(f"Name: {stmt.name}")                 # Assigned name (if set)
-print(f"Phase: {stmt.phase}")               # PENDING, RUNNING, COMPLETED, etc.
-print(f"Bounded: {stmt.is_bounded}")        # False for streaming queries
-print(f"Append-only: {stmt.is_append_only}")  # True if no UPDATE/DELETE
-print(f"Returns changelog: {stmt.returns_changelog}")  # True if includes operations
+print(f"ID: {stmt.statement_id}")             # Unique server-side ID
+print(f"Name: {stmt.name}")                   # Assigned statement name
+print(f"Phase: {stmt.phase}")                 # PENDING, RUNNING, COMPLETED, etc.
+print(f"Bounded: {stmt.is_bounded}")          # False for streaming queries, true for those done in 'snapshot' mode.
+print(f"Append-only: {stmt.is_append_only}")  # True if statement results changelog is simple -- no UPDATE/DELETE operations
 ```
-
-**Key properties for different use cases:**
-
-- `phase` - Determine statement status (running? completed? failed?)
-- `is_bounded` - False for unbounded/streaming queries
-- `is_append_only` - True if results contain only INSERTs (no state tracking needed)
-- `returns_changelog` - True if results include UPDATE/DELETE operations (need compressor?)
-- `created_at` - When the statement was submitted
-- `metadata` - Server-provided timing and execution information
 
 ## Performance Implications
 
 ### Snapshot Mode
 
-Snapshot queries are **blocking**—your code pauses until the server finishes:
+Snapshot queries are **blocking**—your code pauses until the server finishes computing the result set:
 
 ```python
 cursor = connection.cursor()
-cursor.execute("SELECT * FROM large_table")  # ← Blocks here
-# Only reaches this line after server completes query
+cursor.execute("SELECT * FROM large_table")  # ← Blocks here until the statement reaches `COMPLETED` phase.
 rows = cursor.fetchall()
 ```
-
-Network latency directly impacts execution time:
-
-- POST (submit) ~50-200ms
-- GET (check status) ~50-200ms × N times until COMPLETED
-- GET (fetch results) ~50-200ms × N times for N result pages
 
 **Good for:** Ad-hoc queries, analytics, ETL where you want to block until results are ready.
 
 ### Streaming Mode
 
-Streaming queries are **non-blocking**—you control when to poll:
+With streaming queries, you choose between **blocking** and **non-blocking** interaction patterns:
+
+#### Non-Blocking: Using `fetch*()` Methods
+
+The `fetchone()`, `fetchmany()`, and `fetchall()` methods return immediately without waiting, even if no rows are available. You manage your own polling loop:
 
 ```python
 cursor = connection.streaming_cursor()
-cursor.execute("SELECT * FROM kafka_topic")  # ← Returns immediately
+cursor.execute("SELECT * FROM kafka_topic")  # ← Returns when statement enters RUNNING phase
 # Statement is now RUNNING on server, you poll when ready
 
 while cursor.may_have_results:
-    rows = cursor.fetchmany(10)  # Get 10 rows or fewer if not available
+    rows = cursor.fetchmany(10)  # Returns immediately with 0-10 rows (possibly empty!)
+
     if rows:
         process(rows)
     else:
-        time.sleep(0.1)  # Can sleep, do other work, etc.
+        # No rows available right now, can do other work or pause.
+        # Pause time would best be based on knowledge of the query and the
+        # event streams into the source topics the query draws from.
+        time.sleep(1)
 ```
 
 This gives you backpressure control and allows interleaving other work.
 
-**Good for:** Applications that handle continuous data, dashboards, monitoring systems.
+**Good for:** Applications that handle continuous data with backpressure control, dashboards, monitoring systems, or anything doing other work concurrently with polling.
 
-## Statement Creation Methods
+#### Blocking: Using Iteration
 
-### Via cursor.execute()
-
-Most common—returns a `Statement` object via `cursor.statement`:
+Iterating over the cursor with `for row in cursor:` uses a **blocking** pattern. The cursor internally fetches pages of results and yields rows one-by-one from its buffer, blocking indefinitely when the buffer is empty and waiting for the server to produce new results:
 
 ```python
-cursor = connection.cursor()
-cursor.execute("SELECT * FROM table WHERE id = %s", (123,))
-print(cursor.statement.phase)  # Access statement after execute
+cursor = connection.streaming_cursor()
+cursor.execute("SELECT * FROM kafka_topic")
+# Statement is now RUNNING on server
+
+for row in cursor:
+    # Yields rows from internal buffer; blocks when buffer is empty
+    # waiting for server to produce more rows
+    process(row)
 ```
 
-### Via execute_snapshot_ddl()
+This simplifies your code by eliminating manual polling loops, but your application blocks whenever the server hasn't produced new rows yet.
 
-For DDL statements that should block until completion:
-
-```python
-statement = connection.execute_snapshot_ddl(
-    "CREATE TABLE my_table AS SELECT * FROM source",
-    statement_name="create-my-table"
-)
-print(statement.phase)  # Usually COMPLETED
-```
-
-### Via execute_streaming_ddl()
-
-For long-running statements (DDL, INSERT INTO ... SELECT pipelines):
-
-```python
-statement = connection.execute_streaming_ddl(
-    """
-    INSERT INTO target_table
-    SELECT col1, col2 FROM source_table
-    WHERE col3 > %s
-    """,
-    (threshold,),
-    statement_name="hourly-sync"
-)
-print(statement.phase)  # RUNNING (job is running indefinitely)
-```
+**Good for:** Simple, focused streaming applications where straightforward row-by-row processing is the priority and blocking while waiting for data is acceptable.
 
 ### Finding Existing Statements
 
@@ -354,10 +302,9 @@ for stmt in statements:
 
 ### Why Snapshot Mode Is Default
 
-1. **Familiarity** - Behaves like traditional SQL databases (PostgreSQL, MySQL, etc.)
-2. **Simplicity** - No special streaming knowledge required for basic queries
-3. **Blocking semantics** - Matches DB-API v2 expectations
-4. **Safety** - Can't accidentally call `fetchall()` on unbounded data
+1. **Blocking + Finite Result Set semantics** - Matches DB-API v2 expectations
+2. **Familiarity** - Behaves like traditional SQL databases
+3. **Simplicity** - No special streaming knowledge required for basic queries
 
 Streaming mode is opt-in (via `streaming_cursor()`) for applications that explicitly need continuous data.
 
@@ -380,8 +327,8 @@ cursor.execute(
 
 The driver:
 
-1. Takes your SQL template and parameter tuple
-2. Converts parameters to appropriate SQL literals
+1. Takes your SQL template and parameters tuple
+2. Converts parameters to appropriate SQL literals based on the class of the parameter as documented in [TYPES.md](TYPES.md)
 3. Interpolates them into the SQL string
 4. Submits the complete SQL to the server
 

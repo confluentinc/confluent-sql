@@ -10,8 +10,9 @@ familiar database programming patterns with Confluent's streaming SQL capabiliti
 
 ## Status
 
-This is pre-production code mainly developed as the lower level portion of a dbt adaptor for Confluent Cloud Flink,
-but is aimed to also be a reasonable standalone dbapi+ driver for python programs to interact with Confluent Flink SQL.
+This is pre-production code mainly developed as the lower level portion of a `dbt` adaptor for Confluent Cloud Flink, but is aimed to also be a reasonable standalone dbapi+ driver for python programs to interact with Confluent Flink SQL.
+
+The behavior of snapshot-mode cursors, complying with dbapi semantics, are well stable. The streaming query extensions are more of a work in progress at this time. Feedback and suggestions are welcome!
 
 ## Prerequisites
 
@@ -49,14 +50,14 @@ connection = confluent_sql.connect(
 )
 ```
 
-Create a cursor and run a query:
+Create a cursor and run a point-in-time `SNAPSHOT` query:
 
 ```python
 cursor = connection.cursor()
 cursor.execute("SELECT customer_id, name FROM customers")
 ```
 
-Fetch results using fetchone, fetchmany and fetchall:
+Fetch results using `fetchone()`, `fetchmany()` and `fetchall()`:
 
 ```python
 print(cursor.fetchone())
@@ -78,28 +79,11 @@ cursor.close()
 connection.close()
 ```
 
-## Parameterized Statement and Flink to Python Value Support
-
-This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
-
-## DB-API Extensions
-
-This driver extends the standard DB-API v2 interface with powerful features designed for stream processing:
-
-- **Dictionary result rows** - Access columns by name instead of position
-- **Streaming cursors** - Non-blocking result consumption from continuous queries
-- **Changelog compression** - Automatic state management for aggregations and joins
-- **Statement lifecycle** - Named statements, labels, and resource management
-- **Type system** - Full support for all Flink SQL types including streaming-specific types
-- **Performance monitoring** - Built-in fetch metrics and introspection
-
-See **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)** for more details.
-
-### Quick Examples
-
 **Dictionary Result Rows:**
 
 ```python
+
+...
 cursor = connection.cursor(as_dict=True)
 cursor.execute("SELECT customer_id, name, email FROM customers WHERE customer_id = %s", (123,))
 row = cursor.fetchone()
@@ -111,6 +95,10 @@ print(row["customer_id"])  # Access by column name
 ```python
 import time
 
+...
+
+# Execute a streaming statement, runs and produces results indefinitely until
+# we stop consuming its results or the statement is stopped or deleted via API ...
 cursor = connection.streaming_cursor()
 cursor.execute("SELECT * FROM orders_stream WHERE total > %s", (1000,))
 
@@ -123,15 +111,20 @@ while cursor.may_have_results:
         time.sleep(0.1)
 ```
 
-**Note:** The streaming query example uses `connection.streaming_cursor()` which doesn't require additional imports. If you need to use the lower-level `cursor()` method with a specific execution mode, you'll need to import `ExecutionMode`:
+## Parameterized Statement and Flink to Python Value Support
 
-```python
-from confluent_sql.execution_mode import ExecutionMode
+This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
 
-cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
-```
+## DB-API Extensions
 
-See [DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md) for more details on execution modes and cursor creation.
+This driver extends the standard DB-API v2 interface with additional features:
+
+- **Dictionary result rows** - Access columns by name instead of position
+- **Streaming cursors** - Non-blocking result consumption from continuous queries
+- **Changelog compression** - Automatic state management for aggregations and joins
+- **Statement lifecycle management** - Named statements, labels, and resource management
+- **Type system** - Full support for all Flink SQL types including streaming-specific types
+- **Performance monitoring** - Built-in fetch metrics and introspection
 
 ## Architecture & How It Works
 
