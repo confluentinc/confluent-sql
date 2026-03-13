@@ -754,3 +754,78 @@ class TestStreamingChangelogCursor:
                 # Cleanup
                 cursor.delete_statement()
                 cursor.close()
+
+    @pytest.mark.slow
+    def test_streaming_append_only_iteration_collects_all_rows(self, connection: Connection):
+        """Integration test verifying that streaming append-only iteration doesn't short-circuit
+        when encountering empty pages.
+
+        This test replicates the example in examples/simple_append_only_streaming_query_example.py
+        and demonstrates the fix for the bug where iteration would raise StopIteration after
+        fetching an empty page, even if more data was available.
+
+        The test:
+        1. Creates a table with sample data
+        2. Executes a streaming append-only SELECT query
+        3. Iterates using 'for row in cursor' syntax
+        4. Verifies all rows are observed via iteration
+        5. Cleans up the table
+
+        This proves that iteration correctly handles streaming mode where servers may return
+        empty pages while data is still arriving.
+        """
+
+        # Create a unique table name for this test
+        table_name = f"test_streaming_iteration_{uuid4().hex[:8]}"
+
+        try:
+            # Step 1: Create table with sample data
+            with connection.closing_cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    CREATE TABLE {table_name} (
+                        id INT,
+                        name STRING
+                    )
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    INSERT INTO {table_name} (id, name) VALUES
+                    (1, 'Alice'),
+                    (2, 'Bob'),
+                    (3, 'Charlie')
+                    """
+                )
+
+            # Step 2: Execute streaming query and iterate
+            with connection.closing_streaming_cursor(as_dict=True) as cursor:
+                cursor.execute(f"SELECT id, name FROM {table_name}")
+
+                # Verify this is an append-only streaming query
+                assert cursor.statement.is_append_only is True, (
+                    "Expected statement to be append-only"
+                )
+                assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
+
+                # Step 3: Iterate and collect all rows
+                # This is the critical part - in the buggy version, iteration would stop
+                # prematurely after empty pages, collecting 0 rows instead of 3.
+                names_observed: set[str] = set()
+                for row in cursor:
+                    assert isinstance(row, dict), f"Expected dict row, got {type(row)}: {row}"
+                    names_observed.add(row["name"])
+
+                    # Break after observing all names (as in the example)
+                    if names_observed == {"Alice", "Bob", "Charlie"}:
+                        break
+
+            # Step 4: Verify all expected rows were observed
+            assert names_observed == {"Alice", "Bob", "Charlie"}, (
+                f"Expected to observe all three names via iteration, but got: {names_observed}"
+            )
+
+        finally:
+            # Step 5: Clean up the table
+            with connection.closing_cursor() as cursor:
+                cursor.execute(f"DROP TABLE IF EXISTS {table_name}")

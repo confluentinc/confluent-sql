@@ -174,9 +174,7 @@ class TestFetchMethods:
         assert fetch_tracker["count"] == 2, "Should have fetched twice"
         assert result4 == [("page2_row1",), ("page2_row2",)]
 
-    def test_fetchmany_makes_at_most_one_fetch(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_fetchmany_makes_at_most_one_fetch(self, append_only_reader: AppendOnlyResultReader):
         """Test that fetchmany makes at most one fetch request per call.
 
         When the buffer is empty and fetchmany is called with a large size,
@@ -264,9 +262,7 @@ class TestFetchMethods:
         AppendOnlyResultReader."""
         statement = statement_factory(is_append_only=True)
         # Create reader in STREAMING_QUERY mode
-        reader = AppendOnlyResultReader(
-            mock_connection, statement, ExecutionMode.STREAMING_QUERY
-        )
+        reader = AppendOnlyResultReader(mock_connection, statement, ExecutionMode.STREAMING_QUERY)
 
         fetch_count = 0
 
@@ -341,9 +337,7 @@ class TestFetchMethods:
         """Test that fetchone() makes at most one fetch per call in streaming mode."""
         statement = statement_factory(is_append_only=True)
         # Create reader in STREAMING_QUERY mode
-        reader = AppendOnlyResultReader(
-            mock_connection, statement, ExecutionMode.STREAMING_QUERY
-        )
+        reader = AppendOnlyResultReader(mock_connection, statement, ExecutionMode.STREAMING_QUERY)
 
         fetch_count = 0
 
@@ -419,13 +413,9 @@ class TestFetchMethods:
         fetched = append_only_reader.fetchone()
         assert fetched is None, f"Expected to fetch None when no more results, got {fetched}"
 
-    def test_fetchall_against_bounded_statement(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_fetchall_against_bounded_statement(self, append_only_reader: AppendOnlyResultReader):
         # By default the statement from the fixture should be bounded.
-        assert append_only_reader._statement.is_bounded, (
-            "Statement should be bounded for this test"
-        )
+        assert append_only_reader._statement.is_bounded, "Statement should be bounded for this test"
 
         # Mock some results in the reader
         append_only_reader._results = deque([("row1",), ("row2",), ("row3",)])
@@ -436,9 +426,7 @@ class TestFetchMethods:
             f"Expected to fetch all rows, got {fetched}"
         )
 
-    def test_fetchall_vs_streaming_results(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_fetchall_vs_streaming_results(self, append_only_reader: AppendOnlyResultReader):
         # Doctor the reader's statement to have come from a streaming query
         append_only_reader._statement.traits.is_bounded = False  # type: ignore
 
@@ -452,9 +440,7 @@ class TestFetchMethods:
 
 @pytest.mark.unit
 class TestIteration:
-    def test_iteration_over_onhand_results(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_iteration_over_onhand_results(self, append_only_reader: AppendOnlyResultReader):
         # Mock some results in the reader
         append_only_reader._results = deque([("row1",), ("row2",), ("row3",)])
 
@@ -467,9 +453,7 @@ class TestIteration:
             f"Expected to collect all rows through iteration, got {collected}"
         )
 
-    def test_iteration_calls_fetch_next_page(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_iteration_calls_fetch_next_page(self, append_only_reader: AppendOnlyResultReader):
         # Mock the _fetch_next_page method to track calls
         call_tracker = {"called": False}
 
@@ -494,9 +478,7 @@ class TestIteration:
             f"Expected to collect fetched rows through iteration, got {collected}"
         )
 
-    def test_iteration_stops_when_no_more_results(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_iteration_stops_when_no_more_results(self, append_only_reader: AppendOnlyResultReader):
         # Mock the _fetch_next_page method to simulate no results and no next page
         def mock_fetch_next_page():
             append_only_reader._results = deque()
@@ -546,9 +528,7 @@ class TestIteration:
 
 @pytest.mark.unit
 class TestFetchNextPage:
-    def test_raises_if_statement_not_ready(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_raises_if_statement_not_ready(self, append_only_reader: AppendOnlyResultReader):
         # Append-only statements in streaming mode are ready when RUNNING.
         # But a statement in PENDING phase is never ready, so test that instead.
         append_only_reader._statement._phase = Phase.PENDING
@@ -706,10 +686,12 @@ class TestChangelogEventReader:
             fetch_count += 1
             if fetch_count == 1:
                 # First fetch returns 2 changelog rows
-                reader._results = deque([
-                    ChangeloggedRow(Op.INSERT, ("row1",)),
-                    ChangeloggedRow(Op.UPDATE_BEFORE, ("row2",)),
-                ])
+                reader._results = deque(
+                    [
+                        ChangeloggedRow(Op.INSERT, ("row1",)),
+                        ChangeloggedRow(Op.UPDATE_BEFORE, ("row2",)),
+                    ]
+                )
                 reader._next_page = "page2"
             elif fetch_count == 2:
                 # Second fetch returns 2 more changelog rows
@@ -750,9 +732,7 @@ class TestFetchMetrics:
         assert metrics.paused_secs == pytest.approx(0.0)
         assert metrics.avg_rows_per_page == pytest.approx(0.0)
 
-    def test_metrics_updated_during_fetch(
-        self, append_only_reader: AppendOnlyResultReader
-    ):
+    def test_metrics_updated_during_fetch(self, append_only_reader: AppendOnlyResultReader):
         """Test that metrics are properly updated when fetching pages."""
 
         # Mock the connection's _get_statement_results to return results
@@ -785,39 +765,55 @@ class TestFetchMetrics:
         assert metrics.avg_rows_per_page == pytest.approx(3.0)
 
     def test_metrics_with_pausing(self, append_only_reader: AppendOnlyResultReader):
-        """Test that pausing metrics are tracked correctly."""
+        """Test that pausing metrics are tracked correctly when fetching multiple pages."""
         # Set up connection pause time
         append_only_reader._connection.statement_results_page_fetch_pause_secs = 2.0
 
-        # Mock get_statement_results to return some rows
+        # Mock get_statement_results to return rows with a next page on first call,
+        # then different rows on second call (to test pause between fetches)
+        call_count = 0
+
         def mock_get_statement_results(
             statement_name: str, next_url: str | None
         ) -> tuple[list[ChangelogRow], str | None]:
-            return [ChangelogRow(Op.INSERT.value, ["value1"])], None
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First fetch returns a row and indicates more pages
+                return [ChangelogRow(Op.INSERT.value, ["value1"])], "page_2_token"
+            else:
+                # Second fetch returns another row and no more pages
+                return [ChangelogRow(Op.INSERT.value, ["value2"])], None
 
         append_only_reader._connection._get_statement_results = mock_get_statement_results
 
-        # Set up state as if we had fetched before (to trigger pause logic)
-        append_only_reader._results = deque()
-        append_only_reader._most_recent_results_fetch_time = 99.0  # Previous fetch time
-        append_only_reader._fetch_next_page_called = True
-
-        # Mock time to simulate: current time is 99.5, so only 0.5 seconds elapsed
-        # This means we need to pause for 1.5 seconds (2.0 - 0.5)
-        # Need: elapsed check, prep_for_fetch, record_fetch_completion, setting
-        # _most_recent_results_fetch_time
+        # First fetch: prep_for_fetch (100.0), record_fetch_completion (100.05),
+        #             setting _most_recent_results_fetch_time (100.05)
+        # Second fetch: elapsed check (100.55), prep_for_fetch (100.6),
+        #             record_fetch_completion (100.65), setting _most_recent_results_fetch_time
+        #               (100.65)
+        # Elapsed is 100.55 - 100.05 = 0.5 seconds, pause needed = 2.0 - 0.5 = 1.5 seconds
         with (
-            patch("time.monotonic", side_effect=[99.5, 100.0, 100.1, 100.1]),
+            patch(
+                "time.monotonic", side_effect=[100.0, 100.05, 100.05, 100.55, 100.6, 100.65, 100.65]
+            ),
             patch("time.sleep") as mock_sleep,
         ):
+            # First fetch (no pause, first call ever)
+            append_only_reader._fetch_next_page()
+
+            # Clear results to simulate consumption, but keep the next_page token
+            append_only_reader._results = deque()
+
+            # Second fetch (should pause because not enough time has elapsed)
             append_only_reader._fetch_next_page()
             mock_sleep.assert_called_once_with(1.5)
 
         metrics = append_only_reader.metrics
         assert metrics.paused_times == 1
         assert metrics.paused_secs == pytest.approx(1.5)
-        assert metrics.total_page_fetches == 1
-        assert metrics.fetch_request_secs == pytest.approx(0.1)  # 100.1 - 100.0
+        assert metrics.total_page_fetches == 2
+        assert metrics.total_changelog_rows_fetched == 2
 
     def test_metrics_empty_page_fetch(self, append_only_reader: AppendOnlyResultReader):
         """Test that empty page fetches are tracked."""
