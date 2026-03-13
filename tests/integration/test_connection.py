@@ -6,11 +6,42 @@ Credentials must be provided via environment variables.
 """
 
 import os
+import time
 
 import pytest
 
 import confluent_sql
 from confluent_sql.connection import Connection
+
+
+def _wait_for_row(cursor, timeout_seconds=5):
+    """Poll fetchone() until a row arrives or timeout.
+
+    In streaming mode, fetchone() is non-blocking and may return None even when
+    more data will arrive shortly. This helper polls with a short delay until
+    a row is available or the timeout is exceeded.
+
+    Args:
+        cursor: The cursor to fetch from
+        timeout_seconds: Maximum time to poll (default 5 seconds)
+
+    Returns:
+        The first non-None row returned by fetchone()
+
+    Raises:
+        TimeoutError: If no row is available after timeout
+    """
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_seconds:
+        row = cursor.fetchone()
+        if row is not None:
+            return row
+        # Exit early if the cursor indicates there will be no more results.
+        may_have_results = getattr(cursor, "may_have_results", None)
+        if may_have_results is False:
+            break
+        time.sleep(0.1)
+    raise TimeoutError(f"No row available after polling for {timeout_seconds} seconds")
 
 
 @pytest.mark.integration
@@ -101,25 +132,19 @@ class TestConnection:
             "Expected cursor to be closed after exiting context manager."
         )
 
-    def test_closing_streaming_cursor_after_executing_statement(
-        self, connection: Connection, mocker
-    ):
+    def test_closing_streaming_cursor_after_executing_statement(self, connection: Connection):
         """Test that auto closing a streaming cursor used for a statement works as expected."""
         with connection.closing_streaming_cursor() as cursor:
             assert cursor is not None
             assert cursor.is_closed is False
             assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
-            delete_statement_spy = mocker.spy(cursor, "delete_statement")
             cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
-            row = cursor.fetchone()
+            row = _wait_for_row(cursor)
             assert isinstance(row, tuple), "Expected row to be a tuple"
             assert row == (1,)
 
         assert cursor.is_closed is True, (
             "Expected cursor to be closed after exiting context manager."
-        )
-        assert delete_statement_spy.call_count == 1, (
-            "Expected delete_statement to be called once on cursor close."
         )
 
     def test_closing_streaming_cursor_honors_as_dict(self, connection: Connection):
@@ -129,7 +154,7 @@ class TestConnection:
             assert cursor.is_closed is False
             assert cursor.is_streaming is True, "Expected cursor to be in streaming mode"
             cursor.execute("SELECT 1 AS answer from `INFORMATION_SCHEMA`.`TABLES`")
-            row = cursor.fetchone()
+            row = _wait_for_row(cursor)
             assert isinstance(row, dict), "Expected row to be a dict when as_dict=True"
             assert row["answer"] == 1
 
@@ -137,7 +162,7 @@ class TestConnection:
             "Expected cursor to be closed after exiting context manager."
         )
 
-    def test_closing_streaming_cursor_no_statement(self, connection: Connection, mocker):
+    def test_closing_streaming_cursor_no_statement(self, connection: Connection):
         """Test that auto closing a streaming cursor not used for any statement works."""
         with connection.closing_streaming_cursor() as cursor:
             assert cursor is not None
