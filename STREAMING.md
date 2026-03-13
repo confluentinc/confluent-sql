@@ -4,6 +4,8 @@ The `confluent-sql` driver provides full support for continuous streaming querie
 
 ## Overview
 
+> **⚠️ Early Access:** [Snapshot queries](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html) on Confluent Cloud Flink SQL are currently in Early Access and may be subject to change. The SNAPSHOT mode described below relies on this feature.
+
 This driver supports two primary execution modes:
 
 | Mode                   | Use Case              | Query Examples                  | Result Behavior                                                              |

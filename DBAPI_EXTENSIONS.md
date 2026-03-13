@@ -4,6 +4,8 @@ The `confluent-sql` driver extends the standard [DB-API v2](https://peps.python.
 
 ## Understanding Snapshot vs Streaming Modes
 
+> **⚠️ Early Access:** [Snapshot queries](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html) on Confluent Cloud Flink SQL are currently in Early Access and may be subject to change.
+
 **By default, the driver operates in [SNAPSHOT mode](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html)**, producing behavior very similar to traditional SQL databases:
 
 - Queries execute and block until complete

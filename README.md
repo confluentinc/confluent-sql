@@ -14,6 +14,8 @@ This is pre-production code mainly developed as the lower level portion of a `db
 
 The behavior of snapshot-mode cursors, complying with dbapi semantics, are well stable. The streaming query extensions are more of a work in progress at this time. Feedback and suggestions are welcome!
 
+> **⚠️ Early Access:** [Snapshot queries](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html) on Confluent Cloud Flink SQL are currently in Early Access and may be subject to change. The driver defaults to snapshot mode for all queries unless streaming mode is explicitly requested.
+
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment

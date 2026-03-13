@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+import warnings
 from collections import namedtuple
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -235,6 +236,9 @@ class Connection:
 
         self._row_type_registry = RowTypeRegistry()
 
+        # TODO: remove after snapshot queries reach open preview (May 2026)
+        self._snapshot_warning_issued = False
+
     def close(self) -> None:
         """
         Close the connection.
@@ -346,6 +350,15 @@ class Connection:
         """
         if self._closed:
             raise InterfaceError("Connection is closed")
+
+        # TODO: remove after snapshot queries reach open preview (May 2026)
+        if mode.is_snapshot and not self._snapshot_warning_issued:
+            self._snapshot_warning_issued = True
+            warnings.warn(
+                "Snapshot queries on Confluent Cloud Flink SQL are currently in "
+                "Early Access and may be subject to change.",
+                stacklevel=2,
+            )
 
         return Cursor(self, as_dict=as_dict, execution_mode=mode)
 
