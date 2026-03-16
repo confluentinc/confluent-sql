@@ -45,7 +45,7 @@ Every statement progresses through these phases:
 
 ### How Phases Progress
 
-**Snapshot queries (the default):** *(⚠️ [Early Access](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html))*
+**Snapshot queries (the default):** _(⚠️ [Early Access](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html))_
 
 ```
 PENDING  → RUNNING → COMPLETED
@@ -156,13 +156,11 @@ cursor2.execute(
     statement_label="hourly-metrics"
 )
 
-# Later, find all statements with that label
+# Later, find all statements with that label to then delete
 statements = connection.list_statements(label="hourly-metrics")
 for stmt in statements:
     print(f"{stmt.name}: {stmt.phase}")
-
-# Delete all statements with that label
-connection.delete_statement(label="hourly-metrics")
+    connection.delete_statement(stmt)
 ```
 
 Labels allow you to organize statements logically without requiring unique names per statement—multiple statements can share the same label.
@@ -178,6 +176,7 @@ Statements persist on the server independently of your client connection, but ar
        "CREATE TABLE daily_summary AS SELECT * FROM events WHERE date > %s",
        (start_date,),
        statement_name="daily-summary-job"
+       statement_label="daily-jobs"
    )
    ```
 
@@ -191,19 +190,25 @@ Statements persist on the server independently of your client connection, but ar
            # Can delete when done: connection.delete_statement(stmt.name)
    ```
 
+### Foreground vs Background Statements
+
+Confluent Cloud Flink differentiates between 'foreground' and 'background' statements.
+
+A 'background' statement is one where the results are being published to a Kafka topic/Flink table, such as an INSERT INTO or CREATE TABLE AS SELECT. Foreground statements are those whose result sets are returned to the client that submitted the statement, such as regular SELECT statements.
+
 ### Statement Result Retention and Lifetime
 
 **Result Availability:**
 
-- Results are only retained server-side **while you are actively fetching them**
+- Results for foreground staetments are only retained server-side **while you are actively fetching them**
 - Once you have fetched a page of results from a statement via `fetchone()`, `fetchmany()`, `fetchall()`, or cursor iteration, the server **does not retain those results**
 - If you need to access results again, you must re-execute the query (submit a new statement)
 - The statement results API acts like a single, forward-only cursor.
 
 **Automatic Cleanup:**
 
-- Statements that produce results (e.g., SELECT queries) will be automatically **STOPPED** by the server if results are not fetched within a reasonable amount of time (typically minutes)
-- STOPPED statements are eventually garbage collected by the server after a generous retention period (~weeks).
+- Foreground statements will be automatically **STOPPED** by the server if results are not fetched within a reasonable amount of time (typically minutes)
+- STOPPED foreground statements are eventually garbage collected by the server after a generous retention period (~weeks).
 
 ### Statement Properties and Metadata
 

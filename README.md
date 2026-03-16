@@ -43,7 +43,7 @@ import confluent_sql
 connection = confluent_sql.connect(
     flink_api_key="your-flink-api-key",
     flink_api_secret="your-flink-api-secret",
-    organization_id="org-123456",
+    organization_id="your-org-uuid",
     environment="env-123456",
     compute_pool_id="lfcp-789012",
     cloud_provider="aws",
