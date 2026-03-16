@@ -1,4 +1,5 @@
 import re
+import warnings
 
 import pytest
 
@@ -1675,3 +1676,60 @@ class TestMayHaveResults:
         mock_reader.may_have_results = True
 
         assert mock_connection_cursor.may_have_results is True
+
+
+@pytest.mark.unit
+class TestSnapshotWarning:
+    """Tests for the early access warning emitted when creating snapshot mode cursors."""
+
+    def test_snapshot_warning_emitted_once_per_connection(self, mock_connection_factory):
+        """Verify that snapshot mode warning is emitted exactly once per connection."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # First snapshot cursor should emit the warning
+        with pytest.warns(
+            UserWarning,
+            match="Snapshot queries on Confluent Cloud Flink SQL are currently in Early Access",
+        ):
+            cursor1 = mock_connection.cursor(mode=ExecutionMode.SNAPSHOT)
+
+        # Flag should now be set
+        assert mock_connection._snapshot_warning_issued is True
+
+        # Second snapshot cursor should NOT emit warning
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            cursor2 = mock_connection.cursor(mode=ExecutionMode.SNAPSHOT)
+
+        # Filter to only UserWarnings about snapshot
+        snapshot_warnings = [
+            w for w in warning_list
+            if issubclass(w.category, UserWarning)
+            and "Snapshot queries" in str(w.message)
+        ]
+        assert len(snapshot_warnings) == 0
+
+        cursor1.close()
+        cursor2.close()
+
+    def test_snapshot_warning_not_emitted_for_streaming_query_cursor(self, mock_connection_factory):
+        """Verify that warning is not emitted for streaming query cursors."""
+        mock_connection = mock_connection_factory(None, None)
+
+        # Streaming query cursor should not emit warning
+        with warnings.catch_warnings(record=True) as warning_list:
+            warnings.simplefilter("always")
+            cursor = mock_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+
+        # Filter to only UserWarnings about snapshot
+        snapshot_warnings = [
+            w for w in warning_list
+            if issubclass(w.category, UserWarning)
+            and "Snapshot queries" in str(w.message)
+        ]
+        assert len(snapshot_warnings) == 0
+
+        # Flag should still be False
+        assert mock_connection._snapshot_warning_issued is False
+
+        cursor.close()

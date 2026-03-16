@@ -132,9 +132,7 @@ class TestConnection:
             "Expected cursor to be closed after exiting context manager."
         )
 
-    def test_closing_streaming_cursor_after_executing_statement(
-        self, connection: Connection
-    ):
+    def test_closing_streaming_cursor_after_executing_statement(self, connection: Connection):
         """Test that auto closing a streaming cursor used for a statement works as expected."""
         with connection.closing_streaming_cursor() as cursor:
             assert cursor is not None

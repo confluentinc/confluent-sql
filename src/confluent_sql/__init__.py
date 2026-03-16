@@ -24,6 +24,7 @@ from .exceptions import (
     TypeMismatchError,
     Warning,
 )
+from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
 from .statement import Op
 from .types import SqlNone, YearMonthInterval
@@ -37,6 +38,7 @@ __all__ = [
     "connect",
     "Connection",
     "Cursor",
+    "ExecutionMode",
     "Op",
     "ChangeloggedRow",
     "ChangelogCompressor",
