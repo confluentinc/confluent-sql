@@ -154,6 +154,10 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
+    _snapshot_warning_issued: bool
+    """Internal flag to track whether the snapshot query early access warning has been issued.
+        Remove after snapshot queries reach open preview (expected May 2026)."""
+
     def __init__(  # noqa: PLR0913
         self,
         flink_api_key: str,
