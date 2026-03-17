@@ -29,14 +29,11 @@ blocks:
     dependencies: []
     task:
       jobs:
-        - name: "Ruff Lint"
+        - name: "Lint, Type Check, and Test"
+          exit_on_failure: true
           commands:
             - uv run ruff check
-        - name: "Pyright Type Checking"
-          commands:
             - uv run pyright
-        - name: "Run Tests"
-          commands:
             # Only unit tests until vault secrets are handled for integration tests
             - uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
