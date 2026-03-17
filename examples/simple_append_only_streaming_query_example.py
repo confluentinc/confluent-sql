@@ -6,13 +6,13 @@ import confluent_sql
 """Example of using the streaming execution mode with a dict-returning cursor."""
 
 conn = confluent_sql.connect(
-    flink_api_key=os.getenv("CONFLUENT_FLINK_API_KEY"),
-    flink_api_secret=os.getenv("CONFLUENT_FLINK_API_SECRET"),
-    environment=os.getenv("CONFLUENT_ENV_ID"),
-    organization_id=os.getenv("CONFLUENT_ORG_ID"),
-    compute_pool_id=os.getenv("CONFLUENT_COMPUTE_POOL_ID"),
-    cloud_provider=os.getenv("CONFLUENT_CLOUD_PROVIDER"),
-    cloud_region=os.getenv("CONFLUENT_CLOUD_REGION"),
+    flink_api_key=os.getenv("CONFLUENT_FLINK_API_KEY", ""),
+    flink_api_secret=os.getenv("CONFLUENT_FLINK_API_SECRET", ""),
+    environment=os.getenv("CONFLUENT_ENV_ID", ""),
+    organization_id=os.getenv("CONFLUENT_ORG_ID", ""),
+    compute_pool_id=os.getenv("CONFLUENT_COMPUTE_POOL_ID", ""),
+    cloud_provider=os.getenv("CONFLUENT_CLOUD_PROVIDER", ""),
+    cloud_region=os.getenv("CONFLUENT_CLOUD_REGION", ""),
     dbname=os.getenv("CONFLUENT_TEST_DBNAME", "default"),
 )
 
@@ -51,6 +51,7 @@ with conn.closing_streaming_cursor(as_dict=True) as cursor:
     # a changelog compressor.
     assert cursor.statement.is_append_only is True, "Expected statement to be append-only"
     for row in cursor:
+        assert isinstance(row, dict), f"Expected row to be a dict, got {type(row)}"
         names_observed.add(row["name"])
         print(f"Observed row in streaming query: {row}")
 
