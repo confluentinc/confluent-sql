@@ -17,6 +17,7 @@ line-length = 100
 lint.ignore = [
     "PLR2004", # stop complaining about inlined constants, mostly in test cases
 ]
+lint.exclude = ["build/", "dist/", ".venv/"]
 lint.select = [
     "UP",
     "PL",
