@@ -24,11 +24,6 @@ global_job_config:
       - export UV_CACHE_KEY="uv-v1-$(checksum pyproject.toml uv.lock)"
       - cache restore "$UV_CACHE_KEY"
       - uv sync
-  epilogue:
-    on_pass:
-      commands:
-        - export UV_CACHE_KEY="uv-v1-$(checksum pyproject.toml uv.lock)"
-        - cache store "$UV_CACHE_KEY" ~/.cache/uv
 
 blocks:
   - name: "Lint"
@@ -51,6 +46,10 @@ blocks:
             # Only unit tests until vault secrets are handled for integration tests
             - uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
+        on_pass:
+          commands:
+            - export UV_CACHE_KEY="uv-v1-$(checksum pyproject.toml uv.lock)"
+            - cache store "$UV_CACHE_KEY" ~/.cache/uv
         always:
           commands:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
