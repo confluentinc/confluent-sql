@@ -30,12 +30,8 @@ blocks:
     task:
       jobs:
         - name: "Lint, Type Check, and Test"
-          exit_on_failure: true
           commands:
-            - uv run ruff check
-            - uv run pyright
-            # Only unit tests until vault secrets are handled for integration tests
-            - uv run pytest -m unit --junitxml=test-results.xml
+            - uv run ruff check && uv run pyright && uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
           commands:
