@@ -52,6 +52,8 @@ blocks:
     dependencies:
       - "Lint"
       - "Test"
+    run:
+      when: "branch == 'master' || branch == 'metadata_revisions'"
     task:
       jobs:
         - name: "Build Package and Store Artifacts in Semaphore"
@@ -59,8 +61,9 @@ blocks:
             - echo "Building package with version $VERSION"
             - uv build
           artifacts:
-            - dist/confluent_sql-$VERSION.tar.gz
-            - dist/confluent_sql-$VERSION-py3-none-any.whl
+            paths:
+              - dist/confluent_sql-$VERSION.tar.gz
+              - dist/confluent_sql-$VERSION-py3-none-any.whl
 
 after_pipeline:
   task:
