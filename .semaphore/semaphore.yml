@@ -25,7 +25,7 @@ global_job_config:
       - cache restore "$UV_CACHE_KEY"
       - uv sync
   epilogue:
-    always:
+    on_pass:
       commands:
         - export UV_CACHE_KEY="uv-v1-$(checksum pyproject.toml uv.lock)"
         - cache store "$UV_CACHE_KEY" .venv ~/.cache/uv
