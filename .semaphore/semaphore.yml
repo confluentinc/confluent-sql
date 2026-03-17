@@ -26,7 +26,7 @@ global_job_config:
 
 blocks:
   - name: "Test"
-    dependencies:
+    dependencies: []
     task:
       jobs:
         - name: "Ruff Lint"
