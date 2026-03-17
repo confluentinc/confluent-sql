@@ -20,6 +20,9 @@ global_job_config:
     commands:
       - checkout
       - . vault-setup
+      - curl -LsSf https://astral.sh/uv/0.10.10/install.sh | sh
+      - uv sync
+      - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2
 
 blocks:
   - name: "Lint"
@@ -28,7 +31,7 @@ blocks:
       jobs:
         - name: "Ruff Lint"
           commands:
-            - uv run ruff check src tests
+            - uv run ruff check
         - name: "Pyright Type Checking"
           commands:
             - uv run pyright
@@ -36,10 +39,6 @@ blocks:
     dependencies:
       - "Lint"
     task:
-      prologue:
-        commands:
-          - curl -LsSf https://astral.sh/uv/0.9.27/install.sh | sh
-          - uv sync
       jobs:
         - name: "Run Tests"
           commands:
@@ -49,9 +48,23 @@ blocks:
         always:
           commands:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
+  - name: "Build"
+    dependencies:
+      - "Lint"
+      - "Test"
+    task:
+      jobs:
+        - name: "Build Package and Store Artifacts in Semaphore"
+          commands:
+            - echo "Building package with version $VERSION"
+            - uv build
+          artifacts:
+            - dist/confluent_sql-$VERSION.tar.gz
+            - dist/confluent_sql-$VERSION-py3-none-any.whl
+
 after_pipeline:
   task:
     jobs:
-      - name: Publish Test Results to Semaphore
+      - name: Publish CICD Results to Semaphore
         commands:
           - test-results gen-pipeline-report || echo "Could not publish pipeline test result report. Are there any test results to publish?"
