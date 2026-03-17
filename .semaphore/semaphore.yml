@@ -40,7 +40,7 @@ blocks:
     dependencies:
       - "Test"
     skip:
-      when: "branch != 'master' and branch != 'metadata_revisions'"
+      when: "branch != 'master'"
     task:
       jobs:
         - name: "Build Package and Store Artifacts in Semaphore"
