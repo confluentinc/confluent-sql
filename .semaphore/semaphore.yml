@@ -28,7 +28,7 @@ global_job_config:
     on_pass:
       commands:
         - export UV_CACHE_KEY="uv-v1-$(checksum pyproject.toml uv.lock)"
-        - cache store "$UV_CACHE_KEY" .venv ~/.cache/uv
+        - cache store "$UV_CACHE_KEY" ~/.cache/uv
 
 blocks:
   - name: "Lint"
