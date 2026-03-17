@@ -45,12 +45,15 @@ blocks:
   - name: "Build"
     dependencies:
       - "Test"
-    skip:
-      when: "branch != 'master' and branch != 'metadata_revisions'"
     task:
       jobs:
         - name: "Build Package and Store Artifacts in Semaphore"
           commands:
+            - |
+              if [[ "$SEMAPHORE_GIT_BRANCH" != "master" && "$SEMAPHORE_GIT_BRANCH" != "metadata_revisions" ]]; then
+                echo "Skipping build on branch $SEMAPHORE_GIT_BRANCH"
+                exit 0
+              fi
             - echo "Building package with version $VERSION"
             - uv build
       epilogue:
