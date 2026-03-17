@@ -2,7 +2,7 @@ version: v1.0
 name: build-test-release
 agent:
   machine:
-    type: s1-prod-ubuntu24-04-amd64-1
+    type: s1-prod-ubuntu24-04-arm64-1
 
 auto_cancel:
   running:
@@ -20,38 +20,42 @@ global_job_config:
     commands:
       - checkout
       - . vault-setup
+      - curl -LsSf https://astral.sh/uv/0.10.10/install.sh | sh
+      - uv sync
+      - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
 
 blocks:
-  - name: "Lint"
+  - name: "Test"
     dependencies: []
     task:
       jobs:
-        - name: "Ruff Lint"
+        - name: "Lint, Type Check, and Test"
           commands:
-            - uv run ruff check src tests
-        - name: "Pyright Type Checking"
-          commands:
-            - uv run pyright
-  - name: "Test"
-    dependencies:
-      - "Lint"
-    task:
-      prologue:
-        commands:
-          - curl -LsSf https://astral.sh/uv/0.9.27/install.sh | sh
-          - uv sync
-      jobs:
-        - name: "Run Tests"
-          commands:
-            # Only unit tests until vault secrets are handled for integration tests
-            - uv run pytest -m unit --junitxml=test-results.xml
+            - uv run ruff check && uv run pyright && uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
           commands:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
+  - name: "Build"
+    dependencies:
+      - "Test"
+    skip:
+      when: "branch != 'master'"
+    task:
+      jobs:
+        - name: "Build Package and Store Artifacts in Semaphore"
+          commands:
+            - echo "Building package with version $VERSION"
+            - uv build
+      epilogue:
+        on_pass:
+          commands:
+            - artifact push workflow dist/confluent_sql-$VERSION.tar.gz
+            - artifact push workflow dist/confluent_sql-$VERSION-py3-none-any.whl
+
 after_pipeline:
   task:
     jobs:
-      - name: Publish Test Results to Semaphore
+      - name: Publish CICD Results to Semaphore
         commands:
           - test-results gen-pipeline-report || echo "Could not publish pipeline test result report. Are there any test results to publish?"
