@@ -53,7 +53,7 @@ blocks:
       - "Lint"
       - "Test"
     run:
-      when: "branch == 'master' || branch == 'metadata_revisions'"
+      when: "branch =~ 'master|metadata_revisions'"
     task:
       jobs:
         - name: "Build Package and Store Artifacts in Semaphore"
