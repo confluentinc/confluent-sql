@@ -20,6 +20,22 @@ global_job_config:
     commands:
       - checkout
       - . vault-setup
+      - export UV_VERSION=0.10.10
+      - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+      - export UV_CACHE_KEY="uv-${UV_VERSION}-$(checksum pyproject.toml uv.lock)"
+      - cache restore "$UV_CACHE_KEY"
+      - uv sync
+  epilogue:
+    on_pass:
+      commands:
+        # only write to the cache from non-PR builds due to security concerns
+        - |
+          if [ "$SEMAPHORE_GIT_REF_TYPE" != "pull-request" ]; then
+            export UV_CACHE_KEY="uv-${UV_VERSION}-$(checksum pyproject.toml uv.lock)"
+            cache store "$UV_CACHE_KEY" ~/.cache/uv
+          else
+            echo "Skipping cache store on pull-request builds"
+          fi
 
 blocks:
   - name: "Lint"
@@ -36,10 +52,6 @@ blocks:
     dependencies:
       - "Lint"
     task:
-      prologue:
-        commands:
-          - curl -LsSf https://astral.sh/uv/0.9.27/install.sh | sh
-          - uv sync
       jobs:
         - name: "Run Tests"
           commands:
