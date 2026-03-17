@@ -25,6 +25,17 @@ global_job_config:
       - export UV_CACHE_KEY="uv-${UV_VERSION}-$(checksum pyproject.toml uv.lock)"
       - cache restore "$UV_CACHE_KEY"
       - uv sync
+  epilogue:
+    on_pass:
+      commands:
+        # only write to the cache from non-PR builds due to security concerns
+        - |
+          if [ "$SEMAPHORE_GIT_REF_TYPE" != "pull-request" ]; then
+            export UV_CACHE_KEY="uv-${UV_VERSION}-$(checksum pyproject.toml uv.lock)"
+            cache store "$UV_CACHE_KEY" ~/.cache/uv
+          else
+            echo "Skipping cache store on pull-request builds"
+          fi
 
 blocks:
   - name: "Lint"
@@ -47,10 +58,6 @@ blocks:
             # Only unit tests until vault secrets are handled for integration tests
             - uv run pytest -m unit --junitxml=test-results.xml
       epilogue:
-        on_pass:
-          commands:
-            - export UV_CACHE_KEY="uv-${UV_VERSION}-$(checksum pyproject.toml uv.lock)"
-            - cache store "$UV_CACHE_KEY" ~/.cache/uv
         always:
           commands:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
