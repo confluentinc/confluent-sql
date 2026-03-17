@@ -8,12 +8,16 @@ version = "0.1.0"
 description = "DB-API v2 compliant driver for Confluent SQL"
 requires-python = ">=3.10"
 dependencies = ["httpx>=0.23.0,<0.29.0"]
+platforms = ["any"]
+maintainers = [{ name = "Confluent", email = "support@confluent.io" }]
+license = { file = "LICENSE.txt" }
 
 [tool.ruff]
 line-length = 100
 lint.ignore = [
     "PLR2004", # stop complaining about inlined constants, mostly in test cases
 ]
+lint.exclude = ["build/", "dist/", ".venv/"]
 lint.select = [
     "UP",
     "PL",
@@ -37,7 +41,7 @@ max-args = 10
 verboseOutput = true
 pythonVersion = "3.10"
 pythonPlatform = "All"
-include = ["src", "tests"]
+include = ["src", "tests", "examples"]
 
 [tool.pytest.ini_options]
 addopts = [
