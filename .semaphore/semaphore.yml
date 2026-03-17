@@ -25,8 +25,7 @@ global_job_config:
       - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
 
 blocks:
-  - name: "Lint"
-    dependencies: []
+  - name: "Test"
     task:
       jobs:
         - name: "Ruff Lint"
@@ -35,11 +34,6 @@ blocks:
         - name: "Pyright Type Checking"
           commands:
             - uv run pyright
-  - name: "Test"
-    dependencies:
-      - "Lint"
-    task:
-      jobs:
         - name: "Run Tests"
           commands:
             # Only unit tests until vault secrets are handled for integration tests
@@ -50,10 +44,9 @@ blocks:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
   - name: "Build"
     dependencies:
-      - "Lint"
       - "Test"
-    run:
-      when: "branch =~ 'master|metadata_revisions'"
+    skip:
+      when: "branch != 'master' and branch != 'metadata_revisions'"
     task:
       jobs:
         - name: "Build Package and Store Artifacts in Semaphore"
