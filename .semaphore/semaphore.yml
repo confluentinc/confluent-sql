@@ -60,10 +60,11 @@ blocks:
           commands:
             - echo "Building package with version $VERSION"
             - uv build
-          artifacts:
-            paths:
-              - dist/confluent_sql-$VERSION.tar.gz
-              - dist/confluent_sql-$VERSION-py3-none-any.whl
+      epilogue:
+        on_pass:
+          commands:
+            - artifact push workflow dist/confluent_sql-$VERSION.tar.gz
+            - artifact push workflow dist/confluent_sql-$VERSION-py3-none-any.whl
 
 after_pipeline:
   task:
