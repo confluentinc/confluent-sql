@@ -1,0 +1,24 @@
+version: v1.0
+name: Publish `confluent_sql` to Codeartifact
+agent:
+  machine:
+    type: s1-prod-ubuntu24-04-arm64-1
+
+global_job_config:
+  prologue:
+    commands:
+      - checkout
+      - . vault-setup
+      - curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
+      - uv sync
+
+blocks:
+  - name: Publish `confluent_sql` to codeartifact
+    task:
+      jobs:
+        - name: Publish `confluent_sql` to codeartifact
+          commands:
+            - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+            - echo "Publishing confluent-sql $VERSION to Codeartifact"
+            - uv build
+            - uv publish --force --index codeartifact dist/*
