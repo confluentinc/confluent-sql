@@ -20,3 +20,7 @@ semaphore:
     - global_job_config
 make:
   enable: false
+code_artifact:
+  enable: true
+  package_paths:
+    - pypi-internal/pypi//confluent-sql*
