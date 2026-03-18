@@ -21,4 +21,4 @@ blocks:
             - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
             - echo "Publishing confluent-sql $VERSION to Codeartifact"
             - uv build
-            - uv publish --force --index codeartifact dist/*
+            - uv publish --index codeartifact dist/*
