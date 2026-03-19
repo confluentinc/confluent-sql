@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def connect(  # noqa: PLR0913
+    *,
     flink_api_key: str,
     flink_api_secret: str,
     environment: str,
@@ -98,13 +99,13 @@ def connect(  # noqa: PLR0913
         raise InterfaceError("Flink API key and secret are required")
 
     return Connection(
-        flink_api_key,
-        flink_api_secret,
-        environment,
-        compute_pool_id,
-        organization_id,
-        cloud_provider,
-        cloud_region,
+        flink_api_key=flink_api_key,
+        flink_api_secret=flink_api_secret,
+        environment=environment,
+        compute_pool_id=compute_pool_id,
+        organization_id=organization_id,
+        cloud_provider=cloud_provider,
+        cloud_region=cloud_region,
         api_key=api_key,
         api_secret=api_secret,
         dbname=dbname,
