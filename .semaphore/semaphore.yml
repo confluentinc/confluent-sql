@@ -2,17 +2,17 @@ version: v1.0
 name: build-test-release
 agent:
   machine:
-    type: s1-prod-ubuntu24-04-arm64-1
+    type: s1-prod-ubuntu24-04-arm64-00
 
 auto_cancel:
   running:
-    when: "branch != 'master'"
+    when: "branch != 'main'"
 
 execution_time_limit:
   hours: 1
 
 queue:
-  - when: "branch != 'master'"
+  - when: "branch != 'main'"
     processing: parallel
 
 global_job_config:
@@ -36,26 +36,14 @@ blocks:
         always:
           commands:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
-  - name: "Build"
-    dependencies:
-      - "Test"
-    skip:
-      when: "branch != 'master'"
-    task:
-      jobs:
-        - name: "Build Package and Store Artifacts in Semaphore"
-          commands:
-            - echo "Building package with version $VERSION"
-            - uv build
-      epilogue:
-        on_pass:
-          commands:
-            - artifact push workflow dist/confluent_sql-$VERSION.tar.gz
-            - artifact push workflow dist/confluent_sql-$VERSION-py3-none-any.whl
 
 promotions:
   - name: Publish confluent-sql to codeartifact
     pipeline_file: publish_to_codeartifact.yml
+    auto_promote:
+        when: "result = 'passed' and tag =~ '^v\\.'"
+  - name: Publish confluent-sql to PyPi
+    pipeline_file: publish_to_pypi.yml
 
 after_pipeline:
   task:
