@@ -13,6 +13,11 @@ platforms = ["any"]
 maintainers = [{ name = "Confluent", email = "support@confluent.io" }]
 license = { file = "LICENSE.txt" }
 
+[project.urls]
+Repository = "https://github.com/confluentinc/confluent-sql"
+Documentation = "https://github.com/confluentinc/confluent-sql?tab=readme-ov-file#confluent-sql"
+"Bug Tracker" = "https://github.com/confluentinc/confluent-sql/issues"
+
 [tool.ruff]
 line-length = 100
 lint.ignore = [
