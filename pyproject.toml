@@ -30,6 +30,8 @@ classifiers = [
 Repository = "https://github.com/confluentinc/confluent-sql"
 Documentation = "https://github.com/confluentinc/confluent-sql?tab=readme-ov-file#confluent-sql"
 "Bug Tracker" = "https://github.com/confluentinc/confluent-sql/issues"
+Changelog = "https://github.com/confluentinc/confluent-sql/blob/main/CHANGELOG.md"
+
 
 [tool.ruff]
 line-length = 100
