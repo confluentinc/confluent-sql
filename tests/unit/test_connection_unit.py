@@ -258,6 +258,34 @@ class TestConnectChecks:
                 flink_api_secret="",
             )
 
+    def test_connect_passes_host_to_connection(self, connection_factory: ConnectionFactory):
+        """Test that connect() passes the host parameter through to Connection."""
+        custom_host = "https://custom-flink.example.com"
+        conn = connection_factory(
+            environment="foo_id",
+            compute_pool_id="1234",
+            organization_id="4567",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+            host=custom_host,
+        )
+        assert conn.host == custom_host
+
+    def test_connect_default_host_when_not_provided(self, connection_factory: ConnectionFactory):
+        """Test that connect() uses the default host when host is not provided."""
+        conn = connection_factory(
+            environment="foo_id",
+            compute_pool_id="1234",
+            organization_id="4567",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+        )
+        assert conn.host == "https://flink.us-east-1.aws.confluent.cloud"
+
 
 @pytest.mark.unit
 @pytest.mark.typeconv

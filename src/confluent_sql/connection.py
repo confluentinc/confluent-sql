@@ -39,6 +39,7 @@ def connect(  # noqa: PLR0913
     cloud_region: str,
     api_key: str | None = None,
     api_secret: str | None = None,
+    host: str | None = None,
     dbname: str | None = None,
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
@@ -56,6 +57,7 @@ def connect(  # noqa: PLR0913
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
+        host: The base URL for Confluent Cloud API (optional, overrides cloud_provider/cloud_region)
         dbname: The name of the database to use (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
@@ -107,6 +109,7 @@ def connect(  # noqa: PLR0913
         cloud_region,
         api_key=api_key,
         api_secret=api_secret,
+        host=host,
         dbname=dbname,
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
