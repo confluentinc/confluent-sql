@@ -115,7 +115,7 @@ while cursor.may_have_results:
 
 ## Parameterized Statement and Flink to Python Value Support
 
-This driver supports all Flink types, some with caveats. Please consult [the type support documentation](TYPES.md) for more details.
+This driver supports all Flink types, some with caveats. Please consult [the type support documentation](https://github.com/confluentinc/confluent-sql/blob/main/TYPES.md) for more details.
 
 ## DB-API Extensions
 
@@ -138,15 +138,15 @@ allowing features like:
 - **Batch management** - Label related statements for group operations
 
 For an in-depth explanation of the HTTP architecture and statement lifecycle,
-see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+see **[ARCHITECTURE.md](https://github.com/confluentinc/confluent-sql/blob/main/ARCHITECTURE.md)**.
 
 ### Complete Documentation
 
-For comprehensive documentation of all DB-API extensions, see **[DBAPI_EXTENSIONS.md](DBAPI_EXTENSIONS.md)**.
+For comprehensive documentation of all DB-API extensions, see **[DBAPI_EXTENSIONS.md](https://github.com/confluentinc/confluent-sql/blob/main/DBAPI_EXTENSIONS.md)**.
 
-For detailed streaming query guidance, see **[STREAMING.md](STREAMING.md)**.
+For detailed streaming query guidance, see **[STREAMING.md](https://github.com/confluentinc/confluent-sql/blob/main/STREAMING.md)**.
 
-For type support and examples, see **[TYPES.md](TYPES.md)**.
+For type support and examples, see **[TYPES.md](https://github.com/confluentinc/confluent-sql/blob/main/TYPES.md)**.
 
 ## Development
 
