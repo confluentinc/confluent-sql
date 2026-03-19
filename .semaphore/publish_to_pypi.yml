@@ -1,0 +1,25 @@
+version: v1.0
+name: Publish `confluent_sql` to PyPi
+agent:
+  machine:
+    type: s1-prod-ubuntu24-04-arm64-00
+
+global_job_config:
+  prologue:
+    commands:
+      - checkout
+      - . vault-setup
+      - curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
+      - uv sync
+
+blocks:
+  - name: Publish `confluent_sql` to PyPi
+    task:
+      jobs:
+        - name: Publish `confluent_sql` to PyPi
+          commands:
+            - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+            - echo "Publishing confluent-sql $VERSION to PyPi"
+            - uv build
+            - CONFLUENT_SQL_KEY=$(vault kv get -field=confluent-sql v1/ci/kv/pypi/pypi.org)
+            - uv publish -u __token__ -p "$CONFLUENT_SQL_KEY" dist/*
