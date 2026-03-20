@@ -4,16 +4,15 @@ Uses confluent-sql as the DB-API backend so an LLM can explore and query
 Flink tables (backed by Kafka topics) conversationally.
 
 Requirements:
-    uv add langchain langchain-community langchain-anthropic confluent-sql
+    uv add langchain langchain-community langchain-anthropic langgraph confluent-sql
 """
 
 import os
 import sys
 
 from langchain_anthropic import ChatAnthropic
-from langchain_community.utilities import SQLDatabase
-from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from langchain.agents import create_sql_agent
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
 
 sys.path.insert(0, "..")
 from _connection import get_connection
@@ -23,21 +22,10 @@ def create_flink_sql_agent():
     """Build a LangChain SQL agent backed by Confluent Flink SQL."""
     conn = get_connection()
 
-    # LangChain's SQLDatabase can wrap any DB-API connection via
-    # SQLAlchemy's `create_engine` -- but for raw DB-API we can
-    # build a minimal wrapper using from_uri with a creator function.
-    #
-    # Alternatively, use the database toolkit directly with cursor calls.
-    # Here we show the most direct approach: a custom tool.
-
     llm = ChatAnthropic(
         model="claude-sonnet-4-20250514",
         api_key=os.environ["ANTHROPIC_API_KEY"],
     )
-
-    # For Flink SQL, we build a lightweight tool that lets the agent
-    # run queries and inspect results.
-    from langchain_core.tools import tool
 
     @tool
     def run_flink_sql(query: str) -> str:
@@ -49,11 +37,10 @@ def create_flink_sql_agent():
             rows = cursor.fetchall()
             if not rows:
                 return "No results."
-            # Format as a readable table
             columns = list(rows[0].keys())
             header = " | ".join(columns)
             lines = [header, "-" * len(header)]
-            for row in rows[:50]:  # Cap display at 50 rows
+            for row in rows[:50]:
                 lines.append(" | ".join(str(row[c]) for c in columns))
             return "\n".join(lines)
 
@@ -77,8 +64,6 @@ def create_flink_sql_agent():
                 return f"Table '{table_name}' not found."
             return "\n".join(str(row) for row in rows)
 
-    from langgraph.prebuilt import create_react_agent
-
     agent = create_react_agent(
         llm,
         tools=[run_flink_sql, list_flink_tables, describe_flink_table],
@@ -101,7 +86,6 @@ if __name__ == "__main__":
             if not question:
                 continue
             result = agent.invoke({"messages": [{"role": "user", "content": question}]})
-            # Print the last AI message
             for msg in reversed(result["messages"]):
                 if msg.type == "ai" and msg.content:
                     print(f"\nAgent: {msg.content}\n")
