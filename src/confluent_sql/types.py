@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ColumnTypeDefinition",
+    "PropertiesDict",
     "StrAnyDict",
     "StatementTypeConverter",
     "TypeConverter",
