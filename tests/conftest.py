@@ -56,7 +56,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         compute_pool_id: str | None = None,
         cloud_provider: str | None = None,
         cloud_region: str | None = None,
-        dbname: str | None = None,
+        database: str | None = None,
         result_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
     ) -> Connection:
@@ -74,8 +74,8 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
         if cloud_region is None:
             cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
-        if dbname is None:
-            dbname = os.getenv("CONFLUENT_TEST_DBNAME", "")
+        if database is None:
+            database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
         connection = connect(
             flink_api_key=flink_api_key,
@@ -85,7 +85,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             compute_pool_id=compute_pool_id,
             cloud_region=cloud_region,
             cloud_provider=cloud_provider,
-            dbname=dbname,
+            database=database,
             result_page_fetch_pause_millis=result_page_fetch_pause_millis,
             http_user_agent=http_user_agent,
         )

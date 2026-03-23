@@ -145,7 +145,7 @@ class TestExecuteStatementProperties:
             cloud_region="us-east-1",
             flink_api_key="key",
             flink_api_secret="secret",
-            dbname="default_db",
+            database="default_db",
         )
         request_mock = self.install_request_mock(connection, mocker)
 
