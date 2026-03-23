@@ -60,10 +60,13 @@ dev = ["pytest", "pytest-cov"]
 
 [dependency-groups]
 dev = [
+    "pandas>=2.3.3",
+    "polars>=1.39.3",
     "pyright>=1.1.407",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.15.1",
     "python-dotenv>=1.0.0",
     "ruff>=0.14.3",
+    "streamlit>=1.55.0",
 ]
