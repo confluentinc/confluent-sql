@@ -57,7 +57,7 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
     compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
     cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
     cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
-    dbname = os.getenv("CONFLUENT_TEST_DBNAME", "")
+    database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
     if not all(
         [
@@ -68,7 +68,7 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
             compute_pool_id,
             cloud_region,
             cloud_provider,
-            dbname,
+            database,
         ]
     ):
         pytest.skip("Missing required environment variables for integration test")
@@ -81,7 +81,7 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
         compute_pool_id=compute_pool_id,
         cloud_region=cloud_region,
         cloud_provider=cloud_provider,
-        dbname=dbname,
+        database=database,
     )
 
     yield conn
@@ -90,13 +90,13 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
 
 
 @pytest.fixture()
-def dbname():
+def database():
     """Returns the database name used for integration tests."""
-    dbname = os.getenv("CONFLUENT_TEST_DBNAME", "")
-    if not dbname:
+    database = os.getenv("CONFLUENT_TEST_DBNAME", "")
+    if not database:
         pytest.skip("Missing CONFLUENT_TEST_DBNAME environment variable for integration test")
 
-    return dbname
+    return database
 
 
 @pytest.fixture()
@@ -235,7 +235,7 @@ def cursor_with_nonstreaming_data_factory(
                     `DATA_TYPE` as `type`
                 FROM `INFORMATION_SCHEMA`.`COLUMNS`
                 WHERE TABLE_NAME = '{test_table_name}'
-                    AND TABLE_SCHEMA = '{table_connection._dbname}'
+                    AND TABLE_SCHEMA = '{table_connection._database}'
                     AND IS_HIDDEN='NO'"""
         )
 

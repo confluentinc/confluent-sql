@@ -39,7 +39,7 @@ def connect(  # noqa: PLR0913
     cloud_region: str,
     api_key: str | None = None,
     api_secret: str | None = None,
-    dbname: str | None = None,
+    database: str | None = None,
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
 ) -> Connection:
@@ -56,7 +56,7 @@ def connect(  # noqa: PLR0913
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
-        dbname: The name of the database to use (optional)
+        database: The name of the database to use (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
             to the statement results API when consuming results for a statement, especially when
@@ -107,7 +107,7 @@ def connect(  # noqa: PLR0913
         cloud_region,
         api_key=api_key,
         api_secret=api_secret,
-        dbname=dbname,
+        database=database,
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
     )
@@ -147,7 +147,7 @@ class Connection:
     """
 
     _closed: bool
-    _dbname: str | None
+    _database: str | None
     _client: httpx.Client
     _http_user_agent: str
 
@@ -170,7 +170,7 @@ class Connection:
         api_key: str | None = None,
         api_secret: str | None = None,
         host: str | None = None,
-        dbname: str | None = None,
+        database: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
     ):
@@ -192,7 +192,7 @@ class Connection:
             api_key: Confluent Cloud API key for general Confluent Cloud resources (optional)
             api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
             host: The base URL for Confluent Cloud API (optional)
-            dbname: The name of the database to use (optional)
+            database: The name of the database to use (optional)
             http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
                            driver name/version, documentation URL, and support email.
@@ -215,7 +215,7 @@ class Connection:
 
         # Internal state
         self._closed = False
-        self._dbname = dbname
+        self._database = database
 
         # Set user agent (validation happens in setter, default if None)
         self.http_user_agent = (
@@ -797,8 +797,8 @@ class Connection:
         # Connection-level properties overlay (always set, cannot be overridden by user)
         merged_properties["sql.current-catalog"] = self.environment
 
-        if self._dbname is not None:
-            merged_properties["sql.current-database"] = self._dbname
+        if self._database is not None:
+            merged_properties["sql.current-database"] = self._database
 
         # Cursor-level execution mode properties overlay (always set when applicable)
         if execution_mode.is_snapshot:

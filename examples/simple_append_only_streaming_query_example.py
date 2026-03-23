@@ -13,7 +13,7 @@ conn = confluent_sql.connect(
     compute_pool_id=os.getenv("CONFLUENT_COMPUTE_POOL_ID", ""),
     cloud_provider=os.getenv("CONFLUENT_CLOUD_PROVIDER", ""),
     cloud_region=os.getenv("CONFLUENT_CLOUD_REGION", ""),
-    dbname=os.getenv("CONFLUENT_TEST_DBNAME", "default"),
+    database=os.getenv("CONFLUENT_TEST_DBNAME", "default"),
 )
 
 
