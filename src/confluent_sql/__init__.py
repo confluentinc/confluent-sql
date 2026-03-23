@@ -27,7 +27,7 @@ from .exceptions import (
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
 from .statement import Op
-from .types import SqlNone, YearMonthInterval
+from .types import PropertiesDict, SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -59,6 +59,7 @@ __all__ = [
     "apilevel",
     "threadsafety",
     "paramstyle",
+    "PropertiesDict",
     "SqlNone",
     "YearMonthInterval",
 ]
