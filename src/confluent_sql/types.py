@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ColumnTypeDefinition",
+    "PropertiesDict",
     "StrAnyDict",
     "StatementTypeConverter",
     "TypeConverter",
@@ -59,6 +60,10 @@ nested row types.
 """
 
 StrAnyDict: TypeAlias = dict[str, Any]
+
+PropertiesDict: TypeAlias = dict[str, str | int | bool]
+"""Type for statement properties dictionary. Keys are property names, values can be
+strings, integers, or booleans."""
 
 
 @dataclass

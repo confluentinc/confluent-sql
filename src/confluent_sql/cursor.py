@@ -31,7 +31,7 @@ from .result_readers import (
     ResultTupleOrDict,
 )
 from .statement import Statement
-from .types import convert_statement_parameters
+from .types import PropertiesDict, convert_statement_parameters
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -118,9 +118,7 @@ class Cursor:
 
         # Statement execution state
         self._statement: Statement | None = None
-        self._result_reader: AppendOnlyResultReader | ChangelogEventReader | None = (
-            None
-        )
+        self._result_reader: AppendOnlyResultReader | ChangelogEventReader | None = None
 
     @property
     def description(self) -> list[tuple] | None:
@@ -158,9 +156,7 @@ class Cursor:
                 f"arraysize must be a positive integer, got {type(value).__name__}"
             )
         if value <= 0:
-            raise InterfaceError(
-                f"arraysize must be a positive integer, got {value}"
-            )
+            raise InterfaceError(f"arraysize must be a positive integer, got {value}")
         self._arraysize = value
 
     @property
@@ -186,6 +182,7 @@ class Cursor:
         timeout: int = 3000,
         statement_name: str | None = None,
         statement_label: str | None = None,
+        properties: PropertiesDict | None = None,
     ) -> None:
         """
         Execute a SQL statement.
@@ -203,9 +200,13 @@ class Cursor:
                             need to provide the label value itself (e.g., "my-batch-job").
                             Use Connection.list_statements(label=...) to retrieve statements
                             by label.
+            properties: Optional dictionary of statement properties to set for this execution.
+                       Keys must be strings, values must be str, int, or bool. System
+                       properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
+                       are always set by the driver and cannot be overridden.
 
         Raises:
-            InterfaceError: If the cursor is closed
+            InterfaceError: If the cursor is closed, or if invalid properties are provided.
             ProgrammingError: If the SQL statement is invalid
             OperationalError: If the statement cannot be executed
         """
@@ -235,7 +236,7 @@ class Cursor:
 
         # Now submit the statement ...
         self._statement = self._submit_statement(
-            statement_text, parameters, statement_name, statement_label
+            statement_text, parameters, statement_name, statement_label, properties
         )
 
         if self._statement.is_failed:
@@ -354,9 +355,7 @@ class Cursor:
         self._raise_if_closed()
         self._raise_if_ddl_mode()
 
-        return self._get_result_reader().fetchmany(
-            size if size is not None else self.arraysize
-        )
+        return self._get_result_reader().fetchmany(size if size is not None else self.arraysize)
 
     def fetchall(self) -> list[ResultRow]:
         """
@@ -743,6 +742,7 @@ class Cursor:
         parameters: tuple | list | None = None,
         statement_name: str | None = None,
         statement_label: str | None = None,
+        properties: PropertiesDict | None = None,
     ) -> Statement:
         """
         Submit a SQL statement for execution.
@@ -754,6 +754,7 @@ class Cursor:
                             not provided)
             statement_label: Optional label for the statement for easier identification in
                             server logs and UIs (defaults to None)
+            properties: Optional dictionary of statement properties (optional)
 
         Returns:
             The submitted Statement object
@@ -761,6 +762,7 @@ class Cursor:
         Raises:
             OperationalError: If statement submission fails
             ProgrammingError: If template parameter interpolation fails
+            InterfaceError: If the provided properties are invalid
         """
         logger.info(f"Submitting statement {statement_text}")
 
@@ -773,6 +775,7 @@ class Cursor:
             self._execution_mode,
             statement_name,
             statement_label,
+            properties,
         )
         return Statement.from_response(self._connection, response)
 
