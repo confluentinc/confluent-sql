@@ -258,23 +258,8 @@ class TestConnectChecks:
                 flink_api_secret="",
             )
 
-    def test_connect_passes_host_to_connection(self, connection_factory: ConnectionFactory):
-        """Test that connect() passes the host parameter through to Connection."""
-        custom_host = "https://custom-flink.example.com"
-        conn = connection_factory(
-            environment="foo_id",
-            compute_pool_id="1234",
-            organization_id="4567",
-            cloud_provider="aws",
-            cloud_region="us-east-1",
-            flink_api_key="valid-key",
-            flink_api_secret="valid-secret",
-            host=custom_host,
-        )
-        assert conn.host == custom_host
-
     def test_connect_default_host_when_not_provided(self, connection_factory: ConnectionFactory):
-        """Test that connect() uses the default host when host is not provided."""
+        """Test that connect() constructs the default public endpoint when host is not provided."""
         conn = connection_factory(
             environment="foo_id",
             compute_pool_id="1234",
@@ -285,6 +270,34 @@ class TestConnectChecks:
             flink_api_secret="valid-secret",
         )
         assert conn.host == "https://flink.us-east-1.aws.confluent.cloud"
+
+    def test_connect_host_as_domain_suffix(self, connection_factory: ConnectionFactory):
+        """Test that host is used as the domain suffix in the constructed URL."""
+        conn = connection_factory(
+            environment="foo_id",
+            compute_pool_id="1234",
+            organization_id="4567",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+            host="private.confluent.cloud",
+        )
+        assert conn.host == "https://flink.us-east-1.aws.private.confluent.cloud"
+
+    def test_connect_host_custom_proxy(self, connection_factory: ConnectionFactory):
+        """Test that a custom proxy domain can be used as host suffix."""
+        conn = connection_factory(
+            environment="foo_id",
+            compute_pool_id="1234",
+            organization_id="4567",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+            host="proxy.internal:8443",
+        )
+        assert conn.host == "https://flink.us-east-1.aws.proxy.internal:8443"
 
 
 @pytest.mark.unit

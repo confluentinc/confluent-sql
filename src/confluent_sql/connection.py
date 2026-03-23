@@ -57,7 +57,12 @@ def connect(  # noqa: PLR0913
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
         api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
         api_secret: Confluent Cloud API secret (optional)
-        host: The base URL for Confluent Cloud API (optional, overrides cloud_provider/cloud_region)
+        host: Domain suffix for the Flink API endpoint (optional). The full URL is
+            constructed as https://flink.{cloud_region}.{cloud_provider}.{host}.
+            Defaults to "confluent.cloud" (public endpoint). Use
+            "private.confluent.cloud" for private networking endpoints, or a custom
+            domain for reverse proxy setups. This mirrors the Confluent Table API's
+            rest-endpoint configuration pattern.
         dbname: The name of the database to use (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
@@ -194,7 +199,8 @@ class Connection:
                 the next page of results for the statement.
             api_key: Confluent Cloud API key for general Confluent Cloud resources (optional)
             api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
-            host: The base URL for Confluent Cloud API (optional)
+            host: Domain suffix for the Flink API endpoint (optional). Defaults to
+                "confluent.cloud". See connect() for details.
             dbname: The name of the database to use (optional)
             http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
@@ -225,9 +231,11 @@ class Connection:
             http_user_agent if http_user_agent is not None else self.DEFAULT_USER_AGENT
         )
 
-        # Create httpx client for making API calls
-        if self.host is None:
-            self.host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
+        # Construct the Flink API base URL using cloud_region, cloud_provider,
+        # and the host domain suffix (defaulting to "confluent.cloud" for public endpoints).
+        # This mirrors the Confluent Table API's rest-endpoint pattern.
+        host_domain = host or "confluent.cloud"
+        self.host = f"https://flink.{cloud_region}.{cloud_provider}.{host_domain}"
         base_url = f"{self.host}/sql/v1/organizations/{organization_id}/environments/{environment}"
 
         # Create httpx client for making API calls
