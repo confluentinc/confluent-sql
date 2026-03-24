@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def connect(  # noqa: PLR0913
+    *,
     flink_api_key: str,
     flink_api_secret: str,
     environment: str,
@@ -37,8 +38,6 @@ def connect(  # noqa: PLR0913
     organization_id: str,
     cloud_provider: str,
     cloud_region: str,
-    api_key: str | None = None,
-    api_secret: str | None = None,
     database: str | None = None,
     dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
@@ -55,8 +54,6 @@ def connect(  # noqa: PLR0913
         organization_id: Organization ID
         cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure")
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
-        api_key: Confluent Cloud key (optional, for general Confluent Cloud resources)
-        api_secret: Confluent Cloud Flink Region API API secret (optional)
         database: The default Flink database (Kafka cluster) to use when resolving
             table/view/udf names (optional)
         dbname: Deprecated alias for database parameter (optional)
@@ -120,8 +117,6 @@ def connect(  # noqa: PLR0913
         organization_id,
         cloud_provider,
         cloud_region,
-        api_key=api_key,
-        api_secret=api_secret,
         database=database or dbname,  # dbname is deprecated.
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
@@ -143,8 +138,6 @@ class Connection:
     environment: str
     organization_id: str
     compute_pool_id: str
-    api_key: str | None
-    api_secret: str | None
     host: str | None
     statement_results_page_fetch_pause_secs: float
     """Maximum seconds to wait between fetching pages of statement
@@ -182,8 +175,6 @@ class Connection:
         organization_id: str,
         cloud_provider: str,
         cloud_region: str,
-        api_key: str | None = None,
-        api_secret: str | None = None,
         host: str | None = None,
         database: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
@@ -204,8 +195,6 @@ class Connection:
                 statement results. Defaults to 100ms. If most recent fetch of results for a
                 statement was more than this long ago, then no delay will happen when fetching
                 the next page of results for the statement.
-            api_key: Confluent Cloud API key for general Confluent Cloud resources (optional)
-            api_secret: Confluent Cloud API secret for general Confluent Cloud resources (optional)
             host: The base URL for Confluent Cloud API (optional)
             database: The name of the database to use (optional)
             http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
@@ -215,8 +204,6 @@ class Connection:
         self.environment = environment
         self.compute_pool_id = compute_pool_id
         self.organization_id = organization_id
-        self.api_key = api_key
-        self.api_secret = api_secret
         self.host = host
 
         if statement_results_page_fetch_pause_millis < 0:

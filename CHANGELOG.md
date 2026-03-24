@@ -9,6 +9,11 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Changed
   * Respelled the `connect()` parameter `dbname` to `database`. The old spelling `dbname` is deprecated and will be removed in after one release cycle.
+  * `connect()` is now keyword-only callable.
+
+### Removed
+  * The unused control-plane `api_key` and `api_secret` `connect()` parameters have been removed. The Flink regional API key params `flink_api_key` and `flink_api_secret` remain.
+
 
 ## 0.1.x
 
