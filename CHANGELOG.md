@@ -9,6 +9,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Changed
   * Respelled the `connect()` parameter `dbname` to `database`. The old spelling `dbname` is deprecated and will be removed in after one release cycle.
+  * class `SqlNone` now gracefully strips trailing `NOT NULL` constraints from type names (case-insensitively), so that `str(SqlNone("DATE NOT NULL"))` returns valid FlinkSQL `"cast (null as DATE)"`.
 
 ## 0.1.x
 
