@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from confluent_sql import InterfaceError, PropertiesDict, connect
+from confluent_sql import InterfaceError, connect
 from confluent_sql.connection import Connection
 from confluent_sql.execution_mode import ExecutionMode
 
@@ -189,7 +189,9 @@ class TestExecuteStatementProperties:
     def test_properties_rejects_reserved_system_properties(
         self, invalid_credential_connection, reserved_property
     ):
-        """Verify InterfaceError is raised when user attempts to provide reserved system properties."""
+        """Verify InterfaceError is raised when user attempts to provide reserved
+        system properties."""
+
         with pytest.raises(InterfaceError, match="is a reserved system property"):
             invalid_credential_connection._execute_statement(
                 "SELECT 1",
