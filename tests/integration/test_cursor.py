@@ -349,7 +349,7 @@ class TestCursor:
 @pytest.mark.integration
 class TestCursorParameterInterpolation:
     def test_interpolate_with_parameters(
-        self, populated_table_connection: Connection, test_table_name: str, dbname: str
+        self, populated_table_connection: Connection, test_table_name: str, database: str
     ):
         with populated_table_connection.closing_cursor(as_dict=True) as cursor:
             # Query the system catalog about the test table, using parameters
@@ -359,14 +359,14 @@ class TestCursorParameterInterpolation:
                 FROM `INFORMATION_SCHEMA`.`TABLES`
                 WHERE TABLE_NAME = %s AND TABLE_SCHEMA = %s
                 """,
-                (test_table_name, dbname),
+                (test_table_name, database),
             )
 
             results = cursor.fetchall()
             assert len(results) == 1
             row = results[0]
             assert row["TABLE_NAME"] == test_table_name  # type: ignore[index]
-            assert row["TABLE_SCHEMA"] == dbname  # type: ignore[index]
+            assert row["TABLE_SCHEMA"] == database  # type: ignore[index]
 
 
 @pytest.mark.integration

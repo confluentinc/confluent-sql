@@ -194,6 +194,60 @@ class TestGetNextPageToken:
 
 
 @pytest.mark.unit
+class TestDeprecatedDbnameParameter:
+    """Tests for deprecated 'dbname' parameter handling in connect()."""
+
+    def test_dbname_alone_works_with_deprecation_warning(self):
+        """Test that passing dbname (without database) works but raises deprecation warning.
+
+        Verifies that:
+        1. The connection is created successfully
+        2. A DeprecationWarning is raised
+        3. The database value is set from dbname
+        4. The connection stores the database correctly
+        """
+        with pytest.warns(DeprecationWarning, match="'dbname' parameter is deprecated"):
+            conn = connect(
+                environment="env-id",
+                compute_pool_id="cp-id",
+                organization_id="org-id",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                flink_api_key="key",
+                flink_api_secret="secret",
+                dbname="my_database",  # Using deprecated parameter
+                database=None,  # Not providing new parameter
+            )
+
+        # Verify the connection was created
+        assert conn is not None
+        # Verify the database was set from dbname
+        assert conn._database == "my_database"
+
+    def test_both_dbname_and_database_raises_interface_error(self):
+        """Test that providing both dbname and database raises InterfaceError.
+
+        Verifies that when both parameters are provided, an InterfaceError is raised
+        with a clear error message indicating the conflict.
+        """
+        with pytest.raises(
+            InterfaceError,
+            match="Cannot specify both 'database' and deprecated 'dbname' parameters",
+        ):
+            connect(
+                environment="env-id",
+                compute_pool_id="cp-id",
+                organization_id="org-id",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                flink_api_key="key",
+                flink_api_secret="secret",
+                dbname="old_database",  # Deprecated parameter
+                database="new_database",  # New parameter - conflict!
+            )
+
+
+@pytest.mark.unit
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
