@@ -9,6 +9,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Changed
   * Respelled the `connect()` parameter `dbname` to `database`. The old spelling `dbname` is deprecated and will be removed in after one release cycle.
+  * class `SqlNone` now gracefully strips trailing `NOT NULL` constraints from type names (case-insensitive), so that `str(SqlNone("DATE NOT NULL"))` returns `"cast (null as DATE)"`. This assists integrations like the dbt adapter that provide type names with nullability constraints from schema metadata.
 
 ## 0.1.x
 
