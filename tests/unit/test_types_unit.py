@@ -2019,3 +2019,45 @@ class TestSqlNone:
     def test_constants(self, const, expected):
         """Test that the predefined SqlNone constants have the expected string representations."""
         assert str(const) == expected
+
+    @pytest.mark.parametrize(
+        "type_with_not_null, expected_clean_type",
+        [
+            # Simple types with various case patterns
+            ("DATE NOT NULL", "DATE"),
+            ("DATE not null", "DATE"),
+            ("DATE Not Null", "DATE"),
+            ("INTEGER NOT NULL", "INTEGER"),
+            ("VARCHAR NOT NULL", "VARCHAR"),
+            ("BOOLEAN NOT NULL", "BOOLEAN"),
+            # Parameterized types
+            ("ARRAY<INTEGER> NOT NULL", "ARRAY<INTEGER>"),
+            ("MAP<STRING, INTEGER> NOT NULL", "MAP<STRING, INTEGER>"),
+            ("MULTISET<STRING> NOT NULL", "MULTISET<STRING>"),
+            # Complex nested types
+            (
+                "ROW<field1 INTEGER, field2 STRING> NOT NULL",
+                "ROW<field1 INTEGER, field2 STRING>",
+            ),
+            ("ARRAY<ARRAY<BOOLEAN>> NOT NULL", "ARRAY<ARRAY<BOOLEAN>>"),
+            # Whitespace variations
+            ("DATE  NOT  NULL", "DATE"),
+            ("DATE NOT NULL  ", "DATE"),
+            ("DATE   NOT   NULL", "DATE"),
+            # Case preservation (only NOT NULL is case-insensitive)
+            ("date not null", "date"),
+            ("Date Not Null", "Date"),
+            ("ARRAY<int> not null", "ARRAY<int>"),
+        ],
+    )
+    def test_strip_not_null_constraint(self, type_with_not_null, expected_clean_type):
+        """Test that trailing NOT NULL constraints are stripped from type names."""
+        sql_none = SqlNone(type_with_not_null)
+        assert sql_none._flink_type_name == expected_clean_type
+        assert str(sql_none) == f"cast (null as {expected_clean_type})"
+
+    def test_type_without_not_null_unchanged(self):
+        """Ensure types without NOT NULL pass through unchanged."""
+        for type_name in ["DATE", "ARRAY<INTEGER>", "ROW<f1 INT>"]:
+            sql_none = SqlNone(type_name)
+            assert sql_none._flink_type_name == type_name
