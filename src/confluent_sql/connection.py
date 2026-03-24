@@ -40,6 +40,7 @@ def connect(  # noqa: PLR0913
     api_key: str | None = None,
     api_secret: str | None = None,
     database: str | None = None,
+    dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
 ) -> Connection:
@@ -47,16 +48,18 @@ def connect(  # noqa: PLR0913
     Create a connection to a Confluent SQL service.
 
     Args:
-        flink_api_key: Flink API key
-        flink_api_secret: Flink API secret
+        flink_api_key: Flink Region API key
+        flink_api_secret: Flink Region API secret
         environment: Environment ID
         compute_pool_id: Compute pool ID for SQL execution
         organization_id: Organization ID
         cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure")
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
-        api_key: Confluent Cloud API key (optional, for general Confluent Cloud resources)
-        api_secret: Confluent Cloud API secret (optional)
-        database: The name of the database to use (optional)
+        api_key: Confluent Cloud key (optional, for general Confluent Cloud resources)
+        api_secret: Confluent Cloud Flink Region API API secret (optional)
+        database: The default Flink database (Kafka cluster) to use when resolving
+            table/view/udf names (optional)
+        dbname: Deprecated alias for database parameter (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
             to the statement results API when consuming results for a statement, especially when
@@ -97,6 +100,18 @@ def connect(  # noqa: PLR0913
     if not flink_api_key or not flink_api_secret:
         raise InterfaceError("Flink API key and secret are required")
 
+    if dbname is not None:
+        warnings.warn(
+            "The 'dbname' parameter is deprecated and will be removed in a future release. "
+            "Please use the 'database' parameter instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if database is not None:
+            raise InterfaceError(
+                "Cannot specify both 'database' and deprecated 'dbname' parameters"
+            )
+
     return Connection(
         flink_api_key,
         flink_api_secret,
@@ -107,7 +122,7 @@ def connect(  # noqa: PLR0913
         cloud_region,
         api_key=api_key,
         api_secret=api_secret,
-        database=database,
+        database=database or dbname,  # dbname is deprecated.
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
     )
