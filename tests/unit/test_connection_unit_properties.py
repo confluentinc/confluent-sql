@@ -135,41 +135,6 @@ class TestExecuteStatementProperties:
         assert props["int-prop"] == 42
         assert props["bool-prop"] is True
 
-    def test_properties_system_overrides_user(self, mocker):
-        """Verify system properties (catalog, database, snapshot mode) cannot be overridden."""
-        connection = connect(
-            environment="env-id",
-            organization_id="org-id",
-            compute_pool_id="cp-id",
-            cloud_provider="aws",
-            cloud_region="us-east-1",
-            flink_api_key="key",
-            flink_api_secret="secret",
-            dbname="default_db",
-        )
-        request_mock = self.install_request_mock(connection, mocker)
-
-        # User tries to override system properties
-        user_props: PropertiesDict = {
-            "sql.current-catalog": "user-catalog",
-            "sql.snapshot.mode": "earliest",
-        }
-
-        connection._execute_statement(
-            "SELECT 1",
-            ExecutionMode.SNAPSHOT,
-            properties=user_props,
-        )
-
-        payload = request_mock.call_args[1]["json"]
-        props = payload["spec"]["properties"]
-
-        # System properties should win
-        assert props["sql.current-catalog"] == connection.environment
-        assert props["sql.snapshot.mode"] == "now"
-        # Default database should still be present
-        assert props["sql.current-database"] == "default_db"
-
     def test_properties_mixed_user_and_system(self, invalid_credential_connection, mocker):
         """Verify mixed user and system properties work correctly."""
         request_mock = self.install_request_mock(invalid_credential_connection, mocker)
@@ -212,3 +177,22 @@ class TestExecuteStatementProperties:
         assert "sql.snapshot.mode" not in props
         # But catalog should still be set
         assert "sql.current-catalog" in props
+
+    @pytest.mark.parametrize(
+        "reserved_property",
+        [
+            "sql.current-catalog",
+            "sql.current-database",
+            "sql.snapshot.mode",
+        ],
+    )
+    def test_properties_rejects_reserved_system_properties(
+        self, invalid_credential_connection, reserved_property
+    ):
+        """Verify InterfaceError is raised when user attempts to provide reserved system properties."""
+        with pytest.raises(InterfaceError, match="is a reserved system property"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.SNAPSHOT,
+                properties={reserved_property: "user-value"},
+            )

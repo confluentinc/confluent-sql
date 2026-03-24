@@ -747,6 +747,12 @@ class Connection:
 
         self._row_type_registry.register_row_type(class_for_flink_row)
 
+    _NEVER_USER_PROVIDED_PROPERTIES = {
+        "sql.current-catalog",
+        "sql.current-database",
+        "sql.snapshot.mode",
+    }
+
     def _resolve_properties(
         self, properties: PropertiesDict | None, execution_mode: ExecutionMode
     ) -> PropertiesDict:
@@ -771,9 +777,7 @@ class Connection:
         # Validate properties parameter if provided
         if properties is not None:
             if not isinstance(properties, dict):
-                raise InterfaceError(
-                    f"properties must be a dict, got {type(properties).__name__}"
-                )
+                raise InterfaceError(f"properties must be a dict, got {type(properties).__name__}")
 
             for key, value in properties.items():
                 if not isinstance(key, str):
@@ -785,6 +789,8 @@ class Connection:
                         f"properties values must be str, int, or bool, "
                         f"got {type(value).__name__} for key {key!r}"
                     )
+                if key in self._NEVER_USER_PROVIDED_PROPERTIES:
+                    raise InterfaceError(f"'{key}' is a reserved system property.")
 
         # Start with user properties (if provided), then overlay system properties
         # This ensures system properties always win and cannot be overridden
