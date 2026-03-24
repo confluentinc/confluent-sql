@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from confluent_sql import Connection, Cursor, InterfaceError, StatementDeletedError
+from confluent_sql import Connection, Cursor, InterfaceError, PropertiesDict, StatementDeletedError
 from confluent_sql.exceptions import NotSupportedError
 from confluent_sql.statement import Op, Phase
 
@@ -53,6 +53,34 @@ class TestCursor:
 
         # Cleanup.
         connection.delete_statement(statement)
+
+    def test_cursor_execute_with_statement_properties(
+        self, populated_table_connection: Connection, test_table_name: str
+    ):
+        """Test that statement properties are accepted and persisted in the Statement.
+
+        Verifies that:
+        1. cursor.execute() accepts a properties parameter
+        2. The statement executes successfully with custom properties
+        3. The returned Statement object contains the provided properties
+        4. Results can be fetched from the statement
+        """
+        cursor = populated_table_connection.cursor()
+        properties: PropertiesDict = {"sql.state-ttl": "100 ms"}
+        cursor.execute(f"SELECT * FROM {test_table_name}", properties=properties)
+
+        # Verify statement was created and completed
+        statement = cursor._statement
+        assert statement is not None
+        assert statement.phase is Phase.COMPLETED
+        assert statement.name is not None
+
+        # Verify the property is present in the statement properties
+        assert statement.properties["sql.state-ttl"] == "100 ms"
+
+        # Verify we can fetch results
+        row = cursor.fetchone()
+        assert row is not None  # Test table is populated
 
     def test_cursor_description_raises_if_closed(self, cursor: Cursor):
         cursor.close()

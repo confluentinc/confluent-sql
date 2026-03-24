@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING
 
 from .exceptions import InterfaceError, OperationalError
 from .execution_mode import ExecutionMode
-from .types import ColumnTypeDefinition, FromResponseTypes, StatementTypeConverter, StrAnyDict
+from .types import (
+    ColumnTypeDefinition,
+    FromResponseTypes,
+    PropertiesDict,
+    StatementTypeConverter,
+    StrAnyDict,
+)
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -265,6 +271,16 @@ class Statement:
     @property
     def principal(self) -> str:
         return self.spec["principal"]
+
+    @property
+    def properties(self) -> PropertiesDict:
+        """Get the statement properties (sql.state-ttl, sql.snapshot.mode, etc).
+
+        Returns:
+            Dictionary of statement properties. Keys are property names (e.g., "sql.snapshot.mode"),
+            values are strings, integers, or booleans as defined by PropertiesDict.
+        """
+        return self.spec["properties"]
 
     @property
     def sql_kind(self) -> str:

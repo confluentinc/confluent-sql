@@ -808,18 +808,39 @@ cursor.execute(
     timeout: int = 3000,
     statement_name: str | None = None,
     statement_label: str | None = None,
+    properties: dict[str, str | int | bool] | None = None,
 ) -> None
 ```
 
 ### Parameter Reference
 
-| Parameter         | Type                    | Default    | Description                                                        |
-| ----------------- | ----------------------- | ---------- | ------------------------------------------------------------------ |
-| `statement_text`  | `str`                   | (required) | SQL statement to execute                                           |
-| `parameters`      | `tuple \| list \| None` | None       | Parameter values for parameterized statements                      |
-| `timeout`         | `int`                   | 3000       | Max seconds to wait for statement to reach RUNNING/COMPLETED phase |
-| `statement_name`  | `str \| None`           | None       | Custom statement identifier (defaults to UUID)                     |
-| `statement_label` | `str \| None`           | None       | Label for grouping related statements                              |
+| Parameter         | Type                              | Default    | Description                                                        |
+| ----------------- | --------------------------------- | ---------- | ------------------------------------------------------------------ |
+| `statement_text`  | `str`                             | (required) | SQL statement to execute                                           |
+| `parameters`      | `tuple \| list \| None`           | None       | Parameter values for parameterized statements                      |
+| `timeout`         | `int`                             | 3000       | Max seconds to wait for statement to reach RUNNING/COMPLETED phase |
+| `statement_name`  | `str \| None`                     | None       | Custom statement identifier (defaults to UUID)                     |
+| `statement_label` | `str \| None`                     | None       | Label for grouping related statements                              |
+| `properties`      | `dict[str, str \| int \| bool] \| None` | None | [Statement properties](#statement-properties) to set for execution |
+
+### Statement Properties
+
+The `properties` parameter allows you to set [Flink SQL statement properties](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html#table-options) at query execution time. These are the same properties that can be set with Flink SQL `SET` statements.
+
+**Important Precedence Rules:**
+- Connection-level defaults (catalog, database) are always applied
+- Cursor execution mode settings (e.g., `sql.snapshot.mode` for snapshot queries) are always applied
+- User-provided properties in the `properties` parameter can extend these settings but cannot override system properties
+
+
+**Accessing Properties After Execution:**
+The properties are stored in the Statement object and can be accessed via `statement.properties`:
+
+```python
+cursor.execute(query, properties={"sql.state-ttl": "100 ms"})
+props = cursor.statement.properties
+assert props["sql.state-ttl"] == "100 ms"
+```
 
 **Examples:**
 
@@ -856,6 +877,14 @@ cursor.execute(
     timeout=3000,
     statement_name="product-sales-hourly",
     statement_label="analytics"
+)
+
+# With statement properties
+cursor.execute(
+    "SELECT * FROM orders WHERE status = %s",
+    ("pending",),
+    statement_name="pending-orders-query",
+    properties={"sql.state-ttl": "100 ms"}
 )
 ```
 

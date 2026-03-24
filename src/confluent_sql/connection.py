@@ -24,7 +24,7 @@ from .exceptions import InterfaceError, OperationalError, StatementDeletedError
 from .execution_mode import ExecutionMode
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
-from .types import RowPythonTypes
+from .types import PropertiesDict, RowPythonTypes
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +477,7 @@ class Connection:
         timeout: int = 3000,
         statement_name: str | None = None,
         statement_label: str | None = None,
+        properties: PropertiesDict | None = None,
     ) -> Statement:
         """Execute bounded DDL that completes after consuming snapshot data.
 
@@ -499,6 +500,8 @@ class Connection:
                             group and manage related statements. The label will be
                             prefixed with "user.confluent.io/" when stored but you only
                             need to provide the label value itself (e.g., "my-ddl-batch")
+            properties: Optional dictionary of statement properties to set for this execution.
+                       Keys must be strings, values must be str, int, or bool.
 
         Returns:
             Statement for managing the statement lifecycle
@@ -514,6 +517,7 @@ class Connection:
                 timeout=timeout,
                 statement_name=statement_name,
                 statement_label=statement_label,
+                properties=properties,
             )
 
         # Return the last version of the statement
@@ -526,6 +530,7 @@ class Connection:
         timeout: int = 3000,
         statement_name: str | None = None,
         statement_label: str | None = None,
+        properties: PropertiesDict | None = None,
     ) -> Statement:
         """Execute unbounded DDL that starts a streaming job.
 
@@ -544,6 +549,8 @@ class Connection:
                             group and manage related statements. The label will be
                             prefixed with "user.confluent.io/" when stored but you only
                             need to provide the label value itself (e.g., "streaming-jobs")
+            properties: Optional dictionary of statement properties to set for this execution.
+                       Keys must be strings, values must be str, int, or bool.
         Returns:
             Statement for any further management of the statement lifecycle
         """
@@ -555,6 +562,7 @@ class Connection:
                 timeout=timeout,
                 statement_name=statement_name,
                 statement_label=statement_label,
+                properties=properties,
             )
 
         return cur.statement
@@ -739,12 +747,79 @@ class Connection:
 
         self._row_type_registry.register_row_type(class_for_flink_row)
 
+    _NEVER_USER_PROVIDED_PROPERTIES = {
+        "sql.current-catalog",
+        "sql.current-database",
+        "sql.snapshot.mode",
+    }
+
+    def _resolve_properties(
+        self, properties: PropertiesDict | None, execution_mode: ExecutionMode
+    ) -> PropertiesDict:
+        """
+        Validate and merge user properties with system properties.
+
+        Validates the properties parameter and merges it with system-level properties
+        (catalog, database, snapshot mode). System properties always have precedence
+        and cannot be overridden by user input.
+
+        Args:
+            properties: Optional dictionary of user-provided statement properties.
+                       Keys must be strings, values must be str, int, or bool.
+            execution_mode: The execution mode (determines if snapshot.mode is set).
+
+        Returns:
+            Merged properties dictionary with system properties overlaid.
+
+        Raises:
+            InterfaceError: If properties parameter is invalid (not a dict, invalid keys/values).
+        """
+        # Validate properties parameter if provided
+        if properties is not None:
+            if not isinstance(properties, dict):
+                raise InterfaceError(f"properties must be a dict, got {type(properties).__name__}")
+
+            for key, value in properties.items():
+                if not isinstance(key, str):
+                    raise InterfaceError(
+                        f"properties keys must be strings, got {type(key).__name__} for key {key!r}"
+                    )
+                if not isinstance(value, (str, int, bool)):
+                    raise InterfaceError(
+                        f"properties values must be str, int, or bool, "
+                        f"got {type(value).__name__} for key {key!r}"
+                    )
+                if key in self._NEVER_USER_PROVIDED_PROPERTIES:
+                    raise InterfaceError(f"'{key}' is a reserved system property.")
+
+        # Start with user properties (if provided), then overlay system properties
+        # This ensures system properties always win and cannot be overridden
+        merged_properties: PropertiesDict = {}
+
+        if properties is not None:
+            # User properties applied first
+            merged_properties.update(properties)
+
+        # Connection-level properties overlay (always set, cannot be overridden by user)
+        merged_properties["sql.current-catalog"] = self.environment
+
+        if self._dbname is not None:
+            merged_properties["sql.current-database"] = self._dbname
+
+        # Cursor-level execution mode properties overlay (always set when applicable)
+        if execution_mode.is_snapshot:
+            # Ask for snapshot mode behavior -- point-in-time results.
+            merged_properties["sql.snapshot.mode"] = "now"
+
+        return merged_properties
+
     def _execute_statement(
         self,
         statement: str,
         execution_mode: ExecutionMode,
         statement_name: str | None = None,
         statement_label: str | None = None,
+        properties: PropertiesDict | None = None,
     ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response.
@@ -755,28 +830,25 @@ class Connection:
             statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}')
             statement_label: Optional label for the statement for easier identification in
                             server logs and UIs (defaults to None).
+            properties: Optional dictionary of statement properties to set for this execution.
+                       Keys must be strings, values must be str, int, or bool. System
+                       properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
+                       are always set by the driver and cannot be overridden.
 
         Returns:
             Dictionary containing the API response
 
         Raises:
             OperationalError: If statement execution fails
+            InterfaceError: If properties parameter is invalid
         """
 
         # Create the statement payload as per Flink SQL API documentation
         if statement_name is None:
             statement_name = f"dbapi-{str(uuid.uuid4())}"
 
-        # Each connection uses a single environment, also
-        # called catalog, so we set the property here
-        properties = {"sql.current-catalog": self.environment}
-
-        if self._dbname is not None:
-            properties["sql.current-database"] = self._dbname
-
-        if execution_mode.is_snapshot:
-            # Ask for snapshot mode behavior -- point-in-time results.
-            properties["sql.snapshot.mode"] = "now"
+        # Resolve and merge user properties with system properties
+        merged_properties = self._resolve_properties(properties, execution_mode)
 
         payload = {
             "name": statement_name,
@@ -784,7 +856,7 @@ class Connection:
             "environment_id": self.environment,
             "spec": {
                 "statement": statement,
-                "properties": properties,
+                "properties": merged_properties,
                 "compute_pool_id": self.compute_pool_id,
                 "stopped": False,
             },
