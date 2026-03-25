@@ -5,6 +5,7 @@ All notable changes to this dbapi driver will be documented in this file.
 ## Unreleased
 
 ### Added
+  * New optional `host` parameter on `connect()` to allow users to specify a custom Confluent Cloud API endpoint (e.g., for private networking endpoints). When provided, the `cloud_provider` and `cloud_region` parameters are ignored. (#66)
   * New optional keyword parameter `properties: PropertiesDict | None` on `Cursor.execute()` and related methods to allow callers to provide [statement execution properties](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html#table-options). Note: connection or cursor-level properties for default catalog, database, and execution mode cannot be overridden by this parameter.
 
 ### Changed
