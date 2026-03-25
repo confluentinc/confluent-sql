@@ -39,7 +39,7 @@ def connect(  # noqa: PLR0913
     cloud_provider: str | None = None,
     cloud_region: str | None = None,
     database: str | None = None,
-    host: str | None = None,
+    endpoint: str | None = None,
     dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
@@ -53,15 +53,17 @@ def connect(  # noqa: PLR0913
         environment: Environment ID
         compute_pool_id: Compute pool ID for SQL execution
         organization_id: Organization ID
-        cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure"). Ignored if host parameter is
-            provided.
-        cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Ignored if host parameter is
-            provided.
+        cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure"). Required if endpoint is not
+            provided; must not be provided if endpoint is specified.
+        cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is not
+            provided; must not be provided if endpoint is specified.
         database: The default Flink database (Kafka cluster) to use when resolving
             table/view/udf names (optional)
-        host: The base URL for Confluent Cloud API (optional). If not provided, the host will be
-            constructed based on the cloud_provider and cloud_region parameters in the format
-            "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
+        endpoint: The base URL for Confluent Cloud API (optional). If not provided, the endpoint
+            will be constructed based on the cloud_provider and cloud_region parameters in the
+            format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud". A trailing
+            slash is optional and will be stripped if provided (e.g., both
+            "https://custom.example.com" and "https://custom.example.com/" are accepted).
         dbname: Deprecated alias for database parameter (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
@@ -94,17 +96,17 @@ def connect(  # noqa: PLR0913
     if not organization_id:
         raise InterfaceError("Organization ID is required")
 
-    if host:
+    if endpoint:
         if cloud_provider or cloud_region:
             raise InterfaceError(
-                "cloud_provider and cloud_region should not be provided when host is specified"
+                "cloud_provider and cloud_region should not be provided when endpoint is specified"
             )
     else:
         if not cloud_provider:
-            raise InterfaceError("Cloud provider is required when host is not provided")
+            raise InterfaceError("Cloud provider is required when endpoint is not provided")
 
         if not cloud_region:
-            raise InterfaceError("Cloud region is required when host is not provided")
+            raise InterfaceError("Cloud region is required when endpoint is not provided")
 
     if not flink_api_key or not flink_api_secret:
         raise InterfaceError("Flink API key and secret are required")
@@ -129,7 +131,7 @@ def connect(  # noqa: PLR0913
         organization_id,
         cloud_provider,
         cloud_region,
-        host,
+        endpoint,
         database=database or dbname,  # dbname is deprecated.
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
@@ -187,7 +189,7 @@ class Connection:
         organization_id: str,
         cloud_provider: str | None,
         cloud_region: str | None,
-        host: str | None,
+        endpoint: str | None,
         database: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
@@ -201,17 +203,18 @@ class Connection:
             environment: Environment ID
             compute_pool_id: Compute pool ID for SQL execution
             organization_id: Organization ID
-            cloud_provider: Cloud provider
-            cloud_region: Cloud region (e.g., "us-east-2", "us-west-2")
-            host: The base URL for Confluent Cloud API (optional). If not provided, the host will be
-                constructed based on the cloud_provider and cloud_region parameters in the format
-                "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
+            cloud_provider: Cloud provider (required if endpoint is not provided)
+            cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
+                not provided.
+            endpoint: The base URL for Confluent Cloud API (optional). If not provided, the
+                endpoint will be constructed based on the cloud_provider and cloud_region
+                parameters in the format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
+                A trailing slash is optional and will be stripped if provided.
+            database: The name of the database to use (optional)
             result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
                 statement results. Defaults to 100ms. If most recent fetch of results for a
                 statement was more than this long ago, then no delay will happen when fetching
                 the next page of results for the statement.
-            host: The base URL for Confluent Cloud API (optional)
-            database: The name of the database to use (optional)
             http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
                            driver name/version, documentation URL, and support email.
@@ -239,11 +242,14 @@ class Connection:
         )
 
         # Create httpx client for making API calls
-        if not host:
-            # Construct the host URL based on cloud provider and region.
-            host = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
+        if not endpoint:
+            # Construct the endpoint URL based on cloud provider and region.
+            endpoint = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
+        else:
+            # Strip trailing slash if user provided one, to ensure clean URL construction
+            endpoint = endpoint.rstrip("/")
 
-        base_url = f"{host}/sql/v1/organizations/{organization_id}/environments/{environment}"
+        base_url = f"{endpoint}/sql/v1/organizations/{organization_id}/environments/{environment}"
 
         # Create httpx client for making API calls
         basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
