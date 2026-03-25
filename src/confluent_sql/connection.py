@@ -94,7 +94,12 @@ def connect(  # noqa: PLR0913
     if not organization_id:
         raise InterfaceError("Organization ID is required")
 
-    if not host:
+    if host:
+        if cloud_provider or cloud_region:
+            raise InterfaceError(
+                "cloud_provider and cloud_region should not be provided when host is specified"
+            )
+    else:
         if not cloud_provider:
             raise InterfaceError("Cloud provider is required when host is not provided")
 
