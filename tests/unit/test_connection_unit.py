@@ -268,7 +268,9 @@ class TestConnectChecks:
 
     def test_requires_cloud_provider(self, connection_factory: ConnectionFactory):
         """Test that cloud provider is required when host is not provided."""
-        with pytest.raises(InterfaceError, match="Cloud provider is required when host is not provided"):
+        with pytest.raises(
+            InterfaceError, match="Cloud provider is required when host is not provided"
+        ):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -278,7 +280,9 @@ class TestConnectChecks:
 
     def test_requires_cloud_region(self, connection_factory: ConnectionFactory):
         """Test that cloud region is required when host is not provided."""
-        with pytest.raises(InterfaceError, match="Cloud region is required when host is not provided"):
+        with pytest.raises(
+            InterfaceError, match="Cloud region is required when host is not provided"
+        ):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -324,10 +328,14 @@ class TestConnectChecks:
         )
 
         # Verify base_url constructed with custom host (httpx adds trailing slash)
-        expected_base_url = "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        expected_base_url = (
+            "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        )
         assert str(conn._client.base_url) == expected_base_url
 
-    def test_host_parameter_makes_cloud_params_optional(self, connection_factory: ConnectionFactory):
+    def test_host_parameter_makes_cloud_params_optional(
+        self, connection_factory: ConnectionFactory
+    ):
         """Test that cloud_provider and cloud_region are optional when host is provided."""
         # Should NOT raise error - cloud params are optional with host
         conn = connection_factory(
@@ -924,9 +932,7 @@ class TestClosingCursor:
     def test_closing_cursor_respects_mode_parameter(self, invalid_credential_connection):
         """Test that closing_cursor respects the mode parameter."""
         # Test with SNAPSHOT mode (default)
-        with invalid_credential_connection.closing_cursor(
-            mode=ExecutionMode.SNAPSHOT
-        ) as cursor:
+        with invalid_credential_connection.closing_cursor(mode=ExecutionMode.SNAPSHOT) as cursor:
             assert cursor is not None
             assert cursor.execution_mode == ExecutionMode.SNAPSHOT
 
@@ -997,12 +1003,13 @@ class TestClosingStreamingCursor:
         assert cursor is not None
         assert cursor.is_closed is True
 
-    def test_closing_streaming_cursor_closes_even_on_exception(
-        self, invalid_credential_connection
-    ):
+    def test_closing_streaming_cursor_closes_even_on_exception(self, invalid_credential_connection):
         """Test that cursor is closed even if an exception is raised in the context."""
         cursor = None
-        with pytest.raises(ValueError), invalid_credential_connection.closing_streaming_cursor() as c:  # noqa: SIM117,E501
+        with (
+            pytest.raises(ValueError),
+            invalid_credential_connection.closing_streaming_cursor() as c,
+        ):  # noqa: SIM117,E501
             cursor = c
             assert cursor.is_closed is False
             raise ValueError("Test exception")
@@ -1019,10 +1026,12 @@ class TestClosingStreamingCursor:
         Verifies equivalence to closing_cursor(mode=ExecutionMode.STREAMING_QUERY).
         """
         # Create two cursors - one with closing_streaming_cursor, one with closing_cursor
-        with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1, \
-             invalid_credential_connection.closing_cursor(
+        with (
+            invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1,
+            invalid_credential_connection.closing_cursor(
                 as_dict=True, mode=ExecutionMode.STREAMING_QUERY
-            ) as cursor2:
+            ) as cursor2,
+        ):
             # Both should have the same execution mode
             assert cursor1.execution_mode == cursor2.execution_mode
             assert cursor1.is_streaming == cursor2.is_streaming
