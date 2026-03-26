@@ -248,6 +248,39 @@ class TestDeprecatedDbnameParameter:
 
 
 @pytest.mark.unit
+class TestConnectionInit:
+    """Tests for Connection.__init__ method."""
+
+    @pytest.mark.parametrize(
+        "cloud_provider,cloud_region,endpoint",
+        [
+            (None, None, None),
+            ("aws", None, None),
+            (None, "us-east-1", None),
+            ("", "", None),
+            ("aws", "", None),
+            ("", "us-east-1", None),
+        ],
+    )
+    def test_requires_endpoint_or_cloud_info(self, cloud_provider, cloud_region, endpoint):
+        """Test that creating a connection without proper endpoint or cloud info raises an error."""
+        with pytest.raises(
+            InterfaceError,
+            match="cloud_provider and cloud_region are required when endpoint is not provided",
+        ):
+            Connection(
+                environment="foo_id",
+                compute_pool_id="1234",
+                organization_id="4567",
+                flink_api_key="valid-key",
+                flink_api_secret="valid-secret",
+                cloud_provider=cloud_provider,
+                cloud_region=cloud_region,
+                endpoint=endpoint,
+            )
+
+
+@pytest.mark.unit
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
@@ -267,8 +300,10 @@ class TestConnectChecks:
             connection_factory(environment="foo_id", compute_pool_id="1234", organization_id="")
 
     def test_requires_cloud_provider(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without a cloud provider raises an error."""
-        with pytest.raises(InterfaceError, match="Cloud provider is required"):
+        """Test that cloud provider is required when endpoint is not provided."""
+        with pytest.raises(
+            InterfaceError, match="Cloud provider is required when endpoint is not provided"
+        ):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -277,8 +312,10 @@ class TestConnectChecks:
             )
 
     def test_requires_cloud_region(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without a cloud region raises an error."""
-        with pytest.raises(InterfaceError, match="Cloud region is required"):
+        """Test that cloud region is required when host is not provided."""
+        with pytest.raises(
+            InterfaceError, match="Cloud region is required when endpoint is not provided"
+        ):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -286,6 +323,21 @@ class TestConnectChecks:
                 cloud_provider="aws",
                 cloud_region="",
             )
+
+    def test_builds_endpoint_from_cloud_info(self, connection_factory: ConnectionFactory):
+        """Test that when endpoint is not provided, it is built correctly from cloud info."""
+        conn = connection_factory(
+            environment="env-123",
+            organization_id="org-456",
+            compute_pool_id="cp-789",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="test-key",
+            flink_api_secret="test-secret",
+        )
+
+        expected_base_url = "https://flink.us-east-1.aws.confluent.cloud/sql/v1/organizations/org-456/environments/env-123/"
+        assert str(conn._client.base_url) == expected_base_url
 
     def test_requires_flink_api_key(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API key raises an error."""
@@ -310,6 +362,105 @@ class TestConnectChecks:
                 cloud_region="us-east-1",
                 flink_api_key="valid-key",
                 flink_api_secret="",
+            )
+
+    def test_endpoint_parameter_uses_custom_endpoint(self, connection_factory: ConnectionFactory):
+        """Test that providing endpoint parameter uses the custom endpoint."""
+        conn = connection_factory(
+            environment="env-123",
+            organization_id="org-456",
+            compute_pool_id="cp-789",
+            flink_api_key="test-key",
+            flink_api_secret="test-secret",
+            endpoint="https://custom.example.com",
+        )
+
+        # Verify base_url constructed with custom host (httpx adds trailing slash)
+        expected_base_url = (
+            "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        )
+        assert str(conn._client.base_url) == expected_base_url
+
+    def test_endpoint_parameter_with_trailing_slash(self, connection_factory: ConnectionFactory):
+        """Test that endpoint parameter with trailing slash is stripped correctly."""
+        conn = connection_factory(
+            environment="env-123",
+            organization_id="org-456",
+            compute_pool_id="cp-789",
+            flink_api_key="test-key",
+            flink_api_secret="test-secret",
+            endpoint="https://custom.example.com/",
+        )
+
+        # Verify trailing slash was stripped and URL is clean (no double slashes)
+        base_url = str(conn._client.base_url)
+        assert "custom.example.com" in base_url
+        # Verify no double slashes before /sql (trailing slash should be stripped)
+        assert "//sql" not in base_url
+        assert (
+            base_url
+            == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        )
+
+    def test_endpoint_parameter_without_trailing_slash(self, connection_factory: ConnectionFactory):
+        """Test that endpoint parameter without trailing slash works correctly."""
+        conn = connection_factory(
+            environment="env-123",
+            organization_id="org-456",
+            compute_pool_id="cp-789",
+            flink_api_key="test-key",
+            flink_api_secret="test-secret",
+            endpoint="https://custom.example.com",
+        )
+
+        # Verify URL is clean (same result as with trailing slash)
+        base_url = str(conn._client.base_url)
+        assert "custom.example.com" in base_url
+        # Verify no double slashes
+        assert "//sql" not in base_url
+        assert (
+            base_url
+            == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        )
+
+    def test_endpoint_raises_error_when_cloud_provider_also_provided(
+        self, connection_factory: ConnectionFactory
+    ):
+        """Test that providing endpoint with cloud_provider raises an error."""
+        with pytest.raises(
+            InterfaceError,
+            match=(
+                "cloud_provider and cloud_region should not be provided when endpoint is specified"
+            ),
+        ):
+            connection_factory(
+                environment="env-123",
+                organization_id="org-456",
+                compute_pool_id="cp-789",
+                flink_api_key="test-key",
+                flink_api_secret="test-secret",
+                endpoint="https://custom.example.com",
+                cloud_provider="aws",
+            )
+
+    def test_endpoint_raises_error_when_cloud_region_also_provided(
+        self, connection_factory: ConnectionFactory
+    ):
+        """Test that providing endpoint with cloud_region raises an error."""
+        with pytest.raises(
+            InterfaceError,
+            match=(
+                "cloud_provider and cloud_region should not be provided when endpoint is specified"
+            ),
+        ):
+            connection_factory(
+                environment="env-123",
+                organization_id="org-456",
+                compute_pool_id="cp-789",
+                flink_api_key="test-key",
+                flink_api_secret="test-secret",
+                endpoint="https://custom.example.com",
+                cloud_region="us-east-1",
             )
 
 
@@ -825,9 +976,7 @@ class TestClosingCursor:
     def test_closing_cursor_respects_mode_parameter(self, invalid_credential_connection):
         """Test that closing_cursor respects the mode parameter."""
         # Test with SNAPSHOT mode (default)
-        with invalid_credential_connection.closing_cursor(
-            mode=ExecutionMode.SNAPSHOT
-        ) as cursor:
+        with invalid_credential_connection.closing_cursor(mode=ExecutionMode.SNAPSHOT) as cursor:
             assert cursor is not None
             assert cursor.execution_mode == ExecutionMode.SNAPSHOT
 
@@ -898,12 +1047,13 @@ class TestClosingStreamingCursor:
         assert cursor is not None
         assert cursor.is_closed is True
 
-    def test_closing_streaming_cursor_closes_even_on_exception(
-        self, invalid_credential_connection
-    ):
+    def test_closing_streaming_cursor_closes_even_on_exception(self, invalid_credential_connection):
         """Test that cursor is closed even if an exception is raised in the context."""
         cursor = None
-        with pytest.raises(ValueError), invalid_credential_connection.closing_streaming_cursor() as c:  # noqa: SIM117,E501
+        with (
+            pytest.raises(ValueError),
+            invalid_credential_connection.closing_streaming_cursor() as c,
+        ):  # noqa: SIM117,E501
             cursor = c
             assert cursor.is_closed is False
             raise ValueError("Test exception")
@@ -920,10 +1070,12 @@ class TestClosingStreamingCursor:
         Verifies equivalence to closing_cursor(mode=ExecutionMode.STREAMING_QUERY).
         """
         # Create two cursors - one with closing_streaming_cursor, one with closing_cursor
-        with invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1, \
-             invalid_credential_connection.closing_cursor(
+        with (
+            invalid_credential_connection.closing_streaming_cursor(as_dict=True) as cursor1,
+            invalid_credential_connection.closing_cursor(
                 as_dict=True, mode=ExecutionMode.STREAMING_QUERY
-            ) as cursor2:
+            ) as cursor2,
+        ):
             # Both should have the same execution mode
             assert cursor1.execution_mode == cursor2.execution_mode
             assert cursor1.is_streaming == cursor2.is_streaming
