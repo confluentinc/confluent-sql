@@ -71,10 +71,13 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             organization_id = os.getenv("CONFLUENT_ORG_ID", "")
         if compute_pool_id is None:
             compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
-        if cloud_provider is None:
-            cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
-        if cloud_region is None:
-            cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
+        if endpoint is None:
+            # Only fill in cloud_provider and cloud_region from env vars if endpoint is not
+            # provided, otherwise connect will raise an error.
+            if cloud_provider is None:
+                cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+            if cloud_region is None:
+                cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
         if database is None:
             database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 

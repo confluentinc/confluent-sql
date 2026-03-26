@@ -248,6 +248,39 @@ class TestDeprecatedDbnameParameter:
 
 
 @pytest.mark.unit
+class TestConnectionInit:
+    """Tests for Connection.__init__ method."""
+
+    @pytest.mark.parametrize(
+        "cloud_provider,cloud_region,endpoint",
+        [
+            (None, None, None),
+            ("aws", None, None),
+            (None, "us-east-1", None),
+            ("", "", None),
+            ("aws", "", None),
+            ("", "us-east-1", None),
+        ],
+    )
+    def test_requires_endpoint_or_cloud_info(self, cloud_provider, cloud_region, endpoint):
+        """Test that creating a connection without proper endpoint or cloud info raises an error."""
+        with pytest.raises(
+            InterfaceError,
+            match="cloud_provider and cloud_region are required when endpoint is not provided",
+        ):
+            Connection(
+                environment="foo_id",
+                compute_pool_id="1234",
+                organization_id="4567",
+                flink_api_key="valid-key",
+                flink_api_secret="valid-secret",
+                cloud_provider=cloud_provider,
+                cloud_region=cloud_region,
+                endpoint=endpoint,
+            )
+
+
+@pytest.mark.unit
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
@@ -267,7 +300,7 @@ class TestConnectChecks:
             connection_factory(environment="foo_id", compute_pool_id="1234", organization_id="")
 
     def test_requires_cloud_provider(self, connection_factory: ConnectionFactory):
-        """Test that cloud provider is required when host is not provided."""
+        """Test that cloud provider is required when endpoint is not provided."""
         with pytest.raises(
             InterfaceError, match="Cloud provider is required when endpoint is not provided"
         ):
@@ -290,6 +323,21 @@ class TestConnectChecks:
                 cloud_provider="aws",
                 cloud_region="",
             )
+
+    def test_builds_endpoint_from_cloud_info(self, connection_factory: ConnectionFactory):
+        """Test that when endpoint is not provided, it is built correctly from cloud info."""
+        conn = connection_factory(
+            environment="env-123",
+            organization_id="org-456",
+            compute_pool_id="cp-789",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="test-key",
+            flink_api_secret="test-secret",
+        )
+
+        expected_base_url = "https://flink.us-east-1.aws.confluent.cloud/sql/v1/organizations/org-456/environments/env-123/"
+        assert str(conn._client.base_url) == expected_base_url
 
     def test_requires_flink_api_key(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API key raises an error."""
@@ -317,7 +365,7 @@ class TestConnectChecks:
             )
 
     def test_endpoint_parameter_uses_custom_endpoint(self, connection_factory: ConnectionFactory):
-        """Test that providing host parameter uses the custom endpoint."""
+        """Test that providing endpoint parameter uses the custom endpoint."""
         conn = connection_factory(
             environment="env-123",
             organization_id="org-456",
@@ -331,39 +379,6 @@ class TestConnectChecks:
         expected_base_url = (
             "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
         )
-        assert str(conn._client.base_url) == expected_base_url
-
-    def test_endpoint_parameter_makes_cloud_params_optional(
-        self, connection_factory: ConnectionFactory
-    ):
-        """Test that cloud_provider and cloud_region are optional when host is provided."""
-        # Should NOT raise error - cloud params are optional with host
-        conn = connection_factory(
-            environment="env-123",
-            organization_id="org-456",
-            compute_pool_id="cp-789",
-            flink_api_key="test-key",
-            flink_api_secret="test-secret",
-            endpoint="https://custom.example.com",
-        )
-
-        # Verify connection was created successfully
-        assert not conn.is_closed
-        assert str(conn._client.base_url).startswith("https://custom.example.com")
-
-    def test_default_endpoint_construction(self, connection_factory: ConnectionFactory):
-        """Test that host is constructed from cloud_provider and cloud_region when not provided."""
-        conn = connection_factory(
-            environment="env-123",
-            organization_id="org-456",
-            compute_pool_id="cp-789",
-            flink_api_key="test-key",
-            flink_api_secret="test-secret",
-            cloud_provider="aws",
-            cloud_region="us-west-2",
-        )
-
-        expected_base_url = "https://flink.us-west-2.aws.confluent.cloud/sql/v1/organizations/org-456/environments/env-123/"
         assert str(conn._client.base_url) == expected_base_url
 
     def test_endpoint_parameter_with_trailing_slash(self, connection_factory: ConnectionFactory):
@@ -382,7 +397,10 @@ class TestConnectChecks:
         assert "custom.example.com" in base_url
         # Verify no double slashes before /sql (trailing slash should be stripped)
         assert "//sql" not in base_url
-        assert base_url == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        assert (
+            base_url
+            == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        )
 
     def test_endpoint_parameter_without_trailing_slash(self, connection_factory: ConnectionFactory):
         """Test that endpoint parameter without trailing slash works correctly."""
@@ -400,7 +418,10 @@ class TestConnectChecks:
         assert "custom.example.com" in base_url
         # Verify no double slashes
         assert "//sql" not in base_url
-        assert base_url == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        assert (
+            base_url
+            == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
+        )
 
     def test_endpoint_raises_error_when_cloud_provider_also_provided(
         self, connection_factory: ConnectionFactory
@@ -409,8 +430,7 @@ class TestConnectChecks:
         with pytest.raises(
             InterfaceError,
             match=(
-                "cloud_provider and cloud_region should not be provided when endpoint "
-                "is specified"
+                "cloud_provider and cloud_region should not be provided when endpoint is specified"
             ),
         ):
             connection_factory(
@@ -430,8 +450,7 @@ class TestConnectChecks:
         with pytest.raises(
             InterfaceError,
             match=(
-                "cloud_provider and cloud_region should not be provided when endpoint "
-                "is specified"
+                "cloud_provider and cloud_region should not be provided when endpoint is specified"
             ),
         ):
             connection_factory(

@@ -241,6 +241,11 @@ class Connection:
             http_user_agent if http_user_agent is not None else self.DEFAULT_USER_AGENT
         )
 
+        if not endpoint and not (cloud_provider and cloud_region):
+            raise InterfaceError(
+                "cloud_provider and cloud_region are required when endpoint is not provided"
+            )
+
         # Create httpx client for making API calls
         if not endpoint:
             # Construct the endpoint URL based on cloud provider and region.
