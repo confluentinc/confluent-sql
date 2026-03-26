@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "confluent-sql"
-version = "0.2.0-pre"
+version = "0.2.0"
 description = "DB-API v2 compliant driver for Confluent Cloud Flink SQL"
 readme = "README.md"
 requires-python = ">=3.10"
