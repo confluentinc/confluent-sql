@@ -59,6 +59,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         database: str | None = None,
         result_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
+        endpoint: str | None = None,
     ) -> Connection:
         if flink_api_key is None:
             flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
@@ -70,10 +71,13 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             organization_id = os.getenv("CONFLUENT_ORG_ID", "")
         if compute_pool_id is None:
             compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
-        if cloud_provider is None:
-            cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
-        if cloud_region is None:
-            cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
+        if endpoint is None:
+            # Only fill in cloud_provider and cloud_region from env vars if endpoint is not
+            # provided, otherwise connect will raise an error.
+            if cloud_provider is None:
+                cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+            if cloud_region is None:
+                cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
         if database is None:
             database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
@@ -88,6 +92,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             database=database,
             result_page_fetch_pause_millis=result_page_fetch_pause_millis,
             http_user_agent=http_user_agent,
+            endpoint=endpoint,
         )
 
         connections.append(connection)
