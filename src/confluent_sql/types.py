@@ -513,9 +513,19 @@ class SqlNone:
     _parameterized_type_regex = re.compile(r"^(?:ARRAY|MAP|MULTISET|ROW)\b", re.IGNORECASE)
     """Compiled regex pattern for parameterized Flink type names."""
 
+    _not_null_suffix_regex = re.compile(r"\s*NOT\s+NULL\s*$", re.IGNORECASE)
+    """Compiled regex pattern to strip trailing NOT NULL constraints."""
+
     def __init__(self, python_or_flink_type: str | type):
         if isinstance(python_or_flink_type, str):
             # The caller provided a Flink type name directly.
+            # Strip trailing "NOT NULL" constraint if present (case-insensitive).
+            # This assists integrations (like dbt adapters) that may provide
+            # type names with nullability constraints from schema metadata.
+            python_or_flink_type = (
+                SqlNone._not_null_suffix_regex.sub("", python_or_flink_type).rstrip()
+            )
+
             # Validate the provided Flink type name using case-insensitive regexes.
 
             if SqlNone._known_types_regex is None:
