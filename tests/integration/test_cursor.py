@@ -4,7 +4,14 @@ from uuid import uuid4
 
 import pytest
 
-from confluent_sql import Connection, Cursor, InterfaceError, PropertiesDict, StatementDeletedError
+from confluent_sql import (
+    HIDDEN_LABEL,
+    Connection,
+    Cursor,
+    InterfaceError,
+    PropertiesDict,
+    StatementDeletedError,
+)
 from confluent_sql.exceptions import NotSupportedError
 from confluent_sql.statement import Op, Phase
 
@@ -33,7 +40,7 @@ class TestCursor:
         """Test over submitting and finding statements via end-user-provided label."""
         label = f"test-label-{uuid4()}"
         name = f"test-statement-{uuid4()}".lower()
-        cursor.execute(SINGLE_COLUMN_QUERY, statement_name=name, statement_label=label)
+        cursor.execute(SINGLE_COLUMN_QUERY, statement_name=name, statement_labels=[label])
 
         statement = cursor._statement
         assert statement is not None
@@ -52,6 +59,65 @@ class TestCursor:
         assert all(s.name != statement.name for s in statements)
 
         # Cleanup.
+        connection.delete_statement(statement)
+
+    def test_cursor_execute_with_multiple_labels(self, cursor: Cursor, connection: Connection):
+        """Test submitting statement with multiple labels and verifying all are present."""
+        label1 = f"test-label-1-{uuid4()}"
+        label2 = f"test-label-2-{uuid4()}"
+        label3 = f"test-label-3-{uuid4()}"
+        name = f"test-statement-{uuid4()}".lower()
+
+        cursor.execute(
+            SINGLE_COLUMN_QUERY, statement_name=name, statement_labels=[label1, label2, label3]
+        )
+
+        statement = cursor._statement
+        assert statement is not None
+
+        # Verify all labels are present in the statement
+        assert label1 in statement.end_user_labels
+        assert label2 in statement.end_user_labels
+        assert label3 in statement.end_user_labels
+        assert len(statement.end_user_labels) == 3
+
+        # Should be able to list statements by any of the labels
+        for label in [label1, label2, label3]:
+            statements = connection.list_statements(label=label)
+            assert any(s.name == statement.name for s in statements), (
+                f"Statement should be findable by label {label}"
+            )
+
+        # Cleanup
+        connection.delete_statement(statement)
+
+    def test_hidden_label_usage(self, cursor: Cursor, connection: Connection):
+        """Test using the HIDDEN_LABEL constant."""
+        custom_label = f"custom-{uuid4()}"
+        name = f"test-statement-{uuid4()}".lower()
+
+        cursor.execute(
+            SINGLE_COLUMN_QUERY, statement_name=name, statement_labels=[HIDDEN_LABEL, custom_label]
+        )
+
+        statement = cursor._statement
+        assert statement is not None
+
+        # Verify both labels are present (HIDDEN_LABEL should have prefix stripped)
+        assert "hidden" in statement.end_user_labels  # HIDDEN_LABEL has prefix stripped
+        assert custom_label in statement.end_user_labels
+
+        # Should be findable by custom label
+        statements = connection.list_statements(label=custom_label)
+        assert any(s.name == statement.name for s in statements)
+
+        # Should also be findable by "hidden" label. But default
+        # (Confluent Cloud UI filters out statements with "hidden" label,
+        # so this is more for testing the label handling)
+        statements = connection.list_statements(label="hidden")
+        assert any(s.name == statement.name for s in statements)
+
+        # Cleanup
         connection.delete_statement(statement)
 
     def test_cursor_execute_with_statement_properties(
