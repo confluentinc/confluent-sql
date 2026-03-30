@@ -853,14 +853,16 @@ class Connection:
         properties: PropertiesDict | None = None,
     ) -> dict[str, Any]:
         """
-        Execute a SQL statement and return the response.
+        Execute a SQL statement and return the response. Any statement parameters must have already
+        been incorproated into the statement string, in that the create statement endpoint
+        does not support separate parameter passing.
 
         Args:
             statement: The SQL statement to execute
-            parameters: Parameters for the SQL statement (optional)
             statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}')
             statement_labels: Optional list of labels for the statement for easier identification
-                             in server logs and UIs (defaults to None).
+                             in server logs and UIs (defaults to None). Use HIDDEN_LABEL to mark
+                             statements as hidden from default views.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
