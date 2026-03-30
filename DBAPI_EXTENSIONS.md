@@ -386,7 +386,7 @@ Use for statements that produce unbounded/continuous results:
 Both `execute_snapshot_ddl()` and `execute_streaming_ddl()` also accept these parameters for controlling statement identity and lifecycle:
 
 - `statement_name` (str | None): Custom statement identifier (defaults to auto-generated UUID)
-- `statement_label` (str | None): Label for grouping related statements
+- `statement_labels` (list[str] | None): List of labels for grouping related statements
 
 Example with statement naming and labeling:
 
@@ -394,10 +394,10 @@ Example with statement naming and labeling:
 statement = connection.execute_streaming_ddl(
     "CREATE TABLE orders_stream AS SELECT * FROM kafka_orders",
     statement_name="orders-stream-job",
-    statement_label="data-pipelines"
+    statement_labels=["data-pipelines", "streaming"]
 )
 
-# Later, find all statements with this label
+# Later, find all statements with any of the labels
 statements = connection.list_statements(label="data-pipelines")
 ```
 
@@ -424,12 +424,20 @@ connection.delete_statement("active-users-query")
 **Statement Labels** - Group related statements for batch operations
 
 ```python
-# Execute multiple statements with same label
+from confluent_sql import HIDDEN_LABEL
+
+# Execute multiple statements with labels
 for source in ["kafka_topic_a", "kafka_topic_b", "kafka_topic_c"]:
     cursor.execute(
         f"CREATE TABLE {source}_backup AS SELECT * FROM {source}",
-        statement_label="daily-backups"
+        statement_labels=["daily-backups", "batch-job"]
     )
+
+# Mark a background job as hidden
+cursor.execute(
+    "SELECT * FROM `INFORMATION_SCHEMA`.`TABLES`",
+    statement_labels=[HIDDEN_LABEL]
+)
 
 # Later, list and delete all backups
 statements = connection.list_statements(label="daily-backups")
@@ -807,21 +815,21 @@ cursor.execute(
     *,
     timeout: int = 3000,
     statement_name: str | None = None,
-    statement_label: str | None = None,
+    statement_labels: list[str] | None = None,
     properties: dict[str, str | int | bool] | None = None,
 ) -> None
 ```
 
 ### Parameter Reference
 
-| Parameter         | Type                              | Default    | Description                                                        |
-| ----------------- | --------------------------------- | ---------- | ------------------------------------------------------------------ |
-| `statement_text`  | `str`                             | (required) | SQL statement to execute                                           |
-| `parameters`      | `tuple \| list \| None`           | None       | Parameter values for parameterized statements                      |
-| `timeout`         | `int`                             | 3000       | Max seconds to wait for statement to reach RUNNING/COMPLETED phase |
-| `statement_name`  | `str \| None`                     | None       | Custom statement identifier (defaults to UUID)                     |
-| `statement_label` | `str \| None`                     | None       | Label for grouping related statements                              |
-| `properties`      | `dict[str, str \| int \| bool] \| None` | None | [Statement properties](#statement-properties) to set for execution |
+| Parameter          | Type                              | Default    | Description                                                        |
+| ------------------ | --------------------------------- | ---------- | ------------------------------------------------------------------ |
+| `statement_text`   | `str`                             | (required) | SQL statement to execute                                           |
+| `parameters`       | `tuple \| list \| None`           | None       | Parameter values for parameterized statements                      |
+| `timeout`          | `int`                             | 3000       | Max seconds to wait for statement to reach RUNNING/COMPLETED phase |
+| `statement_name`   | `str \| None`                     | None       | Custom statement identifier (defaults to UUID)                     |
+| `statement_labels` | `list[str] \| None`               | None       | List of labels for grouping related statements                     |
+| `properties`       | `dict[str, str \| int \| bool] \| None` | None | [Statement properties](#statement-properties) to set for execution |
 
 ### Statement Properties
 
@@ -867,7 +875,7 @@ cursor.execute(
 # With statement labeling (for batch operations)
 cursor.execute(
     "CREATE TABLE orders_backup AS SELECT * FROM orders",
-    statement_label="daily-backups"
+    statement_labels=["daily-backups", "batch-job"]
 )
 
 # All together
@@ -876,7 +884,7 @@ cursor.execute(
     (),
     timeout=3000,
     statement_name="product-sales-hourly",
-    statement_label="analytics"
+    statement_labels=["analytics", "hourly"]
 )
 
 # With statement properties
