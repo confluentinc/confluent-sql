@@ -859,6 +859,7 @@ class Connection:
 
         Args:
             statement: The SQL statement to execute
+            execution_mode: The execution mode for the statement (snapshot, streaming query, etc.)
             statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}')
             statement_labels: Optional list of labels for the statement for easier identification
                              in server logs and UIs (defaults to None). Use HIDDEN_LABEL to mark
