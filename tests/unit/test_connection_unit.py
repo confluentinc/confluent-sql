@@ -884,7 +884,9 @@ class TestGetStatement:
         }
 
         def raise_http_error():
-            raise httpx.HTTPStatusError("Statement not found", request=Mock(), response=response_mock)
+            raise httpx.HTTPStatusError(
+                "Statement not found", request=Mock(), response=response_mock
+            )
 
         response_mock.raise_for_status = raise_http_error
         request_mock.return_value = response_mock
@@ -912,7 +914,9 @@ class TestGetStatement:
         }
 
         def raise_http_error():
-            raise httpx.HTTPStatusError("Internal server error", request=Mock(), response=response_mock)
+            raise httpx.HTTPStatusError(
+                "Internal server error", request=Mock(), response=response_mock
+            )
 
         response_mock.raise_for_status = raise_http_error
         request_mock.return_value = response_mock
