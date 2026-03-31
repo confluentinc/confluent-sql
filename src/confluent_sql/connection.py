@@ -109,7 +109,7 @@ def connect(  # noqa: PLR0913
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
     if not flink_api_key or not flink_api_secret:
-        raise InterfaceError("Flink API key and secret are required")
+        raise InterfaceError("Flink Region API key and secret are required")
 
     if dbname is not None:
         warnings.warn(

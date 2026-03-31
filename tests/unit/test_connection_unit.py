@@ -341,7 +341,7 @@ class TestConnectChecks:
 
     def test_requires_flink_api_key(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API key raises an error."""
-        with pytest.raises(InterfaceError, match="Flink API key and secret are required"):
+        with pytest.raises(InterfaceError, match="Flink Region API key and secret are required"):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -353,7 +353,7 @@ class TestConnectChecks:
 
     def test_requires_flink_api_secret(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API secret raises an error."""
-        with pytest.raises(InterfaceError, match="Flink API key and secret are required"):
+        with pytest.raises(InterfaceError, match="Flink Region API key and secret are required"):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
