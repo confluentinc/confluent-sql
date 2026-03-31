@@ -198,8 +198,8 @@ class Connection:
         Initialize a new connection to a Confluent SQL service.
 
         Args:
-            flink_api_key: Flink API key
-            flink_api_secret: Flink API secret
+            flink_api_key: Flink region API key
+            flink_api_secret: Flink region API secret
             environment: Environment ID
             compute_pool_id: Compute pool ID for SQL execution
             organization_id: Organization ID
