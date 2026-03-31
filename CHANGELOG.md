@@ -11,6 +11,7 @@ All notable changes to this dbapi driver will be documented in this file.
   * Class `SqlNone` now gracefully strips trailing `NOT NULL` constraints from type names (case-insensitively), so that `str(SqlNone("DATE NOT NULL"))` returns valid FlinkSQL `"cast (null as DATE)"`.
   * `connect()` is now keyword-only callable.
   * The `host` parameter for `Connection.__init__()` has been renamed to `endpoint`.
+  * Clarified and improved documentation around Flink region API key use.
 
 ### Added
   * New optional keyword parameter `properties: PropertiesDict | None` on `Cursor.execute()` and related methods to allow callers to provide [statement execution properties](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html#table-options). Note: connection or cursor-level properties for default catalog, database, and execution mode cannot be overridden by this parameter.
