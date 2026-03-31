@@ -20,8 +20,27 @@ The behavior of snapshot-mode cursors, complying with dbapi semantics, are well 
 
 - **Confluent Cloud account** with Flink environment
 - **Active Flink compute pool** (must be pre-created)
-- **Flink Compute Pool API credentials** for Flink SQL API access: a user or service account API key and secret for the compute pool (used as HTTP Basic Auth, for example via `flink_api_key` and `flink_api_secret`).
+- **Existing Flink Database** (Confluent Cloud Kafka cluster)
+- **Flink Region API credentials** for Flink SQL Region API access: a user or service account Flink Region API key and secret.
 
+### How to Obtain a Flink Region API Key
+
+This driver requires a **Flink Region API key** (also called a Flink SQL API key), which is specific to your Flink compute pool and provides access to the regional Flink SQL API endpoints. This is distinct from a Confluent Cloud control-plane API key.
+
+To create or find a Flink Region API key:
+
+1. Go to [https://confluent.cloud/settings/api-keys](https://confluent.cloud/settings/api-keys)
+2. Filter by resource **'Flink Region'**
+3. Find an existing key, or follow the **'+ Add API Key'** path to create a new one
+4. When creating a new key, select either:
+   - **My account** - for development/testing
+   - **Service account** - for production applications (recommended)
+   and then:   
+   - **The Environment, Cloud Provider and Cloud Region** matching the Flink database(s) / Kafka cluster(s) you intend to use this driver against.
+5. Save both the **API key** and **API secret** securely (the secret cannot be retrieved later)
+6. Use these credentials as the `flink_api_key` and `flink_api_secret` parameters in the `connect()` function
+
+API keys may also be generated using the `confluent` cli tool or by API access, outside the scope of this document.
 ## Installation
 
 ```bash
@@ -41,14 +60,14 @@ import confluent_sql
 
 # Connect to Confluent Cloud Flink SQL
 connection = confluent_sql.connect(
-    flink_api_key="your-flink-api-key",
-    flink_api_secret="your-flink-api-secret",
     organization_id="your-org-uuid",
     environment="env-123456",
-    compute_pool_id="lfcp-789012",
     cloud_provider="aws",
     cloud_region="us-east-2",
-    database="your-database-name"
+    flink_api_key="your-flink-api-key",
+    flink_api_secret="your-flink-api-secret",
+    database="your-database-name",
+    compute_pool_id="lfcp-789012"
 )
 ```
 
@@ -173,14 +192,14 @@ Set required environment variables for integration tests.
 If any of the variables is not set, integration tests will be skipped.
 
 ```bash
-export CONFLUENT_FLINK_API_KEY="your-key"
-export CONFLUENT_FLINK_API_SECRET="your-secret"
-export CONFLUENT_ENV_ID="env-123456"
 export CONFLUENT_ORG_ID="org-123456"
-export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012"
+export CONFLUENT_ENV_ID="env-123456"
 export CONFLUENT_CLOUD_PROVIDER="aws"
 export CONFLUENT_CLOUD_REGION="us-east-2"
-export CONFLUENT_TEST_DBNAME="test-db"
+export CONFLUENT_FLINK_API_KEY="your-key" # Flink Region API key for the above cloud/region ...
+export CONFLUENT_FLINK_API_SECRET="your-secret" # and associated secret.
+export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # A compute pool within the above cloud/region.
+export CONFLUENT_TEST_DBNAME="test-db" # A database/kafka cluster name within the above cloud/region.
 ```
 
 Run tests:
