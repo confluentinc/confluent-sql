@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from confluent_sql import InterfaceError, OperationalError
+from confluent_sql import InterfaceError, OperationalError, StatementNotFoundError
 from confluent_sql.__version__ import VERSION
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
 from confluent_sql.connection import logger as connection_module_logger
@@ -48,10 +48,10 @@ class TestHTTPStatusErrorHandling:
     def test_connection_error_with_valid_error_details(
         self, invalid_credential_connection: Connection, mocker
     ):
-        """Test error message formatting when response contains valid error JSON with details.
+        """Test that 404 errors are converted to StatementNotFoundError.
 
-        When the API returns a structured error response with multiple error objects,
-        the exception message should include all error details joined by semicolons.
+        When the API returns a 404 error for a statement GET request,
+        _get_statement should raise StatementNotFoundError with the statement name.
         """
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
 
@@ -71,11 +71,12 @@ class TestHTTPStatusErrorHandling:
         response_mock.raise_for_status = raise_http_error
         request_mock.return_value = response_mock
 
-        with pytest.raises(
-            OperationalError,
-            match="error sending request '404' - Statement not found; Please check statement name",
-        ):
+        with pytest.raises(StatementNotFoundError) as exc_info:
             invalid_credential_connection._get_statement("test-name")
+
+        # Verify exception has statement name
+        assert exc_info.value.statement_name == "test-name"
+        assert "test-name" in str(exc_info.value)
 
     def test_connection_error_with_invalid_json(
         self, invalid_credential_connection: Connection, mocker
@@ -795,6 +796,159 @@ class TestConnectionListStatements:
         # Verify label_selector is not double-prefixed
         call_params = request_mock.call_args[1]["params"]
         assert call_params["label_selector"] == "user.confluent.io/already-prefixed=true"
+
+
+@pytest.mark.unit
+class TestGetStatement:
+    """Tests for connection.get_statement method."""
+
+    def test_get_statement_with_string_name(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test getting a statement by string name."""
+        statement_data = statement_response_factory(name="my-statement")
+
+        # Mock _get_statement to return the statement data
+        get_statement_mock = mocker.patch.object(
+            invalid_credential_connection,
+            "_get_statement",
+            return_value=statement_data,
+        )
+
+        # Call get_statement with string name
+        result = invalid_credential_connection.get_statement("my-statement")
+
+        # Verify _get_statement was called with correct name
+        get_statement_mock.assert_called_once_with("my-statement")
+
+        # Verify we got a Statement object back
+        assert isinstance(result, Statement)
+        assert result.name == "my-statement"
+
+    def test_get_statement_with_statement_object(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test getting a statement by passing a Statement object."""
+        statement_data = statement_response_factory(name="existing-statement")
+
+        # Create an initial Statement object
+        initial_statement = Statement.from_response(invalid_credential_connection, statement_data)
+
+        # Mock _get_statement to return updated data
+        updated_data = statement_response_factory(name="existing-statement")
+        get_statement_mock = mocker.patch.object(
+            invalid_credential_connection,
+            "_get_statement",
+            return_value=updated_data,
+        )
+
+        # Call get_statement with Statement object
+        result = invalid_credential_connection.get_statement(initial_statement)
+
+        # Verify _get_statement was called with the statement name
+        get_statement_mock.assert_called_once_with("existing-statement")
+
+        # Verify we got a Statement object back
+        assert isinstance(result, Statement)
+        assert result.name == "existing-statement"
+
+    def test_get_statement_with_invalid_type(
+        self,
+        invalid_credential_connection: Connection,
+    ):
+        """Test that passing an invalid type raises TypeError."""
+        with pytest.raises(
+            TypeError,
+            match="Statement must be specified by name or Statement object",
+        ):
+            invalid_credential_connection.get_statement(123)  # type: ignore
+
+    def test_get_statement_not_found(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that getting a non-existent statement raises StatementNotFoundError."""
+        # Mock _request to raise HTTPStatusError with 404
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        response_mock = Mock()
+        response_mock.status_code = 404
+        response_mock.json.return_value = {
+            "errors": [{"detail": "Statement not found"}]
+        }
+
+        def raise_http_error():
+            raise httpx.HTTPStatusError("Statement not found", request=Mock(), response=response_mock)
+
+        response_mock.raise_for_status = raise_http_error
+        request_mock.return_value = response_mock
+
+        # Should raise the more specific StatementNotFoundError
+        with pytest.raises(StatementNotFoundError) as exc_info:
+            invalid_credential_connection.get_statement("non-existent")
+
+        # Verify exception has correct attributes
+        assert exc_info.value.statement_name == "non-existent"
+        assert "non-existent" in str(exc_info.value)
+
+    def test_get_statement_api_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that non-404 errors remain as OperationalError."""
+        # Mock _request to raise HTTPStatusError with 500
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        response_mock = Mock()
+        response_mock.status_code = 500
+        response_mock.json.return_value = {
+            "errors": [{"detail": "Internal server error"}]
+        }
+
+        def raise_http_error():
+            raise httpx.HTTPStatusError("Internal server error", request=Mock(), response=response_mock)
+
+        response_mock.raise_for_status = raise_http_error
+        request_mock.return_value = response_mock
+
+        # Should raise OperationalError, not StatementNotFoundError
+        with pytest.raises(OperationalError) as exc_info:
+            invalid_credential_connection.get_statement("some-statement")
+
+        # Verify it's not the specific subclass
+        assert not isinstance(exc_info.value, StatementNotFoundError)
+        assert "500" in str(exc_info.value)
+
+    def test_get_statement_logs_operation(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that get_statement logs the operation."""
+        statement_data = statement_response_factory(name="log-test-statement")
+
+        # Mock _get_statement
+        mocker.patch.object(
+            invalid_credential_connection,
+            "_get_statement",
+            return_value=statement_data,
+        )
+
+        # Spy on logger.info
+        logger_info_spy = mocker.spy(connection_module_logger, "info")
+
+        # Call get_statement
+        invalid_credential_connection.get_statement("log-test-statement")
+
+        # Verify logger was called with expected message
+        logger_info_spy.assert_called_with("Getting statement 'log-test-statement'")
 
 
 @pytest.mark.unit

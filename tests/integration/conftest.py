@@ -289,6 +289,68 @@ def expected_nonstreaming_results_factory() -> Callable[
 
 
 @pytest.fixture(scope="session")
+def cleaned_up_statement_name_factory(
+    connection: Connection,
+) -> Generator[Callable[[], str], Any, None]:
+    """
+    A factory fixture that generates unique statement names and tracks them for cleanup.
+
+    This fixture is session-scoped and will delete all created statements at the end
+    of the test session.
+
+    Yields:
+        A factory function that returns a unique statement name each time it's called.
+    """
+    statement_names: list[str] = []
+    counter = 0
+
+    def _create_statement_name() -> str:
+        """Generate a unique statement name and track it for cleanup.
+
+        Statement names must:
+        - Contain lowercase alphanumeric characters and hyphens only
+        - Start with alphanumeric character
+        - Maximum 100 characters
+        """
+        nonlocal counter
+        counter += 1
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # Use lowercase, replace underscores with hyphens, ensure alphanumeric start
+        username = getpass.getuser().lower().replace("_", "-")
+        name = f"pytest-dbapi-stmt-{username}-{timestamp}-{counter}"
+        statement_names.append(name)
+        return name
+
+    yield _create_statement_name
+
+    # Cleanup all created statements
+    logger.info(f"Cleaning up {len(statement_names)} test statement(s)")
+    for statement_name in statement_names:
+        try:
+            connection.delete_statement(statement_name)
+            logger.debug(f"Deleted statement: {statement_name}")
+        except Exception as e:
+            logger.warning(f"Failed to delete statement {statement_name}: {e}")
+
+
+@pytest.fixture()
+def cleaned_up_statement_name(
+    cleaned_up_statement_name_factory: Callable[[], str],
+) -> str:
+    """
+    Returns a unique statement name that will be automatically cleaned up.
+
+    This is a function-scoped fixture that delegates to the session-scoped factory.
+    Each test that uses this fixture will get a unique statement name, and all
+    statements will be cleaned up at the end of the test session.
+
+    Returns:
+        A unique statement name for this test.
+    """
+    return cleaned_up_statement_name_factory()
+
+
+@pytest.fixture(scope="session")
 def test_row_table_name():
     """Returns a table name to use for the ROW-column table to populate for testing."""
     # Returns a fixed name for the test table, but if we have to adopt

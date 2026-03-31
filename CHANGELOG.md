@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+  * New `Connection.get_statement(statement)` method to retrieve statement metadata by name or refresh a Statement object with the latest server state. Accepts either a statement name (string) or a Statement object. Returns a Statement object with current phase, schema, and execution traits. (#86)
+  * New `StatementNotFoundError` exception, a subclass of `OperationalError`, raised by `Connection.get_statement(statement)` when attempting to retrieve a statement that does not exist. Provides programmatic access to the statement name via the `statement_name` attribute.
+
 ## 0.2.0, 2026-03-26
 
 ### Changed

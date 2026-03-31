@@ -161,6 +161,39 @@ class StatementDeletedError(StatementStoppedError):
         super().__init__(message, statement_name, statement=None, phase=None)
 
 
+class StatementNotFoundError(OperationalError):
+    """
+    Exception raised when attempting to retrieve a statement that does not exist.
+
+    This exception is raised when calling connection.get_statement() with a statement
+    name that does not exist in the server, indicated by an HTTP 404 response from
+    the GET /statements/{name} endpoint.
+
+    This differs from StatementDeletedError, which is raised when a statement existed
+    and results were being fetched, but the statement was deleted while consuming results.
+
+    Attributes:
+        statement_name: The name of the statement that was not found.
+
+    Example:
+        try:
+            stmt = connection.get_statement("non-existent-statement")
+        except StatementNotFoundError as e:
+            print(f"Statement '{e.statement_name}' not found")
+    """
+
+    def __init__(self, message: str, statement_name: str):
+        """
+        Initialize StatementNotFoundError.
+
+        Args:
+            message: Human-readable error message
+            statement_name: The name of the statement that was not found
+        """
+        super().__init__(message)
+        self.statement_name = statement_name
+
+
 class IntegrityError(DatabaseError):
     """
     Exception raised when the relational integrity of the database is affected.

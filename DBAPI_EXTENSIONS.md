@@ -459,6 +459,33 @@ for statement in statements:
     print(f"Created: {statement.created_at}")
 ```
 
+**`get_statement()` - Retrieve statement by exact name**
+
+```python
+# Get statement by name
+stmt = connection.get_statement("my-statement-name")
+print(f"Status: {stmt.phase}")  # PENDING, RUNNING, COMPLETED, FAILED, etc.
+
+# Check if results are ready
+if stmt.can_fetch_results(ExecutionMode.SNAPSHOT):
+    # Results are available
+    ...
+
+# Refresh a Statement object with latest server state
+stmt = cursor.statement
+time.sleep(5)
+stmt = connection.get_statement(stmt)  # Fetch updated state
+print(f"Updated phase: {stmt.phase}")
+
+# Raises StatementNotFoundError if statement not found
+try:
+    stmt = connection.get_statement("non-existent-statement")
+except StatementNotFoundError as e:
+    print(f"Statement '{e.statement_name}' does not exist")
+except OperationalError as e:
+    print(f"Other error: {e}")
+```
+
 **`delete_statement()` - Stop and remove a statement**
 
 ```python
