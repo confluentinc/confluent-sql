@@ -35,6 +35,8 @@ To create or find a Flink Region API key:
 4. When creating a new key, select either:
    - **My account** - for development/testing
    - **Service account** - for production applications (recommended)
+   and then:   
+   - **The Environment, Cloud Provider and Cloud Region** matching the Flink database(s) / Kafka cluster(s) you intend to use this driver against.
 5. Save both the **API key** and **API secret** securely (the secret cannot be retrieved later)
 6. Use these credentials as the `flink_api_key` and `flink_api_secret` parameters in the `connect()` function
 
