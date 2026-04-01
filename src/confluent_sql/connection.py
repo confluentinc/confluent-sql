@@ -951,7 +951,8 @@ class Connection:
 
         Raises:
             OperationalError: If statement execution fails
-            InterfaceError: If properties parameter is invalid or if statement_labels is invalid
+            InterfaceError: If properties parameter is invalid, or if statement_labels is invalid,
+                            or if compute_pool_id is not a string when provided.
         """
 
         # Create the statement payload as per Flink SQL API documentation
