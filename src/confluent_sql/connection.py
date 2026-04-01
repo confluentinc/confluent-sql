@@ -20,7 +20,12 @@ import httpx
 
 from .__version__ import VERSION
 from .cursor import Cursor
-from .exceptions import InterfaceError, OperationalError, StatementDeletedError
+from .exceptions import (
+    InterfaceError,
+    OperationalError,
+    StatementDeletedError,
+    StatementNotFoundError,
+)
 from .execution_mode import ExecutionMode
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
@@ -664,6 +669,55 @@ class Connection:
 
         return statements
 
+    def get_statement(self, statement: str | Statement) -> Statement:
+        """
+        Get the current state of a statement by name or Statement object.
+
+        Retrieves the latest status and metadata for a statement from the server,
+        including phase (PENDING, RUNNING, COMPLETED, FAILED, etc.), schema,
+        and execution traits. Useful for polling statement progress or checking
+        if results are ready to fetch.
+
+        Args:
+            statement: The name of the statement to retrieve, or a Statement object.
+                      If a Statement object is passed, its current state will be
+                      refreshed from the server.
+
+        Returns:
+            A Statement object representing the current state of the statement.
+            If a Statement object was passed as input, a new Statement object
+            with updated metadata and status from the server will be returned.
+
+        Raises:
+            TypeError: If statement is neither a string nor a Statement object
+            StatementNotFoundError: If statement does not exist (HTTP 404)
+            OperationalError: If other API errors occur
+
+        Example:
+            # Get statement by name
+            stmt = connection.get_statement("my-statement-name")
+            print(f"Status: {stmt.phase}")  # e.g., "RUNNING" or "COMPLETED"
+
+            # Refresh a Statement object's state
+            stmt = connection.get_statement(stmt)
+            if stmt.can_fetch_results(ExecutionMode.SNAPSHOT):
+                # Results are ready
+                ...
+        """
+        if isinstance(statement, Statement):
+            statement_name = statement.name
+        else:
+            if not isinstance(statement, str):
+                raise TypeError(
+                    "Statement must be specified by name or Statement object, "
+                    f"got {type(statement)}"
+                )
+            statement_name = statement
+
+        logger.info(f"Getting statement '{statement_name}'")
+        response_dict = self._get_statement(statement_name)
+        return Statement.from_response(self, response_dict)
+
     def delete_statement(self, statement: str | Statement) -> None:
         """
         Delete a statement by name or Statement object.
@@ -928,7 +982,10 @@ class Connection:
 
     def _get_statement(self, statement_name: str) -> dict[str, Any]:
         """
-        Get the current structure of a statement.
+        INTERNAL USE ONLY. Get raw statement API response.
+
+        For public use, call get_statement() which returns a Statement object.
+        This internal method returns the raw API JSON response.
 
         Args:
             statement_name: The name of the statement to check
@@ -937,9 +994,20 @@ class Connection:
             Dictionary containing the statement status and details
 
         Raises:
-            OperationalError: If status check fails
+            StatementNotFoundError: If statement does not exist (HTTP 404)
+            OperationalError: If other API errors occur
         """
-        return self._request(f"/statements/{statement_name}").json()
+        try:
+            return self._request(f"/statements/{statement_name}").json()
+        except OperationalError as e:
+            # Check if this is a 404 error
+            if e.http_status_code == 404:
+                raise StatementNotFoundError(
+                    f"Statement '{statement_name}' not found: {e}",
+                    statement_name=statement_name,
+                ) from e
+            # Re-raise other operational errors
+            raise
 
     def _get_statement_results(
         self, statement_name: str, next_url: str | None
@@ -967,7 +1035,7 @@ class Connection:
             response = self._request(next_url).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
-            if "404" in str(e):
+            if e.http_status_code == 404:
                 raise StatementDeletedError(
                     f"Statement '{statement_name}' has been deleted", statement_name
                 ) from e
@@ -1032,7 +1100,8 @@ class Connection:
                 details = "no more details"
 
             raise OperationalError(
-                f"error sending request '{e.response.status_code}' - {details}"
+                f"error sending request '{e.response.status_code}' - {details}",
+                http_status_code=e.response.status_code,
             ) from e
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
