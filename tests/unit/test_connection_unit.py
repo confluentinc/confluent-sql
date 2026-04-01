@@ -12,7 +12,7 @@ from confluent_sql.__version__ import VERSION
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
 from confluent_sql.connection import logger as connection_module_logger
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import LABEL_PREFIX, Statement
+from confluent_sql.statement import HIDDEN_LABEL, LABEL_PREFIX, Statement
 from tests.conftest import ConnectionFactory
 from tests.unit.conftest import StatementResponseFactory
 
@@ -990,7 +990,7 @@ class TestExecuteStatement:
             "SELECT 1",
             ExecutionMode.STREAMING_QUERY,
             statement_name="test-stmt",
-            statement_label=None,
+            statement_labels=None,
         )
 
         # Verify the request was made
@@ -1022,7 +1022,7 @@ class TestExecuteStatement:
             "SELECT 1",
             ExecutionMode.STREAMING_QUERY,
             statement_name="test-stmt",
-            statement_label=test_label,
+            statement_labels=[test_label],
         )
 
         # Verify the request was made
@@ -1057,7 +1057,7 @@ class TestExecuteStatement:
             "SELECT 1",
             ExecutionMode.STREAMING_QUERY,
             statement_name="test-stmt",
-            statement_label=already_prefixed_label,
+            statement_labels=[already_prefixed_label],
         )
 
         # Verify the request was made
@@ -1082,6 +1082,179 @@ class TestExecuteStatement:
         assert double_prefixed not in payload["metadata"]["labels"], (
             "Label should not be double-prefixed"
         )
+
+    def test_empty_list_omits_metadata_labels(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when an empty list is provided, no metadata is added (same as None)."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with empty list
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=[],
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify no metadata key exists in payload (same behavior as None)
+        assert "metadata" not in payload, (
+            "Payload should not contain metadata when empty list provided"
+        )
+
+    def test_multiple_labels_all_added(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when multiple labels are provided, all are added to metadata."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with multiple labels
+        labels = ["label1", "label2", "label3"]
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=labels,
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when labels provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify all labels are present and prefixed correctly
+        for label in labels:
+            expected_label_key = f"{LABEL_PREFIX}{label}"
+            assert expected_label_key in payload["metadata"]["labels"], (
+                f"Label {label} should be in metadata"
+            )
+            assert payload["metadata"]["labels"][expected_label_key] == "true"
+
+        # Verify we have exactly 3 labels
+        assert len(payload["metadata"]["labels"]) == 3
+
+    def test_multiple_labels_mixed_prefixes(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that mixed prefixed and unprefixed labels are handled correctly."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with mixed prefix labels
+        prefixed_label = f"{LABEL_PREFIX}already-prefixed"
+        unprefixed_label = "not-prefixed"
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=[prefixed_label, unprefixed_label],
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when labels provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify the prefixed label was not double-prefixed
+        assert prefixed_label in payload["metadata"]["labels"]
+        assert payload["metadata"]["labels"][prefixed_label] == "true"
+
+        # Verify the unprefixed label was prefixed
+        expected_unprefixed_key = f"{LABEL_PREFIX}{unprefixed_label}"
+        assert expected_unprefixed_key in payload["metadata"]["labels"]
+        assert payload["metadata"]["labels"][expected_unprefixed_key] == "true"
+
+        # Verify we have exactly 2 labels
+        assert len(payload["metadata"]["labels"]) == 2
+
+    def test_non_list_raises_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that providing a non-list value raises InterfaceError."""
+        self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with a string instead of list
+        with pytest.raises(InterfaceError, match="statement_labels must be a list of strings"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.STREAMING_QUERY,
+                statement_name="test-stmt",
+                statement_labels="not-a-list",  # type: ignore[arg-type]
+            )
+
+    def test_non_string_label_raises_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that providing non-string elements in the list raises InterfaceError."""
+        self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with non-string label element
+        with pytest.raises(InterfaceError, match="All statement labels must be strings"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.STREAMING_QUERY,
+                statement_name="test-stmt",
+                statement_labels=["valid", 123],  # type: ignore[list-item]
+            )
+
+    def test_hidden_label_constant(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that HIDDEN_LABEL constant works correctly."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with HIDDEN_LABEL
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=[HIDDEN_LABEL],
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when label provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify HIDDEN_LABEL is present (already prefixed, so no double-prefix)
+        assert HIDDEN_LABEL in payload["metadata"]["labels"]
+        assert payload["metadata"]["labels"][HIDDEN_LABEL] == "true"
 
 
 @pytest.fixture()

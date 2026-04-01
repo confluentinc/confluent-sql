@@ -27,6 +27,10 @@ LABEL_PREFIX = "user.confluent.io/"
 label, users can provide just the end-user portion of the label (without the prefix) and this driver
 will add the prefix before making API calls."""
 
+HIDDEN_LABEL = "user.confluent.io/hidden"
+"""Special label to mark a statement as hidden. Statements with this label are typically excluded
+from default views in UIs and monitoring tools."""
+
 
 class Op(Enum):
     """Row operation types for Flink SQL changelog streams.
