@@ -969,9 +969,15 @@ class Connection:
         merged_properties = self._resolve_properties(properties, execution_mode)
 
         # Use provided compute_pool_id or default to Connection's compute_pool_id
-        resolved_compute_pool_id = (
-            compute_pool_id if compute_pool_id is not None else self.compute_pool_id
-        )
+        if compute_pool_id is not None:
+            # Just so that the user is well aware that this is happening ...
+            logger.info(
+                f"execute_statement(): Overriding connection compute_pool_id"
+                f" '{self.compute_pool_id}' with provided compute_pool_id '{compute_pool_id}'"
+            )
+            resolved_compute_pool_id = compute_pool_id
+        else:
+            resolved_compute_pool_id = self.compute_pool_id
 
         payload = {
             "name": statement_name,

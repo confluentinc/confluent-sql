@@ -1497,7 +1497,7 @@ class TestComputePoolIdParameter:
     def test_execute_statement_with_compute_pool_id(
         self, invalid_credential_connection, mocker
     ):
-        """Test that _execute_statement uses provided compute_pool_id in payload."""
+        """Test that _execute_statement uses provided compute_pool_id and logs override."""
         # Mock the HTTP request
         mock_response = mocker.Mock()
         mock_response.json.return_value = {
@@ -1509,6 +1509,9 @@ class TestComputePoolIdParameter:
             'request',
             return_value=mock_response
         )
+
+        # Patch logger.info to verify override message
+        mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
 
         # Call _execute_statement with a custom compute_pool_id
         invalid_credential_connection._execute_statement(
@@ -1524,6 +1527,15 @@ class TestComputePoolIdParameter:
 
         # Verify the compute_pool_id in the payload matches the provided one
         assert payload['spec']['compute_pool_id'] == "lfcp-custom-pool"
+
+        # Verify logger.info was called with the override message
+        assert mock_log_info.called, "Expected logger.info to be called"
+        log_messages = [str(call) for call in mock_log_info.call_args_list]
+        assert any(
+            "Overriding connection compute_pool_id" in msg
+            and "lfcp-custom-pool" in msg
+            for msg in log_messages
+        ), f"Expected override log message not found in: {log_messages}"
 
     def test_execute_statement_defaults_to_connection_pool(
         self, invalid_credential_connection, mocker
