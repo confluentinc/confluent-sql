@@ -342,7 +342,7 @@ class TestConnectChecks:
 
     def test_requires_flink_api_key(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API key raises an error."""
-        with pytest.raises(InterfaceError, match="Flink Region API key and secret are required"):
+        with pytest.raises(InterfaceError, match="Flink region API key and secret are required"):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -354,7 +354,7 @@ class TestConnectChecks:
 
     def test_requires_flink_api_secret(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a Flink API secret raises an error."""
-        with pytest.raises(InterfaceError, match="Flink Region API key and secret are required"):
+        with pytest.raises(InterfaceError, match="Flink region API key and secret are required"):
             connection_factory(
                 environment="foo_id",
                 compute_pool_id="1234",
@@ -879,9 +879,7 @@ class TestGetStatement:
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         response_mock = Mock()
         response_mock.status_code = 404
-        response_mock.json.return_value = {
-            "errors": [{"detail": "Statement not found"}]
-        }
+        response_mock.json.return_value = {"errors": [{"detail": "Statement not found"}]}
 
         def raise_http_error():
             raise httpx.HTTPStatusError(
@@ -909,9 +907,7 @@ class TestGetStatement:
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         response_mock = Mock()
         response_mock.status_code = 500
-        response_mock.json.return_value = {
-            "errors": [{"detail": "Internal server error"}]
-        }
+        response_mock.json.return_value = {"errors": [{"detail": "Internal server error"}]}
 
         def raise_http_error():
             raise httpx.HTTPStatusError(

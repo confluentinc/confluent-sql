@@ -21,7 +21,7 @@ The behavior of snapshot-mode cursors, complying with dbapi semantics, are well 
 - **Confluent Cloud account** with Flink environment
 - **Active Flink compute pool** (must be pre-created)
 - **Existing Flink Database** (Confluent Cloud Kafka cluster)
-- **Flink Region API credentials** for Flink SQL Region API access: a user or service account Flink Region API key and secret.
+- **Flink Region API credentials** for Flink SQL Region API access: a user or service account Flink region API key and secret.
 
 ### How to Obtain a Flink Region API Key
 
@@ -40,7 +40,7 @@ To create or find a Flink Region API key:
 5. Save both the **API key** and **API secret** securely (the secret cannot be retrieved later)
 6. Use these credentials as the `flink_api_key` and `flink_api_secret` parameters in the `connect()` function
 
-API keys may also be generated using the `confluent` cli tool or by API access, outside the scope of this document.
+API keys may also be generated using the Confluent CLI or by API access, outside the scope of this document.
 ## Installation
 
 ```bash

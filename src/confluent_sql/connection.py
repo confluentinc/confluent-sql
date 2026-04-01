@@ -53,8 +53,8 @@ def connect(  # noqa: PLR0913
     Create a connection to a Confluent SQL service.
 
     Args:
-        flink_api_key: Flink Region API key
-        flink_api_secret: Flink Region API secret
+        flink_api_key: Flink region API key
+        flink_api_secret: Flink region API secret
         environment: Environment ID
         compute_pool_id: Compute pool ID for SQL execution
         organization_id: Organization ID
@@ -114,7 +114,7 @@ def connect(  # noqa: PLR0913
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
     if not flink_api_key or not flink_api_secret:
-        raise InterfaceError("Flink Region API key and secret are required")
+        raise InterfaceError("Flink region API key and secret are required")
 
     if dbname is not None:
         warnings.warn(
