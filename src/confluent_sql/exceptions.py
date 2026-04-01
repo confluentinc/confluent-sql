@@ -92,9 +92,15 @@ class OperationalError(DatabaseError):
     the control of the programmer, such as unexpected disconnection,
     the data source name not found, a transaction could not be processed,
     a memory allocation error occurred during processing, etc.
+
+    Attributes:
+        http_status_code: Optional HTTP status code associated with the error,
+            if the error originated from an HTTP API call.
     """
 
-    pass
+    def __init__(self, message: str, http_status_code: int | None = None):
+        super().__init__(message)
+        self.http_status_code = http_status_code
 
 
 class ComputePoolExhaustedError(OperationalError):

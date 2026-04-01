@@ -1001,7 +1001,7 @@ class Connection:
             return self._request(f"/statements/{statement_name}").json()
         except OperationalError as e:
             # Check if this is a 404 error
-            if "404" in str(e):
+            if e.http_status_code == 404:
                 raise StatementNotFoundError(
                     f"Statement '{statement_name}' not found",
                     statement_name=statement_name,
@@ -1035,7 +1035,7 @@ class Connection:
             response = self._request(next_url).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
-            if "404" in str(e):
+            if e.http_status_code == 404:
                 raise StatementDeletedError(
                     f"Statement '{statement_name}' has been deleted", statement_name
                 ) from e
@@ -1100,7 +1100,8 @@ class Connection:
                 details = "no more details"
 
             raise OperationalError(
-                f"error sending request '{e.response.status_code}' - {details}"
+                f"error sending request '{e.response.status_code}' - {details}",
+                http_status_code=e.response.status_code
             ) from e
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
