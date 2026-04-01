@@ -3,6 +3,7 @@
 import getpass
 import logging
 import os
+import re
 from collections.abc import Callable, Generator
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,24 @@ def load_env_file():
         load_dotenv(env_file)
     else:
         logger.debug(f"No .env file found at {env_file}")
+
+
+@pytest.fixture(scope="session")
+def filtered_username() -> str:
+    """Returns a sanitized username safe for use in resource names.
+
+    Filters the current username to only alphabetic characters [a-zA-Z]
+    and limits to a maximum of 10 characters. This prevents issues with
+    special characters or overly long usernames in resource identifiers.
+
+    Returns:
+        Sanitized username (alphabetic only, max 10 chars)
+    """
+    username = getpass.getuser()
+    # Filter to only alphabetic characters
+    filtered = re.sub(r"[^a-zA-Z]", "", username)
+    # Limit to 10 characters
+    return filtered[:10]
 
 
 @pytest.fixture(scope="session")
@@ -112,11 +131,11 @@ def single_test_connection(
 
 
 @pytest.fixture(scope="session")
-def test_table_name():
+def test_table_name(filtered_username: str):
     """Returns a table name to use for the table to populate for testing."""
     # Returns a fixed name for the test table, but if we have to adopt
     # pytest-xdist, we could include the worker id in the name to avoid collisions.
-    suffix = f"_{getpass.getuser()}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
+    suffix = f"_{filtered_username}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
     return "pytest_table" + suffix
 
 
@@ -286,6 +305,69 @@ def expected_nonstreaming_results_factory() -> Callable[
             ]
 
     return _get_expected_results
+
+
+@pytest.fixture(scope="session")
+def cleaned_up_statement_name_factory(
+    connection: Connection,
+    filtered_username: str,
+) -> Generator[Callable[[], str], Any, None]:
+    """
+    A factory fixture that generates unique statement names and tracks them for cleanup.
+
+    This fixture is session-scoped and will delete all created statements at the end
+    of the test session.
+
+    Yields:
+        A factory function that returns a unique statement name each time it's called.
+    """
+    statement_names: list[str] = []
+    counter = 0
+
+    def _create_statement_name() -> str:
+        """Generate a unique statement name and track it for cleanup.
+
+        Statement names must:
+        - Contain lowercase alphanumeric characters and hyphens only
+        - Start with alphanumeric character
+        - Maximum 100 characters
+        """
+        nonlocal counter
+        counter += 1
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # Use filtered username (already sanitized to alphanumeric only)
+        username = filtered_username.lower()
+        name = f"pytest-dbapi-stmt-{username}-{timestamp}-{counter}"
+        statement_names.append(name)
+        return name
+
+    yield _create_statement_name
+
+    # Cleanup all created statements
+    logger.info(f"Cleaning up {len(statement_names)} test statement(s)")
+    for statement_name in statement_names:
+        try:
+            connection.delete_statement(statement_name)
+            logger.debug(f"Deleted statement: {statement_name}")
+        except Exception as e:
+            logger.warning(f"Failed to delete statement {statement_name}: {e}")
+
+
+@pytest.fixture()
+def cleaned_up_statement_name(
+    cleaned_up_statement_name_factory: Callable[[], str],
+) -> str:
+    """
+    Returns a unique statement name that will be automatically cleaned up.
+
+    This is a function-scoped fixture that delegates to the session-scoped factory.
+    Each test that uses this fixture will get a unique statement name, and all
+    statements will be cleaned up at the end of the test session.
+
+    Returns:
+        A unique statement name for this test.
+    """
+    return cleaned_up_statement_name_factory()
 
 
 @pytest.fixture(scope="session")

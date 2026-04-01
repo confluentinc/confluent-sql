@@ -92,9 +92,15 @@ class OperationalError(DatabaseError):
     the control of the programmer, such as unexpected disconnection,
     the data source name not found, a transaction could not be processed,
     a memory allocation error occurred during processing, etc.
+
+    Attributes:
+        http_status_code: Optional HTTP status code associated with the error,
+            if the error originated from an HTTP API call.
     """
 
-    pass
+    def __init__(self, message: str, http_status_code: int | None = None):
+        super().__init__(message)
+        self.http_status_code = http_status_code
 
 
 class ComputePoolExhaustedError(OperationalError):
@@ -159,6 +165,39 @@ class StatementDeletedError(StatementStoppedError):
 
     def __init__(self, message: str, statement_name: str):
         super().__init__(message, statement_name, statement=None, phase=None)
+
+
+class StatementNotFoundError(OperationalError):
+    """
+    Exception raised when attempting to retrieve a statement that does not exist.
+
+    This exception is raised when calling connection.get_statement() with a statement
+    name that does not exist in the server, indicated by an HTTP 404 response from
+    the GET /statements/{name} endpoint.
+
+    This differs from StatementDeletedError, which is raised when a statement existed
+    and results were being fetched, but the statement was deleted while consuming results.
+
+    Attributes:
+        statement_name: The name of the statement that was not found.
+
+    Example:
+        try:
+            stmt = connection.get_statement("non-existent-statement")
+        except StatementNotFoundError as e:
+            print(f"Statement '{e.statement_name}' not found")
+    """
+
+    def __init__(self, message: str, statement_name: str):
+        """
+        Initialize StatementNotFoundError.
+
+        Args:
+            message: Human-readable error message
+            statement_name: The name of the statement that was not found
+        """
+        super().__init__(message)
+        self.statement_name = statement_name
 
 
 class IntegrityError(DatabaseError):
