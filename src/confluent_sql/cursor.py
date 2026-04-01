@@ -181,7 +181,7 @@ class Cursor:
         *,
         timeout: int = 3000,
         statement_name: str | None = None,
-        statement_label: str | None = None,
+        statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
     ) -> None:
         """
@@ -194,12 +194,13 @@ class Cursor:
                     (streaming) in seconds (default: 3000)
             statement_name: Optional name for the statement (defaults to DB-API UUID
                             if not provided)
-            statement_label: Optional label for the statement. Labels can be used to
-                            group and manage related statements. The label will be
-                            prefixed with "user.confluent.io/" when stored but you only
-                            need to provide the label value itself (e.g., "my-batch-job").
-                            Use Connection.list_statements(label=...) to retrieve statements
-                            by label.
+            statement_labels: Optional list of labels for the statement. Labels can be used to
+                             group and manage related statements. Each label will be
+                             prefixed with "user.confluent.io/" when stored but you only
+                             need to provide the label values (e.g., ["my-batch-job", "daily"]).
+                             Use Connection.list_statements(label=...) to retrieve statements
+                             by label. The special HIDDEN_LABEL constant can be used to mark
+                             statements as hidden from default views in UIs and monitoring tools.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
@@ -236,7 +237,7 @@ class Cursor:
 
         # Now submit the statement ...
         self._statement = self._submit_statement(
-            statement_text, parameters, statement_name, statement_label, properties
+            statement_text, parameters, statement_name, statement_labels, properties
         )
 
         if self._statement.is_failed:
@@ -741,7 +742,7 @@ class Cursor:
         statement_text: str,
         parameters: tuple | list | None = None,
         statement_name: str | None = None,
-        statement_label: str | None = None,
+        statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
     ) -> Statement:
         """
@@ -752,8 +753,8 @@ class Cursor:
             parameters: Parameters for the SQL statement (optional)
             statement_name: Optional name for the statement (defaults to DB-API UUID if
                             not provided)
-            statement_label: Optional label for the statement for easier identification in
-                            server logs and UIs (defaults to None)
+            statement_labels: Optional list of labels for the statement for easier identification
+                             in server logs and UIs (defaults to None)
             properties: Optional dictionary of statement properties (optional)
 
         Returns:
@@ -774,7 +775,7 @@ class Cursor:
             interpolated_statement,
             self._execution_mode,
             statement_name,
-            statement_label,
+            statement_labels,
             properties,
         )
         return Statement.from_response(self._connection, response)

@@ -740,7 +740,7 @@ with connection.closing_streaming_cursor(as_dict=True) as cursor:
 
 ```python
 cursor = connection.streaming_cursor()
-cursor.execute("SELECT * FROM stream WHERE active = %s", (True,), statement_label="my-streaming-job")
+cursor.execute("SELECT * FROM stream WHERE active = %s", (True,), statement_labels=["my-streaming-job"])
 
 # Query statement information
 print(f"Statement name: {cursor.statement.name}")

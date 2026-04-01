@@ -4,6 +4,12 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+* New constant `confluent_sql.HIDDEN_LABEL` used for driving `Cursor.execute()` to indicate that the statement should be hidden in default listings in Confluent Cloud UIs. This feature is intended to be used for minor queries, such as when investigating `INFORMATION_SCHEMA`.
+
+### Changed
+  * Respelled the `statement_label: str | None` parameter in `Cursor.execute()` and peers to be `statement_labels: list[str] | None` so as to allow multiple labels to be applied to a statement, including `HIDDEN_LABEL`.
+
 ## 0.2.0, 2026-03-26
 
 ### Changed

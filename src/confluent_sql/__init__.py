@@ -26,7 +26,7 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
-from .statement import Op
+from .statement import HIDDEN_LABEL, Op
 from .types import PropertiesDict, SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
@@ -62,4 +62,5 @@ __all__ = [
     "PropertiesDict",
     "SqlNone",
     "YearMonthInterval",
+    "HIDDEN_LABEL",
 ]
