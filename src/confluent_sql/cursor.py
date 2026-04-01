@@ -183,6 +183,7 @@ class Cursor:
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
+        compute_pool_id: str | None = None,
     ) -> None:
         """
         Execute a SQL statement.
@@ -205,6 +206,11 @@ class Cursor:
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
+            compute_pool_id: Optional compute pool ID to use for this statement execution.
+                            If not provided, uses the Connection's default compute_pool_id.
+                            The compute pool must be accessible to the API key used for the
+                            connection. Validation of compute pool accessibility is performed
+                            by Confluent Cloud Flink.
 
         Raises:
             InterfaceError: If the cursor is closed, or if invalid properties are provided.
@@ -237,7 +243,12 @@ class Cursor:
 
         # Now submit the statement ...
         self._statement = self._submit_statement(
-            statement_text, parameters, statement_name, statement_labels, properties
+            statement_text,
+            parameters,
+            statement_name,
+            statement_labels,
+            properties,
+            compute_pool_id=compute_pool_id,
         )
 
         if self._statement.is_failed:
@@ -744,6 +755,8 @@ class Cursor:
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
+        *,
+        compute_pool_id: str | None = None,
     ) -> Statement:
         """
         Submit a SQL statement for execution.
@@ -756,6 +769,8 @@ class Cursor:
             statement_labels: Optional list of labels for the statement for easier identification
                              in server logs and UIs (defaults to None)
             properties: Optional dictionary of statement properties (optional)
+            compute_pool_id: Optional compute pool ID to use for this statement execution.
+                            If not provided, uses the Connection's default compute_pool_id.
 
         Returns:
             The submitted Statement object
@@ -777,6 +792,7 @@ class Cursor:
             statement_name,
             statement_labels,
             properties,
+            compute_pool_id=compute_pool_id,
         )
         return Statement.from_response(self._connection, response)
 
