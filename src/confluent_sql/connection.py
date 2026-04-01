@@ -1003,7 +1003,7 @@ class Connection:
             # Check if this is a 404 error
             if e.http_status_code == 404:
                 raise StatementNotFoundError(
-                    f"Statement '{statement_name}' not found",
+                    f"Statement '{statement_name}' not found: {e}",
                     statement_name=statement_name,
                 ) from e
             # Re-raise other operational errors
@@ -1101,7 +1101,7 @@ class Connection:
 
             raise OperationalError(
                 f"error sending request '{e.response.status_code}' - {details}",
-                http_status_code=e.response.status_code
+                http_status_code=e.response.status_code,
             ) from e
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:

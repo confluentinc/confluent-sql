@@ -3,6 +3,7 @@
 import getpass
 import logging
 import os
+import re
 from collections.abc import Callable, Generator
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,24 @@ def load_env_file():
         load_dotenv(env_file)
     else:
         logger.debug(f"No .env file found at {env_file}")
+
+
+@pytest.fixture(scope="session")
+def filtered_username() -> str:
+    """Returns a sanitized username safe for use in resource names.
+
+    Filters the current username to only alphabetic characters [a-zA-Z]
+    and limits to a maximum of 10 characters. This prevents issues with
+    special characters or overly long usernames in resource identifiers.
+
+    Returns:
+        Sanitized username (alphabetic only, max 10 chars)
+    """
+    username = getpass.getuser()
+    # Filter to only alphabetic characters
+    filtered = re.sub(r"[^a-zA-Z]", "", username)
+    # Limit to 10 characters
+    return filtered[:10]
 
 
 @pytest.fixture(scope="session")
@@ -112,11 +131,11 @@ def single_test_connection(
 
 
 @pytest.fixture(scope="session")
-def test_table_name():
+def test_table_name(filtered_username: str):
     """Returns a table name to use for the table to populate for testing."""
     # Returns a fixed name for the test table, but if we have to adopt
     # pytest-xdist, we could include the worker id in the name to avoid collisions.
-    suffix = f"_{getpass.getuser()}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
+    suffix = f"_{filtered_username}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
     return "pytest_table" + suffix
 
 
@@ -291,6 +310,7 @@ def expected_nonstreaming_results_factory() -> Callable[
 @pytest.fixture(scope="session")
 def cleaned_up_statement_name_factory(
     connection: Connection,
+    filtered_username: str,
 ) -> Generator[Callable[[], str], Any, None]:
     """
     A factory fixture that generates unique statement names and tracks them for cleanup.
@@ -315,8 +335,8 @@ def cleaned_up_statement_name_factory(
         nonlocal counter
         counter += 1
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        # Use lowercase, replace underscores with hyphens, ensure alphanumeric start
-        username = getpass.getuser().lower().replace("_", "-")
+        # Use filtered username (already sanitized to alphanumeric only)
+        username = filtered_username.lower()
         name = f"pytest-dbapi-stmt-{username}-{timestamp}-{counter}"
         statement_names.append(name)
         return name

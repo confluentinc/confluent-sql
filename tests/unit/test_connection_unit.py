@@ -45,7 +45,7 @@ def _create_http_error_404():
 class TestHTTPStatusErrorHandling:
     """Tests for enhanced error handling in Connection._request method."""
 
-    def test_connection_error_with_valid_error_details(
+    def test_get_statement_converts_404_to_statement_not_found_error(
         self, invalid_credential_connection: Connection, mocker
     ):
         """Test that 404 errors are converted to StatementNotFoundError.
