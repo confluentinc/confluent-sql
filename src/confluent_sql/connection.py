@@ -20,7 +20,12 @@ import httpx
 
 from .__version__ import VERSION
 from .cursor import Cursor
-from .exceptions import InterfaceError, OperationalError, StatementDeletedError
+from .exceptions import (
+    InterfaceError,
+    OperationalError,
+    StatementDeletedError,
+    StatementNotFoundError,
+)
 from .execution_mode import ExecutionMode
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
@@ -505,7 +510,7 @@ class Connection:
         parameters: tuple | list | None = None,
         timeout: int = 3000,
         statement_name: str | None = None,
-        statement_label: str | None = None,
+        statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
     ) -> Statement:
         """Execute bounded DDL that completes after consuming snapshot data.
@@ -525,10 +530,11 @@ class Connection:
             parameters: Optional statement parameters
             timeout: Maximum time to wait for completion in seconds
             statement_name: Optional name for the statement
-            statement_label: Optional label for the statement. Labels can be used to
-                            group and manage related statements. The label will be
-                            prefixed with "user.confluent.io/" when stored but you only
-                            need to provide the label value itself (e.g., "my-ddl-batch")
+            statement_labels: Optional list of labels for the statement. Labels can be used to
+                             group and manage related statements. Each label will be
+                             prefixed with "user.confluent.io/" when stored but you only
+                             need to provide the label values (e.g., ["my-ddl-batch", "daily"]).
+                             Use HIDDEN_LABEL to mark statements as hidden from default views.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool.
 
@@ -545,7 +551,7 @@ class Connection:
                 parameters,
                 timeout=timeout,
                 statement_name=statement_name,
-                statement_label=statement_label,
+                statement_labels=statement_labels,
                 properties=properties,
             )
 
@@ -558,7 +564,7 @@ class Connection:
         parameters: tuple | list | None = None,
         timeout: int = 3000,
         statement_name: str | None = None,
-        statement_label: str | None = None,
+        statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
     ) -> Statement:
         """Execute unbounded DDL that starts a streaming job.
@@ -574,10 +580,11 @@ class Connection:
             parameters: Optional statement parameters
             timeout: Maximum time to wait for completion in seconds
             statement_name: Optional name for the statement
-            statement_label: Optional label for the statement. Labels can be used to
-                            group and manage related statements. The label will be
-                            prefixed with "user.confluent.io/" when stored but you only
-                            need to provide the label value itself (e.g., "streaming-jobs")
+            statement_labels: Optional list of labels for the statement. Labels can be used to
+                             group and manage related statements. Each label will be
+                             prefixed with "user.confluent.io/" when stored but you only
+                             need to provide the label values (e.g., ["streaming-jobs", "daily"]).
+                             Use HIDDEN_LABEL to mark statements as hidden from default views.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool.
         Returns:
@@ -590,7 +597,7 @@ class Connection:
                 parameters,
                 timeout=timeout,
                 statement_name=statement_name,
-                statement_label=statement_label,
+                statement_labels=statement_labels,
                 properties=properties,
             )
 
@@ -620,8 +627,8 @@ class Connection:
 
         Example:
             # Submit statements with a label
-            cursor.execute("SELECT * FROM users", statement_label="daily-report")
-            cursor.execute("SELECT * FROM orders", statement_label="daily-report")
+            cursor.execute("SELECT * FROM users", statement_labels=["daily-report"])
+            cursor.execute("SELECT * FROM orders", statement_labels=["daily-report"])
 
             # Later, retrieve all statements with that label
             statements = connection.list_statements(label="daily-report")
@@ -661,6 +668,55 @@ class Connection:
             has_more_pages = next_page_token is not None
 
         return statements
+
+    def get_statement(self, statement: str | Statement) -> Statement:
+        """
+        Get the current state of a statement by name or Statement object.
+
+        Retrieves the latest status and metadata for a statement from the server,
+        including phase (PENDING, RUNNING, COMPLETED, FAILED, etc.), schema,
+        and execution traits. Useful for polling statement progress or checking
+        if results are ready to fetch.
+
+        Args:
+            statement: The name of the statement to retrieve, or a Statement object.
+                      If a Statement object is passed, its current state will be
+                      refreshed from the server.
+
+        Returns:
+            A Statement object representing the current state of the statement.
+            If a Statement object was passed as input, a new Statement object
+            with updated metadata and status from the server will be returned.
+
+        Raises:
+            TypeError: If statement is neither a string nor a Statement object
+            StatementNotFoundError: If statement does not exist (HTTP 404)
+            OperationalError: If other API errors occur
+
+        Example:
+            # Get statement by name
+            stmt = connection.get_statement("my-statement-name")
+            print(f"Status: {stmt.phase}")  # e.g., "RUNNING" or "COMPLETED"
+
+            # Refresh a Statement object's state
+            stmt = connection.get_statement(stmt)
+            if stmt.can_fetch_results(ExecutionMode.SNAPSHOT):
+                # Results are ready
+                ...
+        """
+        if isinstance(statement, Statement):
+            statement_name = statement.name
+        else:
+            if not isinstance(statement, str):
+                raise TypeError(
+                    "Statement must be specified by name or Statement object, "
+                    f"got {type(statement)}"
+                )
+            statement_name = statement
+
+        logger.info(f"Getting statement '{statement_name}'")
+        response_dict = self._get_statement(statement_name)
+        return Statement.from_response(self, response_dict)
 
     def delete_statement(self, statement: str | Statement) -> None:
         """
@@ -847,18 +903,21 @@ class Connection:
         statement: str,
         execution_mode: ExecutionMode,
         statement_name: str | None = None,
-        statement_label: str | None = None,
+        statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
     ) -> dict[str, Any]:
         """
-        Execute a SQL statement and return the response.
+        Execute a SQL statement and return the response. Any statement parameters must have already
+        been incorproated into the statement string, in that the create statement endpoint
+        does not support separate parameter passing.
 
         Args:
             statement: The SQL statement to execute
-            parameters: Parameters for the SQL statement (optional)
+            execution_mode: The execution mode for the statement (snapshot, streaming query, etc.)
             statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}')
-            statement_label: Optional label for the statement for easier identification in
-                            server logs and UIs (defaults to None).
+            statement_labels: Optional list of labels for the statement for easier identification
+                             in server logs and UIs (defaults to None). Use HIDDEN_LABEL to mark
+                             statements as hidden from default views.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
@@ -869,7 +928,7 @@ class Connection:
 
         Raises:
             OperationalError: If statement execution fails
-            InterfaceError: If properties parameter is invalid
+            InterfaceError: If properties parameter is invalid or if statement_labels is invalid
         """
 
         # Create the statement payload as per Flink SQL API documentation
@@ -891,16 +950,31 @@ class Connection:
             },
         }
 
-        if statement_label is not None:
-            # Guard against user already including the mandatory prefix.
-            if statement_label.startswith(STATEMENT_LABEL_PREFIX):
-                label_key = statement_label
-            else:
-                label_key = f"{STATEMENT_LABEL_PREFIX}{statement_label}"
+        if statement_labels is not None:
+            if not isinstance(statement_labels, list):
+                raise InterfaceError(
+                    f"statement_labels must be a list of strings, "
+                    f"got {type(statement_labels).__name__}"
+                )
 
-            payload["metadata"] = {
-                "labels": {label_key: "true"},
-            }
+            # Treat empty list as equivalent to None - no labels to add
+            if len(statement_labels) > 0:
+                labels_dict = {}
+                for label in statement_labels:
+                    if not isinstance(label, str):
+                        raise InterfaceError(
+                            f"All statement labels must be strings, got {type(label).__name__}"
+                        )
+
+                    # Guard against user already including the mandatory prefix
+                    if label.startswith(STATEMENT_LABEL_PREFIX):
+                        label_key = label
+                    else:
+                        label_key = f"{STATEMENT_LABEL_PREFIX}{label}"
+
+                    labels_dict[label_key] = "true"
+
+                payload["metadata"] = {"labels": labels_dict}
 
         # Submit statement using the API
         res = self._request("/statements", method="POST", json=payload)
@@ -908,7 +982,10 @@ class Connection:
 
     def _get_statement(self, statement_name: str) -> dict[str, Any]:
         """
-        Get the current structure of a statement.
+        INTERNAL USE ONLY. Get raw statement API response.
+
+        For public use, call get_statement() which returns a Statement object.
+        This internal method returns the raw API JSON response.
 
         Args:
             statement_name: The name of the statement to check
@@ -917,9 +994,20 @@ class Connection:
             Dictionary containing the statement status and details
 
         Raises:
-            OperationalError: If status check fails
+            StatementNotFoundError: If statement does not exist (HTTP 404)
+            OperationalError: If other API errors occur
         """
-        return self._request(f"/statements/{statement_name}").json()
+        try:
+            return self._request(f"/statements/{statement_name}").json()
+        except OperationalError as e:
+            # Check if this is a 404 error
+            if e.http_status_code == 404:
+                raise StatementNotFoundError(
+                    f"Statement '{statement_name}' not found: {e}",
+                    statement_name=statement_name,
+                ) from e
+            # Re-raise other operational errors
+            raise
 
     def _get_statement_results(
         self, statement_name: str, next_url: str | None
@@ -947,7 +1035,7 @@ class Connection:
             response = self._request(next_url).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
-            if "404" in str(e):
+            if e.http_status_code == 404:
                 raise StatementDeletedError(
                     f"Statement '{statement_name}' has been deleted", statement_name
                 ) from e
@@ -1012,7 +1100,8 @@ class Connection:
                 details = "no more details"
 
             raise OperationalError(
-                f"error sending request '{e.response.status_code}' - {details}"
+                f"error sending request '{e.response.status_code}' - {details}",
+                http_status_code=e.response.status_code,
             ) from e
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:

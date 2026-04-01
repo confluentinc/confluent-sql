@@ -20,13 +20,14 @@ from .exceptions import (
     OperationalError,
     ProgrammingError,
     StatementDeletedError,
+    StatementNotFoundError,
     StatementStoppedError,
     TypeMismatchError,
     Warning,
 )
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
-from .statement import Op
+from .statement import HIDDEN_LABEL, Op
 from .types import PropertiesDict, SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
@@ -51,6 +52,7 @@ __all__ = [
     "ComputePoolExhaustedError",
     "StatementStoppedError",
     "StatementDeletedError",
+    "StatementNotFoundError",
     "IntegrityError",
     "InternalError",
     "ProgrammingError",
@@ -62,4 +64,5 @@ __all__ = [
     "PropertiesDict",
     "SqlNone",
     "YearMonthInterval",
+    "HIDDEN_LABEL",
 ]

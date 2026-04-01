@@ -12,6 +12,8 @@ import pytest
 
 import confluent_sql
 from confluent_sql.connection import Connection
+from confluent_sql.exceptions import StatementNotFoundError
+from confluent_sql.statement import Statement
 
 
 def _wait_for_row(cursor, timeout_seconds=5):
@@ -172,3 +174,61 @@ class TestConnection:
         assert cursor.is_closed is True, (
             "Expected cursor to be closed after exiting context manager."
         )
+
+    def test_get_statement_by_name(self, connection: Connection, cleaned_up_statement_name: str):
+        """Test getting a statement by its name."""
+        # Create a statement with a specific name
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`",
+            statement_name=cleaned_up_statement_name,
+        )
+        # Use public API to get statement
+        original_statement = cursor.statement
+        assert original_statement.name == cleaned_up_statement_name
+
+        # Get the statement by name
+        retrieved_statement = connection.get_statement(cleaned_up_statement_name)
+
+        # Verify we got a Statement object with correct name
+        assert isinstance(retrieved_statement, Statement)
+        assert retrieved_statement.name == cleaned_up_statement_name
+
+        # Clean up cursor (statement will be cleaned up by fixture)
+        cursor.close()
+
+    def test_get_statement_refreshes_object(
+        self, connection: Connection, cleaned_up_statement_name: str
+    ):
+        """Test that passing a Statement object refreshes its state from server."""
+        # Create a statement with a specific name
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`",
+            statement_name=cleaned_up_statement_name,
+        )
+        # Use public API to get statement
+        original_statement = cursor.statement
+
+        # Get refreshed state
+        refreshed_statement = connection.get_statement(original_statement)
+
+        # Verify we got a new Statement object (not the same instance)
+        assert isinstance(refreshed_statement, Statement)
+        assert refreshed_statement.name == original_statement.name
+        # The statement should have the same name but be a different object
+        assert refreshed_statement is not original_statement
+
+        # Clean up cursor (statement will be cleaned up by fixture)
+        cursor.close()
+
+    def test_get_statement_nonexistent_raises(self, connection: Connection):
+        """Test that getting a non-existent statement raises StatementNotFoundError."""
+        with pytest.raises(
+            StatementNotFoundError,
+            match="not found",
+        ) as exc_info:
+            connection.get_statement("non-existent-statement-name")
+
+        # Verify exception has statement name
+        assert exc_info.value.statement_name == "non-existent-statement-name"

@@ -7,12 +7,12 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from confluent_sql import InterfaceError, OperationalError
+from confluent_sql import InterfaceError, OperationalError, StatementNotFoundError
 from confluent_sql.__version__ import VERSION
 from confluent_sql.connection import Connection, RowTypeRegistry, connect
 from confluent_sql.connection import logger as connection_module_logger
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import LABEL_PREFIX, Statement
+from confluent_sql.statement import HIDDEN_LABEL, LABEL_PREFIX, Statement
 from tests.conftest import ConnectionFactory
 from tests.unit.conftest import StatementResponseFactory
 
@@ -45,13 +45,13 @@ def _create_http_error_404():
 class TestHTTPStatusErrorHandling:
     """Tests for enhanced error handling in Connection._request method."""
 
-    def test_connection_error_with_valid_error_details(
+    def test_get_statement_converts_404_to_statement_not_found_error(
         self, invalid_credential_connection: Connection, mocker
     ):
-        """Test error message formatting when response contains valid error JSON with details.
+        """Test that 404 errors are converted to StatementNotFoundError.
 
-        When the API returns a structured error response with multiple error objects,
-        the exception message should include all error details joined by semicolons.
+        When the API returns a 404 error for a statement GET request,
+        _get_statement should raise StatementNotFoundError with the statement name.
         """
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
 
@@ -71,11 +71,12 @@ class TestHTTPStatusErrorHandling:
         response_mock.raise_for_status = raise_http_error
         request_mock.return_value = response_mock
 
-        with pytest.raises(
-            OperationalError,
-            match="error sending request '404' - Statement not found; Please check statement name",
-        ):
+        with pytest.raises(StatementNotFoundError) as exc_info:
             invalid_credential_connection._get_statement("test-name")
+
+        # Verify exception has statement name
+        assert exc_info.value.statement_name == "test-name"
+        assert "test-name" in str(exc_info.value)
 
     def test_connection_error_with_invalid_json(
         self, invalid_credential_connection: Connection, mocker
@@ -798,6 +799,163 @@ class TestConnectionListStatements:
 
 
 @pytest.mark.unit
+class TestGetStatement:
+    """Tests for connection.get_statement method."""
+
+    def test_get_statement_with_string_name(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test getting a statement by string name."""
+        statement_data = statement_response_factory(name="my-statement")
+
+        # Mock _get_statement to return the statement data
+        get_statement_mock = mocker.patch.object(
+            invalid_credential_connection,
+            "_get_statement",
+            return_value=statement_data,
+        )
+
+        # Call get_statement with string name
+        result = invalid_credential_connection.get_statement("my-statement")
+
+        # Verify _get_statement was called with correct name
+        get_statement_mock.assert_called_once_with("my-statement")
+
+        # Verify we got a Statement object back
+        assert isinstance(result, Statement)
+        assert result.name == "my-statement"
+
+    def test_get_statement_with_statement_object(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test getting a statement by passing a Statement object."""
+        statement_data = statement_response_factory(name="existing-statement")
+
+        # Create an initial Statement object
+        initial_statement = Statement.from_response(invalid_credential_connection, statement_data)
+
+        # Mock _get_statement to return updated data
+        updated_data = statement_response_factory(name="existing-statement")
+        get_statement_mock = mocker.patch.object(
+            invalid_credential_connection,
+            "_get_statement",
+            return_value=updated_data,
+        )
+
+        # Call get_statement with Statement object
+        result = invalid_credential_connection.get_statement(initial_statement)
+
+        # Verify _get_statement was called with the statement name
+        get_statement_mock.assert_called_once_with("existing-statement")
+
+        # Verify we got a Statement object back
+        assert isinstance(result, Statement)
+        assert result.name == "existing-statement"
+
+    def test_get_statement_with_invalid_type(
+        self,
+        invalid_credential_connection: Connection,
+    ):
+        """Test that passing an invalid type raises TypeError."""
+        with pytest.raises(
+            TypeError,
+            match="Statement must be specified by name or Statement object",
+        ):
+            invalid_credential_connection.get_statement(123)  # type: ignore
+
+    def test_get_statement_not_found(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that getting a non-existent statement raises StatementNotFoundError."""
+        # Mock _request to raise HTTPStatusError with 404
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        response_mock = Mock()
+        response_mock.status_code = 404
+        response_mock.json.return_value = {
+            "errors": [{"detail": "Statement not found"}]
+        }
+
+        def raise_http_error():
+            raise httpx.HTTPStatusError(
+                "Statement not found", request=Mock(), response=response_mock
+            )
+
+        response_mock.raise_for_status = raise_http_error
+        request_mock.return_value = response_mock
+
+        # Should raise the more specific StatementNotFoundError
+        with pytest.raises(StatementNotFoundError) as exc_info:
+            invalid_credential_connection.get_statement("non-existent")
+
+        # Verify exception has correct attributes
+        assert exc_info.value.statement_name == "non-existent"
+        assert "non-existent" in str(exc_info.value)
+
+    def test_get_statement_api_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that non-404 errors remain as OperationalError."""
+        # Mock _request to raise HTTPStatusError with 500
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        response_mock = Mock()
+        response_mock.status_code = 500
+        response_mock.json.return_value = {
+            "errors": [{"detail": "Internal server error"}]
+        }
+
+        def raise_http_error():
+            raise httpx.HTTPStatusError(
+                "Internal server error", request=Mock(), response=response_mock
+            )
+
+        response_mock.raise_for_status = raise_http_error
+        request_mock.return_value = response_mock
+
+        # Should raise OperationalError, not StatementNotFoundError
+        with pytest.raises(OperationalError) as exc_info:
+            invalid_credential_connection.get_statement("some-statement")
+
+        # Verify it's not the specific subclass
+        assert not isinstance(exc_info.value, StatementNotFoundError)
+        assert "500" in str(exc_info.value)
+
+    def test_get_statement_logs_operation(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Test that get_statement logs the operation."""
+        statement_data = statement_response_factory(name="log-test-statement")
+
+        # Mock _get_statement
+        mocker.patch.object(
+            invalid_credential_connection,
+            "_get_statement",
+            return_value=statement_data,
+        )
+
+        # Spy on logger.info
+        logger_info_spy = mocker.spy(connection_module_logger, "info")
+
+        # Call get_statement
+        invalid_credential_connection.get_statement("log-test-statement")
+
+        # Verify logger was called with expected message
+        logger_info_spy.assert_called_with("Getting statement 'log-test-statement'")
+
+
+@pytest.mark.unit
 class TestExecuteStatement:
     """Tests for _execute_statement method."""
 
@@ -832,7 +990,7 @@ class TestExecuteStatement:
             "SELECT 1",
             ExecutionMode.STREAMING_QUERY,
             statement_name="test-stmt",
-            statement_label=None,
+            statement_labels=None,
         )
 
         # Verify the request was made
@@ -864,7 +1022,7 @@ class TestExecuteStatement:
             "SELECT 1",
             ExecutionMode.STREAMING_QUERY,
             statement_name="test-stmt",
-            statement_label=test_label,
+            statement_labels=[test_label],
         )
 
         # Verify the request was made
@@ -899,7 +1057,7 @@ class TestExecuteStatement:
             "SELECT 1",
             ExecutionMode.STREAMING_QUERY,
             statement_name="test-stmt",
-            statement_label=already_prefixed_label,
+            statement_labels=[already_prefixed_label],
         )
 
         # Verify the request was made
@@ -924,6 +1082,179 @@ class TestExecuteStatement:
         assert double_prefixed not in payload["metadata"]["labels"], (
             "Label should not be double-prefixed"
         )
+
+    def test_empty_list_omits_metadata_labels(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when an empty list is provided, no metadata is added (same as None)."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with empty list
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=[],
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify no metadata key exists in payload (same behavior as None)
+        assert "metadata" not in payload, (
+            "Payload should not contain metadata when empty list provided"
+        )
+
+    def test_multiple_labels_all_added(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that when multiple labels are provided, all are added to metadata."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with multiple labels
+        labels = ["label1", "label2", "label3"]
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=labels,
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when labels provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify all labels are present and prefixed correctly
+        for label in labels:
+            expected_label_key = f"{LABEL_PREFIX}{label}"
+            assert expected_label_key in payload["metadata"]["labels"], (
+                f"Label {label} should be in metadata"
+            )
+            assert payload["metadata"]["labels"][expected_label_key] == "true"
+
+        # Verify we have exactly 3 labels
+        assert len(payload["metadata"]["labels"]) == 3
+
+    def test_multiple_labels_mixed_prefixes(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that mixed prefixed and unprefixed labels are handled correctly."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with mixed prefix labels
+        prefixed_label = f"{LABEL_PREFIX}already-prefixed"
+        unprefixed_label = "not-prefixed"
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=[prefixed_label, unprefixed_label],
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when labels provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify the prefixed label was not double-prefixed
+        assert prefixed_label in payload["metadata"]["labels"]
+        assert payload["metadata"]["labels"][prefixed_label] == "true"
+
+        # Verify the unprefixed label was prefixed
+        expected_unprefixed_key = f"{LABEL_PREFIX}{unprefixed_label}"
+        assert expected_unprefixed_key in payload["metadata"]["labels"]
+        assert payload["metadata"]["labels"][expected_unprefixed_key] == "true"
+
+        # Verify we have exactly 2 labels
+        assert len(payload["metadata"]["labels"]) == 2
+
+    def test_non_list_raises_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that providing a non-list value raises InterfaceError."""
+        self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with a string instead of list
+        with pytest.raises(InterfaceError, match="statement_labels must be a list of strings"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.STREAMING_QUERY,
+                statement_name="test-stmt",
+                statement_labels="not-a-list",  # type: ignore[arg-type]
+            )
+
+    def test_non_string_label_raises_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that providing non-string elements in the list raises InterfaceError."""
+        self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with non-string label element
+        with pytest.raises(InterfaceError, match="All statement labels must be strings"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.STREAMING_QUERY,
+                statement_name="test-stmt",
+                statement_labels=["valid", 123],  # type: ignore[list-item]
+            )
+
+    def test_hidden_label_constant(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Test that HIDDEN_LABEL constant works correctly."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        # Execute statement with HIDDEN_LABEL
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.STREAMING_QUERY,
+            statement_name="test-stmt",
+            statement_labels=[HIDDEN_LABEL],
+        )
+
+        # Verify the request was made
+        request_mock.assert_called_once()
+        call_args = request_mock.call_args
+
+        # Get the JSON payload
+        payload = call_args[1]["json"]
+
+        # Verify metadata exists and has labels
+        assert "metadata" in payload, "Payload should contain metadata when label provided"
+        assert "labels" in payload["metadata"], "Metadata should contain labels"
+
+        # Verify HIDDEN_LABEL is present (already prefixed, so no double-prefix)
+        assert HIDDEN_LABEL in payload["metadata"]["labels"]
+        assert payload["metadata"]["labels"][HIDDEN_LABEL] == "true"
 
 
 @pytest.fixture()
