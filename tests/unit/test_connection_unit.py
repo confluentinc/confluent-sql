@@ -1488,3 +1488,133 @@ class TestHttpUserAgentProperty:
         """Test that constructor validates user agent type and length."""
         with pytest.raises(InterfaceError, match=expected_error):
             http_agent_connection_factory(http_user_agent=invalid_value)
+
+
+@pytest.mark.unit
+class TestComputePoolIdParameter:
+    """Test the compute_pool_id parameter for Connection methods."""
+
+    def test_execute_statement_with_compute_pool_id(
+        self, invalid_credential_connection, mocker
+    ):
+        """Test that _execute_statement uses provided compute_pool_id and logs override."""
+        # Mock the HTTP request
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "name": "test-statement",
+            "spec": {"compute_pool_id": "lfcp-custom-pool"},
+        }
+        mocker.patch.object(
+            invalid_credential_connection._client,
+            'request',
+            return_value=mock_response
+        )
+
+        # Patch logger.info to verify override message
+        mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
+
+        # Call _execute_statement with a custom compute_pool_id
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.SNAPSHOT,
+            compute_pool_id="lfcp-custom-pool"
+        )
+
+        # Verify the request was made
+        invalid_credential_connection._client.request.assert_called_once()
+        call_kwargs = invalid_credential_connection._client.request.call_args
+        payload = call_kwargs.kwargs['json']
+
+        # Verify the compute_pool_id in the payload matches the provided one
+        assert payload['spec']['compute_pool_id'] == "lfcp-custom-pool"
+
+        # Verify logger.info was called with the override message
+        assert mock_log_info.called, "Expected logger.info to be called"
+        log_messages = [str(call) for call in mock_log_info.call_args_list]
+        assert any(
+            "Overriding connection compute_pool_id" in msg
+            and "lfcp-custom-pool" in msg
+            for msg in log_messages
+        ), f"Expected override log message not found in: {log_messages}"
+
+    def test_execute_statement_defaults_to_connection_pool(
+        self, invalid_credential_connection, mocker
+    ):
+        """Test that _execute_statement uses Connection's pool when not provided."""
+        # Mock the HTTP request
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "name": "test-statement",
+            "spec": {"compute_pool_id": "cp-id"},
+        }
+        mocker.patch.object(
+            invalid_credential_connection._client,
+            'request',
+            return_value=mock_response
+        )
+
+        # Call _execute_statement without compute_pool_id
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.SNAPSHOT
+        )
+
+        # Verify the payload uses the connection's compute_pool_id
+        call_kwargs = invalid_credential_connection._client.request.call_args
+        payload = call_kwargs.kwargs['json']
+        assert payload['spec']['compute_pool_id'] == "cp-id"  # from fixture
+
+    def test_execute_statement_validates_compute_pool_type(
+        self, invalid_credential_connection
+    ):
+        """Test that invalid compute_pool_id type raises InterfaceError."""
+        with pytest.raises(InterfaceError, match="compute_pool_id must be a string"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.SNAPSHOT,
+                compute_pool_id=12345  # Invalid: int instead of str
+            )
+
+    def test_execute_snapshot_ddl_with_compute_pool_id(
+        self, invalid_credential_connection, mocker
+    ):
+        """Test that execute_snapshot_ddl passes compute_pool_id to cursor.execute."""
+        # Mock the cursor and its execute method
+        mock_cursor = mocker.Mock()
+        mocker.patch.object(
+            invalid_credential_connection,
+            'closing_cursor',
+            return_value=mocker.MagicMock(__enter__=mocker.Mock(return_value=mock_cursor))
+        )
+
+        invalid_credential_connection.execute_snapshot_ddl(
+            "CREATE TABLE foo (id INT)",
+            compute_pool_id="lfcp-custom-pool"
+        )
+
+        # Verify cursor.execute was called with compute_pool_id
+        mock_cursor.execute.assert_called_once()
+        call_kwargs = mock_cursor.execute.call_args.kwargs
+        assert call_kwargs['compute_pool_id'] == "lfcp-custom-pool"
+
+    def test_execute_streaming_ddl_with_compute_pool_id(
+        self, invalid_credential_connection, mocker
+    ):
+        """Test that execute_streaming_ddl passes compute_pool_id to cursor.execute."""
+        # Mock the cursor and its execute method
+        mock_cursor = mocker.Mock()
+        mocker.patch.object(
+            invalid_credential_connection,
+            'closing_cursor',
+            return_value=mocker.MagicMock(__enter__=mocker.Mock(return_value=mock_cursor))
+        )
+
+        invalid_credential_connection.execute_streaming_ddl(
+            "CREATE MATERIALIZED TABLE foo AS SELECT * FROM bar",
+            compute_pool_id="lfcp-streaming-pool"
+        )
+
+        # Verify cursor.execute was called with compute_pool_id
+        mock_cursor.execute.assert_called_once()
+        call_kwargs = mock_cursor.execute.call_args.kwargs
+        assert call_kwargs['compute_pool_id'] == "lfcp-streaming-pool"

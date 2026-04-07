@@ -512,6 +512,8 @@ class Connection:
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
+        *,
+        compute_pool_id: str | None = None,
     ) -> Statement:
         """Execute bounded DDL that completes after consuming snapshot data.
 
@@ -537,6 +539,11 @@ class Connection:
                              Use HIDDEN_LABEL to mark statements as hidden from default views.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool.
+            compute_pool_id: Optional compute pool ID to use for this statement execution.
+                            If not provided, uses the Connection's default compute_pool_id.
+                            The compute pool must be accessible to the API key used for the
+                            connection. Validation of compute pool accessibility is performed
+                            by Confluent Cloud Flink.
 
         Returns:
             Statement for managing the statement lifecycle
@@ -553,6 +560,7 @@ class Connection:
                 statement_name=statement_name,
                 statement_labels=statement_labels,
                 properties=properties,
+                compute_pool_id=compute_pool_id,
             )
 
         # Return the last version of the statement
@@ -566,6 +574,8 @@ class Connection:
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
+        *,
+        compute_pool_id: str | None = None,
     ) -> Statement:
         """Execute unbounded DDL that starts a streaming job.
 
@@ -587,6 +597,11 @@ class Connection:
                              Use HIDDEN_LABEL to mark statements as hidden from default views.
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool.
+            compute_pool_id: Optional compute pool ID to use for this statement execution.
+                            If not provided, uses the Connection's default compute_pool_id.
+                            The compute pool must be accessible to the API key used for the
+                            connection. Validation of compute pool accessibility is performed
+                            by Confluent Cloud Flink.
         Returns:
             Statement for any further management of the statement lifecycle
         """
@@ -599,6 +614,7 @@ class Connection:
                 statement_name=statement_name,
                 statement_labels=statement_labels,
                 properties=properties,
+                compute_pool_id=compute_pool_id,
             )
 
         return cur.statement
@@ -905,6 +921,8 @@ class Connection:
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
         properties: PropertiesDict | None = None,
+        *,
+        compute_pool_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute a SQL statement and return the response. Any statement parameters must have already
@@ -922,21 +940,44 @@ class Connection:
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
+            compute_pool_id: Optional compute pool ID to use for this statement execution.
+                            If not provided, uses the Connection's default compute_pool_id.
+                            The compute pool must be accessible to the API key used for the
+                            connection. Validation of compute pool accessibility is performed
+                            by Confluent Cloud Flink.
 
         Returns:
             Dictionary containing the API response
 
         Raises:
             OperationalError: If statement execution fails
-            InterfaceError: If properties parameter is invalid or if statement_labels is invalid
+            InterfaceError: If properties parameter is invalid, or if statement_labels is invalid,
+                            or if compute_pool_id is not a string when provided.
         """
 
         # Create the statement payload as per Flink SQL API documentation
         if statement_name is None:
             statement_name = f"dbapi-{str(uuid.uuid4())}"
 
+        # Validate compute_pool_id type if provided
+        if compute_pool_id is not None and not isinstance(compute_pool_id, str):
+            raise InterfaceError(
+                f"compute_pool_id must be a string, got {type(compute_pool_id).__name__}"
+            )
+
         # Resolve and merge user properties with system properties
         merged_properties = self._resolve_properties(properties, execution_mode)
+
+        # Use provided compute_pool_id or default to Connection's compute_pool_id
+        if compute_pool_id is not None:
+            # Just so that the user is well aware that this is happening ...
+            logger.info(
+                f"execute_statement(): Overriding connection compute_pool_id"
+                f" '{self.compute_pool_id}' with provided compute_pool_id '{compute_pool_id}'"
+            )
+            resolved_compute_pool_id = compute_pool_id
+        else:
+            resolved_compute_pool_id = self.compute_pool_id
 
         payload = {
             "name": statement_name,
@@ -945,7 +986,7 @@ class Connection:
             "spec": {
                 "statement": statement,
                 "properties": merged_properties,
-                "compute_pool_id": self.compute_pool_id,
+                "compute_pool_id": resolved_compute_pool_id,
                 "stopped": False,
             },
         }

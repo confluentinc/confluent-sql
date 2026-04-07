@@ -1,9 +1,11 @@
 import re
+import types
 import warnings
 
 import pytest
 
 from confluent_sql import Cursor, InterfaceError
+from confluent_sql.connection import Connection
 from confluent_sql.exceptions import (
     ComputePoolExhaustedError,
     NotSupportedError,
@@ -1733,3 +1735,84 @@ class TestSnapshotWarning:
         assert mock_connection._snapshot_warning_issued is False
 
         cursor.close()
+
+
+@pytest.mark.unit
+class TestComputePoolIdParameter:
+    """Test the compute_pool_id parameter for Cursor.execute() and related methods."""
+
+    def test_cursor_execute_with_compute_pool_id(self, mock_connection_cursor: Cursor, mocker):
+        """Test that compute_pool_id is passed through the call chain."""
+        # Store original method
+        original_method = mock_connection_cursor._connection._execute_statement
+
+        # Create a mock that wraps the original
+        mock_execute = mocker.Mock(side_effect=original_method)
+        mock_connection_cursor._connection._execute_statement = mock_execute
+
+        mock_connection_cursor.execute(
+            "SELECT 1",
+            compute_pool_id="lfcp-test-pool"
+        )
+
+        # Verify _execute_statement was called with the compute_pool_id
+        mock_execute.assert_called_once()
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs['compute_pool_id'] == "lfcp-test-pool"
+
+    def test_cursor_execute_defaults_to_none_when_not_provided(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that omitting compute_pool_id passes None to _execute_statement."""
+        # Store original method
+        original_method = mock_connection_cursor._connection._execute_statement
+
+        # Create a mock that wraps the original
+        mock_execute = mocker.Mock(side_effect=original_method)
+        mock_connection_cursor._connection._execute_statement = mock_execute
+
+        mock_connection_cursor.execute("SELECT 1")
+
+        # Should be called with None, which triggers default behavior in _execute_statement
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs.get('compute_pool_id') is None
+
+    def test_cursor_submit_statement_passes_compute_pool_id(
+        self, mock_connection_cursor: Cursor, mocker
+    ):
+        """Test that _submit_statement passes compute_pool_id to _execute_statement."""
+        # Store original method
+        original_method = mock_connection_cursor._connection._execute_statement
+
+        # Create a mock that wraps the original
+        mock_execute = mocker.Mock(side_effect=original_method)
+        mock_connection_cursor._connection._execute_statement = mock_execute
+
+        mock_connection_cursor._submit_statement(
+            "SELECT 1",
+            compute_pool_id="lfcp-custom-pool"
+        )
+
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs['compute_pool_id'] == "lfcp-custom-pool"
+
+    def test_cursor_execute_rejects_non_string_compute_pool_id(
+        self, mock_connection_factory
+    ):
+        """Test that Cursor.execute() rejects non-string compute_pool_id values."""
+        # Create a mock connection but bind the REAL _execute_statement method
+        # so that validation logic runs
+        mock_conn = mock_connection_factory(None, None)
+        # Replace the mocked _execute_statement with the real one
+        mock_conn._execute_statement = types.MethodType(
+            Connection._execute_statement, mock_conn
+        )
+
+        with (
+            mock_conn.closing_cursor() as cursor,
+            pytest.raises(InterfaceError, match="compute_pool_id must be a string"),
+        ):
+            cursor.execute(
+                "SELECT 1",
+                compute_pool_id=12345  # Invalid: int instead of str
+            )
