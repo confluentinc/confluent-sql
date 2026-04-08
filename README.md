@@ -61,7 +61,7 @@ import confluent_sql
 # Connect to Confluent Cloud Flink SQL
 connection = confluent_sql.connect(
     organization_id="your-org-uuid",
-    environment="env-123456",
+    environment_id="env-123456",
     cloud_provider="aws",
     cloud_region="us-east-2",
     flink_api_key="your-flink-api-key",

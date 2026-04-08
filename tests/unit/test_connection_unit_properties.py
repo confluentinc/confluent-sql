@@ -13,7 +13,7 @@ from confluent_sql.execution_mode import ExecutionMode
 def invalid_credential_connection() -> Connection:
     """A connection with invalid credentials for testing."""
     return connect(
-        environment="env-id",
+        environment_id="env-id",
         organization_id="org-id",
         compute_pool_id="cp-id",
         cloud_provider="aws",

@@ -70,7 +70,7 @@ class TestConnection:
         connection = confluent_sql.connect(
             flink_api_key=flink_api_key,
             flink_api_secret=flink_api_secret,
-            environment=environment_id,
+            environment_id=environment_id,
             organization_id=organization_id,
             compute_pool_id=compute_pool_id,
             cloud_region=cloud_region,
