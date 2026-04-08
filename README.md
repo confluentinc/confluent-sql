@@ -167,6 +167,16 @@ For detailed streaming query guidance, see **[STREAMING.md](https://github.com/c
 
 For type support and examples, see **[TYPES.md](https://github.com/confluentinc/confluent-sql/blob/main/TYPES.md)**.
 
+
+## Private Networking Considerations
+
+By default, this driver uses the public Confluent Cloud API networking endpoint for the provided cloud provider and region. However, if the Flink database / Kafka cluster you intend to query requires private networking connectivity, then provide the appropriate Flink private networking base URL as the `endpoint` parameter
+to `connect()` or `Connection.__init__()`. Refer to the Confluent Cloud [Flink private networking documentation](https://docs.confluent.io/cloud/current/flink/concepts/flink-private-networking.html) for more information at composing your endpoint URL.
+
+Symptoms of using the public endpoint when private networking is required include:
+  * HTTP 429-related exceptions raised when submitting statements querying tables whose backing Kafka topics / clusters are configured for private networking only.
+  * Empty or surpsingly missing results when querying `INFORMATION_SCHEMA` or `SHOW TABLES`, due to silent filtering of private-networking-only tables/topics when querying the system catalog.
+
 ## Development
 
 ### Setup
