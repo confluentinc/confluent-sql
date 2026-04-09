@@ -4,13 +4,15 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
-### Changed
-  * Respelled and re-typed the `statement_label: str | None` parameter in `Cursor.execute()` and peers to be `statement_labels: list[str] | None` to allow multiple labels to be applied to a statement, including `HIDDEN_LABEL`.
+### Changed - Breaking
+  * `connect()` / `Connection.__init__()`: Renamed `environment` parameter to `environment_id` to clarify that an environment ID (_not_ name) is expected. The internal attribute `Connection.environment` has also been renamed to `Connection.environment_id`. Update all calls from `connect(environment="env-123")` to `connect(environment_id="env-123")`. (#92)
+  * `Cursor.execute()` and peers: Respelled and re-typed the `statement_label: str | None` parameter to be `statement_labels: list[str] | None` to allow multiple labels to be applied to a statement, including `HIDDEN_LABEL`.
 
 ### Added
   * New `Connection.get_statement(statement)` method to retrieve statement metadata by name or refresh a Statement object with the latest server state. Accepts either a statement name (string) or a Statement object. Returns a Statement object with current phase, schema, and execution traits. (#86)
   * New `StatementNotFoundError` exception, a subclass of `OperationalError`, raised by `Connection.get_statement(statement)` when attempting to retrieve a statement that does not exist. Provides programmatic access to the statement name via the `statement_name` attribute.
   * New constant `confluent_sql.HIDDEN_LABEL` used for driving `Cursor.execute()` to indicate that the statement should be hidden in default listings in Confluent Cloud UIs. This feature is intended to be used for minor queries, such as when investigating `INFORMATION_SCHEMA`.
+  * Added documentation regarding use of `connect(endpoint=)` parameter to make use of private networking endpoints (README.md, docstrings).
 
 
 

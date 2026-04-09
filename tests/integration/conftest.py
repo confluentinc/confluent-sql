@@ -71,7 +71,7 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
     """
     flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
     flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
-    environment = os.getenv("CONFLUENT_ENV_ID", "")
+    environment_id = os.getenv("CONFLUENT_ENV_ID", "")
     organization_id = os.getenv("CONFLUENT_ORG_ID", "")
     compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
     cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
@@ -82,7 +82,7 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
         [
             flink_api_key,
             flink_api_secret,
-            environment,
+            environment_id,
             organization_id,
             compute_pool_id,
             cloud_region,
@@ -95,7 +95,7 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
     conn = confluent_sql.connect(
         flink_api_key=flink_api_key,
         flink_api_secret=flink_api_secret,
-        environment=environment,
+        environment_id=environment_id,
         organization_id=organization_id,
         compute_pool_id=compute_pool_id,
         cloud_region=cloud_region,

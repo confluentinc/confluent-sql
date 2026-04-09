@@ -38,7 +38,7 @@ def connect(  # noqa: PLR0913
     *,
     flink_api_key: str,
     flink_api_secret: str,
-    environment: str,
+    environment_id: str,
     compute_pool_id: str,
     organization_id: str,
     cloud_provider: str | None = None,
@@ -55,7 +55,7 @@ def connect(  # noqa: PLR0913
     Args:
         flink_api_key: Flink region API key
         flink_api_secret: Flink region API secret
-        environment: Environment ID
+        environment_id: Environment ID
         compute_pool_id: Compute pool ID for SQL execution
         organization_id: Organization ID
         cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure"). Required if endpoint is not
@@ -96,7 +96,7 @@ def connect(  # noqa: PLR0913
         OperationalError: If connection cannot be established
     """
 
-    if not environment:
+    if not environment_id:
         raise InterfaceError("Environment ID is required")
 
     if not compute_pool_id:
@@ -135,7 +135,7 @@ def connect(  # noqa: PLR0913
     return Connection(
         flink_api_key,
         flink_api_secret,
-        environment,
+        environment_id,
         compute_pool_id,
         organization_id,
         cloud_provider,
@@ -159,7 +159,7 @@ class Connection:
         f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
     )
 
-    environment: str
+    environment_id: str
     organization_id: str
     compute_pool_id: str
     statement_results_page_fetch_pause_secs: float
@@ -193,7 +193,7 @@ class Connection:
         self,
         flink_api_key: str,
         flink_api_secret: str,
-        environment: str,
+        environment_id: str,
         compute_pool_id: str,
         organization_id: str,
         cloud_provider: str | None,
@@ -209,7 +209,7 @@ class Connection:
         Args:
             flink_api_key: Flink region API key
             flink_api_secret: Flink region API secret
-            environment: Environment ID
+            environment_id: Environment ID
             compute_pool_id: Compute pool ID for SQL execution
             organization_id: Organization ID
             cloud_provider: Cloud provider (required if endpoint is not provided)
@@ -232,7 +232,7 @@ class Connection:
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
                            driver name/version, documentation URL, and support email.
         """
-        self.environment = environment
+        self.environment_id = environment_id
         self.compute_pool_id = compute_pool_id
         self.organization_id = organization_id
 
@@ -267,7 +267,10 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        base_url = f"{endpoint}/sql/v1/organizations/{organization_id}/environments/{environment}"
+        base_url = (
+            f"{endpoint}/sql/v1/organizations/{organization_id}"
+            f"/environments/{environment_id}"
+        )
 
         # Create httpx client for making API calls
         basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
@@ -910,7 +913,7 @@ class Connection:
             merged_properties.update(properties)
 
         # Connection-level properties overlay (always set, cannot be overridden by user)
-        merged_properties["sql.current-catalog"] = self.environment
+        merged_properties["sql.current-catalog"] = self.environment_id
 
         if self._database is not None:
             merged_properties["sql.current-database"] = self._database
@@ -990,7 +993,7 @@ class Connection:
         payload = {
             "name": statement_name,
             "organization_id": self.organization_id,
-            "environment_id": self.environment,
+            "environment_id": self.environment_id,
             "spec": {
                 "statement": statement,
                 "properties": merged_properties,
