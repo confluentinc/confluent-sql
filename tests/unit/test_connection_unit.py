@@ -285,8 +285,8 @@ class TestConnectionInit:
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
-    def test_requires_environment(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without an environment raises an error."""
+    def test_requires_environment_id(self, connection_factory: ConnectionFactory):
+        """Test that creating a connection without an environment_id raises an error."""
         with pytest.raises(InterfaceError, match="Environment ID is required"):
             connection_factory(environment_id="")
 
