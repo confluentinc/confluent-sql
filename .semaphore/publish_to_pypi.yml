@@ -10,7 +10,7 @@ global_job_config:
       - checkout
       - . vault-setup
       - curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
-      - uv sync --locked
+      - uv sync --frozen
 
 blocks:
   - name: Publish `confluent_sql` to PyPi
