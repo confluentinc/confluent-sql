@@ -64,11 +64,15 @@ def connect(  # noqa: PLR0913
             provided; must not be provided if endpoint is specified.
         database: The default Flink database (Kafka cluster) to use when resolving
             table/view/udf names (optional)
-        endpoint: The base URL for Confluent Cloud API (optional). If not provided, the endpoint
-            will be constructed based on the cloud_provider and cloud_region parameters in the
-            format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud". A trailing
-            slash is optional and will be stripped if provided (e.g., both
+        endpoint: The base URL for Confluent Cloud API (optional). If not provided, the public
+            networking endpoint will be constructed based on the cloud_provider and cloud_region
+            parameters in the format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
+            A trailing slash is optional and will be stripped if provided (e.g., both
             "https://custom.example.com" and "https://custom.example.com/" are accepted).
+
+            If your Kafka clusters / Flink tables require private networking, supply the base
+            endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for example,
+            but cases and private networking technologies vary).
         dbname: Deprecated alias for database parameter (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
@@ -215,6 +219,10 @@ class Connection:
                 endpoint will be constructed based on the cloud_provider and cloud_region
                 parameters in the format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
                 A trailing slash is optional and will be stripped if provided.
+
+                If your Kafka clusters / Flink tables require private networking, supply the base
+                endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for
+                example, but cases and private networking technologies vary).
             database: The name of the database to use (optional)
             result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
                 statement results. Defaults to 100ms. If most recent fetch of results for a
