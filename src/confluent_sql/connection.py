@@ -66,7 +66,7 @@ def connect(  # noqa: PLR0913
             table/view/udf names (optional)
         endpoint: The base URL for Confluent Cloud API (optional). If not provided, the public
             networking endpoint will be constructed based on the cloud_provider and cloud_region
-            parameters ala "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
+            parameters in the format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
             A trailing slash is optional and will be stripped if provided (e.g., both
             "https://custom.example.com" and "https://custom.example.com/" are accepted).
 
