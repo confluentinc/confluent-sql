@@ -2,7 +2,7 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
-## Unreleased
+## 0.3.0, 2026-04-09
 
 ### Changed - Breaking
   * `connect()` / `Connection.__init__()`: Renamed `environment` parameter to `environment_id` to clarify that an environment ID (_not_ name) is expected. The internal attribute `Connection.environment` has also been renamed to `Connection.environment_id`. Update all calls from `connect(environment="env-123")` to `connect(environment_id="env-123")`. (#92)
