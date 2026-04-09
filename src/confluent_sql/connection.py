@@ -267,7 +267,10 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        base_url = f"{endpoint}/sql/v1/organizations/{organization_id}/environments/{environment_id}"
+        base_url = (
+            f"{endpoint}/sql/v1/organizations/{organization_id}"
+            f"/environments/{environment_id}"
+        )
 
         # Create httpx client for making API calls
         basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
