@@ -51,7 +51,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         *,
         flink_api_key: str | None = None,
         flink_api_secret: str | None = None,
-        environment: str | None = None,
+        environment_id: str | None = None,
         organization_id: str | None = None,
         compute_pool_id: str | None = None,
         cloud_provider: str | None = None,
@@ -65,8 +65,8 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
         if flink_api_secret is None:
             flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
-        if environment is None:
-            environment = os.getenv("CONFLUENT_ENV_ID", "")
+        if environment_id is None:
+            environment_id = os.getenv("CONFLUENT_ENV_ID", "")
         if organization_id is None:
             organization_id = os.getenv("CONFLUENT_ORG_ID", "")
         if compute_pool_id is None:
@@ -84,7 +84,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         connection = connect(
             flink_api_key=flink_api_key,
             flink_api_secret=flink_api_secret,
-            environment=environment,
+            environment_id=environment_id,
             organization_id=organization_id,
             compute_pool_id=compute_pool_id,
             cloud_region=cloud_region,

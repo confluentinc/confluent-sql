@@ -24,7 +24,7 @@ def invalid_credential_connection() -> Connection:
     This is useful for testing connection error handling.
     """
     return connect(
-        environment="env-id",
+        environment_id="env-id",
         organization_id="org-id",
         compute_pool_id="cp-id",
         cloud_provider="aws",
@@ -112,7 +112,7 @@ def test_connection_constructor_hates_negative_pause_millis(connection_factory: 
     statement_results_page_fetch_pause_millis."""
     with pytest.raises(InterfaceError, match="result_page_fetch_pause_millis must be non-negative"):
         connection_factory(
-            environment="foo_id",
+            environment_id="foo_id",
             compute_pool_id="1234",
             organization_id="4567",
             cloud_provider="aws",
@@ -209,7 +209,7 @@ class TestDeprecatedDbnameParameter:
         """
         with pytest.warns(DeprecationWarning, match="'dbname' parameter is deprecated"):
             conn = connect(
-                environment="env-id",
+                environment_id="env-id",
                 compute_pool_id="cp-id",
                 organization_id="org-id",
                 cloud_provider="aws",
@@ -236,7 +236,7 @@ class TestDeprecatedDbnameParameter:
             match="Cannot specify both 'database' and deprecated 'dbname' parameters",
         ):
             connect(
-                environment="env-id",
+                environment_id="env-id",
                 compute_pool_id="cp-id",
                 organization_id="org-id",
                 cloud_provider="aws",
@@ -270,7 +270,7 @@ class TestConnectionInit:
             match="cloud_provider and cloud_region are required when endpoint is not provided",
         ):
             Connection(
-                environment="foo_id",
+                environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 flink_api_key="valid-key",
@@ -285,20 +285,20 @@ class TestConnectionInit:
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
-    def test_requires_environment(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without an environment raises an error."""
+    def test_requires_environment_id(self, connection_factory: ConnectionFactory):
+        """Test that creating a connection without an environment ID raises an error."""
         with pytest.raises(InterfaceError, match="Environment ID is required"):
-            connection_factory(environment="")
+            connection_factory(environment_id="")
 
     def test_requires_compute_pool_id(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without a compute pool ID raises an error."""
         with pytest.raises(InterfaceError, match="Compute pool ID is required"):
-            connection_factory(environment="foo_id", compute_pool_id="")
+            connection_factory(environment_id="foo_id", compute_pool_id="")
 
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without an organization ID raises an error."""
         with pytest.raises(InterfaceError, match="Organization ID is required"):
-            connection_factory(environment="foo_id", compute_pool_id="1234", organization_id="")
+            connection_factory(environment_id="foo_id", compute_pool_id="1234", organization_id="")
 
     def test_requires_cloud_provider(self, connection_factory: ConnectionFactory):
         """Test that cloud provider is required when endpoint is not provided."""
@@ -306,7 +306,7 @@ class TestConnectChecks:
             InterfaceError, match="Cloud provider is required when endpoint is not provided"
         ):
             connection_factory(
-                environment="foo_id",
+                environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="",
@@ -318,7 +318,7 @@ class TestConnectChecks:
             InterfaceError, match="Cloud region is required when endpoint is not provided"
         ):
             connection_factory(
-                environment="foo_id",
+                environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="aws",
@@ -328,7 +328,7 @@ class TestConnectChecks:
     def test_builds_endpoint_from_cloud_info(self, connection_factory: ConnectionFactory):
         """Test that when endpoint is not provided, it is built correctly from cloud info."""
         conn = connection_factory(
-            environment="env-123",
+            environment_id="env-123",
             organization_id="org-456",
             compute_pool_id="cp-789",
             cloud_provider="aws",
@@ -344,7 +344,7 @@ class TestConnectChecks:
         """Test that creating a connection without a Flink API key raises an error."""
         with pytest.raises(InterfaceError, match="Flink region API key and secret are required"):
             connection_factory(
-                environment="foo_id",
+                environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="aws",
@@ -356,7 +356,7 @@ class TestConnectChecks:
         """Test that creating a connection without a Flink API secret raises an error."""
         with pytest.raises(InterfaceError, match="Flink region API key and secret are required"):
             connection_factory(
-                environment="foo_id",
+                environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="aws",
@@ -368,7 +368,7 @@ class TestConnectChecks:
     def test_endpoint_parameter_uses_custom_endpoint(self, connection_factory: ConnectionFactory):
         """Test that providing endpoint parameter uses the custom endpoint."""
         conn = connection_factory(
-            environment="env-123",
+            environment_id="env-123",
             organization_id="org-456",
             compute_pool_id="cp-789",
             flink_api_key="test-key",
@@ -385,7 +385,7 @@ class TestConnectChecks:
     def test_endpoint_parameter_with_trailing_slash(self, connection_factory: ConnectionFactory):
         """Test that endpoint parameter with trailing slash is stripped correctly."""
         conn = connection_factory(
-            environment="env-123",
+            environment_id="env-123",
             organization_id="org-456",
             compute_pool_id="cp-789",
             flink_api_key="test-key",
@@ -406,7 +406,7 @@ class TestConnectChecks:
     def test_endpoint_parameter_without_trailing_slash(self, connection_factory: ConnectionFactory):
         """Test that endpoint parameter without trailing slash works correctly."""
         conn = connection_factory(
-            environment="env-123",
+            environment_id="env-123",
             organization_id="org-456",
             compute_pool_id="cp-789",
             flink_api_key="test-key",
@@ -435,7 +435,7 @@ class TestConnectChecks:
             ),
         ):
             connection_factory(
-                environment="env-123",
+                environment_id="env-123",
                 organization_id="org-456",
                 compute_pool_id="cp-789",
                 flink_api_key="test-key",
@@ -455,7 +455,7 @@ class TestConnectChecks:
             ),
         ):
             connection_factory(
-                environment="env-123",
+                environment_id="env-123",
                 organization_id="org-456",
                 compute_pool_id="cp-789",
                 flink_api_key="test-key",
@@ -1265,7 +1265,7 @@ def http_agent_connection_factory(
 
     def _create_with_agent(http_user_agent: str | None = None) -> Connection:
         return connection_factory(
-            environment="test-env",
+            environment_id="test-env",
             compute_pool_id="test-pool",
             organization_id="test-org",
             cloud_provider="aws",
