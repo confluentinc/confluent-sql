@@ -31,7 +31,7 @@ blocks:
       jobs:
         - name: "Lint, Type Check, and Test"
           commands:
-            - uv run --frozen ruff check && uv run --frozen pyright && uv run --frozen pytest -m unit --junitxml=test-results.xml
+            - uv run --locked ruff check && uv run --locked pyright && uv run --locked pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
           commands:
