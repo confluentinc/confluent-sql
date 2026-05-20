@@ -21,7 +21,7 @@ global_job_config:
       - checkout
       - . vault-setup
       - curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
-      - uv sync
+      - uv sync --frozen
       - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
 
 blocks:
@@ -31,7 +31,7 @@ blocks:
       jobs:
         - name: "Lint, Type Check, and Test"
           commands:
-            - uv run ruff check && uv run pyright && uv run pytest -m unit --junitxml=test-results.xml
+            - uv run --frozen ruff check && uv run --frozen pyright && uv run --frozen pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
           commands:
