@@ -813,7 +813,9 @@ class Connection:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code != 404:
-                raise OperationalError("Error deleting statement") from e
+                raise OperationalError(
+                    "Error deleting statement", http_status_code=e.response.status_code
+                ) from e
             # If the response is 404, it means we don't need to delete the statement.
             logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
 
