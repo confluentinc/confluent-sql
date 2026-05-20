@@ -153,8 +153,9 @@ class TestConnectionDeleteStatementErrors:
         response_mock.raise_for_status = raise_internal_server_error
         request_mock.return_value = response_mock
 
-        with pytest.raises(OperationalError, match="Error deleting statement"):
+        with pytest.raises(OperationalError, match="Error deleting statement") as exc_info:
             invalid_credential_connection.delete_statement("statement-with-error")
+        assert exc_info.value.http_status_code == 500
 
 
 @pytest.mark.unit
