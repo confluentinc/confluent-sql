@@ -59,6 +59,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         database: str | None = None,
         result_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
+        http_timeout_secs: float | None = None,
         endpoint: str | None = None,
     ) -> Connection:
         if flink_api_key is None:
@@ -92,6 +93,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             database=database,
             result_page_fetch_pause_millis=result_page_fetch_pause_millis,
             http_user_agent=http_user_agent,
+            http_timeout_secs=http_timeout_secs,
             endpoint=endpoint,
         )
 
