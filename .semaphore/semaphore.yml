@@ -38,12 +38,10 @@ blocks:
             - "[[ -f test-results.xml ]] && test-results publish test-results.xml"
 
 promotions:
-  - name: Publish confluent-sql to codeartifact
-    pipeline_file: publish_to_codeartifact.yml
-    auto_promote:
-        when: "result = 'passed' and tag =~ '^v\\.'"
   - name: Publish confluent-sql to PyPi
     pipeline_file: publish_to_pypi.yml
+    auto_promote:
+      when: "result = 'passed' and tag =~ '^v\\.'"
 
 after_pipeline:
   task:
