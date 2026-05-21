@@ -4,6 +4,9 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## 0.3.0, 2026-04-09
 
+
+## 0.3.0, 2026-04-09
+
 ### Changed - Breaking
   * `connect()` / `Connection.__init__()`: Renamed `environment` parameter to `environment_id` to clarify that an environment ID (_not_ name) is expected. The internal attribute `Connection.environment` has also been renamed to `Connection.environment_id`. Update all calls from `connect(environment="env-123")` to `connect(environment_id="env-123")`. (#92)
   * `Cursor.execute()` and peers: Respelled and re-typed the `statement_label: str | None` parameter to be `statement_labels: list[str] | None` to allow multiple labels to be applied to a statement, including `HIDDEN_LABEL`.

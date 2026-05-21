@@ -153,8 +153,9 @@ class TestConnectionDeleteStatementErrors:
         response_mock.raise_for_status = raise_internal_server_error
         request_mock.return_value = response_mock
 
-        with pytest.raises(OperationalError, match="Error deleting statement"):
+        with pytest.raises(OperationalError, match="Error deleting statement") as exc_info:
             invalid_credential_connection.delete_statement("statement-with-error")
+        assert exc_info.value.http_status_code == 500
 
 
 @pytest.mark.unit
@@ -1488,6 +1489,94 @@ class TestHttpUserAgentProperty:
         """Test that constructor validates user agent type and length."""
         with pytest.raises(InterfaceError, match=expected_error):
             http_agent_connection_factory(http_user_agent=invalid_value)
+
+
+@pytest.mark.unit
+class TestHttpTimeoutSecs:
+    """Tests for the http_timeout_secs constructor parameter and property."""
+
+    def test_default_is_none_and_httpx_default_applies(
+        self, invalid_credential_connection: Connection
+    ):
+        """When not provided, the property is None and the httpx default (5s) is used."""
+        assert invalid_credential_connection.http_timeout_secs is None
+        # httpx's default Timeout(timeout=5.0) is wrapped in a Timeout object on the client.
+        assert invalid_credential_connection._client.timeout == httpx.Timeout(5.0)
+
+    @pytest.mark.parametrize("timeout_value", [0.5, 1, 10, 30.0, 120])
+    def test_custom_timeout_via_constructor(
+        self, connection_factory: ConnectionFactory, timeout_value
+    ):
+        """A custom timeout is stored on the connection and applied to the httpx client."""
+        conn = connection_factory(
+            environment_id="env-id",
+            organization_id="org-id",
+            compute_pool_id="cp-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="key",
+            flink_api_secret="secret",
+            http_timeout_secs=timeout_value,
+        )
+        assert conn.http_timeout_secs == timeout_value
+        # httpx wraps the timeout into a Timeout(connect, read, write, pool) object.
+        assert conn._client.timeout == httpx.Timeout(timeout_value)
+
+    @pytest.mark.parametrize(
+        "invalid_value,expected_error",
+        [
+            (0, "http_timeout_secs must be positive, got 0"),
+            (-1, "http_timeout_secs must be positive, got -1"),
+            (-0.5, "http_timeout_secs must be positive, got -0.5"),
+        ],
+    )
+    def test_rejects_non_positive(
+        self,
+        connection_factory: ConnectionFactory,
+        invalid_value,
+        expected_error,
+    ):
+        """Zero and negative values are rejected."""
+        with pytest.raises(InterfaceError, match=expected_error):
+            connection_factory(
+                environment_id="env-id",
+                organization_id="org-id",
+                compute_pool_id="cp-id",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                flink_api_key="key",
+                flink_api_secret="secret",
+                http_timeout_secs=invalid_value,
+            )
+
+    @pytest.mark.parametrize(
+        "invalid_value,expected_error",
+        [
+            ("5", "http_timeout_secs must be a number, got str"),
+            ([5], "http_timeout_secs must be a number, got list"),
+            ({"secs": 5}, "http_timeout_secs must be a number, got dict"),
+            (True, "http_timeout_secs must be a number, got bool"),
+            (False, "http_timeout_secs must be a number, got bool"),
+        ],
+    )
+    def test_rejects_non_numeric(
+        self,
+        connection_factory: ConnectionFactory,
+        invalid_value,
+        expected_error,
+    ):
+        """Non-numeric types (including bool) are rejected."""
+        with pytest.raises(InterfaceError, match=expected_error):
+            connection_factory(
+                environment_id="env-id",
+                organization_id="org-id",
+                compute_pool_id="cp-id",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                flink_api_key="key",
+                flink_api_secret="secret",
+                http_timeout_secs=invalid_value,
+            )
 
 
 @pytest.mark.unit
