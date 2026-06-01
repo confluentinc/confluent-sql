@@ -733,7 +733,7 @@ class Connection:
             re.compile(name_regex) if name_regex is not None else None
         )
 
-        # Reëxpress `name_pattern` as a predicate function over statement-name strings:
+        # Re-express `name_pattern` as a predicate function over statement-name strings:
         #   * a user-supplied pattern matches via re.search (substring);
         #   * otherwise an empty pattern matches every name.
         name_matches = (name_pattern or re.compile("")).search
