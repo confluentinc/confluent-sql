@@ -195,6 +195,15 @@ class TestGetNextPageToken:
         """Test that _get_next_page_token correctly extracts the page token from a URL."""
         assert invalid_credential_connection._get_next_page_token(url) == expected
 
+    def test_get_next_page_token_empty_string_returns_none(
+        self, invalid_credential_connection: Connection
+    ):
+        """An empty page_token (`?page_token=`) must read as None, not "". list_statements'
+        pagination loop terminates on `next_page_token is not None`; an empty string would keep
+        that guard True while `if next_page_token:` never sets the token, spinning forever."""
+        url = "https://api.confluent.cloud/statements?label_selector=foo&page_token="
+        assert invalid_credential_connection._get_next_page_token(url) is None
+
 
 @pytest.mark.unit
 class TestDeprecatedDbnameParameter:

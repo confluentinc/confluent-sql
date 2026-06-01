@@ -756,7 +756,7 @@ class Connection:
             # response metadata. The 'next' value will be an entire URL, but we just need to extract
             # the page token from it for the next request.
             next_page_token = self._get_next_page_token(resp_json.get("metadata", {}).get("next"))
-            if next_page_token is not None:
+            if next_page_token:
                 parameters["page_token"] = next_page_token
             has_more_pages = next_page_token is not None
 
@@ -1241,7 +1241,9 @@ class Connection:
         # We can parse it to extract the page_token value.
         parsed = httpx.URL(next_url)
         page_token = parsed.params.get("page_token")
-        return page_token
+        # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
+        # `next_page_token is not None`, so an empty string would spin it forever.
+        return page_token or None
 
 
 class RowTypeRegistry:
