@@ -4,6 +4,13 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- `Connection.list_statements()`:
+  - New optional parameter `compute_pool_id` to list statements only in a single compute pool (otherwise environment-wide).
+  - New optional parameter `name_regex: str | re.Pattern` to filter statement names client-side.
+  - Existing parameter `label` is now optional.
+
 ## 0.3.1, 2026-05-21
 
 ### Added
