@@ -749,14 +749,14 @@ class Connection:
             statements.extend(
                 Statement.from_response(self, s)
                 for s in statements_json
-                if name_matches(s.get("name", ""))
+                if name_matches(s["name"])
             )
 
             # Check if there are more pages to fetch based on the presence of a 'next' link in the
             # response metadata. The 'next' value will be an entire URL, but we just need to extract
             # the page token from it for the next request.
             next_page_token = self._get_next_page_token(resp_json.get("metadata", {}).get("next"))
-            if next_page_token:
+            if next_page_token is not None:
                 parameters["page_token"] = next_page_token
             has_more_pages = next_page_token is not None
 
