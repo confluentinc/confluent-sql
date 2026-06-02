@@ -1816,3 +1816,40 @@ class TestComputePoolIdParameter:
                 "SELECT 1",
                 compute_pool_id=12345  # Invalid: int instead of str
             )
+
+
+@pytest.mark.unit
+class TestStopStatement:
+    """Tests for Cursor.stop_statement."""
+
+    def test_delegates_and_updates_tracked_statement(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """stop_statement delegates to the connection (forwarding the flags) and reassigns the
+        cursor's tracked statement to the returned, stopped one."""
+        running = Statement.from_response(
+            mock_connection_cursor._connection,
+            statement_response_factory(name="stmt-1", phase="RUNNING"),
+        )
+        stopped = Statement.from_response(
+            mock_connection_cursor._connection,
+            statement_response_factory(name="stmt-1", phase="STOPPED"),
+        )
+        mock_connection_cursor._statement = running
+        mock_connection_cursor._connection.stop_statement.return_value = stopped  # type: ignore
+
+        result = mock_connection_cursor.stop_statement(wait_for_stopped=True, timeout=99)
+
+        mock_connection_cursor._connection.stop_statement.assert_called_once_with(  # type: ignore
+            "stmt-1", wait_for_stopped=True, timeout=99
+        )
+        assert result is stopped
+        assert mock_connection_cursor.statement is stopped
+
+    def test_no_active_statement_raises(self, mock_connection_cursor: Cursor):
+        """Stopping with no executed statement raises InterfaceError."""
+        mock_connection_cursor._statement = None
+        with pytest.raises(InterfaceError, match="No active statement to stop"):
+            mock_connection_cursor.stop_statement()

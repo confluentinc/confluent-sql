@@ -472,6 +472,37 @@ class Cursor:
         self._connection.delete_statement(self._statement.name)
         self._statement.set_deleted()
 
+    def stop_statement(self, *, wait_for_stopped: bool = True, timeout: int = 300) -> Statement:
+        """
+        Stop this cursor's statement without deleting it, keeping it around for inspection.
+
+        Delegates to Connection.stop_statement and reassigns the cursor's tracked statement to the
+        returned (stopped) Statement. Unlike delete_statement(), stopping with no active statement
+        is an error -- there is no statement to stop and no sensible Statement to return.
+
+        Args:
+            wait_for_stopped: If True (default), block until the statement reaches STOPPED.
+            timeout: Maximum seconds to wait for STOPPED when wait_for_stopped is True.
+
+        Returns:
+            The updated Statement (STOPPED when blocking, otherwise the just-accepted statement
+            with stop_requested true and phase possibly still RUNNING).
+
+        Raises:
+            InterfaceError: If the cursor is closed or no statement has been executed.
+            StatementNotFoundError: If the statement no longer exists.
+            OperationalError: On other API errors, on timeout, or if the statement FAILED.
+        """
+        self._raise_if_closed()
+
+        if self._statement is None:
+            raise InterfaceError("No active statement to stop")
+
+        self._statement = self._connection.stop_statement(
+            self._statement.name, wait_for_stopped=wait_for_stopped, timeout=timeout
+        )
+        return self._statement
+
     @property
     def is_closed(self) -> bool:
         """

@@ -35,7 +35,7 @@ For comprehensive details on streaming queries, polling patterns, and changelog 
 
 - [Result Format Extensions](#result-format-extensions) - Dictionary rows, custom types
 - [Streaming Query Support](#streaming-query-support) - Comprehensive streaming guide
-- [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, naming, deletion
+- [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, naming, stopping, deletion
 - [Introspection and Metadata](#introspection-and-metadata) - Properties for query state
 - [Performance Monitoring](#performance-monitoring) - Fetch metrics
 - [Type System Extensions](#type-system-extensions) - Flink type support
@@ -493,6 +493,46 @@ except StatementNotFoundError as e:
 except OperationalError as e:
     print(f"Other error: {e}")
 ```
+
+**`stop_statement()` - Halt a statement without deleting it**
+
+Stops a running statement (for example, a long-lived streaming query) while keeping the
+statement resource around for inspection — unlike `delete_statement()`, which stops *and*
+destroys the statement and its results. The stop is issued as a JSON Patch flipping
+`spec.stopped` to `true`; the statement then transitions through `STOPPING` to the terminal
+`STOPPED` phase.
+
+```python
+# Stop from connection (by name or Statement object), blocking until STOPPED (the default)
+stopped = connection.stop_statement("active-users-query")
+print(stopped.is_stopped)  # True
+
+# Non-blocking: return as soon as the stop is accepted
+stmt = connection.stop_statement(statement_obj, wait_for_stopped=False)
+print(stmt.stop_requested)  # True (the stop was accepted)
+# Note: stmt.phase may still be RUNNING at this instant -- the server transitions the phase
+# to STOPPED asynchronously. Poll get_statement() if you need to observe STOPPED:
+while not connection.get_statement(stmt).is_stopped:
+    time.sleep(0.5)
+
+# Bound the blocking wait (seconds); raises OperationalError on timeout
+stopped = connection.stop_statement("active-users-query", timeout=60)
+
+# Stop from cursor (current statement); updates the cursor's tracked statement
+stopped = cursor.stop_statement()
+```
+
+**Behavior notes:**
+
+- Accepts a statement name (string) or a `Statement` object. A `Statement` already in a terminal
+  phase (`STOPPED`/`COMPLETED`/`FAILED`/`DELETED`) is returned unchanged without an API call.
+- `wait_for_stopped=True` (default) blocks until the statement reaches `STOPPED`, so the caller
+  knows the stop took effect. `wait_for_stopped=False` returns once the stop is accepted —
+  confirm acceptance via `Statement.stop_requested` rather than the phase.
+- Raises `StatementNotFoundError` if the statement does not exist, or `OperationalError` on other
+  API errors, on timeout, or if the statement transitions to `FAILED` while stopping.
+- `cursor.stop_statement()` raises `InterfaceError` when the cursor has no executed statement to
+  stop (it is not a silent no-op like `cursor.delete_statement()`).
 
 **`delete_statement()` - Stop and remove a statement**
 
