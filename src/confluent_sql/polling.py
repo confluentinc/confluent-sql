@@ -31,14 +31,20 @@ def sleep_with_backoff(timeout_secs: float, *, started_at: float | None = None) 
     its own timeout error.
 
     Each sleep is clamped to both the 30s ceiling (jitter included -- the cap is on the actual
-    sleep, not the pre-jitter base delay) and the remaining budget, so the total wait never
-    exceeds timeout_secs -- the caller's timeout is an upper bound, not an approximate target. The
-    final paced retry therefore lands right at the deadline rather than running a full backoff step
-    past it.
+    sleep, not the pre-jitter base delay) and the remaining budget, so no paced sleep ever extends
+    past the deadline; the final paced sleep lands right at it rather than running a full backoff
+    step over. The elapsed check is measured from the start each iteration, so time the caller
+    spends in the loop body (e.g. a network GET) is charged against the budget too -- slow caller
+    work ends the pacing sooner, it does not stack on top of the sleeps.
+
+    What this does NOT bound is the caller's own in-flight work: a GET that begins just before the
+    deadline still runs to completion, so total wall time can exceed timeout_secs by up to one unit
+    of caller work. The helper paces the sleeping; it cannot interrupt the caller.
 
     started_at lets a caller that did a timed first attempt (e.g. a network poll) fold that elapsed
-    time into the budget: pass the time.monotonic() captured before that attempt so the timeout
-    bounds the whole operation, not just the paced retries. Defaults to the moment pacing begins.
+    time into the budget: pass the time.monotonic() captured before that attempt so it is charged
+    against the timeout rather than the budget starting fresh after it. Defaults to the moment
+    pacing begins.
     """
     start = time.monotonic() if started_at is None else started_at
     delay = _POLL_BASE_DELAY_SECS

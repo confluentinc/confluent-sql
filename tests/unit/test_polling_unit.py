@@ -95,6 +95,23 @@ class TestSleepWithBackoff:
         assert sum(fake_clock.slept) == pytest.approx(7.0)
         assert fake_clock.now == pytest.approx(10.0)
 
+    def test_caller_work_between_yields_is_charged_against_budget(self, fake_clock: _FakeClock):
+        """Time the caller spends between yields (e.g. a network GET) counts against the timeout,
+        so a slow caller ends pacing sooner -- the budget is shared across sleeps and caller work,
+        not reset per retry. The generator cannot bound the caller's own in-flight work, though:
+        total wall time can still exceed the timeout by the duration of work already underway."""
+        yields = 0
+        for _ in sleep_with_backoff(10.0):
+            yields += 1
+            fake_clock.now += 4.0  # simulate a 4s caller GET in each loop body
+
+        # sleep 1.0 (t=1) + work (t=5); sleep 1.5 (t=6.5) + work (t=10.5); next check 10.5 > 10.
+        assert yields == 2
+        assert fake_clock.slept == [1.0, 1.5]
+        # Caller work pushed total wall time past the 10s timeout -- the helper bounds its sleeping,
+        # not the caller's GETs.
+        assert fake_clock.now == pytest.approx(10.5)
+
     def test_jitter_band_applied(self, mocker):
         """Each sleep is scaled by a ±25% jitter draw."""
         clock = _FakeClock()

@@ -186,22 +186,26 @@ def _http_error_response(status_code: int) -> Mock:
 class TestConnectionStopStatement:
     """Tests for Connection.stop_statement."""
 
-    def test_non_blocking_issues_json_patch_and_returns_stopping(
+    def test_non_blocking_issues_json_patch_and_returns_stop_requested(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         mocker,
     ):
-        """wait_for_stopped=False issues a single RFC 6902 PATCH and returns the STOPPING
-        statement without polling."""
+        """wait_for_stopped=False issues a single RFC 6902 PATCH and returns without polling. Per
+        the real API the accepted-stop response flips spec.stopped to true while status.phase may
+        still read RUNNING, so the caller's reliable signal is stop_requested, not the phase."""
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.return_value = _ok_response(
-            statement_response_factory(name="stmt-1", phase="STOPPING")
+            statement_response_factory(name="stmt-1", phase="RUNNING", stopped=True)
         )
 
         result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
 
-        assert result.is_stopping
+        assert result.stop_requested
+        # The phase has not yet transitioned -- stop_requested, not the phase, proves acceptance.
+        assert result.is_running
+        assert not result.is_stopped
         request_mock.assert_called_once()
         args, kwargs = request_mock.call_args
         assert args == ("PATCH", "/statements/stmt-1")
@@ -219,15 +223,19 @@ class TestConnectionStopStatement:
         """wait_for_stopped=True polls get-statement until the phase settles to STOPPED."""
         mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        # Per the real API, every response after the accepted stop carries spec.stopped=true; the
+        # phase trails behind, transitioning STOPPING -> STOPPED asynchronously.
         request_mock.side_effect = [
-            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # PATCH
-            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # poll 1
-            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPED")),  # poll 2
+            # PATCH, then poll 1, then poll 2.
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True)),
         ]
 
         result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
 
         assert result.is_stopped
+        assert result.stop_requested
         # One PATCH + two GET polls.
         assert request_mock.call_count == 3
         assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
@@ -244,8 +252,11 @@ class TestConnectionStopStatement:
         mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.side_effect = [
-            _ok_response(statement_response_factory(name="stmt-1", phase="RUNNING")),  # PATCH
-            _ok_response(statement_response_factory(name="stmt-1", phase="COMPLETED")),  # poll
+            # PATCH (stop accepted while still RUNNING), then a poll that finds it COMPLETED.
+            _ok_response(statement_response_factory(name="stmt-1", phase="RUNNING", stopped=True)),
+            _ok_response(
+                statement_response_factory(name="stmt-1", phase="COMPLETED", stopped=True)
+            ),
         ]
 
         result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
@@ -263,7 +274,7 @@ class TestConnectionStopStatement:
         without an additional get-statement poll."""
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.return_value = _ok_response(
-            statement_response_factory(name="stmt-1", phase="STOPPED")
+            statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True)
         )
 
         result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
@@ -284,7 +295,7 @@ class TestConnectionStopStatement:
         """stop_statement accepts either a statement name or a Statement object."""
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.return_value = _ok_response(
-            statement_response_factory(name="stmt-1", phase="STOPPING")
+            statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)
         )
 
         if by_object:
@@ -311,7 +322,7 @@ class TestConnectionStopStatement:
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         already_stopped = Statement.from_response(
             invalid_credential_connection,
-            statement_response_factory(name="stmt-1", phase="STOPPED"),
+            statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True),
         )
 
         result = invalid_credential_connection.stop_statement(already_stopped)
@@ -356,7 +367,7 @@ class TestConnectionStopStatement:
         mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.return_value = _ok_response(
-            statement_response_factory(name="stmt-1", phase="STOPPING")
+            statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)
         )
 
         with pytest.raises(OperationalError, match="did not reach STOPPED within"):
@@ -374,8 +385,9 @@ class TestConnectionStopStatement:
         mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.side_effect = [
-            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # PATCH
-            _ok_response(statement_response_factory(name="stmt-1", phase="FAILED")),  # poll
+            # PATCH (stop accepted), then a poll that finds it transitioned to FAILED.
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            _ok_response(statement_response_factory(name="stmt-1", phase="FAILED", stopped=True)),
         ]
 
         with pytest.raises(OperationalError, match="stmt-1"):
