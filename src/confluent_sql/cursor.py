@@ -8,7 +8,6 @@ retrieving results from Confluent SQL services.
 from __future__ import annotations
 
 import logging
-import random
 import time
 import warnings
 from collections.abc import Iterator
@@ -22,6 +21,7 @@ from .exceptions import (
     ProgrammingError,
 )
 from .execution_mode import ExecutionMode
+from .polling import sleep_with_backoff
 from .result_readers import (
     AppendOnlyResultReader,
     ChangelogEventReader,
@@ -472,6 +472,40 @@ class Cursor:
         self._connection.delete_statement(self._statement.name)
         self._statement.set_deleted()
 
+    def stop_statement(self, *, wait_for_stopped: bool = True, timeout: int = 300) -> Statement:
+        """
+        Stop this cursor's statement without deleting it, keeping it around for inspection.
+
+        Delegates to Connection.stop_statement and reassigns the cursor's tracked statement to the
+        returned Statement. Unlike delete_statement(), stopping with no active statement
+        is an error -- there is no statement to stop and no sensible Statement to return.
+
+        Args:
+            wait_for_stopped: If True (default), block until the statement reaches a terminal phase
+                -- normally STOPPED, but COMPLETED if a bounded query finished before the stop
+                landed.
+            timeout: Maximum seconds to wait for a terminal phase when wait_for_stopped is True.
+
+        Returns:
+            The updated Statement: a terminal phase (normally STOPPED, possibly COMPLETED) when
+            blocking, otherwise the just-accepted statement with stop_requested true and phase
+            possibly still RUNNING.
+
+        Raises:
+            InterfaceError: If the cursor is closed or no statement has been executed.
+            StatementNotFoundError: If the statement no longer exists.
+            OperationalError: On other API errors, on timeout, or if the statement FAILED.
+        """
+        self._raise_if_closed()
+
+        if self._statement is None:
+            raise InterfaceError("No active statement to stop")
+
+        self._statement = self._connection.stop_statement(
+            self._statement.name, wait_for_stopped=wait_for_stopped, timeout=timeout
+        )
+        return self._statement
+
     @property
     def is_closed(self) -> bool:
         """
@@ -656,51 +690,58 @@ class Cursor:
                 "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
             )  # pragma: no cover
 
-        start_time = time.monotonic()
-        base_delay = 1.0  # Start with 1 second
-        max_delay = 30.0  # Maximum delay between polls
-        current_delay = base_delay
-
-        while time.monotonic() - start_time < timeout:
-            logger.info(f"Checking statement '{self._statement.name}' status...")
-
-            response = self._connection._get_statement(self._statement.name)
-
-            self._statement = statement = Statement.from_response(self._connection, response)
-
-            self._raise_if_statement_is_broken(statement)
-
-            # If we can fetch results based on execution mode and statement state,
-            # create the result reader and exit the polling loop.
-            if statement.can_fetch_results(self._execution_mode):
-                if statement.is_append_only:
-                    # Create result reader for append-only statements, will
-                    # return row tuples or dicts depending on self._results_as_dicts.
-                    self._result_reader = AppendOnlyResultReader(
-                        self._connection,
-                        self._statement,
-                        self._execution_mode,
-                        as_dict=self._results_as_dicts,
-                    )
-                else:
-                    # Use a ChangelogEventReader that will return pairs of the changelog
-                    # operation and the type-promoted row data as a dict or tuple depending
-                    # on self._results_as_dicts.
-                    self._result_reader = ChangelogEventReader(
-                        self._connection,
-                        self._statement,
-                        self._execution_mode,
-                        as_dict=self._results_as_dicts,
-                    )
+        # First attempt immediately, then back off between subsequent polls. The clock starts
+        # before that first poll so its latency counts against the timeout, not on top of it.
+        started_at = time.monotonic()
+        if self._poll_ready_once():
+            return
+        for _ in sleep_with_backoff(timeout, started_at=started_at):
+            if self._poll_ready_once():
                 return
 
-            # Otherwise, exponential backoff with jitter to prevent thundering herd
-            jitter = random.uniform(0.75, 1.25)  # ±25% randomness
-            actual_delay = current_delay * jitter
-            time.sleep(actual_delay)
-            current_delay = min(current_delay * 1.5, max_delay)
-
         raise OperationalError(f"Statement submission timed out after {timeout} seconds")
+
+    def _poll_ready_once(self) -> bool:
+        """Refresh self._statement from the server once; return True if results are now fetchable.
+
+        Reassigns self._statement with the latest server state, raises if the statement is broken
+        (failed/degraded/pool-exhausted), and on readiness installs the appropriate result reader
+        before returning True. Returns False if the statement is not yet ready to fetch from.
+        """
+        if self._statement is None:
+            raise InterfaceError(
+                "Calling _poll_ready_once but _statement is None, this is probably a bug"
+            )  # pragma: no cover
+
+        logger.info(f"Checking statement '{self._statement.name}' status...")
+
+        response = self._connection._get_statement(self._statement.name)
+        self._statement = statement = Statement.from_response(self._connection, response)
+
+        self._raise_if_statement_is_broken(statement)
+
+        if not statement.can_fetch_results(self._execution_mode):
+            return False
+
+        if statement.is_append_only:
+            # Append-only statements return row tuples or dicts depending on
+            # self._results_as_dicts.
+            self._result_reader = AppendOnlyResultReader(
+                self._connection,
+                statement,
+                self._execution_mode,
+                as_dict=self._results_as_dicts,
+            )
+        else:
+            # Non-append-only statements return pairs of the changelog operation and the
+            # type-promoted row data as a dict or tuple depending on self._results_as_dicts.
+            self._result_reader = ChangelogEventReader(
+                self._connection,
+                statement,
+                self._execution_mode,
+                as_dict=self._results_as_dicts,
+            )
+        return True
 
     def _raise_if_statement_is_broken(self, statement: Statement) -> None:
         """Raise an exception if the statement is in a failed, degraded, or pool-exhausted state.
