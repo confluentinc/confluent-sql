@@ -230,7 +230,7 @@ class TestExecute:
         """The timeout budget covers the initial poll, not just the paced retries: the monotonic
         origin captured *before* the first poll is handed to sleep_with_backoff via started_at, so
         a slow first poll cannot push total wall time past the requested timeout."""
-        pending_statement = statement_response_factory(phase="PENDING")
+        pending_statement = statement_response_factory(phase="PENDING", null_schema=True)
 
         # A clock that only advances when the first poll runs, so we can prove started_at was
         # captured before that poll consumed any time.
