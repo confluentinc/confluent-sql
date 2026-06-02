@@ -139,6 +139,45 @@ class TestStatementProperties:
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_running == expected
 
+    @pytest.mark.parametrize(
+        "phase,expected_stopped,expected_stopping",
+        [
+            ("STOPPED", True, False),
+            ("STOPPING", False, True),
+            ("RUNNING", False, False),
+            ("COMPLETED", False, False),
+            ("FAILED", False, False),
+        ],
+    )
+    def test_is_stopped_and_is_stopping(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+        expected_stopped: bool,
+        expected_stopping: bool,
+    ):
+        """is_stopped is true only for STOPPED; is_stopping only for STOPPING."""
+        statement_json = statement_response_factory(phase=phase)
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.is_stopped == expected_stopped
+        assert statement.is_stopping == expected_stopping
+
+    def test_stop_requested_reflects_spec_stopped(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """stop_requested mirrors spec.stopped -- true once a stop has been requested, even while
+        the phase still reports RUNNING (the server transitions phase asynchronously)."""
+        not_yet = statement_response_factory(name="s", phase="RUNNING")
+        assert not_yet["spec"]["stopped"] is False
+        assert Statement.from_response(mock_connection, not_yet).stop_requested is False
+
+        requested = statement_response_factory(name="s", phase="RUNNING")
+        requested["spec"]["stopped"] = True
+        assert Statement.from_response(mock_connection, requested).stop_requested is True
+
     def test_type_converter_raises_if_no_schema(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):

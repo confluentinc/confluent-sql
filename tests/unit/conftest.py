@@ -71,6 +71,7 @@ def statement_response_factory() -> StatementResponseFactory:
         null_schema: bool = False,
         name: str = "dbapi-d4c685ef-befe-4091-9548-05d5ccb52d4a",
         labels: dict[str, str] | None = None,
+        stopped: bool = False,
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
 
@@ -108,7 +109,7 @@ def statement_response_factory() -> StatementResponseFactory:
                     "sql.snapshot.mode": "now",
                 },
                 "statement": sql_statement,
-                "stopped": False,
+                "stopped": stopped,
             },
             "status": {
                 "detail": status_detail,
