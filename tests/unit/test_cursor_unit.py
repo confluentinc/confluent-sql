@@ -1865,7 +1865,7 @@ class TestStopStatement:
         )
         stopped = Statement.from_response(
             mock_connection_cursor._connection,
-            statement_response_factory(name="stmt-1", phase="STOPPED"),
+            statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True),
         )
         mock_connection_cursor._statement = running
         mock_connection_cursor._connection.stop_statement.return_value = stopped  # type: ignore
