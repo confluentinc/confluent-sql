@@ -34,22 +34,35 @@ def fake_clock(mocker) -> _FakeClock:
 class TestSleepWithBackoff:
     """Tests for the shared backoff pacing generator."""
 
-    def test_sleeps_grow_geometrically_until_timeout(self, fake_clock: _FakeClock):
-        """Each retry sleeps base * growth**n (jitter pinned to 1.0), and yielding stops once the
-        accumulated wait reaches the timeout."""
+    def test_sleeps_grow_geometrically_then_clamp_to_timeout(self, fake_clock: _FakeClock):
+        """Each retry sleeps base * growth**n (jitter pinned to 1.0); the final sleep is clamped to
+        the remaining budget so the cumulative wait equals -- and never exceeds -- the timeout."""
         yields = list(sleep_with_backoff(10.0))
 
-        # base=1.0, growth=1.5: 1.0, 1.5, 2.25, 3.375, 5.0625 -> cumulative 13.1875 > 10 after 5.
-        assert fake_clock.slept == [1.0, 1.5, 2.25, 3.375, 5.0625]
+        # base=1.0, growth=1.5: 1.0, 1.5, 2.25, 3.375 -> cumulative 8.125; the next full step
+        # (5.0625) would overshoot, so it is clamped to the remaining 1.875.
+        assert fake_clock.slept == [1.0, 1.5, 2.25, 3.375, 1.875]
+        assert sum(fake_clock.slept) == 10.0
         assert len(yields) == len(fake_clock.slept) == 5
 
     def test_delay_is_capped(self, fake_clock: _FakeClock):
-        """The per-retry sleep never exceeds the 30s ceiling, even after many retries."""
+        """The per-retry sleep never exceeds the 30s ceiling, even after many retries, and the
+        total wait still lands exactly on the timeout (final sleep clamped to the remainder)."""
         list(sleep_with_backoff(500.0))
 
         assert max(fake_clock.slept) == 30.0
-        # Once the ceiling is hit it stays there.
-        assert fake_clock.slept[-1] == 30.0
+        # The ceiling is held on interior retries; only the last sleep is clamped down.
+        assert fake_clock.slept[-2] == 30.0
+        assert sum(fake_clock.slept) == pytest.approx(500.0)
+        assert fake_clock.slept[-1] < 30.0
+
+    def test_small_timeout_does_not_overshoot(self, fake_clock: _FakeClock):
+        """A sub-base-delay timeout sleeps only the remaining budget and yields once, rather than
+        sleeping a full base delay (up to 1.25s with jitter) past the requested deadline."""
+        yields = list(sleep_with_backoff(0.1))
+
+        assert fake_clock.slept == [0.1]
+        assert len(yields) == 1
 
     def test_zero_timeout_yields_nothing(self, fake_clock: _FakeClock):
         """A non-positive timeout produces no retries and never sleeps."""

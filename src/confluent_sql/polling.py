@@ -29,10 +29,17 @@ def sleep_with_backoff(timeout_secs: float) -> Iterator[None]:
     exponential backoff + jitter and signals "you have waited, try again". The generator stops
     yielding once timeout_secs has elapsed, at which point the caller is responsible for raising
     its own timeout error.
+
+    Each sleep is clamped to the remaining budget, so the total wait never exceeds timeout_secs --
+    the caller's timeout is an upper bound, not an approximate target. The final paced retry
+    therefore lands right at the deadline rather than running a full backoff step past it.
     """
     start = time.monotonic()
     delay = _POLL_BASE_DELAY_SECS
-    while time.monotonic() - start < timeout_secs:
-        time.sleep(delay * random.uniform(*_POLL_JITTER_BAND))
+    while True:
+        remaining = timeout_secs - (time.monotonic() - start)
+        if remaining <= 0:
+            return
+        time.sleep(min(delay * random.uniform(*_POLL_JITTER_BAND), remaining))
         delay = min(delay * _POLL_DELAY_GROWTH, _POLL_MAX_DELAY_SECS)
         yield
