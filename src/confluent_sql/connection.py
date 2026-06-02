@@ -7,6 +7,7 @@ connections to Confluent SQL services.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 import warnings
@@ -27,6 +28,7 @@ from .exceptions import (
     StatementNotFoundError,
 )
 from .execution_mode import ExecutionMode
+from .polling import sleep_with_backoff
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import PropertiesDict, RowPythonTypes
@@ -823,6 +825,126 @@ class Connection:
             # Mark the Statement object as deleted for if the caller still is interested in its
             # reference.
             statement.set_deleted()
+
+    def stop_statement(
+        self,
+        statement: str | Statement,
+        *,
+        wait_for_stopped: bool = True,
+        timeout: int = 300,
+    ) -> Statement:
+        """
+        Stop a statement without deleting it, leaving the statement resource around for inspection.
+
+        Unlike delete_statement(), which stops *and* destroys the statement and its results, this
+        halts a running statement (e.g. a long-lived streaming query) while keeping it queryable
+        via get_statement(). The stop is issued as an RFC 6902 JSON Patch flipping spec.stopped to
+        true. The server accepts the stop immediately (spec.stopped becomes true) but transitions
+        the phase through STOPPING to STOPPED asynchronously -- the PATCH response may still report
+        phase RUNNING.
+
+        Args:
+            statement: The name of the statement to stop, or a Statement object. A Statement
+                already in a terminal phase (STOPPED/COMPLETED/FAILED/DELETED) is returned
+                unchanged without contacting the server.
+            wait_for_stopped: If True (default), block and refresh-loop until the statement reaches
+                STOPPED before returning. If False, return as soon as the stop is accepted; the
+                returned statement's stop_requested is true even though its phase may still be
+                RUNNING.
+            timeout: Maximum seconds to wait for STOPPED when wait_for_stopped is True.
+
+        Returns:
+            A Statement object reflecting the server's response: phase STOPPED when blocking,
+            otherwise the just-accepted statement (stop_requested true, phase possibly still
+            RUNNING).
+
+        Raises:
+            TypeError: If statement is neither a string nor a Statement object.
+            StatementNotFoundError: If the statement does not exist (HTTP 404).
+            OperationalError: On other API errors, on timeout, or if the statement transitions to
+                FAILED while waiting.
+        """
+        if isinstance(statement, Statement):
+            if statement.phase.is_terminal:
+                logger.info(
+                    f"Statement {statement.name} is already in terminal phase "
+                    f"{statement.phase.value}, nothing to stop"
+                )
+                return statement
+            statement_name = statement.name
+        else:
+            if not isinstance(statement, str):
+                raise TypeError(
+                    "Statement to stop must be specified by name or Statement object, "
+                    f"got {type(statement)}"
+                )
+            statement_name = statement
+
+        logger.info(f"Stopping statement {statement_name}")
+        patch_ops = [{"op": "replace", "path": "/spec/stopped", "value": True}]
+        response = self._request(
+            f"/statements/{statement_name}",
+            method="PATCH",
+            content=json.dumps(patch_ops),
+            headers={"Content-Type": "application/json-patch+json"},
+            raise_for_status=False,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise StatementNotFoundError(
+                    f"Statement '{statement_name}' not found while stopping",
+                    statement_name=statement_name,
+                ) from e
+            raise OperationalError(
+                "Error stopping statement", http_status_code=e.response.status_code
+            ) from e
+
+        pending_stopped_statement = Statement.from_response(self, response.json())
+
+        if wait_for_stopped:
+            return self._wait_for_statement_stopped(pending_stopped_statement, timeout)
+        return pending_stopped_statement
+
+    def _wait_for_statement_stopped(self, statement: Statement, timeout: int) -> Statement:
+        """
+        Refresh-loop until the given statement reaches STOPPED (or another terminal phase).
+
+        The passed-in statement -- typically the PATCH response that accepted the stop -- is
+        evaluated before any re-fetch. The stop transitions the phase server-side asynchronously,
+        so a GET issued immediately would almost certainly report the same non-terminal phase we
+        already hold; we therefore sleep *first* and only fetch once wall-clock time has passed and
+        the server state can actually have advanced. Uses exponential backoff with jitter to avoid
+        hammering the server. A statement that ends in any terminal phase other than FAILED (e.g. a
+        bounded query that COMPLETED before the stop landed) is returned, since the caller's intent
+        -- the statement is no longer running -- is satisfied.
+
+        Raises:
+            OperationalError: If the statement transitions to FAILED, or if STOPPED is not reached
+                within the timeout.
+        """
+        def raise_if_failed(candidate: Statement) -> None:
+            if candidate.is_failed:
+                raise OperationalError(
+                    f"Statement '{candidate.name}' transitioned to FAILED while stopping: "
+                    f"{candidate.status.get('detail', '')}"
+                )
+
+        # Evaluate the state we already hold first -- an already-terminal statement needs no fetch.
+        raise_if_failed(statement)
+        if statement.phase.is_terminal:
+            return statement
+
+        for _ in sleep_with_backoff(timeout):
+            statement = self.get_statement(statement.name)
+            raise_if_failed(statement)
+            if statement.phase.is_terminal:
+                return statement
+
+        raise OperationalError(
+            f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
+        )
 
     @property
     def is_closed(self) -> bool:
