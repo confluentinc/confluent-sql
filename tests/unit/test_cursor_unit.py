@@ -1852,31 +1852,34 @@ class TestComputePoolIdParameter:
 class TestStopStatement:
     """Tests for Cursor.stop_statement."""
 
+    @pytest.mark.parametrize("returned_phase", ["STOPPED", "COMPLETED"])
     def test_delegates_and_updates_tracked_statement(
         self,
         mock_connection_cursor: Cursor,
         statement_response_factory: StatementResponseFactory,
+        returned_phase: str,
     ):
         """stop_statement delegates to the connection (forwarding the flags) and reassigns the
-        cursor's tracked statement to the returned, stopped one."""
+        cursor's tracked statement to whatever terminal Statement the connection returns -- not
+        only STOPPED, but also COMPLETED when a bounded query finished before the stop landed."""
         running = Statement.from_response(
             mock_connection_cursor._connection,
             statement_response_factory(name="stmt-1", phase="RUNNING"),
         )
-        stopped = Statement.from_response(
+        terminal = Statement.from_response(
             mock_connection_cursor._connection,
-            statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True),
+            statement_response_factory(name="stmt-1", phase=returned_phase, stopped=True),
         )
         mock_connection_cursor._statement = running
-        mock_connection_cursor._connection.stop_statement.return_value = stopped  # type: ignore
+        mock_connection_cursor._connection.stop_statement.return_value = terminal  # type: ignore
 
         result = mock_connection_cursor.stop_statement(wait_for_stopped=True, timeout=99)
 
         mock_connection_cursor._connection.stop_statement.assert_called_once_with(  # type: ignore
             "stmt-1", wait_for_stopped=True, timeout=99
         )
-        assert result is stopped
-        assert mock_connection_cursor.statement is stopped
+        assert result is terminal
+        assert mock_connection_cursor.statement is terminal
 
     def test_no_active_statement_raises(self, mock_connection_cursor: Cursor):
         """Stopping with no executed statement raises InterfaceError."""

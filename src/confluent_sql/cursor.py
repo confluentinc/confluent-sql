@@ -477,16 +477,19 @@ class Cursor:
         Stop this cursor's statement without deleting it, keeping it around for inspection.
 
         Delegates to Connection.stop_statement and reassigns the cursor's tracked statement to the
-        returned (stopped) Statement. Unlike delete_statement(), stopping with no active statement
+        returned Statement. Unlike delete_statement(), stopping with no active statement
         is an error -- there is no statement to stop and no sensible Statement to return.
 
         Args:
-            wait_for_stopped: If True (default), block until the statement reaches STOPPED.
-            timeout: Maximum seconds to wait for STOPPED when wait_for_stopped is True.
+            wait_for_stopped: If True (default), block until the statement reaches a terminal phase
+                -- normally STOPPED, but COMPLETED if a bounded query finished before the stop
+                landed.
+            timeout: Maximum seconds to wait for a terminal phase when wait_for_stopped is True.
 
         Returns:
-            The updated Statement (STOPPED when blocking, otherwise the just-accepted statement
-            with stop_requested true and phase possibly still RUNNING).
+            The updated Statement: a terminal phase (normally STOPPED, possibly COMPLETED) when
+            blocking, otherwise the just-accepted statement with stop_requested true and phase
+            possibly still RUNNING.
 
         Raises:
             InterfaceError: If the cursor is closed or no statement has been executed.
