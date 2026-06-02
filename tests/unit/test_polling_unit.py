@@ -69,6 +69,32 @@ class TestSleepWithBackoff:
         assert list(sleep_with_backoff(0.0)) == []
         assert fake_clock.slept == []
 
+    def test_jitter_never_exceeds_ceiling(self, mocker):
+        """Even at maximum upward jitter, no individual sleep exceeds the 30s ceiling -- the cap
+        applies to the jittered sleep, not merely to the pre-jitter base delay."""
+        clock = _FakeClock()
+        mocker.patch.object(polling.time, "monotonic", clock.monotonic)
+        mocker.patch.object(polling.time, "sleep", clock.sleep)
+        mocker.patch.object(polling.random, "uniform", return_value=1.25)
+
+        list(sleep_with_backoff(1000.0))
+
+        # Pre-jitter delay caps at 30s; 30 * 1.25 would be 37.5s without a post-jitter clamp.
+        assert max(clock.slept) == 30.0
+
+    def test_started_at_counts_prior_elapsed_against_budget(self, fake_clock: _FakeClock):
+        """A caller that made its own first attempt can pass started_at so the time already spent
+        (e.g. the initial network poll) counts against the timeout, keeping total wall time from
+        that origin within the timeout."""
+        # Simulate 3s already consumed before pacing begins.
+        fake_clock.now = 3.0
+
+        list(sleep_with_backoff(10.0, started_at=0.0))
+
+        # Budget is 10s measured from t=0; 3s already gone leaves ~7s of sleeping.
+        assert sum(fake_clock.slept) == pytest.approx(7.0)
+        assert fake_clock.now == pytest.approx(10.0)
+
     def test_jitter_band_applied(self, mocker):
         """Each sleep is scaled by a ±25% jitter draw."""
         clock = _FakeClock()

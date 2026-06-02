@@ -8,6 +8,7 @@ retrieving results from Confluent SQL services.
 from __future__ import annotations
 
 import logging
+import time
 import warnings
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -686,10 +687,12 @@ class Cursor:
                 "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
             )  # pragma: no cover
 
-        # First attempt immediately, then back off between subsequent polls.
+        # First attempt immediately, then back off between subsequent polls. The clock starts
+        # before that first poll so its latency counts against the timeout, not on top of it.
+        started_at = time.monotonic()
         if self._poll_ready_once():
             return
-        for _ in sleep_with_backoff(timeout):
+        for _ in sleep_with_backoff(timeout, started_at=started_at):
             if self._poll_ready_once():
                 return
 

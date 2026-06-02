@@ -232,6 +232,27 @@ class TestConnectionStopStatement:
         assert request_mock.call_count == 3
         assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
 
+    def test_blocking_returns_on_completed_when_stop_races_a_bounded_query(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A bounded query that COMPLETES before the stop lands satisfies the stop rather than
+        erroring: the blocking wait returns the COMPLETED statement, not just STOPPED. Guards the
+        documented contract that any non-FAILED terminal phase is an acceptable outcome."""
+        mocker.patch("time.sleep")
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="RUNNING")),  # PATCH
+            _ok_response(statement_response_factory(name="stmt-1", phase="COMPLETED")),  # poll
+        ]
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert result.phase.value == "COMPLETED"
+        assert result.phase.is_terminal
+
     def test_blocking_returns_without_polling_when_patch_already_terminal(
         self,
         invalid_credential_connection: Connection,

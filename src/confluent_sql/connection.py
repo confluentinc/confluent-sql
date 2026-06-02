@@ -848,15 +848,16 @@ class Connection:
                 already in a terminal phase (STOPPED/COMPLETED/FAILED/DELETED) is returned
                 unchanged without contacting the server.
             wait_for_stopped: If True (default), block and refresh-loop until the statement reaches
-                STOPPED before returning. If False, return as soon as the stop is accepted; the
-                returned statement's stop_requested is true even though its phase may still be
-                RUNNING.
-            timeout: Maximum seconds to wait for STOPPED when wait_for_stopped is True.
+                a terminal phase before returning -- normally STOPPED, but COMPLETED if a bounded
+                query happened to finish before the stop landed. If False, return as soon as the
+                stop is accepted; the returned statement's stop_requested is true even though its
+                phase may still be RUNNING.
+            timeout: Maximum seconds to wait for a terminal phase when wait_for_stopped is True.
 
         Returns:
-            A Statement object reflecting the server's response: phase STOPPED when blocking,
-            otherwise the just-accepted statement (stop_requested true, phase possibly still
-            RUNNING).
+            A Statement object reflecting the server's response: a terminal phase (normally
+            STOPPED, possibly COMPLETED) when blocking, otherwise the just-accepted statement
+            (stop_requested true, phase possibly still RUNNING).
 
         Raises:
             TypeError: If statement is neither a string nor a Statement object.

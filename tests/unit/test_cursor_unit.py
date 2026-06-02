@@ -221,6 +221,36 @@ class TestExecute:
 
         assert sleep_mock.called, "Expected time.sleep to have been called during wait loop."
 
+    def test_first_poll_elapsed_counts_against_timeout(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """The timeout budget covers the initial poll, not just the paced retries: the monotonic
+        origin captured *before* the first poll is handed to sleep_with_backoff via started_at, so
+        a slow first poll cannot push total wall time past the requested timeout."""
+        pending_statement = statement_response_factory(phase="PENDING")
+
+        # A clock that only advances when the first poll runs, so we can prove started_at was
+        # captured before that poll consumed any time.
+        clock = {"now": 0.0}
+        mocker.patch("time.monotonic", side_effect=lambda: clock["now"])
+
+        def slow_first_poll(*_args, **_kwargs):
+            clock["now"] += 5.0
+            return pending_statement
+
+        mock_connection_cursor._connection._get_statement.side_effect = slow_first_poll  # type: ignore
+
+        # Stub the pacer so the loop body never runs; we only assert how it was invoked.
+        backoff = mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([]))
+
+        with pytest.raises(OperationalError, match="Statement submission timed out"):
+            mock_connection_cursor.execute("SELECT 1 AS col", timeout=30)
+
+        backoff.assert_called_once_with(30, started_at=0.0)
+
     @pytest.mark.parametrize(
         "streaming_mode",
         [ExecutionMode.STREAMING_QUERY, ExecutionMode.STREAMING_DDL],

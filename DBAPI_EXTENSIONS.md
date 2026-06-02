@@ -526,9 +526,10 @@ stopped = cursor.stop_statement()
 
 - Accepts a statement name (string) or a `Statement` object. A `Statement` already in a terminal
   phase (`STOPPED`/`COMPLETED`/`FAILED`/`DELETED`) is returned unchanged without an API call.
-- `wait_for_stopped=True` (default) blocks until the statement reaches `STOPPED`, so the caller
-  knows the stop took effect. `wait_for_stopped=False` returns once the stop is accepted —
-  confirm acceptance via `Statement.stop_requested` rather than the phase.
+- `wait_for_stopped=True` (default) blocks until the statement reaches a terminal phase —
+  normally `STOPPED`, but `COMPLETED` if a bounded query finished before the stop landed — so the
+  caller knows the statement is no longer running. `wait_for_stopped=False` returns once the stop
+  is accepted — confirm acceptance via `Statement.stop_requested` rather than the phase.
 - Raises `StatementNotFoundError` if the statement does not exist, or `OperationalError` on other
   API errors, on timeout, or if the statement transitions to `FAILED` while stopping.
 - `cursor.stop_statement()` raises `InterfaceError` when the cursor has no executed statement to
