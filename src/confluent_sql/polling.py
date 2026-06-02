@@ -1,0 +1,57 @@
+"""Shared pacing for server-polling loops.
+
+Centralizes the exponential-backoff-with-jitter policy used when waiting on asynchronous
+statement state transitions, so the timing mechanics (and their tuning) live in one place rather
+than being copied into each poller.
+"""
+
+import random
+import time
+from collections.abc import Iterator
+
+_POLL_BASE_DELAY_SECS = 1.0
+"""Delay before the first retry sleep."""
+
+_POLL_MAX_DELAY_SECS = 30.0
+"""Ceiling on the per-retry sleep, regardless of how long we have been waiting."""
+
+_POLL_DELAY_GROWTH = 1.5
+"""Multiplier applied to the delay after each retry."""
+
+_POLL_JITTER_BAND = (0.75, 1.25)
+"""Multiplicative jitter band (±25%) applied to each sleep to avoid thundering-herd alignment."""
+
+
+def sleep_with_backoff(timeout_secs: float, *, started_at: float | None = None) -> Iterator[None]:
+    """Pace the retries of a polling loop, yielding once per retry until timeout_secs elapses.
+
+    The caller makes its own first (immediate, unpaced) attempt; each yield then sleeps with
+    exponential backoff + jitter and signals "you have waited, try again". The generator stops
+    yielding once timeout_secs has elapsed, at which point the caller is responsible for raising
+    its own timeout error.
+
+    Each sleep is clamped to both the 30s ceiling (jitter included -- the cap is on the actual
+    sleep, not the pre-jitter base delay) and the remaining budget, so no paced sleep ever extends
+    past the deadline; the final paced sleep lands right at it rather than running a full backoff
+    step over. The elapsed check is measured from the start each iteration, so time the caller
+    spends in the loop body (e.g. a network GET) is charged against the budget too -- slow caller
+    work ends the pacing sooner, it does not stack on top of the sleeps.
+
+    What this does NOT bound is the caller's own in-flight work: a GET that begins just before the
+    deadline still runs to completion, so total wall time can exceed timeout_secs by up to one unit
+    of caller work. The helper paces the sleeping; it cannot interrupt the caller.
+
+    started_at lets a caller that did a timed first attempt (e.g. a network poll) fold that elapsed
+    time into the budget: pass the time.monotonic() captured before that attempt so it is charged
+    against the timeout rather than the budget starting fresh after it. Defaults to the moment
+    pacing begins.
+    """
+    start = time.monotonic() if started_at is None else started_at
+    delay = _POLL_BASE_DELAY_SECS
+    while True:
+        remaining = timeout_secs - (time.monotonic() - start)
+        if remaining <= 0:
+            return
+        time.sleep(min(delay * random.uniform(*_POLL_JITTER_BAND), _POLL_MAX_DELAY_SECS, remaining))
+        delay = min(delay * _POLL_DELAY_GROWTH, _POLL_MAX_DELAY_SECS)
+        yield
