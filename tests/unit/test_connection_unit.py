@@ -1,4 +1,5 @@
 import copy
+import json
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -156,6 +157,214 @@ class TestConnectionDeleteStatementErrors:
         with pytest.raises(OperationalError, match="Error deleting statement") as exc_info:
             invalid_credential_connection.delete_statement("statement-with-error")
         assert exc_info.value.http_status_code == 500
+
+
+def _ok_response(statement_json: dict) -> Mock:
+    """A 200 response mock whose .json() returns the given statement dict."""
+    response_mock = Mock()
+    response_mock.status_code = 200
+    response_mock.raise_for_status = Mock()
+    response_mock.json.return_value = statement_json
+    return response_mock
+
+
+def _http_error_response(status_code: int) -> Mock:
+    """A response mock whose raise_for_status() raises an HTTPStatusError of the given code."""
+    response_mock = Mock()
+    response_mock.status_code = status_code
+
+    def _raise():
+        error_response = Mock()
+        error_response.status_code = status_code
+        raise httpx.HTTPStatusError("boom", request=Mock(), response=error_response)
+
+    response_mock.raise_for_status = _raise
+    return response_mock
+
+
+@pytest.mark.unit
+class TestConnectionStopStatement:
+    """Tests for Connection.stop_statement."""
+
+    def test_non_blocking_issues_json_patch_and_returns_stopping(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """wait_for_stopped=False issues a single RFC 6902 PATCH and returns the STOPPING
+        statement without polling."""
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.return_value = _ok_response(
+            statement_response_factory(name="stmt-1", phase="STOPPING")
+        )
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
+
+        assert result.is_stopping
+        request_mock.assert_called_once()
+        args, kwargs = request_mock.call_args
+        assert args == ("PATCH", "/statements/stmt-1")
+        assert kwargs["headers"]["Content-Type"] == "application/json-patch+json"
+        assert json.loads(kwargs["content"]) == [
+            {"op": "replace", "path": "/spec/stopped", "value": True}
+        ]
+
+    def test_blocking_polls_until_stopped(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """wait_for_stopped=True polls get-statement until the phase settles to STOPPED."""
+        mocker.patch("time.sleep")
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # PATCH
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # poll 1
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPED")),  # poll 2
+        ]
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert result.is_stopped
+        # One PATCH + two GET polls.
+        assert request_mock.call_count == 3
+        assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
+
+    def test_blocking_returns_without_polling_when_patch_already_terminal(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """If the PATCH response is already terminal, the blocking wait returns it directly,
+        without an additional get-statement poll."""
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.return_value = _ok_response(
+            statement_response_factory(name="stmt-1", phase="STOPPED")
+        )
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert result.is_stopped
+        # Just the PATCH -- the PATCH response was already STOPPED, so no GET poll is needed.
+        request_mock.assert_called_once()
+        assert request_mock.call_args.args[0] == "PATCH"
+
+    @pytest.mark.parametrize("by_object", [False, True])
+    def test_accepts_name_or_statement_object(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+        by_object: bool,
+    ):
+        """stop_statement accepts either a statement name or a Statement object."""
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.return_value = _ok_response(
+            statement_response_factory(name="stmt-1", phase="STOPPING")
+        )
+
+        if by_object:
+            running = Statement.from_response(
+                invalid_credential_connection,
+                statement_response_factory(name="stmt-1", phase="RUNNING"),
+            )
+            target = running
+        else:
+            target = "stmt-1"
+
+        result = invalid_credential_connection.stop_statement(target, wait_for_stopped=False)
+
+        assert result.is_stopping
+        assert request_mock.call_args.args == ("PATCH", "/statements/stmt-1")
+
+    def test_already_terminal_statement_short_circuits(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A passed-in Statement already in a terminal phase returns unchanged with no API call."""
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        already_stopped = Statement.from_response(
+            invalid_credential_connection,
+            statement_response_factory(name="stmt-1", phase="STOPPED"),
+        )
+
+        result = invalid_credential_connection.stop_statement(already_stopped)
+
+        assert result is already_stopped
+        request_mock.assert_not_called()
+
+    def test_rejects_bad_type(self, invalid_credential_connection: Connection):
+        """A non-str, non-Statement argument raises TypeError."""
+        with pytest.raises(TypeError, match="name or Statement object"):
+            invalid_credential_connection.stop_statement(42)  # type: ignore[arg-type]
+
+    def test_404_raises_statement_not_found(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        """A 404 from the PATCH surfaces as StatementNotFoundError naming the statement."""
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.return_value = _http_error_response(404)
+
+        with pytest.raises(StatementNotFoundError) as exc_info:
+            invalid_credential_connection.stop_statement("ghost", wait_for_stopped=False)
+        assert exc_info.value.statement_name == "ghost"
+
+    def test_other_http_error_raises_operational_error(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        """A non-404 error from the PATCH surfaces as OperationalError carrying the status code."""
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.return_value = _http_error_response(500)
+
+        with pytest.raises(OperationalError, match="Error stopping statement") as exc_info:
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
+        assert exc_info.value.http_status_code == 500
+
+    def test_blocking_timeout_raises(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """If the statement never reaches STOPPED within the timeout, OperationalError is raised."""
+        mocker.patch("time.sleep")
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.return_value = _ok_response(
+            statement_response_factory(name="stmt-1", phase="STOPPING")
+        )
+
+        with pytest.raises(OperationalError, match="did not reach STOPPED within"):
+            invalid_credential_connection.stop_statement(
+                "stmt-1", wait_for_stopped=True, timeout=0
+            )
+
+    def test_blocking_failed_raises(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A statement that transitions to FAILED while waiting raises OperationalError."""
+        mocker.patch("time.sleep")
+        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # PATCH
+            _ok_response(statement_response_factory(name="stmt-1", phase="FAILED")),  # poll
+        ]
+
+        with pytest.raises(OperationalError, match="stmt-1"):
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+    def test_closed_connection_raises(self, invalid_credential_connection: Connection):
+        """Stopping via a closed connection raises InterfaceError."""
+        invalid_credential_connection.close()
+        with pytest.raises(InterfaceError, match="Connection is closed"):
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
 
 
 @pytest.mark.unit
