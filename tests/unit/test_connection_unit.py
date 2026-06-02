@@ -217,7 +217,7 @@ class TestConnectionStopStatement:
         mocker,
     ):
         """wait_for_stopped=True polls get-statement until the phase settles to STOPPED."""
-        mocker.patch("confluent_sql.connection.time.sleep")
+        mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.side_effect = [
             _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # PATCH
@@ -332,7 +332,7 @@ class TestConnectionStopStatement:
         mocker,
     ):
         """If the statement never reaches STOPPED within the timeout, OperationalError is raised."""
-        mocker.patch("confluent_sql.connection.time.sleep")
+        mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.return_value = _ok_response(
             statement_response_factory(name="stmt-1", phase="STOPPING")
@@ -350,7 +350,7 @@ class TestConnectionStopStatement:
         mocker,
     ):
         """A statement that transitions to FAILED while waiting raises OperationalError."""
-        mocker.patch("confluent_sql.connection.time.sleep")
+        mocker.patch("time.sleep")
         request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
         request_mock.side_effect = [
             _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING")),  # PATCH

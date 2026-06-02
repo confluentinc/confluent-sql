@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
-import time
 import uuid
 import warnings
 from collections import namedtuple
@@ -30,6 +28,7 @@ from .exceptions import (
     StatementNotFoundError,
 )
 from .execution_mode import ExecutionMode
+from .polling import sleep_with_backoff
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import PropertiesDict, RowPythonTypes
@@ -925,27 +924,23 @@ class Connection:
             OperationalError: If the statement transitions to FAILED, or if STOPPED is not reached
                 within the timeout.
         """
-        start_time = time.monotonic()
-        current_delay = 1.0
-        max_delay = 30.0
-
-        while True:
-            if statement.is_failed:
+        def raise_if_failed(candidate: Statement) -> None:
+            if candidate.is_failed:
                 raise OperationalError(
-                    f"Statement '{statement.name}' transitioned to FAILED while stopping: "
-                    f"{statement.status.get('detail', '')}"
+                    f"Statement '{candidate.name}' transitioned to FAILED while stopping: "
+                    f"{candidate.status.get('detail', '')}"
                 )
+
+        # Evaluate the state we already hold first -- an already-terminal statement needs no fetch.
+        raise_if_failed(statement)
+        if statement.phase.is_terminal:
+            return statement
+
+        for _ in sleep_with_backoff(timeout):
+            statement = self.get_statement(statement.name)
+            raise_if_failed(statement)
             if statement.phase.is_terminal:
                 return statement
-
-            if time.monotonic() - start_time >= timeout:
-                break
-
-            jitter = random.uniform(0.75, 1.25)
-            time.sleep(current_delay * jitter)
-            current_delay = min(current_delay * 1.5, max_delay)
-
-            statement = self.get_statement(statement.name)
 
         raise OperationalError(
             f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
