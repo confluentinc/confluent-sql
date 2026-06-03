@@ -194,6 +194,15 @@ class TestGetNextPageToken:
         """Test that _get_next_page_token correctly extracts the page token from a URL."""
         assert invalid_credential_connection._get_next_page_token(url) == expected
 
+    def test_get_next_page_token_empty_string_returns_none(
+        self, invalid_credential_connection: Connection
+    ):
+        """An empty page_token (`?page_token=`) must read as None, not "". list_statements'
+        pagination loop terminates on `next_page_token is not None`; an empty string would keep
+        that guard True while `if next_page_token:` never sets the token, spinning forever."""
+        url = "https://api.confluent.cloud/statements?label_selector=foo&page_token="
+        assert invalid_credential_connection._get_next_page_token(url) is None
+
 
 @pytest.mark.unit
 class TestDeprecatedDbnameParameter:
@@ -797,6 +806,161 @@ class TestConnectionListStatements:
         # Verify label_selector is not double-prefixed
         call_params = request_mock.call_args[1]["params"]
         assert call_params["label_selector"] == "user.confluent.io/already-prefixed=true"
+
+    def test_list_statements_no_filters_lists_all(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """With no filters, list_statements sends only page_size and returns everything."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [statement_response_factory(name="stmt-1")],
+            "metadata": {},
+        }
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        statements = invalid_credential_connection.list_statements()
+
+        # No label_selector, no compute pool filter -- just pagination.
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={"page_size": 100},
+        )
+        assert [s.name for s in statements] == ["stmt-1"]
+
+    def test_list_statements_compute_pool_only(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """compute_pool_id is sent server-side as the spec.compute_pool_id query param."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [statement_response_factory()],
+            "metadata": {},
+        }
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        invalid_credential_connection.list_statements(compute_pool_id="lfcp-xyz")
+
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={"page_size": 100, "spec.compute_pool_id": "lfcp-xyz"},
+        )
+
+    def test_list_statements_label_and_compute_pool_combined(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """label and compute_pool_id both narrow server-side, in one request."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [statement_response_factory()],
+            "metadata": {},
+        }
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        invalid_credential_connection.list_statements(
+            label="daily-report", compute_pool_id="lfcp-xyz"
+        )
+
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={
+                "page_size": 100,
+                "label_selector": "user.confluent.io/daily-report=true",
+                "spec.compute_pool_id": "lfcp-xyz",
+            },
+        )
+
+    def test_list_statements_name_contains_sent_server_side(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """name_contains is forwarded verbatim as the statement_name_search_query query param,
+        accompanied by time_ordered=true (the server ignores the search term without it). The
+        server does the substring matching, so fetched results are returned as-is."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [
+                statement_response_factory(name="report-a"),
+                statement_response_factory(name="daily-report"),
+            ],
+            "metadata": {},
+        }
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        statements = invalid_credential_connection.list_statements(name_contains="report")
+
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={
+                "page_size": 100,
+                "statement_name_search_query": "report",
+                "time_ordered": "true",
+            },
+        )
+        # Whatever the server returns is returned verbatim -- no client-side re-filtering.
+        assert [s.name for s in statements] == ["report-a", "daily-report"]
+
+    def test_list_statements_all_three_filters_combined(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """label, compute_pool_id, and name_contains all narrow server-side in one request."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [statement_response_factory(name="report-a")],
+            "metadata": {},
+        }
+
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+
+        statements = invalid_credential_connection.list_statements(
+            label="daily-report",
+            compute_pool_id="lfcp-xyz",
+            name_contains="report",
+        )
+
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={
+                "page_size": 100,
+                "label_selector": "user.confluent.io/daily-report=true",
+                "spec.compute_pool_id": "lfcp-xyz",
+                "statement_name_search_query": "report",
+                "time_ordered": "true",
+            },
+        )
+        assert [s.name for s in statements] == ["report-a"]
 
 
 @pytest.mark.unit
