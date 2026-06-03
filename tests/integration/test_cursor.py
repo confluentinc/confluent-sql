@@ -61,6 +61,44 @@ class TestCursor:
         # Cleanup.
         connection.delete_statement(statement)
 
+    def test_cursor_execute_and_find_with_name_contains(
+        self, cursor: Cursor, connection: Connection
+    ):
+        """Prove the server-side `statement_name_search_query` substring filter works end-to-end.
+
+        Submits a statement whose name embeds a unique token, then confirms `name_contains`:
+          * finds it by a unique substring of the name,
+          * is case-sensitive (an upper-cased prefix matches nothing), and
+          * returns nothing for an unrelated token.
+        The case-sensitivity assertion guards the discovered server semantics -- and would also
+        fail loudly if list_statements ever stopped sending the required `time_ordered=true`,
+        since without it the server ignores the search term and returns every statement."""
+        token = uuid4().hex
+        prefix = "test-name-contains"
+        name = f"{prefix}-{token}".lower()
+        cursor.execute(SINGLE_COLUMN_QUERY, statement_name=name)
+
+        statement = cursor._statement
+        assert statement is not None
+        assert statement.name == name
+
+        # A substring unique to this statement's name finds it server-side.
+        statements = connection.list_statements(name_contains=token)
+        assert [s.name for s in statements] == [name]
+
+        # Matching is case-sensitive: the upper-cased prefix matches nothing (the real name is
+        # lower-cased). If time_ordered=true were dropped, the server would ignore the search
+        # term and return every statement -- this assertion would then fail.
+        statements = connection.list_statements(name_contains=prefix.upper())
+        assert all(s.name != name for s in statements)
+
+        # An unrelated token matches nothing -- the server, not the client, did the filtering.
+        statements = connection.list_statements(name_contains=uuid4().hex)
+        assert all(s.name != name for s in statements)
+
+        # Cleanup.
+        connection.delete_statement(statement)
+
     def test_cursor_execute_with_multiple_labels(self, cursor: Cursor, connection: Connection):
         """Test submitting statement with multiple labels and verifying all are present."""
         label1 = f"test-label-1-{uuid4()}"
