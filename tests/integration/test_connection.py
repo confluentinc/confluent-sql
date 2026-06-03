@@ -53,7 +53,6 @@ class TestConnection:
         or os.getenv("CONFLUENT_FLINK_API_SECRET") is None
         or os.getenv("CONFLUENT_ENV_ID") is None
         or os.getenv("CONFLUENT_ORG_ID") is None
-        or os.getenv("CONFLUENT_COMPUTE_POOL_ID") is None
         or os.getenv("CONFLUENT_CLOUD_PROVIDER") is None
         or os.getenv("CONFLUENT_CLOUD_REGION") is None,
         reason="Missing confluent environment variables",
@@ -64,7 +63,7 @@ class TestConnection:
         flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
         environment_id = os.getenv("CONFLUENT_ENV_ID", "")
         organization_id = os.getenv("CONFLUENT_ORG_ID", "")
-        compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
+        compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID") or None
         cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
         cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
         connection = confluent_sql.connect(

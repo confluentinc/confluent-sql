@@ -208,8 +208,8 @@ export CONFLUENT_CLOUD_PROVIDER="aws"
 export CONFLUENT_CLOUD_REGION="us-east-2"
 export CONFLUENT_FLINK_API_KEY="your-key" # Flink Region API key for the above cloud/region ...
 export CONFLUENT_FLINK_API_SECRET="your-secret" # and associated secret.
-export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # Optional; a compute pool within the above cloud/region. Leave unset to use the environment default.
 export CONFLUENT_TEST_DBNAME="test-db" # A database/kafka cluster name within the above cloud/region.
+export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # Optional. If set, the integration suite runs against this pool; if unset, the suite runs against the environment's default pool. The driver treats it as optional at connect() either way.
 ```
 
 Run tests:
