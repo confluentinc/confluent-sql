@@ -1032,7 +1032,7 @@ class Connection:
         # Prefer the per-call compute pool over the connection default; either may be absent.
         # A falsy per-call value (None or "") means "unspecified" -- matching connect()'s
         # treatment of "" -- so it defers to the connection default rather than overriding it.
-        if compute_pool_id and self.compute_pool_id:
+        if compute_pool_id and self.compute_pool_id and compute_pool_id != self.compute_pool_id:
             # Replacing an actual connection default -- make the swap visible to the caller.
             logger.info(
                 f"execute_statement(): Overriding connection compute_pool_id"
