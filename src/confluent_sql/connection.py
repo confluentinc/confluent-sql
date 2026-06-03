@@ -1028,15 +1028,15 @@ class Connection:
         merged_properties = self._resolve_properties(properties, execution_mode)
 
         # Prefer the per-call compute pool over the connection default; either may be absent.
-        if compute_pool_id is not None and self.compute_pool_id:
+        # A falsy per-call value (None or "") means "unspecified" -- matching connect()'s
+        # treatment of "" -- so it defers to the connection default rather than overriding it.
+        if compute_pool_id and self.compute_pool_id:
             # Replacing an actual connection default -- make the swap visible to the caller.
             logger.info(
                 f"execute_statement(): Overriding connection compute_pool_id"
                 f" '{self.compute_pool_id}' with provided compute_pool_id '{compute_pool_id}'"
             )
-        resolved_compute_pool_id = (
-            compute_pool_id if compute_pool_id is not None else self.compute_pool_id
-        )
+        resolved_compute_pool_id = compute_pool_id or self.compute_pool_id
 
         spec: dict[str, Any] = {
             "statement": statement,

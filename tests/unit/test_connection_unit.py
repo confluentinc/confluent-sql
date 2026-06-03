@@ -1722,6 +1722,38 @@ class TestComputePoolIdParameter:
             "Overriding connection compute_pool_id" in msg for msg in log_messages
         ), f"Override log should not fire without a connection default: {log_messages}"
 
+    @pytest.mark.parametrize("falsy_per_call_pool", [None, ""])
+    def test_execute_statement_falsy_per_call_pool_defers_to_default(
+        self, invalid_credential_connection, mocker, falsy_per_call_pool
+    ):
+        """A falsy per-call pool defers to the connection default, silently.
+
+        Empty string must behave identically to None -- both mean "unspecified" -- matching
+        how connect() folds "" into no-pool. Neither variant overrides anything, so the
+        override log must stay silent.
+        """
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "name": "test-statement",
+            "spec": {"compute_pool_id": "cp-id"},
+        }
+        mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=mock_response
+        )
+        mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
+
+        invalid_credential_connection._execute_statement(
+            "SELECT 1", ExecutionMode.SNAPSHOT, compute_pool_id=falsy_per_call_pool
+        )
+
+        payload = invalid_credential_connection._client.request.call_args.kwargs["json"]
+        assert payload["spec"]["compute_pool_id"] == "cp-id"  # the connection default
+
+        log_messages = [str(call) for call in mock_log_info.call_args_list]
+        assert not any(
+            "Overriding connection compute_pool_id" in msg for msg in log_messages
+        ), f"Falsy per-call pool should not fire the override log: {log_messages}"
+
     def test_execute_statement_validates_compute_pool_type(
         self, invalid_credential_connection
     ):
