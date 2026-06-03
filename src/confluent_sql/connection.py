@@ -141,11 +141,11 @@ def connect(  # noqa: PLR0913
         flink_api_key,
         flink_api_secret,
         environment_id,
-        compute_pool_id,
         organization_id,
         cloud_provider,
         cloud_region,
         endpoint,
+        compute_pool_id=compute_pool_id,
         database=database or dbname,  # dbname is deprecated.
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
@@ -201,11 +201,11 @@ class Connection:
         flink_api_key: str,
         flink_api_secret: str,
         environment_id: str,
-        compute_pool_id: str | None,
         organization_id: str,
         cloud_provider: str | None,
         cloud_region: str | None,
         endpoint: str | None,
+        compute_pool_id: str | None = None,
         database: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
@@ -218,9 +218,6 @@ class Connection:
             flink_api_key: Flink region API key
             flink_api_secret: Flink region API secret
             environment_id: Environment ID
-            compute_pool_id: Optional compute pool ID for SQL execution. If None, statements
-                created on this connection name no pool and Confluent Cloud Flink runs them in
-                the environment+region default compute pool.
             organization_id: Organization ID
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
@@ -233,6 +230,9 @@ class Connection:
                 If your Kafka clusters / Flink tables require private networking, supply the base
                 endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for
                 example, but cases and private networking technologies vary).
+            compute_pool_id: Optional compute pool ID for SQL execution. If omitted (None) or
+                empty, statements created on this connection name no pool and Confluent Cloud
+                Flink runs them in the environment+region default compute pool.
             database: The name of the database to use (optional)
             result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
                 statement results. Defaults to 100ms. If most recent fetch of results for a
@@ -246,7 +246,9 @@ class Connection:
                            of 5 seconds applies.
         """
         self.environment_id = environment_id
-        self.compute_pool_id = compute_pool_id
+        # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
+        # absence of a default pool rather than carrying an unusable empty string.
+        self.compute_pool_id = compute_pool_id or None
         self.organization_id = organization_id
 
         if statement_results_page_fetch_pause_millis < 0:

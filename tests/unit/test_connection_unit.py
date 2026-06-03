@@ -317,9 +317,30 @@ class TestConnectChecks:
         assert connection.compute_pool_id is None
 
     def test_compute_pool_id_optional_when_empty(self, connection_factory: ConnectionFactory):
-        """An empty compute pool id is accepted and treated as 'no pool specified'."""
+        """An empty compute pool id is folded into None -- 'no pool specified'.
+
+        connect() normalizes "" to None so the stored attribute honestly reports the absence
+        of a default pool rather than carrying an unusable empty string.
+        """
         connection = connection_factory(environment_id="foo_id", compute_pool_id="")
-        assert not connection.compute_pool_id
+        assert connection.compute_pool_id is None
+
+    def test_connection_constructible_without_compute_pool(self):
+        """Connection() is directly constructible without a pool -- optional end-to-end (#108).
+
+        Direct Connection instantiation must not force callers to pass compute_pool_id=None;
+        omitting it leaves the connection poolless.
+        """
+        connection = Connection(
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+            environment_id="env-id",
+            organization_id="org-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            endpoint=None,
+        )
+        assert connection.compute_pool_id is None
 
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without an organization ID raises an error."""
