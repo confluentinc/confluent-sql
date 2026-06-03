@@ -293,7 +293,7 @@ This simplifies your code by eliminating manual polling loops, but your applicat
 
 ### Finding Existing Statements
 
-List statements by label (useful for batch operations):
+List statements—optionally filtered by label, compute pool, and/or name substring (useful for batch operations):
 
 ```python
 # Find all statements with a specific label
