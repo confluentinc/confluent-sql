@@ -455,11 +455,23 @@ for stmt in statements:
 
 ### Finding and Deleting Statements
 
-**`list_statements()` - Find statements by label**
+**`list_statements()` - Find statements, optionally filtered**
+
+Called with no arguments, returns every statement in the environment. Three optional,
+server-side filters narrow the results and combine with AND semantics:
+
+- `label` — statements carrying the given end-user label.
+- `compute_pool_id` — statements in a specific compute pool.
+- `name_contains` — statements whose name contains the given substring (case-sensitive).
 
 ```python
-# Find all statements with a specific label
+# Every statement in the environment
+statements = connection.list_statements()
+
+# Narrow by label, compute pool, and/or name substring (filters AND together)
 statements = connection.list_statements(label="daily-backups", page_size=100)
+statements = connection.list_statements(compute_pool_id="lfcp-789012")
+statements = connection.list_statements(name_contains="orders-stream")
 
 for statement in statements:
     print(f"Statement: {statement.name}")
