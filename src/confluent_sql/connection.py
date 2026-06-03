@@ -8,7 +8,6 @@ connections to Confluent SQL services.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 import warnings
 from collections import namedtuple
@@ -665,15 +664,14 @@ class Connection:
         *,
         label: str | None = None,
         compute_pool_id: str | None = None,
-        name_regex: str | re.Pattern[str] | None = None,
+        name_contains: str | None = None,
         page_size: int = 100,
     ) -> list[Statement]:
         """Return Statement objects, optionally narrowed by label, compute pool, and/or name.
 
         With no filters supplied, every statement in the environment is returned. The filters
-        are combinable (AND semantics): `label` and `compute_pool_id` are applied server-side
-        via query parameters, then `name_regex` filters the fetched results client-side.
-        Pagination is handled automatically.
+        are combinable (AND semantics) and all applied server-side via query parameters;
+        pagination is handled automatically.
 
         Args:
             label: Optional label to filter statements by. You can provide either:
@@ -682,9 +680,10 @@ class Connection:
                    - The full label with prefix (e.g., "user.confluent.io/my-batch-job")
             compute_pool_id: Optional compute pool ID to filter by, applied server-side via the
                             `spec.compute_pool_id` query parameter.
-            name_regex: Optional regular expression (a `str` or pre-compiled `re.Pattern`) used
-                       to filter statements by name client-side. Matching uses `re.search`
-                       (substring) semantics, so anchor with `^`/`$` for a tighter match.
+            name_contains: Optional substring to filter statement names by, applied server-side
+                          via the `statement_name_search_query` query parameter. Matching is a
+                          case-sensitive substring test (no regex / anchoring). Supplying this
+                          forces the result set to be time-ordered (see implementation note).
             page_size: Number of statements to fetch per API request (default: 100).
                       The method will automatically paginate through all results.
 
@@ -705,8 +704,8 @@ class Connection:
             # Filter by compute pool (server-side)
             statements = connection.list_statements(compute_pool_id="lfcp-789012")
 
-            # Filter by statement name (client-side substring match)
-            statements = connection.list_statements(name_regex=r"^dbapi-")
+            # Filter by statement name (server-side substring match)
+            statements = connection.list_statements(name_contains="dbapi-")
 
             # Delete all matching statements
             for stmt in statements:
@@ -727,16 +726,12 @@ class Connection:
         if compute_pool_id is not None:
             parameters["spec.compute_pool_id"] = compute_pool_id
 
-        # re.compile is idempotent on an already-compiled Pattern, so both a raw
-        # string and a pre-compiled pattern are accepted.
-        name_pattern: re.Pattern[str] | None = (
-            re.compile(name_regex) if name_regex is not None else None
-        )
-
-        # Re-express `name_pattern` as a predicate function over statement-name strings:
-        #   * a user-supplied pattern matches via re.search (substring);
-        #   * otherwise an empty pattern matches every name.
-        name_matches = (name_pattern or re.compile("")).search
+        if name_contains is not None:
+            parameters["statement_name_search_query"] = name_contains
+            # The server only honors statement_name_search_query when time_ordered=true is also
+            # present; without it the search term is silently ignored and every statement is
+            # returned. Verified empirically against /sql/v1 -- see the originating PR.
+            parameters["time_ordered"] = "true"
 
         statements: list[Statement] = []
 
@@ -746,11 +741,7 @@ class Connection:
             response = self._request("/statements", params=parameters)
             resp_json = response.json()
             statements_json = resp_json.get("data", [])
-            statements.extend(
-                Statement.from_response(self, s)
-                for s in statements_json
-                if name_matches(s["name"])
-            )
+            statements.extend(Statement.from_response(self, s) for s in statements_json)
 
             # Check if there are more pages to fetch based on the presence of a 'next' link in the
             # response metadata. The 'next' value will be an entire URL, but we just need to extract

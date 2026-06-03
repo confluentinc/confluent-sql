@@ -1,5 +1,4 @@
 import copy
-import re
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -891,50 +890,49 @@ class TestConnectionListStatements:
             },
         )
 
-    @pytest.mark.parametrize(
-        ("name_regex", "expected_names"),
-        [
-            (r"report", ["report-a", "daily-report"]),
-            (re.compile(r"report"), ["report-a", "daily-report"]),
-            (r"^report", ["report-a"]),
-            (r"orders$", ["orders"]),
-        ],
-    )
-    def test_list_statements_name_regex_filters_client_side(
+    def test_list_statements_name_contains_sent_server_side(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         mocker,
-        name_regex: str | re.Pattern[str],
-        expected_names: list[str],
     ):
-        """name_regex filters fetched results by Statement.name using re.search semantics,
-        accepting either a raw string or a pre-compiled pattern."""
+        """name_contains is forwarded verbatim as the statement_name_search_query query param,
+        accompanied by time_ordered=true (the server ignores the search term without it). The
+        server does the substring matching, so fetched results are returned as-is."""
         mock_response = Mock()
         mock_response.json.return_value = {
             "data": [
                 statement_response_factory(name="report-a"),
                 statement_response_factory(name="daily-report"),
-                statement_response_factory(name="orders"),
             ],
             "metadata": {},
         }
 
-        mocker.patch.object(
+        request_mock = mocker.patch.object(
             invalid_credential_connection._client, "request", return_value=mock_response
         )
 
-        statements = invalid_credential_connection.list_statements(name_regex=name_regex)
+        statements = invalid_credential_connection.list_statements(name_contains="report")
 
-        assert [s.name for s in statements] == expected_names
+        request_mock.assert_called_once_with(
+            "GET",
+            "/statements",
+            params={
+                "page_size": 100,
+                "statement_name_search_query": "report",
+                "time_ordered": "true",
+            },
+        )
+        # Whatever the server returns is returned verbatim -- no client-side re-filtering.
+        assert [s.name for s in statements] == ["report-a", "daily-report"]
 
-    def test_list_statements_name_regex_not_sent_to_server(
+    def test_list_statements_all_three_filters_combined(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         mocker,
     ):
-        """name_regex is a client-side filter -- it must never be sent as a query param."""
+        """label, compute_pool_id, and name_contains all narrow server-side in one request."""
         mock_response = Mock()
         mock_response.json.return_value = {
             "data": [statement_response_factory(name="report-a")],
@@ -945,52 +943,10 @@ class TestConnectionListStatements:
             invalid_credential_connection._client, "request", return_value=mock_response
         )
 
-        invalid_credential_connection.list_statements(name_regex=r"report")
-
-        request_mock.assert_called_once_with(
-            "GET",
-            "/statements",
-            params={"page_size": 100},
-        )
-
-    def test_list_statements_invalid_name_regex_fails_before_fetch(
-        self,
-        invalid_credential_connection: Connection,
-        mocker,
-    ):
-        """An un-compilable name_regex string is rejected before any API request is made,
-        so the user learns of their typo immediately rather than after paginating."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
-
-        with pytest.raises(re.error):
-            invalid_credential_connection.list_statements(name_regex="[unterminated")
-
-        request_mock.assert_not_called()
-
-    def test_list_statements_all_three_filters_combined(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        mocker,
-    ):
-        """label + compute_pool_id narrow server-side; name_regex filters the result set."""
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            "data": [
-                statement_response_factory(name="report-a"),
-                statement_response_factory(name="orders"),
-            ],
-            "metadata": {},
-        }
-
-        request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
-        )
-
         statements = invalid_credential_connection.list_statements(
             label="daily-report",
             compute_pool_id="lfcp-xyz",
-            name_regex=r"report",
+            name_contains="report",
         )
 
         request_mock.assert_called_once_with(
@@ -1000,6 +956,8 @@ class TestConnectionListStatements:
                 "page_size": 100,
                 "label_selector": "user.confluent.io/daily-report=true",
                 "spec.compute_pool_id": "lfcp-xyz",
+                "statement_name_search_query": "report",
+                "time_ordered": "true",
             },
         )
         assert [s.name for s in statements] == ["report-a"]
