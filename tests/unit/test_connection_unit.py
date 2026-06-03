@@ -304,7 +304,14 @@ class TestConnectChecks:
         with pytest.raises(InterfaceError, match="Environment ID is required"):
             connection_factory(environment_id="")
 
-    def test_compute_pool_id_optional_when_omitted(self):
+    @pytest.mark.parametrize(
+        "compute_pool_id",
+        [
+            None,
+            "",
+        ],
+    )
+    def test_compute_pool_id_optional(self, compute_pool_id: str | None):
         """A connection may be created without a compute pool; Flink picks the env default."""
         connection = connect(
             environment_id="foo_id",
@@ -313,16 +320,9 @@ class TestConnectChecks:
             cloud_region="us-east-1",
             flink_api_key="valid-key",
             flink_api_secret="valid-secret",
+            compute_pool_id=compute_pool_id,
         )
-        assert connection.compute_pool_id is None
-
-    def test_compute_pool_id_optional_when_empty(self, connection_factory: ConnectionFactory):
-        """An empty compute pool id is folded into None -- 'no pool specified'.
-
-        connect() normalizes "" to None so the stored attribute honestly reports the absence
-        of a default pool rather than carrying an unusable empty string.
-        """
-        connection = connection_factory(environment_id="foo_id", compute_pool_id="")
+        # Should end up None either way.
         assert connection.compute_pool_id is None
 
     def test_connection_constructible_without_compute_pool(self):
