@@ -312,7 +312,7 @@ class TestConnectChecks:
         ],
     )
     def test_compute_pool_id_optional(self, compute_pool_id: str | None):
-        """A connection may be created without a compute pool; Flink picks the env default."""
+        """A connection may be created without or a blank compute pool; Flink will use the default compute pool."""
         connection = connect(
             environment_id="foo_id",
             organization_id="org-id",
