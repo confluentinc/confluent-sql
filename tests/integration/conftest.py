@@ -89,7 +89,8 @@ def _connect_from_env(*, include_compute_pool: bool) -> Connection:
     ):
         pytest.skip("Missing required environment variables for integration test")
 
-    # Optionally set. If omitted, will run in the default compute pool for the environment+region, provisioning if necessary.
+    # Optionally set. If omitted, will run in the default compute pool for the environment+region,
+    # provisioning if necessary.
     maybe_compute_pool_id = (
         (os.getenv("CONFLUENT_COMPUTE_POOL_ID") or None) if include_compute_pool else None
     )
