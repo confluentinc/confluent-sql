@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Support for "poolless Flink": `confluent_sql.connect()` now treats `compute_pool_id` as optional. Statements submitted w/o their own overriding `compute_pool_id` via a connection w/o a default compute pool id will make use of the default compute pool in the environment+cloud region (provisioning one if necessary). See [the Confluent documentation](https://docs.confluent.io/cloud/current/flink/concepts/compute-pools.html#default-compute-pools) for more details.
+
 ## 0.3.1, 2026-05-21
 
 ### Added
