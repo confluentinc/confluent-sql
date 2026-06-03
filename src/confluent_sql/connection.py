@@ -39,8 +39,8 @@ def connect(  # noqa: PLR0913
     flink_api_key: str,
     flink_api_secret: str,
     environment_id: str,
-    compute_pool_id: str,
     organization_id: str,
+    compute_pool_id: str | None = None,
     cloud_provider: str | None = None,
     cloud_region: str | None = None,
     database: str | None = None,
@@ -57,8 +57,12 @@ def connect(  # noqa: PLR0913
         flink_api_key: Flink region API key
         flink_api_secret: Flink region API secret
         environment_id: Environment ID
-        compute_pool_id: Compute pool ID for SQL execution
         organization_id: Organization ID
+        compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
+            created on this connection name no pool, so Confluent Cloud Flink runs them in
+            the environment+region default compute pool (provisioning if necessary). Individual
+            statement submission methods may still override or specify a compute pool id on a
+            per-statement basis.
         cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure"). Required if endpoint is not
             provided; must not be provided if endpoint is specified.
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is not
@@ -102,9 +106,6 @@ def connect(  # noqa: PLR0913
 
     if not environment_id:
         raise InterfaceError("Environment ID is required")
-
-    if not compute_pool_id:
-        raise InterfaceError("Compute pool ID is required")
 
     if not organization_id:
         raise InterfaceError("Organization ID is required")
@@ -166,7 +167,7 @@ class Connection:
 
     environment_id: str
     organization_id: str
-    compute_pool_id: str
+    compute_pool_id: str | None
     statement_results_page_fetch_pause_secs: float
     """Maximum seconds to wait between fetching pages of statement
         results (per statement). Prevents tight loops of requests to the
@@ -200,7 +201,7 @@ class Connection:
         flink_api_key: str,
         flink_api_secret: str,
         environment_id: str,
-        compute_pool_id: str,
+        compute_pool_id: str | None,
         organization_id: str,
         cloud_provider: str | None,
         cloud_region: str | None,
@@ -217,7 +218,9 @@ class Connection:
             flink_api_key: Flink region API key
             flink_api_secret: Flink region API secret
             environment_id: Environment ID
-            compute_pool_id: Compute pool ID for SQL execution
+            compute_pool_id: Optional compute pool ID for SQL execution. If None, statements
+                created on this connection name no pool and Confluent Cloud Flink runs them in
+                the environment+region default compute pool.
             organization_id: Organization ID
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
@@ -580,7 +583,9 @@ class Connection:
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
-                            If not provided, uses the Connection's default compute_pool_id.
+                            If not provided, uses the Connection's default compute_pool_id,
+                            if any; otherwise Confluent Cloud Flink runs the statement in the
+                            environment+region default compute pool.
                             The compute pool must be accessible to the API key used for the
                             connection. Validation of compute pool accessibility is performed
                             by Confluent Cloud Flink.
@@ -638,7 +643,9 @@ class Connection:
             properties: Optional dictionary of statement properties to set for this execution.
                        Keys must be strings, values must be str, int, or bool.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
-                            If not provided, uses the Connection's default compute_pool_id.
+                            If not provided, uses the Connection's default compute_pool_id,
+                            if any; otherwise Confluent Cloud Flink runs the statement in the
+                            environment+region default compute pool.
                             The compute pool must be accessible to the API key used for the
                             connection. Validation of compute pool accessibility is performed
                             by Confluent Cloud Flink.
@@ -991,7 +998,9 @@ class Connection:
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
-                            If not provided, uses the Connection's default compute_pool_id.
+                            If not provided, uses the Connection's default compute_pool_id,
+                            if any; otherwise Confluent Cloud Flink runs the statement in the
+                            environment+region default compute pool.
                             The compute pool must be accessible to the API key used for the
                             connection. Validation of compute pool accessibility is performed
                             by Confluent Cloud Flink.
@@ -1018,27 +1027,33 @@ class Connection:
         # Resolve and merge user properties with system properties
         merged_properties = self._resolve_properties(properties, execution_mode)
 
-        # Use provided compute_pool_id or default to Connection's compute_pool_id
-        if compute_pool_id is not None:
-            # Just so that the user is well aware that this is happening ...
+        # Prefer the per-call compute pool over the connection default; either may be absent.
+        if compute_pool_id is not None and self.compute_pool_id:
+            # Replacing an actual connection default -- make the swap visible to the caller.
             logger.info(
                 f"execute_statement(): Overriding connection compute_pool_id"
                 f" '{self.compute_pool_id}' with provided compute_pool_id '{compute_pool_id}'"
             )
-            resolved_compute_pool_id = compute_pool_id
-        else:
-            resolved_compute_pool_id = self.compute_pool_id
+        resolved_compute_pool_id = (
+            compute_pool_id if compute_pool_id is not None else self.compute_pool_id
+        )
+
+        spec: dict[str, Any] = {
+            "statement": statement,
+            "properties": merged_properties,
+            "stopped": False,
+        }
+
+        # Omit the key entirely when no pool is resolved, letting Flink fall back to the
+        # environment+region default compute pool.
+        if resolved_compute_pool_id:
+            spec["compute_pool_id"] = resolved_compute_pool_id
 
         payload = {
             "name": statement_name,
             "organization_id": self.organization_id,
             "environment_id": self.environment_id,
-            "spec": {
-                "statement": statement,
-                "properties": merged_properties,
-                "compute_pool_id": resolved_compute_pool_id,
-                "stopped": False,
-            },
+            "spec": spec,
         }
 
         if statement_labels is not None:

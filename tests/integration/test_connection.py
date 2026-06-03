@@ -92,6 +92,24 @@ class TestConnection:
         # Stop + delete the statement, CCloud-Flink side.
         cursor.close()
 
+    def test_default_compute_pool_when_none_specified(self, poolless_connection: Connection):
+        """A connection without a compute pool runs statements in the environment default.
+
+        Proves the end-to-end #108 path: no compute_pool_id is sent, yet Flink still runs the
+        statement and associates it with a (default) compute pool in the response.
+        """
+        assert poolless_connection.compute_pool_id is None
+
+        with poolless_connection.closing_cursor() as cursor:
+            cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
+            row = cursor.fetchone()
+            assert row == (1,)
+
+            # Flink picked a default pool for us even though we named none.
+            assert cursor.statement.compute_pool_id, (
+                "Expected the server to associate the statement with a default compute pool"
+            )
+
     def test_closing_cursor_after_executing_statement(self, connection: Connection, mocker):
         """Test that auto closing a cursor used for a bounded statement works as expected."""
         with connection.closing_cursor() as cursor:

@@ -19,13 +19,12 @@ The behavior of snapshot-mode cursors, complying with dbapi semantics, are well 
 ## Prerequisites
 
 - **Confluent Cloud account** with Flink environment
-- **Active Flink compute pool** (must be pre-created)
 - **Existing Flink Database** (Confluent Cloud Kafka cluster)
 - **Flink Region API credentials** for Flink SQL Region API access: a user or service account Flink region API key and secret.
 
 ### How to Obtain a Flink Region API Key
 
-This driver requires a **Flink Region API key** (also called a Flink SQL API key), which is specific to your Flink compute pool and provides access to the regional Flink SQL API endpoints. This is distinct from a Confluent Cloud control-plane API key.
+This driver requires a **Flink Region API key** (also called a Flink SQL API key), which is specific to your Flink region/environment (the environment + cloud provider + cloud region triplet) and provides access to the regional Flink SQL API endpoints. This is distinct from a Confluent Cloud control-plane API key.
 
 To create or find a Flink Region API key:
 
@@ -35,12 +34,13 @@ To create or find a Flink Region API key:
 4. When creating a new key, select either:
    - **My account** - for development/testing
    - **Service account** - for production applications (recommended)
-   and then:   
+     and then:
    - **The Environment, Cloud Provider and Cloud Region** matching the Flink database(s) / Kafka cluster(s) you intend to use this driver against.
 5. Save both the **API key** and **API secret** securely (the secret cannot be retrieved later)
 6. Use these credentials as the `flink_api_key` and `flink_api_secret` parameters in the `connect()` function
 
 API keys may also be generated using the Confluent CLI or by API access, outside the scope of this document.
+
 ## Installation
 
 ```bash
@@ -67,7 +67,7 @@ connection = confluent_sql.connect(
     flink_api_key="your-flink-api-key",
     flink_api_secret="your-flink-api-secret",
     database="your-database-name",
-    compute_pool_id="lfcp-789012"
+    compute_pool_id="lfcp-789012"  # optional; omit to use the environment's default compute pool
 )
 ```
 
@@ -167,15 +167,15 @@ For detailed streaming query guidance, see **[STREAMING.md](https://github.com/c
 
 For type support and examples, see **[TYPES.md](https://github.com/confluentinc/confluent-sql/blob/main/TYPES.md)**.
 
-
 ## Private Networking Considerations
 
 By default, this driver uses the public Confluent Cloud API networking endpoint for the provided cloud provider and region. However, if the Flink database / Kafka cluster you intend to query requires private networking connectivity, then provide the appropriate Flink private networking base URL as the `endpoint` parameter
 to `connect()` or `Connection.__init__()`. Refer to the Confluent Cloud [Flink private networking documentation](https://docs.confluent.io/cloud/current/flink/concepts/flink-private-networking.html) for more information on composing your endpoint URL.
 
 Symptoms of using the public endpoint when private networking is required include:
-  * HTTP 429-related exceptions raised when submitting statements querying tables whose backing Kafka topics / clusters are configured for private networking only.
-  * Empty or surprisingly missing results when querying `INFORMATION_SCHEMA` or `SHOW TABLES`, due to silent filtering of private-networking-only tables/topics when querying the system catalog.
+
+- HTTP 429-related exceptions raised when submitting statements querying tables whose backing Kafka topics / clusters are configured for private networking only.
+- Empty or surprisingly missing results when querying `INFORMATION_SCHEMA` or `SHOW TABLES`, due to silent filtering of private-networking-only tables/topics when querying the system catalog.
 
 ## Development
 
@@ -208,7 +208,7 @@ export CONFLUENT_CLOUD_PROVIDER="aws"
 export CONFLUENT_CLOUD_REGION="us-east-2"
 export CONFLUENT_FLINK_API_KEY="your-key" # Flink Region API key for the above cloud/region ...
 export CONFLUENT_FLINK_API_SECRET="your-secret" # and associated secret.
-export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # A compute pool within the above cloud/region.
+export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # Optional; a compute pool within the above cloud/region. Leave unset to use the environment default.
 export CONFLUENT_TEST_DBNAME="test-db" # A database/kafka cluster name within the above cloud/region.
 ```
 

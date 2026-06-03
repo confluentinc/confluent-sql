@@ -34,6 +34,19 @@ def invalid_credential_connection() -> Connection:
     )
 
 
+@pytest.fixture()
+def poolless_connection() -> Connection:
+    """A connection created without a compute pool, exercising the default-pool path."""
+    return connect(
+        environment_id="env-id",
+        organization_id="org-id",
+        cloud_provider="aws",
+        cloud_region="us-east-1",
+        flink_api_key="invalid-key",
+        flink_api_secret="invalid-secret",
+    )
+
+
 def _create_http_error_404():
     """Helper function that raises an HTTPStatusError with a mocked 404 response."""
     mock_response = Mock()
@@ -291,10 +304,22 @@ class TestConnectChecks:
         with pytest.raises(InterfaceError, match="Environment ID is required"):
             connection_factory(environment_id="")
 
-    def test_requires_compute_pool_id(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without a compute pool ID raises an error."""
-        with pytest.raises(InterfaceError, match="Compute pool ID is required"):
-            connection_factory(environment_id="foo_id", compute_pool_id="")
+    def test_compute_pool_id_optional_when_omitted(self):
+        """A connection may be created without a compute pool; Flink picks the env default."""
+        connection = connect(
+            environment_id="foo_id",
+            organization_id="org-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="valid-key",
+            flink_api_secret="valid-secret",
+        )
+        assert connection.compute_pool_id is None
+
+    def test_compute_pool_id_optional_when_empty(self, connection_factory: ConnectionFactory):
+        """An empty compute pool id is accepted and treated as 'no pool specified'."""
+        connection = connection_factory(environment_id="foo_id", compute_pool_id="")
+        assert not connection.compute_pool_id
 
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """Test that creating a connection without an organization ID raises an error."""
@@ -1652,6 +1677,50 @@ class TestComputePoolIdParameter:
         call_kwargs = invalid_credential_connection._client.request.call_args
         payload = call_kwargs.kwargs['json']
         assert payload['spec']['compute_pool_id'] == "cp-id"  # from fixture
+
+    def test_execute_statement_omits_pool_when_none_resolved(
+        self, poolless_connection, mocker
+    ):
+        """With no per-call argument and no connection default, spec carries no pool."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"name": "test-statement", "spec": {}}
+        mocker.patch.object(poolless_connection._client, "request", return_value=mock_response)
+        mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
+
+        poolless_connection._execute_statement("SELECT 1", ExecutionMode.SNAPSHOT)
+
+        payload = poolless_connection._client.request.call_args.kwargs["json"]
+        assert "compute_pool_id" not in payload["spec"]
+
+        # No connection default means there is nothing to "override" -- stay silent.
+        log_messages = [str(call) for call in mock_log_info.call_args_list]
+        assert not any(
+            "Overriding connection compute_pool_id" in msg for msg in log_messages
+        ), f"Override log should not fire without a connection default: {log_messages}"
+
+    def test_execute_statement_per_call_pool_without_connection_default(
+        self, poolless_connection, mocker
+    ):
+        """A per-call pool is used even with no connection default, without an override log."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "name": "test-statement",
+            "spec": {"compute_pool_id": "lfcp-explicit"},
+        }
+        mocker.patch.object(poolless_connection._client, "request", return_value=mock_response)
+        mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
+
+        poolless_connection._execute_statement(
+            "SELECT 1", ExecutionMode.SNAPSHOT, compute_pool_id="lfcp-explicit"
+        )
+
+        payload = poolless_connection._client.request.call_args.kwargs["json"]
+        assert payload["spec"]["compute_pool_id"] == "lfcp-explicit"
+
+        log_messages = [str(call) for call in mock_log_info.call_args_list]
+        assert not any(
+            "Overriding connection compute_pool_id" in msg for msg in log_messages
+        ), f"Override log should not fire without a connection default: {log_messages}"
 
     def test_execute_statement_validates_compute_pool_type(
         self, invalid_credential_connection

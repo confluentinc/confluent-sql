@@ -108,6 +108,51 @@ def connection(load_env_file) -> Generator[Connection, Any, None]:
     conn.close()
 
 
+@pytest.fixture(scope="session")
+def poolless_connection(load_env_file) -> Generator[Connection, Any, None]:
+    """
+    A real connection created without a compute pool, exercising the default-pool path.
+
+    Deliberately does not require (or pass) CONFLUENT_COMPUTE_POOL_ID, so statements
+    submitted through it rely on the environment+region default compute pool (the
+    "Poolless Flink" feature that went GA in Apr 2026).
+    """
+    flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
+    flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
+    environment_id = os.getenv("CONFLUENT_ENV_ID", "")
+    organization_id = os.getenv("CONFLUENT_ORG_ID", "")
+    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
+    database = os.getenv("CONFLUENT_TEST_DBNAME", "")
+
+    if not all(
+        [
+            flink_api_key,
+            flink_api_secret,
+            environment_id,
+            organization_id,
+            cloud_region,
+            cloud_provider,
+            database,
+        ]
+    ):
+        pytest.skip("Missing required environment variables for integration test")
+
+    conn = confluent_sql.connect(
+        flink_api_key=flink_api_key,
+        flink_api_secret=flink_api_secret,
+        environment_id=environment_id,
+        organization_id=organization_id,
+        cloud_region=cloud_region,
+        cloud_provider=cloud_provider,
+        database=database,
+    )
+
+    yield conn
+
+    conn.close()
+
+
 @pytest.fixture()
 def database():
     """Returns the database name used for integration tests."""
