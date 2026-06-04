@@ -236,6 +236,26 @@ class Statement:
         return self.phase == Phase.RUNNING
 
     @property
+    def is_stopping(self) -> bool:
+        """Is the statement in the process of stopping (transient, settles to STOPPED)?"""
+        return self.phase == Phase.STOPPING
+
+    @property
+    def is_stopped(self) -> bool:
+        """Has the statement been stopped (terminal)?"""
+        return self.phase == Phase.STOPPED
+
+    @property
+    def stop_requested(self) -> bool:
+        """Has a stop been requested for this statement (spec.stopped is true)?
+
+        This flips true as soon as the server accepts a stop request, which can be *before* the
+        phase transitions away from RUNNING -- the phase change to STOPPING/STOPPED happens
+        asynchronously. Useful for confirming a non-blocking stop_statement() call was accepted.
+        """
+        return bool(self.spec.get("stopped", False))
+
+    @property
     def is_deletable(self) -> bool:
         """Check if the statement can be deleted safely."""
         return self.phase in {Phase.COMPLETED, Phase.FAILED, Phase.STOPPED}
