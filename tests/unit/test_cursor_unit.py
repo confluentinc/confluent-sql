@@ -1,8 +1,6 @@
 import re
 import types
 import warnings
-from collections.abc import Callable
-from typing import Any
 
 import pytest
 
@@ -18,9 +16,9 @@ from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
 from confluent_sql.statement import ChangelogRow, Op, Statement
 from tests.unit.conftest import (
+    CursorWithStatementFactory,
     MockConnectionFactory,
     ResultRowFactory,
-    StatementFactory,
     StatementResponseFactory,
 )
 
@@ -1411,26 +1409,8 @@ class TestArraysizeProperty:
 class TestRaiseIfStatementIsBroken:
     """Unit tests for Cursor._raise_if_statement_is_broken()."""
 
-    @pytest.fixture
-    def cursor_with_statement_factory(
-        self,
-        mock_connection_cursor: Cursor,
-        statement_factory: StatementFactory,
-    ) -> Callable[..., Cursor]:
-        """Returns a factory that installs a statement (built from the given statement_factory
-        kwargs) as the cursor's tracked statement and hands the cursor back, so each test can
-        declare the state under inspection inline and then call the no-argument
-        _raise_if_statement_is_broken() against it.
-        """
-
-        def _factory(**statement_kwargs: Any) -> Cursor:
-            mock_connection_cursor._statement = statement_factory(**statement_kwargs)
-            return mock_connection_cursor
-
-        return _factory
-
     def test_does_nothing_for_healthy_statement(
-        self, cursor_with_statement_factory: Callable[..., Cursor]
+        self, cursor_with_statement_factory: CursorWithStatementFactory
     ):
         """Test that no exception is raised for a healthy statement."""
         cursor = cursor_with_statement_factory(phase="RUNNING")
@@ -1453,7 +1433,7 @@ class TestRaiseIfStatementIsBroken:
     )
     def test_raises_operational_error_for_broken_statement(
         self,
-        cursor_with_statement_factory: Callable[..., Cursor],
+        cursor_with_statement_factory: CursorWithStatementFactory,
         phase: str,
         status_detail: str,
         expected_match: str,
@@ -1466,7 +1446,7 @@ class TestRaiseIfStatementIsBroken:
 
     def test_raises_compute_pool_exhausted_error_and_deletes_statement(
         self,
-        cursor_with_statement_factory: Callable[..., Cursor],
+        cursor_with_statement_factory: CursorWithStatementFactory,
         mocker,
     ):
         """Test that ComputePoolExhaustedError is raised for pool-exhausted statement
@@ -1492,7 +1472,7 @@ class TestRaiseIfStatementIsBroken:
 
     def test_logs_error_when_delete_fails_for_pool_exhausted(
         self,
-        cursor_with_statement_factory: Callable[..., Cursor],
+        cursor_with_statement_factory: CursorWithStatementFactory,
         mocker,
         caplog,
     ):
@@ -1531,7 +1511,7 @@ class TestRaiseIfStatementIsBroken:
     )
     def test_pool_exhausted_requires_pending_phase_and_pool_exhausted_state(
         self,
-        cursor_with_statement_factory: Callable[..., Cursor],
+        cursor_with_statement_factory: CursorWithStatementFactory,
         phase: str,
         scaling_state: str,
     ):

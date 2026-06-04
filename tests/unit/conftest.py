@@ -8,7 +8,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
-from confluent_sql import Connection
+from confluent_sql import Connection, Cursor
 from confluent_sql.connection import RowTypeRegistry
 from confluent_sql.statement import ChangelogRow, Op, Statement
 
@@ -170,6 +170,28 @@ def statement_factory(
 
 StatementFactory: TypeAlias = Callable[..., Statement]
 """A factory type alias for creating Statement instances."""
+
+CursorWithStatementFactory: TypeAlias = Callable[..., Cursor]
+"""A factory type alias for creating cursors pre-loaded with a tracked statement."""
+
+
+@pytest.fixture()
+def cursor_with_statement_factory(
+    mock_connection_factory: MockConnectionFactory,
+    statement_factory: StatementFactory,
+) -> CursorWithStatementFactory:
+    """Returns a factory that builds a cursor whose tracked statement is set from the given
+    statement_factory kwargs, so a test can declare the statement state under inspection inline
+    and exercise cursor methods (e.g. _raise_if_statement_is_broken) against it.
+    """
+
+    def _factory(**statement_kwargs: Any) -> Cursor:
+        cursor = mock_connection_factory(None, None).cursor()
+        cursor._statement = statement_factory(**statement_kwargs)
+        return cursor
+
+    return _factory
+
 
 GetStatementsResultsValue: TypeAlias = tuple[list[ChangelogRow], str | None]
 """A type alias for the return value of _get_statement_results()."""
