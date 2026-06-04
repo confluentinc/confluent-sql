@@ -207,7 +207,9 @@ class Cursor:
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
-                            If not provided, uses the Connection's default compute_pool_id.
+                            If not provided, uses the Connection's default compute_pool_id,
+                            if any; otherwise Confluent Cloud Flink runs the statement in the
+                            environment+region default compute pool.
                             The compute pool must be accessible to the API key used for the
                             connection. Validation of compute pool accessibility is performed
                             by Confluent Cloud Flink.
@@ -817,7 +819,9 @@ class Cursor:
                              in server logs and UIs (defaults to None)
             properties: Optional dictionary of statement properties (optional)
             compute_pool_id: Optional compute pool ID to use for this statement execution.
-                            If not provided, uses the Connection's default compute_pool_id.
+                            If not provided, uses the Connection's default compute_pool_id,
+                            if any; otherwise Confluent Cloud Flink runs the statement in the
+                            environment+region default compute pool.
 
         Returns:
             The submitted Statement object

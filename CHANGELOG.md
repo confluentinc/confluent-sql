@@ -6,6 +6,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Added
 
+- Support for "poolless Flink": `confluent_sql.connect()` now treats `compute_pool_id` as optional. Statements submitted w/o their own overriding `compute_pool_id` via a connection w/o a default compute pool id will make use of the default compute pool in the environment+cloud region (provisioning one if necessary). See [the Confluent documentation](https://docs.confluent.io/cloud/current/flink/concepts/compute-pools.html#default-compute-pools) for more details.
 - New `Connection.stop_statement(statement, *, wait_for_stopped=True, timeout=300)` method to stop a running statement without deleting it, leaving the statement resource around for inspection (unlike `delete_statement()`, which also destroys it). Accepts a statement name or a `Statement` object. By default it blocks until the statement reaches `STOPPED`; pass `wait_for_stopped=False` to return as soon as the stop is accepted. A matching `Cursor.stop_statement()` stops the cursor's current statement. New `Statement.is_stopped`, `Statement.is_stopping`, and `Statement.stop_requested` properties expose the relevant state. (#61)
 
 ### Changed
@@ -14,6 +15,7 @@ All notable changes to this dbapi driver will be documented in this file.
   - New optional parameter `compute_pool_id` to list statements only in a single compute pool (otherwise environment-wide).
   - New optional parameter `name_contains: str` to filter statements server-side to those whose name contains the given substring (case-sensitive).
   - Existing parameter `label` is now optional.
+  - The end result is that callers can now provide between zero and all of the possible kwargs to vary between 'no filtering at all, return all current statements in the environment' and 'apply all the possible filters as if ANDed together.'
 
 ## 0.3.1, 2026-05-21
 
