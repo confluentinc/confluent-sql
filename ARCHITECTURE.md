@@ -109,28 +109,29 @@ print(statement.name)  # "create-summary-table"
 
 **Name Uniqueness:**
 
-Statement names **must be unique within the compute pool** they are submitted to. If you attempt to submit a statement with a name that already exists in the same compute pool, the server will reject it with an error. This means:
+Statement names **must be unique within the environment** they are submitted to. If you attempt to submit a statement with a name that already exists anywhere in the same environment—even from a connection on a different compute pool—the server will reject it with an error. This means:
 
-- Auto-generated names are guaranteed unique per compute pool
-- If using explicit names, you must ensure they don't conflict with existing statements
+- Auto-generated names are guaranteed unique within the environment
+- If using explicit names, you must ensure they don't conflict with any existing statement in the environment
 - After deleting a statement, its name becomes available for reuse
-- Names are scoped to the compute pool, not globally—different compute pools can have statements with the same name
+- Names are scoped to the environment, not to a compute pool—a name in use anywhere in the environment cannot be reused from another compute pool
 
 ```python
-# This will work: same name in different compute pools
+# This will fail: the name is already in use elsewhere in the environment,
+# even though the second connection targets a different compute pool.
 pool_a_cursor = connection_pool_a.cursor()
 pool_a_cursor.execute(
     "SELECT * FROM data",
-    statement_name="my-query"  # OK in pool A
+    statement_name="my-query"  # OK: first use of this name in the environment
 )
 
 pool_b_cursor = connection_pool_b.cursor()
 pool_b_cursor.execute(
     "SELECT * FROM data",
-    statement_name="my-query"  # OK in pool B (different pool)
+    statement_name="my-query"  # ❌ Error: name already exists in the environment
 )
 
-# This will fail: same name in the same compute pool
+# This also fails for the same reason, within a single compute pool:
 cursor1 = connection.cursor()
 cursor1.execute("SELECT * FROM table1", statement_name="my-query")
 
@@ -167,7 +168,7 @@ Labels allow you to organize statements logically without requiring unique names
 
 ### Statement Persistence and Recovery
 
-Statements persist on the server independently of your client connection, but are **scoped to the compute pool** where they were submitted. Statements can only be found, monitored, and recovered within the same compute pool:
+Statements persist on the server independently of your client connection, and are **scoped to the environment** (organization + environment) they were submitted to—not to the compute pool or the submitting connection. Any connection to the same environment can find, monitor, and recover them, regardless of which compute pool ran them (narrow to a single pool with the `compute_pool_id` filter on `list_statements()` when you want pool-level isolation):
 
 1. **Create a statement with a name** for recovery:
 
@@ -180,9 +181,9 @@ Statements persist on the server independently of your client connection, but ar
    )
    ```
 
-2. **Recover it from another connection in the same compute pool:**
+2. **Recover it from another connection in the same environment:**
    ```python
-   # In a different Python process or session (same compute pool)
+   # In a different Python process or session (same environment)
    statements = connection.list_statements(label="daily-jobs")
    for stmt in statements:
        if stmt.name == "daily-summary-job":
@@ -292,7 +293,7 @@ This simplifies your code by eliminating manual polling loops, but your applicat
 
 ### Finding Existing Statements
 
-List statements by label (useful for batch operations):
+List statements—optionally filtered by label, compute pool, and/or name substring (useful for batch operations):
 
 ```python
 # Find all statements with a specific label
