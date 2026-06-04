@@ -7,6 +7,7 @@ connections to Confluent SQL services.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 import warnings
@@ -27,6 +28,7 @@ from .exceptions import (
     StatementNotFoundError,
 )
 from .execution_mode import ExecutionMode
+from .polling import sleep_with_backoff
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import PropertiesDict, RowPythonTypes
@@ -668,56 +670,84 @@ class Connection:
 
         return cur.statement
 
-    def list_statements(self, *, label: str, page_size: int = 100) -> list[Statement]:
-        """Return a list of Statement objects for statements with the given label.
+    def list_statements(
+        self,
+        *,
+        label: str | None = None,
+        compute_pool_id: str | None = None,
+        name_contains: str | None = None,
+        page_size: int = 100,
+    ) -> list[Statement]:
+        """Return Statement objects, optionally narrowed by label, compute pool, and/or name.
 
-        This method retrieves all statements that were created with the specified label,
-        which is useful for managing groups of related statements. The method handles
-        pagination automatically to retrieve all matching statements.
+        With no filters supplied, every statement in the environment is returned. The filters
+        are combinable (AND semantics) and all applied server-side via query parameters;
+        pagination is handled automatically.
 
         Args:
-            label: The label to filter statements by. You can provide either:
+            label: Optional label to filter statements by. You can provide either:
                    - Just the label value (e.g., "my-batch-job") - the "user.confluent.io/"
                      prefix will be added automatically
                    - The full label with prefix (e.g., "user.confluent.io/my-batch-job")
+            compute_pool_id: Optional compute pool ID to filter by, applied server-side via the
+                            `spec.compute_pool_id` query parameter.
+            name_contains: Optional substring to filter statement names by, applied server-side
+                          via the `statement_name_search_query` query parameter. Matching is a
+                          case-sensitive substring test (no regex / anchoring). Supplying this
+                          forces the result set to be time-ordered (see implementation note).
             page_size: Number of statements to fetch per API request (default: 100).
                       The method will automatically paginate through all results.
 
         Returns:
-            A list of Statement objects that have the specified label. Returns an
-            empty list if no statements match the label.
+            A list of matching Statement objects. Returns an empty list if nothing matches.
 
         Raises:
             OperationalError: If the API request fails
 
         Example:
-            # Submit statements with a label
-            cursor.execute("SELECT * FROM users", statement_labels=["daily-report"])
-            cursor.execute("SELECT * FROM orders", statement_labels=["daily-report"])
+            # List every statement in the environment
+            statements = connection.list_statements()
 
-            # Later, retrieve all statements with that label
+            # Submit statements with a label, then retrieve them
+            cursor.execute("SELECT * FROM users", statement_labels=["daily-report"])
             statements = connection.list_statements(label="daily-report")
 
-            # Delete all statements with the label
+            # Filter by compute pool (server-side)
+            statements = connection.list_statements(compute_pool_id="lfcp-789012")
+
+            # Filter by statement name (server-side substring match)
+            statements = connection.list_statements(name_contains="dbapi-")
+
+            # Delete all matching statements
             for stmt in statements:
                 connection.delete_statement(stmt)
         """
 
-        if not label.startswith(STATEMENT_LABEL_PREFIX):
-            # Append prefix and make it a label selector for the API query parameter. The API
-            # expects the full label key, which includes the prefix, but we want to allow users
-            # to filter by just the end-user portion of the label.
-            adjusted_label_filter = f"{STATEMENT_LABEL_PREFIX}{label}=true"
-        else:
-            adjusted_label_filter = f"{label}=true"
+        # Server-side filters: only include a query parameter when its filter was supplied.
+        parameters: dict[str, str | int] = {"page_size": page_size}
+        if label is not None:
+            if not label.startswith(STATEMENT_LABEL_PREFIX):
+                # Append prefix and make it a label selector for the API query parameter. The API
+                # expects the full label key, which includes the prefix, but we want to allow
+                # users to filter by just the end-user portion of the label.
+                parameters["label_selector"] = f"{STATEMENT_LABEL_PREFIX}{label}=true"
+            else:
+                parameters["label_selector"] = f"{label}=true"
+
+        if compute_pool_id is not None:
+            parameters["spec.compute_pool_id"] = compute_pool_id
+
+        if name_contains is not None:
+            parameters["statement_name_search_query"] = name_contains
+            # The server only honors statement_name_search_query when time_ordered=true is also
+            # present; without it the search term is silently ignored and every statement is
+            # returned. Verified empirically against /sql/v1 -- see the originating PR.
+            parameters["time_ordered"] = "true"
 
         statements: list[Statement] = []
 
         has_more_pages = True
         next_page_token: str | None = None
-        # Use the `label_selector` query parameter to filter statements by label
-        # on the server side.
-        parameters = {"label_selector": adjusted_label_filter, "page_size": page_size}
         while has_more_pages:
             response = self._request("/statements", params=parameters)
             resp_json = response.json()
@@ -832,6 +862,127 @@ class Connection:
             # Mark the Statement object as deleted for if the caller still is interested in its
             # reference.
             statement.set_deleted()
+
+    def stop_statement(
+        self,
+        statement: str | Statement,
+        *,
+        wait_for_stopped: bool = True,
+        timeout: int = 300,
+    ) -> Statement:
+        """
+        Stop a statement without deleting it, leaving the statement resource around for inspection.
+
+        Unlike delete_statement(), which stops *and* destroys the statement and its results, this
+        halts a running statement (e.g. a long-lived streaming query) while keeping it queryable
+        via get_statement(). The stop is issued as an RFC 6902 JSON Patch flipping spec.stopped to
+        true. The server accepts the stop immediately (spec.stopped becomes true) but transitions
+        the phase through STOPPING to STOPPED asynchronously -- the PATCH response may still report
+        phase RUNNING.
+
+        Args:
+            statement: The name of the statement to stop, or a Statement object. A Statement
+                already in a terminal phase (STOPPED/COMPLETED/FAILED/DELETED) is returned
+                unchanged without contacting the server.
+            wait_for_stopped: If True (default), block and refresh-loop until the statement reaches
+                a terminal phase before returning -- normally STOPPED, but COMPLETED if a bounded
+                query happened to finish before the stop landed. If False, return as soon as the
+                stop is accepted; the returned statement's stop_requested is true even though its
+                phase may still be RUNNING.
+            timeout: Maximum seconds to wait for a terminal phase when wait_for_stopped is True.
+
+        Returns:
+            A Statement object reflecting the server's response: a terminal phase (normally
+            STOPPED, possibly COMPLETED) when blocking, otherwise the just-accepted statement
+            (stop_requested true, phase possibly still RUNNING).
+
+        Raises:
+            TypeError: If statement is neither a string nor a Statement object.
+            StatementNotFoundError: If the statement does not exist (HTTP 404).
+            OperationalError: On other API errors, on timeout, or if the statement transitions to
+                FAILED while waiting.
+        """
+        if isinstance(statement, Statement):
+            if statement.phase.is_terminal:
+                logger.info(
+                    f"Statement {statement.name} is already in terminal phase "
+                    f"{statement.phase.value}, nothing to stop"
+                )
+                return statement
+            statement_name = statement.name
+        else:
+            if not isinstance(statement, str):
+                raise TypeError(
+                    "Statement to stop must be specified by name or Statement object, "
+                    f"got {type(statement)}"
+                )
+            statement_name = statement
+
+        logger.info(f"Stopping statement {statement_name}")
+        patch_ops = [{"op": "replace", "path": "/spec/stopped", "value": True}]
+        response = self._request(
+            f"/statements/{statement_name}",
+            method="PATCH",
+            content=json.dumps(patch_ops),
+            headers={"Content-Type": "application/json-patch+json"},
+            raise_for_status=False,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise StatementNotFoundError(
+                    f"Statement '{statement_name}' not found while stopping",
+                    statement_name=statement_name,
+                ) from e
+            raise OperationalError(
+                "Error stopping statement", http_status_code=e.response.status_code
+            ) from e
+
+        pending_stopped_statement = Statement.from_response(self, response.json())
+
+        if wait_for_stopped:
+            return self._wait_for_statement_stopped(pending_stopped_statement, timeout)
+        return pending_stopped_statement
+
+    def _wait_for_statement_stopped(self, statement: Statement, timeout: int) -> Statement:
+        """
+        Refresh-loop until the given statement reaches STOPPED (or another terminal phase).
+
+        The passed-in statement -- typically the PATCH response that accepted the stop -- is
+        evaluated before any re-fetch. The stop transitions the phase server-side asynchronously,
+        so a GET issued immediately would almost certainly report the same non-terminal phase we
+        already hold; we therefore sleep *first* and only fetch once wall-clock time has passed and
+        the server state can actually have advanced. Uses exponential backoff with jitter to avoid
+        hammering the server. A statement that ends in any terminal phase other than FAILED (e.g. a
+        bounded query that COMPLETED before the stop landed) is returned, since the caller's intent
+        -- the statement is no longer running -- is satisfied.
+
+        Raises:
+            OperationalError: If the statement transitions to FAILED, or if STOPPED is not reached
+                within the timeout.
+        """
+        def raise_if_failed(candidate: Statement) -> None:
+            if candidate.is_failed:
+                raise OperationalError(
+                    f"Statement '{candidate.name}' transitioned to FAILED while stopping: "
+                    f"{candidate.status.get('detail', '')}"
+                )
+
+        # Evaluate the state we already hold first -- an already-terminal statement needs no fetch.
+        raise_if_failed(statement)
+        if statement.phase.is_terminal:
+            return statement
+
+        for _ in sleep_with_backoff(timeout):
+            statement = self.get_statement(statement.name)
+            raise_if_failed(statement)
+            if statement.phase.is_terminal:
+                return statement
+
+        raise OperationalError(
+            f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
+        )
 
     @property
     def is_closed(self) -> bool:
@@ -1221,7 +1372,9 @@ class Connection:
         # We can parse it to extract the page_token value.
         parsed = httpx.URL(next_url)
         page_token = parsed.params.get("page_token")
-        return page_token
+        # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
+        # `next_page_token is not None`, so an empty string would spin it forever.
+        return page_token or None
 
 
 class RowTypeRegistry:

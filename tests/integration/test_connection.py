@@ -13,7 +13,29 @@ import pytest
 import confluent_sql
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import StatementNotFoundError
+from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Statement
+
+
+def _start_running_streaming_statement(connection, table_name, statement_name):
+    """Launch an unbounded streaming SELECT (stays RUNNING) and return the (cursor, statement)."""
+    cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+    cursor.execute(f"SELECT * FROM {table_name}", statement_name=statement_name)
+    assert cursor.statement.is_running, (
+        f"Expected streaming statement to be RUNNING, got {cursor.statement.phase.value}"
+    )
+    return cursor, cursor.statement
+
+
+def _poll_until_stopped(connection, statement_name, timeout_seconds=60):
+    """Poll get_statement until the named statement is STOPPED or timeout."""
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_seconds:
+        statement = connection.get_statement(statement_name)
+        if statement.is_stopped:
+            return statement
+        time.sleep(0.5)
+    raise TimeoutError(f"Statement '{statement_name}' not STOPPED after {timeout_seconds}s")
 
 
 def _wait_for_row(cursor, timeout_seconds=5):
@@ -248,4 +270,107 @@ class TestConnection:
             connection.get_statement("non-existent-statement-name")
 
         # Verify exception has statement name
+        assert exc_info.value.statement_name == "non-existent-statement-name"
+
+
+@pytest.mark.integration
+class TestStopStatement:
+    """Integration tests for stop_statement against a real environment."""
+
+    def test_blocking_stop_reaches_stopped_without_deleting(
+        self,
+        table_connection: Connection,
+        test_table_name: str,
+        cleaned_up_statement_name: str,
+    ):
+        """Blocking stop_statement settles the statement to STOPPED and leaves it queryable."""
+        cursor, _ = _start_running_streaming_statement(
+            table_connection, test_table_name, cleaned_up_statement_name
+        )
+        try:
+            stopped = table_connection.stop_statement(
+                cleaned_up_statement_name, wait_for_stopped=True
+            )
+            assert stopped.is_stopped
+
+            # Proof it was stopped, not deleted: it is still retrievable and STOPPED.
+            still_there = table_connection.get_statement(cleaned_up_statement_name)
+            assert still_there.is_stopped
+        finally:
+            cursor.close()
+
+    def test_non_blocking_stop_returns_promptly_then_settles(
+        self,
+        table_connection: Connection,
+        test_table_name: str,
+        cleaned_up_statement_name: str,
+    ):
+        """Non-blocking stop_statement returns promptly with the stop accepted, then settles.
+
+        The PATCH 200 response reflects the stop request (spec.stopped becomes true) but the phase
+        may still be RUNNING at that instant -- the server transitions to STOPPED asynchronously.
+        """
+        cursor, _ = _start_running_streaming_statement(
+            table_connection, test_table_name, cleaned_up_statement_name
+        )
+        try:
+            result = table_connection.stop_statement(
+                cleaned_up_statement_name, wait_for_stopped=False
+            )
+            assert result.stop_requested
+
+            settled = _poll_until_stopped(table_connection, cleaned_up_statement_name)
+            assert settled.is_stopped
+        finally:
+            cursor.close()
+
+    def test_stopping_already_stopped_statement_is_noop(
+        self,
+        table_connection: Connection,
+        test_table_name: str,
+        cleaned_up_statement_name: str,
+    ):
+        """Re-stopping an already-STOPPED statement returns it and does not raise."""
+        cursor, _ = _start_running_streaming_statement(
+            table_connection, test_table_name, cleaned_up_statement_name
+        )
+        try:
+            stopped = table_connection.stop_statement(
+                cleaned_up_statement_name, wait_for_stopped=True
+            )
+            assert stopped.is_stopped
+
+            # Passing the already-terminal Statement back short-circuits with no error.
+            again = table_connection.stop_statement(stopped)
+            assert again.is_stopped
+        finally:
+            cursor.close()
+
+    def test_cursor_stop_statement(
+        self,
+        table_connection: Connection,
+        test_table_name: str,
+        cleaned_up_statement_name: str,
+    ):
+        """cursor.stop_statement stops the cursor's statement and updates its tracked state."""
+        cursor = table_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        try:
+            cursor.execute(
+                f"SELECT * FROM {test_table_name}", statement_name=cleaned_up_statement_name
+            )
+            assert cursor.statement.is_running
+
+            stopped = cursor.stop_statement(wait_for_stopped=True)
+            assert stopped.is_stopped
+            assert cursor.statement.is_stopped
+
+            # Stopped, not deleted: still retrievable.
+            assert table_connection.get_statement(cleaned_up_statement_name).is_stopped
+        finally:
+            cursor.close()
+
+    def test_stop_nonexistent_statement_raises(self, connection: Connection):
+        """Stopping a non-existent statement raises StatementNotFoundError."""
+        with pytest.raises(StatementNotFoundError) as exc_info:
+            connection.stop_statement("non-existent-statement-name", wait_for_stopped=False)
         assert exc_info.value.statement_name == "non-existent-statement-name"
