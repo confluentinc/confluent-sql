@@ -8,6 +8,13 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - New `Connection.stop_statement(statement, *, wait_for_stopped=True, timeout=300)` method to stop a running statement without deleting it, leaving the statement resource around for inspection (unlike `delete_statement()`, which also destroys it). Accepts a statement name or a `Statement` object. By default it blocks until the statement reaches `STOPPED`; pass `wait_for_stopped=False` to return as soon as the stop is accepted. A matching `Cursor.stop_statement()` stops the cursor's current statement. New `Statement.is_stopped`, `Statement.is_stopping`, and `Statement.stop_requested` properties expose the relevant state. (#61)
 
+### Changed
+
+- `Connection.list_statements()`:
+  - New optional parameter `compute_pool_id` to list statements only in a single compute pool (otherwise environment-wide).
+  - New optional parameter `name_contains: str` to filter statements server-side to those whose name contains the given substring (case-sensitive).
+  - Existing parameter `label` is now optional.
+
 ## 0.3.1, 2026-05-21
 
 ### Added

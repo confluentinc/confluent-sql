@@ -661,56 +661,84 @@ class Connection:
 
         return cur.statement
 
-    def list_statements(self, *, label: str, page_size: int = 100) -> list[Statement]:
-        """Return a list of Statement objects for statements with the given label.
+    def list_statements(
+        self,
+        *,
+        label: str | None = None,
+        compute_pool_id: str | None = None,
+        name_contains: str | None = None,
+        page_size: int = 100,
+    ) -> list[Statement]:
+        """Return Statement objects, optionally narrowed by label, compute pool, and/or name.
 
-        This method retrieves all statements that were created with the specified label,
-        which is useful for managing groups of related statements. The method handles
-        pagination automatically to retrieve all matching statements.
+        With no filters supplied, every statement in the environment is returned. The filters
+        are combinable (AND semantics) and all applied server-side via query parameters;
+        pagination is handled automatically.
 
         Args:
-            label: The label to filter statements by. You can provide either:
+            label: Optional label to filter statements by. You can provide either:
                    - Just the label value (e.g., "my-batch-job") - the "user.confluent.io/"
                      prefix will be added automatically
                    - The full label with prefix (e.g., "user.confluent.io/my-batch-job")
+            compute_pool_id: Optional compute pool ID to filter by, applied server-side via the
+                            `spec.compute_pool_id` query parameter.
+            name_contains: Optional substring to filter statement names by, applied server-side
+                          via the `statement_name_search_query` query parameter. Matching is a
+                          case-sensitive substring test (no regex / anchoring). Supplying this
+                          forces the result set to be time-ordered (see implementation note).
             page_size: Number of statements to fetch per API request (default: 100).
                       The method will automatically paginate through all results.
 
         Returns:
-            A list of Statement objects that have the specified label. Returns an
-            empty list if no statements match the label.
+            A list of matching Statement objects. Returns an empty list if nothing matches.
 
         Raises:
             OperationalError: If the API request fails
 
         Example:
-            # Submit statements with a label
-            cursor.execute("SELECT * FROM users", statement_labels=["daily-report"])
-            cursor.execute("SELECT * FROM orders", statement_labels=["daily-report"])
+            # List every statement in the environment
+            statements = connection.list_statements()
 
-            # Later, retrieve all statements with that label
+            # Submit statements with a label, then retrieve them
+            cursor.execute("SELECT * FROM users", statement_labels=["daily-report"])
             statements = connection.list_statements(label="daily-report")
 
-            # Delete all statements with the label
+            # Filter by compute pool (server-side)
+            statements = connection.list_statements(compute_pool_id="lfcp-789012")
+
+            # Filter by statement name (server-side substring match)
+            statements = connection.list_statements(name_contains="dbapi-")
+
+            # Delete all matching statements
             for stmt in statements:
                 connection.delete_statement(stmt)
         """
 
-        if not label.startswith(STATEMENT_LABEL_PREFIX):
-            # Append prefix and make it a label selector for the API query parameter. The API
-            # expects the full label key, which includes the prefix, but we want to allow users
-            # to filter by just the end-user portion of the label.
-            adjusted_label_filter = f"{STATEMENT_LABEL_PREFIX}{label}=true"
-        else:
-            adjusted_label_filter = f"{label}=true"
+        # Server-side filters: only include a query parameter when its filter was supplied.
+        parameters: dict[str, str | int] = {"page_size": page_size}
+        if label is not None:
+            if not label.startswith(STATEMENT_LABEL_PREFIX):
+                # Append prefix and make it a label selector for the API query parameter. The API
+                # expects the full label key, which includes the prefix, but we want to allow
+                # users to filter by just the end-user portion of the label.
+                parameters["label_selector"] = f"{STATEMENT_LABEL_PREFIX}{label}=true"
+            else:
+                parameters["label_selector"] = f"{label}=true"
+
+        if compute_pool_id is not None:
+            parameters["spec.compute_pool_id"] = compute_pool_id
+
+        if name_contains is not None:
+            parameters["statement_name_search_query"] = name_contains
+            # The server only honors statement_name_search_query when time_ordered=true is also
+            # present; without it the search term is silently ignored and every statement is
+            # returned. Verified empirically against /sql/v1 -- see the originating PR.
+            parameters["time_ordered"] = "true"
 
         statements: list[Statement] = []
 
         has_more_pages = True
         next_page_token: str | None = None
-        # Use the `label_selector` query parameter to filter statements by label
-        # on the server side.
-        parameters = {"label_selector": adjusted_label_filter, "page_size": page_size}
         while has_more_pages:
             response = self._request("/statements", params=parameters)
             resp_json = response.json()
@@ -1327,7 +1355,9 @@ class Connection:
         # We can parse it to extract the page_token value.
         parsed = httpx.URL(next_url)
         page_token = parsed.params.get("page_token")
-        return page_token
+        # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
+        # `next_page_token is not None`, so an empty string would spin it forever.
+        return page_token or None
 
 
 class RowTypeRegistry:
