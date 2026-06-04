@@ -72,6 +72,7 @@ def statement_response_factory() -> StatementResponseFactory:
         name: str = "dbapi-d4c685ef-befe-4091-9548-05d5ccb52d4a",
         labels: dict[str, str] | None = None,
         stopped: bool = False,
+        scaling_state: str = "OK",
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
 
@@ -117,7 +118,7 @@ def statement_response_factory() -> StatementResponseFactory:
                 "phase": phase,
                 "scaling_status": {
                     "last_updated": "2025-11-07T18:45:05Z",
-                    "scaling_state": "OK",
+                    "scaling_state": scaling_state,
                 },
                 "traits": {
                     "connection_refs": [],

@@ -716,19 +716,19 @@ class Cursor:
         logger.info(f"Checking statement '{self._statement.name}' status...")
 
         response = self._connection._get_statement(self._statement.name)
-        self._statement = statement = Statement.from_response(self._connection, response)
+        self._statement = Statement.from_response(self._connection, response)
 
-        self._raise_if_statement_is_broken(statement)
+        self._raise_if_statement_is_broken()
 
-        if not statement.can_fetch_results(self._execution_mode):
+        if not self._statement.can_fetch_results(self._execution_mode):
             return False
 
-        if statement.is_append_only:
+        if self._statement.is_append_only:
             # Append-only statements return row tuples or dicts depending on
             # self._results_as_dicts.
             self._result_reader = AppendOnlyResultReader(
                 self._connection,
-                statement,
+                self._statement,
                 self._execution_mode,
                 as_dict=self._results_as_dicts,
             )
@@ -737,21 +737,27 @@ class Cursor:
             # type-promoted row data as a dict or tuple depending on self._results_as_dicts.
             self._result_reader = ChangelogEventReader(
                 self._connection,
-                statement,
+                self._statement,
                 self._execution_mode,
                 as_dict=self._results_as_dicts,
             )
         return True
 
-    def _raise_if_statement_is_broken(self, statement: Statement) -> None:
-        """Raise an exception if the statement is in a failed, degraded, or pool-exhausted state.
+    def _raise_if_statement_is_broken(self) -> None:
+        """Raise an exception if self._statement is in a failed, degraded, or pool-exhausted state.
 
         Raises:
             OperationalError: If the statement is failed or degraded.
             ComputePoolExhaustedError: If the statement is pool-exhausted (a subclass of
                 OperationalError).
         """
+        if self._statement is None:
+            raise InterfaceError(
+                "Calling _raise_if_statement_is_broken but _statement is None, this is probably"
+                " a bug"
+            )  # pragma: no cover
 
+        statement = self._statement
         if statement.is_failed:
             raise OperationalError(
                 f"Statement '{statement.name}' failed: {statement.status.get('detail', '')}"

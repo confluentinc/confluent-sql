@@ -1,6 +1,8 @@
 import re
 import types
 import warnings
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -15,7 +17,12 @@ from confluent_sql.exceptions import (
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
 from confluent_sql.statement import ChangelogRow, Op, Statement
-from tests.unit.conftest import MockConnectionFactory, ResultRowFactory, StatementResponseFactory
+from tests.unit.conftest import (
+    MockConnectionFactory,
+    ResultRowFactory,
+    StatementFactory,
+    StatementResponseFactory,
+)
 
 
 @pytest.fixture()
@@ -113,12 +120,11 @@ class TestExecute:
         with pytest.raises(OperationalError):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
-        # Verify that _raise_if_statement_is_broken was called
-        raise_if_broken_mock.assert_called_once()
-        # Verify it was called with a Statement object
-        called_statement = raise_if_broken_mock.call_args[0][0]
-        assert isinstance(called_statement, Statement)
-        assert called_statement.phase.name == "FAILED"
+        # Verify that _raise_if_statement_is_broken was called, after the cursor had refreshed
+        # _statement to the FAILED state it inspects.
+        raise_if_broken_mock.assert_called_once_with()
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "FAILED"
 
     def test_execute_calls_raise_if_statement_is_broken_for_degraded_statement(
         self,
@@ -145,12 +151,11 @@ class TestExecute:
         with pytest.raises(OperationalError):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
-        # Verify that _raise_if_statement_is_broken was called
-        raise_if_broken_mock.assert_called_once()
-        # Verify it was called with a Statement object
-        called_statement = raise_if_broken_mock.call_args[0][0]
-        assert isinstance(called_statement, Statement)
-        assert called_statement.phase.name == "DEGRADED"
+        # Verify that _raise_if_statement_is_broken was called, after the cursor had refreshed
+        # _statement to the DEGRADED state it inspects.
+        raise_if_broken_mock.assert_called_once_with()
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "DEGRADED"
 
     def test_execute_calls_raise_if_statement_is_broken_for_pool_exhausted(
         self,
@@ -160,8 +165,9 @@ class TestExecute:
     ):
         """Prove that _raise_if_statement_is_broken is called for pool-exhausted statements."""
         # Mock the connection's _get_statement to return a pool-exhausted statement.
-        pool_exhausted_dict = statement_response_factory(phase="PENDING")
-        pool_exhausted_dict["status"]["scaling_status"]["scaling_state"] = "POOL_EXHAUSTED"
+        pool_exhausted_dict = statement_response_factory(
+            phase="PENDING", scaling_state="POOL_EXHAUSTED"
+        )
         mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
             pool_exhausted_dict
         )
@@ -181,13 +187,12 @@ class TestExecute:
         with pytest.raises(ComputePoolExhaustedError):
             mock_connection_cursor.execute("SELECT 1 AS col")
 
-        # Verify that _raise_if_statement_is_broken was called
-        raise_if_broken_mock.assert_called_once()
-        # Verify it was called with a Statement object
-        called_statement = raise_if_broken_mock.call_args[0][0]
-        assert isinstance(called_statement, Statement)
-        assert called_statement.phase.name == "PENDING"
-        assert called_statement.is_pool_exhausted
+        # Verify that _raise_if_statement_is_broken was called, after the cursor had refreshed
+        # _statement to the pool-exhausted state it inspects.
+        raise_if_broken_mock.assert_called_once_with()
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "PENDING"
+        assert mock_connection_cursor._statement.is_pool_exhausted
 
     def test_execute_statement_times_out(
         self,
@@ -1406,81 +1411,78 @@ class TestArraysizeProperty:
 class TestRaiseIfStatementIsBroken:
     """Unit tests for Cursor._raise_if_statement_is_broken()."""
 
-    def test_does_nothing_for_healthy_statement(
+    @pytest.fixture
+    def cursor_with_statement_factory(
         self,
         mock_connection_cursor: Cursor,
-        statement_factory,
+        statement_factory: StatementFactory,
+    ) -> Callable[..., Cursor]:
+        """Returns a factory that installs a statement (built from the given statement_factory
+        kwargs) as the cursor's tracked statement and hands the cursor back, so each test can
+        declare the state under inspection inline and then call the no-argument
+        _raise_if_statement_is_broken() against it.
+        """
+
+        def _factory(**statement_kwargs: Any) -> Cursor:
+            mock_connection_cursor._statement = statement_factory(**statement_kwargs)
+            return mock_connection_cursor
+
+        return _factory
+
+    def test_does_nothing_for_healthy_statement(
+        self, cursor_with_statement_factory: Callable[..., Cursor]
     ):
         """Test that no exception is raised for a healthy statement."""
-        # Create a statement that is neither failed, degraded, nor pool-exhausted
-        healthy_statement = statement_factory(phase="RUNNING")
+        cursor = cursor_with_statement_factory(phase="RUNNING")
+        cursor._raise_if_statement_is_broken()
 
-        # Should not raise any exception
-        mock_connection_cursor._raise_if_statement_is_broken(healthy_statement)
-
-    def test_raises_operational_error_for_failed_statement(
+    @pytest.mark.parametrize(
+        ("phase", "status_detail", "expected_match"),
+        [
+            (
+                "FAILED",
+                "Database connection lost",
+                "Statement .* failed: Database connection lost",
+            ),
+            (
+                "DEGRADED",
+                "Memory limit exceeded",
+                "Statement .* is in DEGRADED state: Memory limit exceeded",
+            ),
+        ],
+    )
+    def test_raises_operational_error_for_broken_statement(
         self,
-        mock_connection_cursor: Cursor,
-        statement_factory,
+        cursor_with_statement_factory: Callable[..., Cursor],
+        phase: str,
+        status_detail: str,
+        expected_match: str,
     ):
-        """Test that OperationalError is raised for a failed statement."""
-        failed_statement = statement_factory(
-            phase="FAILED",
-            status_detail="Database connection lost",
-        )
+        """Test that OperationalError surfaces the detail for failed and degraded statements."""
+        cursor = cursor_with_statement_factory(phase=phase, status_detail=status_detail)
 
-        with pytest.raises(
-            OperationalError,
-            match="Statement .* failed: Database connection lost",
-        ):
-            mock_connection_cursor._raise_if_statement_is_broken(failed_statement)
-
-    def test_raises_operational_error_for_degraded_statement(
-        self,
-        mock_connection_cursor: Cursor,
-        statement_factory,
-    ):
-        """Test that OperationalError is raised for a degraded statement."""
-        degraded_statement = statement_factory(
-            phase="DEGRADED",
-            status_detail="Memory limit exceeded",
-        )
-
-        with pytest.raises(
-            OperationalError,
-            match="Statement .* is in DEGRADED state: Memory limit exceeded",
-        ):
-            mock_connection_cursor._raise_if_statement_is_broken(degraded_statement)
+        with pytest.raises(OperationalError, match=expected_match):
+            cursor._raise_if_statement_is_broken()
 
     def test_raises_compute_pool_exhausted_error_and_deletes_statement(
         self,
-        mock_connection_cursor: Cursor,
-        statement_response_factory: StatementResponseFactory,
+        cursor_with_statement_factory: Callable[..., Cursor],
         mocker,
     ):
         """Test that ComputePoolExhaustedError is raised for pool-exhausted statement
         and that the statement is deleted."""
-        # Create a pool-exhausted statement response
-        pool_exhausted_response = statement_response_factory(phase="PENDING")
-        pool_exhausted_response["status"]["scaling_status"]["scaling_state"] = "POOL_EXHAUSTED"
-
-        # Create the statement from response
-        pool_exhausted_statement = Statement.from_response(
-            mock_connection_cursor._connection,
-            pool_exhausted_response,
-        )
-        # Assign the statement to the cursor so delete_statement has a target
-        mock_connection_cursor._statement = pool_exhausted_statement
+        cursor = cursor_with_statement_factory(phase="PENDING", scaling_state="POOL_EXHAUSTED")
+        assert cursor._statement is not None
 
         # Spy on delete_statement to verify it's called
-        delete_spy = mocker.spy(mock_connection_cursor, "delete_statement")
+        delete_spy = mocker.spy(cursor, "delete_statement")
 
         with pytest.raises(ComputePoolExhaustedError) as exc_info:
-            mock_connection_cursor._raise_if_statement_is_broken(pool_exhausted_statement)
+            cursor._raise_if_statement_is_broken()
 
         # Verify the exception properties
         exception = exc_info.value
-        assert exception.statement_name == pool_exhausted_statement.name
+        assert exception.statement_name == cursor._statement.name
         assert exception.statement_deleted is True
         assert "The statement has been deleted." in str(exception)
         assert "Please retry your query." in str(exception)
@@ -1490,37 +1492,28 @@ class TestRaiseIfStatementIsBroken:
 
     def test_logs_error_when_delete_fails_for_pool_exhausted(
         self,
-        mock_connection_cursor: Cursor,
-        statement_response_factory: StatementResponseFactory,
+        cursor_with_statement_factory: Callable[..., Cursor],
         mocker,
         caplog,
     ):
         """Test that an error is logged if deleting a pool-exhausted statement fails."""
-        # Create a pool-exhausted statement response
-        pool_exhausted_response = statement_response_factory(phase="PENDING")
-        pool_exhausted_response["status"]["scaling_status"]["scaling_state"] = "POOL_EXHAUSTED"
-
-        pool_exhausted_statement = Statement.from_response(
-            mock_connection_cursor._connection,
-            pool_exhausted_response,
-        )
-        # Assign the statement to the cursor so delete_statement attempts deletion
-        mock_connection_cursor._statement = pool_exhausted_statement
+        cursor = cursor_with_statement_factory(phase="PENDING", scaling_state="POOL_EXHAUSTED")
+        assert cursor._statement is not None
 
         # Mock delete_statement to raise an exception
         mocker.patch.object(
-            mock_connection_cursor,
+            cursor,
             "delete_statement",
             side_effect=Exception("Network error during delete"),
         )
 
         # The method should still raise ComputePoolExhaustedError even if delete fails
         with pytest.raises(ComputePoolExhaustedError) as exc_info:
-            mock_connection_cursor._raise_if_statement_is_broken(pool_exhausted_statement)
+            cursor._raise_if_statement_is_broken()
 
         # Verify the exception properties when deletion failed
         exception = exc_info.value
-        assert exception.statement_name == pool_exhausted_statement.name
+        assert exception.statement_name == cursor._statement.name
         assert exception.statement_deleted is False
         assert "The statement could not be deleted and may need manual cleanup." in str(exception)
         assert "Please retry your query." in str(exception)
@@ -1529,33 +1522,23 @@ class TestRaiseIfStatementIsBroken:
         assert "Error deleting pool-exhausted statement" in caplog.text
         assert "Network error during delete" in caplog.text
 
-    def test_pool_exhausted_check_requires_pending_phase_and_pool_exhausted_state(
+    @pytest.mark.parametrize(
+        ("phase", "scaling_state"),
+        [
+            ("RUNNING", "POOL_EXHAUSTED"),  # POOL_EXHAUSTED only counts during PENDING
+            ("PENDING", "OK"),  # PENDING alone, without POOL_EXHAUSTED, is not exhaustion
+        ],
+    )
+    def test_pool_exhausted_requires_pending_phase_and_pool_exhausted_state(
         self,
-        mock_connection_cursor: Cursor,
-        statement_response_factory: StatementResponseFactory,
+        cursor_with_statement_factory: Callable[..., Cursor],
+        phase: str,
+        scaling_state: str,
     ):
         """Test that pool exhaustion only triggers when both conditions are met:
-        phase=PENDING AND scaling_state=POOL_EXHAUSTED."""
-
-        # Test 1: RUNNING phase with POOL_EXHAUSTED scaling_state should not trigger
-        running_response = statement_response_factory(phase="RUNNING")
-        running_response["status"]["scaling_status"]["scaling_state"] = "POOL_EXHAUSTED"
-        running_statement = Statement.from_response(
-            mock_connection_cursor._connection,
-            running_response,
-        )
-        # Should not raise (statement is not pool-exhausted because it's RUNNING)
-        mock_connection_cursor._raise_if_statement_is_broken(running_statement)
-
-        # Test 2: PENDING phase with OK scaling_state should not trigger
-        pending_ok_response = statement_response_factory(phase="PENDING")
-        pending_ok_response["status"]["scaling_status"]["scaling_state"] = "OK"
-        pending_ok_statement = Statement.from_response(
-            mock_connection_cursor._connection,
-            pending_ok_response,
-        )
-        # Should not raise (statement is PENDING but not pool-exhausted)
-        mock_connection_cursor._raise_if_statement_is_broken(pending_ok_statement)
+        phase=PENDING AND scaling_state=POOL_EXHAUSTED. Either condition alone must not raise."""
+        cursor = cursor_with_statement_factory(phase=phase, scaling_state=scaling_state)
+        cursor._raise_if_statement_is_broken()
 
     def test_compute_pool_exhausted_error_properties(self):
         """Test that ComputePoolExhaustedError correctly exposes statement properties."""
