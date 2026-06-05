@@ -13,7 +13,7 @@ from confluent_sql import (
     StatementDeletedError,
 )
 from confluent_sql.exceptions import NotSupportedError
-from confluent_sql.statement import Op, Phase
+from confluent_sql.statement import Op, Phase, Statement
 
 """A one column very fast to complete query."""
 SINGLE_COLUMN_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES`"
@@ -222,31 +222,33 @@ class TestCursor:
         # For an actual unbounded query, we need to use an actual table that comes from
         # a kafka topic.
         cursor = populated_table_connection.streaming_cursor()
-        # Will be an append-only unbounded query
-        cursor.execute(f"SELECT * FROM {test_table_name}")
-        statement = cursor.statement
-        assert statement is not None
-        assert statement.is_bounded is False
-        assert statement.is_append_only is True
-        assert statement.phase is Phase.RUNNING
+        try:
+            # Will be an append-only unbounded query
+            cursor.execute(f"SELECT * FROM {test_table_name}")
+            statement = cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is True
+            assert statement.phase is Phase.RUNNING
 
-        rows = []
-        max_wait_iterations = 30  # Wait up to 30 seconds
-        wait_iterations = 0
-        while cursor.may_have_results and wait_iterations < max_wait_iterations:
-            rows = cursor.fetchmany(10)
-            if rows:
-                break
-            time.sleep(1)
-            wait_iterations += 1
+            rows = []
+            max_wait_iterations = 30  # Wait up to 30 seconds
+            wait_iterations = 0
+            while cursor.may_have_results and wait_iterations < max_wait_iterations:
+                rows = cursor.fetchmany(10)
+                if rows:
+                    break
+                time.sleep(1)
+                wait_iterations += 1
 
-        assert len(rows) > 0, "Expected to fetch some rows from the streaming query."
-
-        # Deleting the statement will inherently stop it. TODO need more explicit way to
-        # differentiate between stopping and deleting a running statement, but that's for
-        # a different test.
-        cursor.delete_statement()
-        cursor.close()
+            assert len(rows) > 0, "Expected to fetch some rows from the streaming query."
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it. Deleting inherently stops a RUNNING statement. TODO need
+            # a more explicit way to differentiate between stopping and deleting a running
+            # statement, but that's for a different test.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     def test_streaming_changelog_cursor(
@@ -256,78 +258,80 @@ class TestCursor:
         populated_table_rowcount: int,
     ):
         cursor = populated_table_connection.streaming_cursor()
-        # Will be a retractable changelog unbounded query. It will emit an INSERT
-        # result set changelog row when the first message is observed, initial count of 1,
-        # then repeatedly revise that single row with UPDATE_BEFORE and UPDATE_AFTER pairs.
+        try:
+            # Will be a retractable changelog unbounded query. It will emit an INSERT
+            # result set changelog row when the first message is observed, initial count of 1,
+            # then repeatedly revise that single row with UPDATE_BEFORE and UPDATE_AFTER pairs.
 
-        # The final observed count will be the last UPDATE_AFTER row's count value.
+            # The final observed count will be the last UPDATE_AFTER row's count value.
 
-        cursor.execute(f"SELECT count(*) as `count` FROM {test_table_name}")
-        statement = cursor.statement
-        assert statement is not None
-        assert statement.is_bounded is False
-        assert statement.is_append_only is False
-        assert statement.phase is Phase.RUNNING
+            cursor.execute(f"SELECT count(*) as `count` FROM {test_table_name}")
+            statement = cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            assert statement.phase is Phase.RUNNING
 
-        max_wait_iterations = 20  # Do up to this many iterations of fetchmany() loop.
-        wait_iterations = 0
+            max_wait_iterations = 20  # Do up to this many iterations of fetchmany() loop.
+            wait_iterations = 0
 
-        the_count = 0
+            the_count = 0
 
-        had_insert = False
-        had_update_before = False
-        had_update_after = False
+            had_insert = False
+            had_update_before = False
+            had_update_after = False
 
-        # Keep consuming until we observe the expected final count.
-        while cursor.may_have_results and wait_iterations < max_wait_iterations:
-            # Will return a batch of up to 10 rows, where each row is a tuple of (operation, data),
-            # where operation is one of Op.INSERT, Op.UPDATE_BEFORE, Op.UPDATE_AFTER, and data is
-            # the row data for that operation.
+            # Keep consuming until we observe the expected final count.
+            while cursor.may_have_results and wait_iterations < max_wait_iterations:
+                # Will return a batch of up to 10 rows, where each row is a tuple of
+                # (operation, data), where operation is one of Op.INSERT, Op.UPDATE_BEFORE,
+                # Op.UPDATE_AFTER, and data is the row data for that operation.
 
-            # If no rows are currently available, will return an empty list, but
-            # may_have_results will still be True, so we can keep trying until we get some rows.
-            rows = cursor.fetchmany(10)
+                # If no rows are currently available, will return an empty list, but
+                # may_have_results will still be True, so we can keep trying until we get rows.
+                rows = cursor.fetchmany(10)
 
-            # Process each row in the batch
-            for op_and_row in rows:
-                op, row = op_and_row
-                if op == Op.INSERT:
-                    had_insert = True
-                    the_count = row[0]  # type: ignore[index]
-                elif op == Op.UPDATE_BEFORE:
-                    had_update_before = True
-                    # Will come in pairs with UPDATE_AFTER, so we don't need to do anything
-                    # with the count here.
-                elif op == Op.UPDATE_AFTER:
-                    had_update_after = True
-                    # Update the count.
-                    the_count = row[0]  # type: ignore[index]
+                # Process each row in the batch
+                for op_and_row in rows:
+                    op, row = op_and_row
+                    if op == Op.INSERT:
+                        had_insert = True
+                        the_count = row[0]  # type: ignore[index]
+                    elif op == Op.UPDATE_BEFORE:
+                        had_update_before = True
+                        # Will come in pairs with UPDATE_AFTER, so we don't need to do anything
+                        # with the count here.
+                    elif op == Op.UPDATE_AFTER:
+                        had_update_after = True
+                        # Update the count.
+                        the_count = row[0]  # type: ignore[index]
 
-                # {test_table_name} is populated with a total of populated_table_rowcount
-                # rows by the test fixture.
+                    # {test_table_name} is populated with a total of populated_table_rowcount
+                    # rows by the test fixture.
+                    if the_count == populated_table_rowcount:
+                        break
+
+                # Break outer loop if we found the expected count.
+                # (A real client of a streaming query will probably want to loop forever,
+                #  but we're just a test here.)
                 if the_count == populated_table_rowcount:
                     break
 
-            # Break outer loop if we found the expected count.
-            # (A real client of a streaming query will probably want to loop forever,
-            #  but we're just a test here.)
-            if the_count == populated_table_rowcount:
-                break
+                wait_iterations += 1
 
-            wait_iterations += 1
-
-        assert had_insert, "Expected to observe an INSERT changelog operation."
-        assert had_update_before, "Expected to observe an UPDATE_BEFORE changelog operation."
-        assert had_update_after, "Expected to observe an UPDATE_AFTER changelog operation."
-        assert the_count == populated_table_rowcount, (
-            f"Expected final count to be {populated_table_rowcount}, got {the_count}."
-        )
-
-        # Deleting the statement will inherently stop it. TODO need more explicit way to
-        # differentiate between stopping and deleting a running statement, but that's for
-        # a different test.
-        cursor.delete_statement()
-        cursor.close()
+            assert had_insert, "Expected to observe an INSERT changelog operation."
+            assert had_update_before, "Expected to observe an UPDATE_BEFORE changelog operation."
+            assert had_update_after, "Expected to observe an UPDATE_AFTER changelog operation."
+            assert the_count == populated_table_rowcount, (
+                f"Expected final count to be {populated_table_rowcount}, got {the_count}."
+            )
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it. Deleting inherently stops a RUNNING statement. TODO need
+            # a more explicit way to differentiate between stopping and deleting a running
+            # statement, but that's for a different test.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     def test_streaming_cursor_fetchall_raises(
@@ -336,20 +340,23 @@ class TestCursor:
         """Prove that if we try to call fetchall() on an unbounded streaming statement, we get an
         error instead of hanging indefinitely."""
         cursor = populated_table_connection.streaming_cursor()
-        cursor.execute(f"SELECT * FROM {test_table_name}")
-        statement = cursor.statement
-        assert statement is not None
-        assert statement.is_bounded is False
-        assert statement.phase is Phase.RUNNING
+        try:
+            cursor.execute(f"SELECT * FROM {test_table_name}")
+            statement = cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.phase is Phase.RUNNING
 
-        with pytest.raises(
-            NotSupportedError,
-            match=re.escape("Cannot call fetchall() on an unbounded streaming statement"),
-        ):
-            cursor.fetchall()
-
-        cursor.delete_statement()
-        cursor.close()
+            with pytest.raises(
+                NotSupportedError,
+                match=re.escape("Cannot call fetchall() on an unbounded streaming statement"),
+            ):
+                cursor.fetchall()
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it.
+            cursor.delete_statement()
+            cursor.close()
 
     def test_cursor_description_connection_closed_raises(
         self,
@@ -425,29 +432,26 @@ class TestCursor:
         # Create the table using streaming cursor mode
         # This should wait for the statement to reach COMPLETED phase
         cursor = connection.streaming_cursor()
-        cursor.execute(f"CREATE TABLE {table_name} (id INT, name STRING)")
-        statement = cursor.statement
-        assert statement is not None
+        try:
+            cursor.execute(f"CREATE TABLE {table_name} (id INT, name STRING)")
+            statement = cursor.statement
+            assert statement is not None
 
-        # Verify the statement has completed (not just RUNNING)
-        assert statement.phase == Phase.COMPLETED
-        assert statement.is_pure_ddl is True
+            # Verify the statement has completed (not just RUNNING)
+            assert statement.phase == Phase.COMPLETED
+            assert statement.is_pure_ddl is True
 
-        # Verify the table exists and is usable by querying it
-        verify_cursor = connection.cursor()
-        verify_cursor.execute(f"SELECT COUNT(*) as row_count FROM {table_name}")
-        results = verify_cursor.fetchall()
-        assert len(results) == 1  # Should have one row with count
-        verify_cursor.close()
-        cursor.close()
-
-        # Cleanup: Drop the created table
-        cleanup_cursor = connection.cursor()
-        cleanup_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cleanup_cursor.close()
-
-        # Delete the statement
-        connection.delete_statement(statement)
+            # Verify the table exists and is usable by querying it
+            with connection.closing_cursor() as verify_cursor:
+                verify_cursor.execute(f"SELECT COUNT(*) as row_count FROM {table_name}")
+                results = verify_cursor.fetchall()
+                assert len(results) == 1  # Should have one row with count
+        finally:
+            # cursor.close() reaps the COMPLETED CREATE statement (terminal => deletable), so no
+            # explicit delete_statement is needed here.
+            cursor.close()
+            with connection.closing_cursor() as drop_cursor:
+                drop_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
 
 @pytest.mark.integration
@@ -513,66 +517,71 @@ class TestStreamingChangelogCursor:
         """
 
         cursor = populated_table_connection.streaming_cursor(as_dict=as_dict)
-
-        cursor.execute(
-            f"SELECT c1 % 2 as even_odd, count(*) as cnt FROM {test_table_name} GROUP BY c1 % 2"
-        )
-
-        statement = cursor.statement
-
-        assert statement is not None
-        assert statement.is_bounded is False
-        assert statement.is_append_only is False
-        assert statement.phase is Phase.RUNNING
-
-        # Verify upsert columns trait
-        assert statement.traits is not None
-        assert statement.traits.upsert_columns == [0]
-
-        # Create changelog compressor
-        compressor = cursor.changelog_compressor()
-
-        max_iterations = 20
-        final_snapshot = None
-
-        # Iterate over snapshots until we see the expected final state
-        for iteration, snapshot in enumerate(compressor.snapshots()):
-            # print(f"Iteration {iteration}: snapshot = {snapshot}")
-            # Expect to have gotten between 0 and 2 rows in the snapshot, depending on how far
-            # along we are in processing the changelog.
-            assert len(snapshot) in (0, 1, 2), (
-                f"Expected snapshot to have 0, 1, or 2 rows, got {len(snapshot)}"
+        try:
+            cursor.execute(
+                f"SELECT c1 % 2 as even_odd, count(*) as cnt FROM {test_table_name} GROUP BY c1 % 2"
             )
 
-            if len(snapshot) == 2:
-                # Sort by even_odd value for consistent ordering
-                snapshot_sorted = sorted(snapshot, key=lambda row: self.get_even_odd(row, as_dict))
+            statement = cursor.statement
 
-                even_odd_0 = self.get_even_odd(snapshot_sorted[0], as_dict)
-                count_0 = self.get_count(snapshot_sorted[0], as_dict)
-                even_odd_1 = self.get_even_odd(snapshot_sorted[1], as_dict)
-                count_1 = self.get_count(snapshot_sorted[1], as_dict)
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            assert statement.phase is Phase.RUNNING
 
-                assert even_odd_0 == 0, "First row should be for even values (0)"
-                assert even_odd_1 == 1, "Second row should be for odd values (1)"
+            # Verify upsert columns trait
+            assert statement.traits is not None
+            assert statement.traits.upsert_columns == [0]
 
-                if count_0 == 5 and count_1 == 5:
-                    final_snapshot = snapshot_sorted
+            # Create changelog compressor
+            compressor = cursor.changelog_compressor()
+
+            max_iterations = 20
+            final_snapshot = None
+
+            # Iterate over snapshots until we see the expected final state
+            for iteration, snapshot in enumerate(compressor.snapshots()):
+                # print(f"Iteration {iteration}: snapshot = {snapshot}")
+                # Expect to have gotten between 0 and 2 rows in the snapshot, depending on how
+                # far along we are in processing the changelog.
+                assert len(snapshot) in (0, 1, 2), (
+                    f"Expected snapshot to have 0, 1, or 2 rows, got {len(snapshot)}"
+                )
+
+                if len(snapshot) == 2:
+                    # Sort by even_odd value for consistent ordering
+                    snapshot_sorted = sorted(
+                        snapshot, key=lambda row: self.get_even_odd(row, as_dict)
+                    )
+
+                    even_odd_0 = self.get_even_odd(snapshot_sorted[0], as_dict)
+                    count_0 = self.get_count(snapshot_sorted[0], as_dict)
+                    even_odd_1 = self.get_even_odd(snapshot_sorted[1], as_dict)
+                    count_1 = self.get_count(snapshot_sorted[1], as_dict)
+
+                    assert even_odd_0 == 0, "First row should be for even values (0)"
+                    assert even_odd_1 == 1, "Second row should be for odd values (1)"
+
+                    if count_0 == 5 and count_1 == 5:
+                        final_snapshot = snapshot_sorted
+                        break
+
+                if iteration >= max_iterations - 1:
                     break
+                time.sleep(1)
 
-            if iteration >= max_iterations - 1:
-                break
-            time.sleep(1)
-
-        assert final_snapshot is not None, (
-            f"Expected to reach final state with counts (5, 5) within {max_iterations} iterations"
-        )
-        assert len(final_snapshot) == 2
-        assert final_snapshot[0] == self.make_expected(0, 5, as_dict)
-        assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
-
-        # Cleanup
-        cursor.delete_statement()
+            assert final_snapshot is not None, (
+                f"Expected to reach final state with counts (5, 5) within {max_iterations} "
+                "iterations"
+            )
+            assert len(final_snapshot) == 2
+            assert final_snapshot[0] == self.make_expected(0, 5, as_dict)
+            assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it, and close the cursor to release the client-side reader.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
@@ -599,70 +608,75 @@ class TestStreamingChangelogCursor:
         """
 
         cursor = populated_table_connection.streaming_cursor(as_dict=as_dict)
-
-        cursor.execute(
-            f"SELECT c1 % 2 as even_odd, count(*) as cnt FROM {test_table_name} GROUP BY c1 % 2"
-        )
-
-        statement = cursor.statement
-
-        assert statement is not None
-        assert statement.is_bounded is False
-        assert statement.is_append_only is False
-        assert statement.phase is Phase.RUNNING
-
-        # Verify upsert columns trait
-        assert statement.traits is not None
-        assert statement.traits.upsert_columns == [0]
-
-        # Create changelog compressor
-        compressor = cursor.changelog_compressor()
-
-        max_iterations = 20
-        final_snapshot = None
-
-        # Use custom polling loop with get_current_snapshot() instead of generator
-        for _ in range(max_iterations):
-            if not cursor.may_have_results:
-                break
-
-            # Fetch current snapshot using get_current_snapshot() method
-            snapshot = compressor.get_current_snapshot()
-
-            # Expect to have gotten between 0 and 2 rows in the snapshot, depending on how far
-            # along we are in processing the changelog.
-            assert len(snapshot) in (0, 1, 2), (
-                f"Expected snapshot to have 0, 1, or 2 rows, got {len(snapshot)}"
+        try:
+            cursor.execute(
+                f"SELECT c1 % 2 as even_odd, count(*) as cnt FROM {test_table_name} GROUP BY c1 % 2"
             )
 
-            if len(snapshot) == 2:
-                # Sort by even_odd value for consistent ordering
-                snapshot_sorted = sorted(snapshot, key=lambda row: self.get_even_odd(row, as_dict))
+            statement = cursor.statement
 
-                even_odd_0 = self.get_even_odd(snapshot_sorted[0], as_dict)
-                count_0 = self.get_count(snapshot_sorted[0], as_dict)
-                even_odd_1 = self.get_even_odd(snapshot_sorted[1], as_dict)
-                count_1 = self.get_count(snapshot_sorted[1], as_dict)
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            assert statement.phase is Phase.RUNNING
 
-                assert even_odd_0 == 0, "First row should be for even values (0)"
-                assert even_odd_1 == 1, "Second row should be for odd values (1)"
+            # Verify upsert columns trait
+            assert statement.traits is not None
+            assert statement.traits.upsert_columns == [0]
 
-                if count_0 == 5 and count_1 == 5:
-                    final_snapshot = snapshot_sorted
+            # Create changelog compressor
+            compressor = cursor.changelog_compressor()
+
+            max_iterations = 20
+            final_snapshot = None
+
+            # Use custom polling loop with get_current_snapshot() instead of generator
+            for _ in range(max_iterations):
+                if not cursor.may_have_results:
                     break
 
-            # Custom wait logic - one of the main reasons to use get_current_snapshot()
-            time.sleep(1)
+                # Fetch current snapshot using get_current_snapshot() method
+                snapshot = compressor.get_current_snapshot()
 
-        assert final_snapshot is not None, (
-            f"Expected to reach final state with counts (5, 5) within {max_iterations} iterations"
-        )
-        assert len(final_snapshot) == 2
-        assert final_snapshot[0] == self.make_expected(0, 5, as_dict)
-        assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
+                # Expect to have gotten between 0 and 2 rows in the snapshot, depending on how
+                # far along we are in processing the changelog.
+                assert len(snapshot) in (0, 1, 2), (
+                    f"Expected snapshot to have 0, 1, or 2 rows, got {len(snapshot)}"
+                )
 
-        # Cleanup
-        cursor.delete_statement()
+                if len(snapshot) == 2:
+                    # Sort by even_odd value for consistent ordering
+                    snapshot_sorted = sorted(
+                        snapshot, key=lambda row: self.get_even_odd(row, as_dict)
+                    )
+
+                    even_odd_0 = self.get_even_odd(snapshot_sorted[0], as_dict)
+                    count_0 = self.get_count(snapshot_sorted[0], as_dict)
+                    even_odd_1 = self.get_even_odd(snapshot_sorted[1], as_dict)
+                    count_1 = self.get_count(snapshot_sorted[1], as_dict)
+
+                    assert even_odd_0 == 0, "First row should be for even values (0)"
+                    assert even_odd_1 == 1, "Second row should be for odd values (1)"
+
+                    if count_0 == 5 and count_1 == 5:
+                        final_snapshot = snapshot_sorted
+                        break
+
+                # Custom wait logic - one of the main reasons to use get_current_snapshot()
+                time.sleep(1)
+
+            assert final_snapshot is not None, (
+                f"Expected to reach final state with counts (5, 5) within {max_iterations} "
+                "iterations"
+            )
+            assert len(final_snapshot) == 2
+            assert final_snapshot[0] == self.make_expected(0, 5, as_dict)
+            assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it, and close the cursor to release the client-side reader.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
@@ -701,56 +715,60 @@ class TestStreamingChangelogCursor:
                 return (min_val, max_val, cnt)
 
         cursor = populated_table_connection.streaming_cursor(as_dict=as_dict)
-        cursor.execute(
-            f"SELECT min(c1) as min_val, max(c1) as max_val, count(*) as cnt FROM {test_table_name}"
-        )
-
-        statement = cursor.statement
-        assert statement is not None
-        assert statement.is_bounded is False
-        assert statement.is_append_only is False
-        assert statement.phase is Phase.RUNNING
-
-        # Verify NO upsert columns (global aggregation)
-        assert statement.traits is not None
-        assert statement.traits.upsert_columns is None
-
-        # Create changelog compressor
-        compressor = cursor.changelog_compressor()
-
-        max_iterations = 20
-        final_snapshot = None
-
-        # Iterate over snapshots until we see the expected final state
-        for iteration, snapshot in enumerate(compressor.snapshots()):
-            # Expect to have 0 or 1 row in the snapshot (global aggregation = single row)
-            assert len(snapshot) in (0, 1), (
-                f"Expected snapshot to have 0 or 1 row, got {len(snapshot)}"
+        try:
+            cursor.execute(
+                f"SELECT min(c1) as min_val, max(c1) as max_val, count(*) as cnt "
+                f"FROM {test_table_name}"
             )
 
-            if len(snapshot) == 1:
-                row = snapshot[0]
-                min_val = get_min(row)
-                max_val = get_max(row)
-                cnt = get_count(row)
+            statement = cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            assert statement.phase is Phase.RUNNING
 
-                # Check if we've reached final state
-                if min_val == 1 and max_val == 10 and cnt == 10:
-                    final_snapshot = snapshot
+            # Verify NO upsert columns (global aggregation)
+            assert statement.traits is not None
+            assert statement.traits.upsert_columns is None
+
+            # Create changelog compressor
+            compressor = cursor.changelog_compressor()
+
+            max_iterations = 20
+            final_snapshot = None
+
+            # Iterate over snapshots until we see the expected final state
+            for iteration, snapshot in enumerate(compressor.snapshots()):
+                # Expect to have 0 or 1 row in the snapshot (global aggregation = single row)
+                assert len(snapshot) in (0, 1), (
+                    f"Expected snapshot to have 0 or 1 row, got {len(snapshot)}"
+                )
+
+                if len(snapshot) == 1:
+                    row = snapshot[0]
+                    min_val = get_min(row)
+                    max_val = get_max(row)
+                    cnt = get_count(row)
+
+                    # Check if we've reached final state
+                    if min_val == 1 and max_val == 10 and cnt == 10:
+                        final_snapshot = snapshot
+                        break
+
+                if iteration >= max_iterations - 1:
                     break
+                time.sleep(1)
 
-            if iteration >= max_iterations - 1:
-                break
-            time.sleep(1)
-
-        assert final_snapshot is not None, (
-            f"Expected to reach final state (1, 10, 10) within {max_iterations} iterations"
-        )
-        assert len(final_snapshot) == 1
-        assert final_snapshot[0] == make_expected(1, 10, 10)
-
-        # Cleanup
-        cursor.delete_statement()
+            assert final_snapshot is not None, (
+                f"Expected to reach final state (1, 10, 10) within {max_iterations} iterations"
+            )
+            assert len(final_snapshot) == 1
+            assert final_snapshot[0] == make_expected(1, 10, 10)
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it, and close the cursor to release the client-side reader.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     def test_changelog_compressor_raises_on_external_deletion(
@@ -909,6 +927,7 @@ class TestStreamingChangelogCursor:
 
         # Create a unique table name for this test
         table_name = f"test_streaming_iteration_{uuid4().hex[:8]}"
+        streaming_statement: Statement | None = None
 
         try:
             # Step 1: Create table with sample data
@@ -933,6 +952,7 @@ class TestStreamingChangelogCursor:
             # Step 2: Execute streaming query and iterate
             with connection.closing_streaming_cursor(as_dict=True) as cursor:
                 cursor.execute(f"SELECT id, name FROM {table_name}")
+                streaming_statement = cursor.statement
 
                 # Verify this is an append-only streaming query
                 assert cursor.statement.is_append_only is True, (
@@ -958,6 +978,11 @@ class TestStreamingChangelogCursor:
             )
 
         finally:
-            # Step 5: Clean up the table
+            # Step 5: Stop the streaming query *before* dropping its table. The append-only
+            # SELECT never ends on its own; dropping the table (and its backing Kafka topic) out
+            # from under a still-RUNNING statement transitions it to FAILED and emits noisy
+            # notifications. delete_statement stops-then-destroys and is a no-op if already gone.
+            if streaming_statement is not None:
+                connection.delete_statement(streaming_statement)
             with connection.closing_cursor() as cursor:
                 cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
