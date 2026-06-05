@@ -68,6 +68,8 @@ def _connect_from_env(*, include_compute_pool: bool) -> Connection:
     otherwise left unspecified (Flink falls back to the environment default pool). When
     False, the pool is never forwarded, forcing the default-pool path even if the var is set.
     """
+    global_api_key = os.getenv("CONFLUENT_GLOBAL_API_KEY", "")
+    global_api_secret = os.getenv("CONFLUENT_GLOBAL_API_SECRET", "")
     flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
     flink_api_secret = os.getenv("CONFLUENT_FLINK_API_SECRET", "")
     environment_id = os.getenv("CONFLUENT_ENV_ID", "")
@@ -76,10 +78,13 @@ def _connect_from_env(*, include_compute_pool: bool) -> Connection:
     cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
     database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
+    # Either a Global pair or a Flink-region pair authenticates the connection.
+    have_credentials = (global_api_key and global_api_secret) or (
+        flink_api_key and flink_api_secret
+    )
     if not all(
         [
-            flink_api_key,
-            flink_api_secret,
+            have_credentials,
             environment_id,
             organization_id,
             cloud_region,
@@ -96,6 +101,8 @@ def _connect_from_env(*, include_compute_pool: bool) -> Connection:
     )
 
     return confluent_sql.connect(
+        global_api_key=global_api_key,
+        global_api_secret=global_api_secret,
         flink_api_key=flink_api_key,
         flink_api_secret=flink_api_secret,
         environment_id=environment_id,

@@ -36,10 +36,56 @@ from .types import PropertiesDict, RowPythonTypes
 logger = logging.getLogger(__name__)
 
 
+def _resolve_api_credentials(
+    global_api_key: str | None,
+    global_api_secret: str | None,
+    flink_api_key: str | None,
+    flink_api_secret: str | None,
+) -> tuple[str, str]:
+    """Pick the (key, secret) pair a connection authenticates with.
+
+    A 'global' Confluent Cloud API key works against every route this driver touches (Flink
+    today, TableFlow and friends later), whereas a Flink-region key only works against Flink.
+    The global pair therefore wins when both are supplied. Either pair may be omitted, but a
+    half-supplied pair (key without secret, or vice versa) is a configuration mistake worth
+    surfacing rather than silently treating as absent.
+
+    Empty strings count as absent (matching how the rest of connect() treats blank parameters).
+
+    Raises:
+        InterfaceError: If either pair is half-supplied, or if neither pair is fully supplied.
+    """
+    global_key, global_secret = global_api_key or "", global_api_secret or ""
+    flink_key, flink_secret = flink_api_key or "", flink_api_secret or ""
+
+    if bool(global_key) != bool(global_secret):
+        raise InterfaceError("global_api_key and global_api_secret must be provided together")
+    if bool(flink_key) != bool(flink_secret):
+        raise InterfaceError("flink_api_key and flink_api_secret must be provided together")
+
+    if global_key:
+        if flink_key:
+            logger.warning(
+                "Both global and Flink API credentials provided; using the global credentials "
+                "and ignoring flink_api_key/flink_api_secret."
+            )
+        return (global_key, global_secret)
+
+    if flink_key:
+        return (flink_key, flink_secret)
+
+    raise InterfaceError(
+        "Either global_api_key/global_api_secret or flink_api_key/flink_api_secret "
+        "must be provided"
+    )
+
+
 def connect(  # noqa: PLR0913
     *,
-    flink_api_key: str,
-    flink_api_secret: str,
+    global_api_key: str | None = None,
+    global_api_secret: str | None = None,
+    flink_api_key: str | None = None,
+    flink_api_secret: str | None = None,
     environment_id: str,
     organization_id: str,
     compute_pool_id: str | None = None,
@@ -56,8 +102,13 @@ def connect(  # noqa: PLR0913
     Create a connection to a Confluent SQL service.
 
     Args:
-        flink_api_key: Flink region API key
-        flink_api_secret: Flink region API secret
+        global_api_key: A "Global" Confluent Cloud API key, usable against every route this
+            driver touches. Preferred over flink_api_key when both are supplied. Either this
+            pair or the flink_api_key pair must be provided.
+        global_api_secret: Secret paired with global_api_key. Must be supplied together with it.
+        flink_api_key: Flink region API key, usable only against Flink routes. Used when no
+            global key is supplied. Either this pair or the global_api_key pair must be provided.
+        flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
         environment_id: Environment ID
         organization_id: Organization ID
         compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
@@ -124,9 +175,6 @@ def connect(  # noqa: PLR0913
         if not cloud_region:
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
-    if not flink_api_key or not flink_api_secret:
-        raise InterfaceError("Flink region API key and secret are required")
-
     if dbname is not None:
         warnings.warn(
             "The 'dbname' parameter is deprecated and will be removed in a future release. "
@@ -140,13 +188,15 @@ def connect(  # noqa: PLR0913
             )
 
     return Connection(
-        flink_api_key,
-        flink_api_secret,
         environment_id,
         organization_id,
         cloud_provider,
         cloud_region,
         endpoint,
+        global_api_key=global_api_key,
+        global_api_secret=global_api_secret,
+        flink_api_key=flink_api_key,
+        flink_api_secret=flink_api_secret,
         compute_pool_id=compute_pool_id,
         database=database or dbname,  # dbname is deprecated.
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
@@ -200,13 +250,16 @@ class Connection:
 
     def __init__(  # noqa: PLR0913
         self,
-        flink_api_key: str,
-        flink_api_secret: str,
         environment_id: str,
         organization_id: str,
         cloud_provider: str | None,
         cloud_region: str | None,
         endpoint: str | None,
+        *,
+        global_api_key: str | None = None,
+        global_api_secret: str | None = None,
+        flink_api_key: str | None = None,
+        flink_api_secret: str | None = None,
         compute_pool_id: str | None = None,
         database: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
@@ -217,8 +270,14 @@ class Connection:
         Initialize a new connection to a Confluent SQL service.
 
         Args:
-            flink_api_key: Flink region API key
-            flink_api_secret: Flink region API secret
+            global_api_key: A "Global" Confluent Cloud API key, usable against every route this
+                driver touches. Preferred over flink_api_key when both are supplied. Either this
+                pair or the flink_api_key pair must be provided.
+            global_api_secret: Secret paired with global_api_key. Must be supplied together with it.
+            flink_api_key: Flink region API key, usable only against Flink routes. Used when no
+                global key is supplied. Either this pair or the global_api_key pair must be
+                provided.
+            flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
             environment_id: Environment ID
             organization_id: Organization ID
             cloud_provider: Cloud provider (required if endpoint is not provided)
@@ -306,7 +365,10 @@ class Connection:
         )
 
         # Create httpx client for making API calls
-        basic_auth = httpx.BasicAuth(username=flink_api_key, password=flink_api_secret)
+        auth_key, auth_secret = _resolve_api_credentials(
+            global_api_key, global_api_secret, flink_api_key, flink_api_secret
+        )
+        basic_auth = httpx.BasicAuth(username=auth_key, password=auth_secret)
         client_kwargs: dict[str, Any] = {
             "auth": basic_auth,
             "base_url": base_url,
