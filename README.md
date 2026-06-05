@@ -20,11 +20,15 @@ The behavior of snapshot-mode cursors, complying with dbapi semantics, are well 
 
 - **Confluent Cloud account** with Flink environment
 - **Existing Flink Database** (Confluent Cloud Kafka cluster)
-- **Flink Region API credentials** for Flink SQL Region API access: a user or service account Flink region API key and secret.
+- **API credentials**, one of:
+  - a **"Global" Confluent Cloud API key** and secret, passed as `global_api_key` / `global_api_secret`, or
+  - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`.
+
+  A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Provide at least one pair. If you supply both, the Global pair is used and the Flink pair is ignored. A half-supplied pair (a key without its secret, or vice versa) is rejected.
 
 ### How to Obtain a Flink Region API Key
 
-This driver requires a **Flink Region API key** (also called a Flink SQL API key), which is specific to your Flink region/environment (the environment + cloud provider + cloud region triplet) and provides access to the regional Flink SQL API endpoints. This is distinct from a Confluent Cloud control-plane API key.
+A **Flink Region API key** (also called a Flink SQL API key) is specific to your Flink region/environment (the environment + cloud provider + cloud region triplet) and provides access to the regional Flink SQL API endpoints. This is distinct from a Confluent Cloud control-plane API key. (A "Global" Confluent Cloud API key is the alternative — see above — and is created the same way but without scoping to a single Flink region.)
 
 To create or find a Flink Region API key:
 
@@ -64,8 +68,8 @@ connection = confluent_sql.connect(
     environment_id="env-123456",
     cloud_provider="aws",
     cloud_region="us-east-2",
-    flink_api_key="your-flink-api-key",
-    flink_api_secret="your-flink-api-secret",
+    flink_api_key="your-flink-api-key",  # or global_api_key=... for a "Global" Confluent Cloud key
+    flink_api_secret="your-flink-api-secret",  # or global_api_secret=...
     database="your-database-name",
     compute_pool_id="lfcp-789012"  # optional; omit to use the environment's default compute pool
 )
@@ -208,6 +212,8 @@ export CONFLUENT_CLOUD_PROVIDER="aws"
 export CONFLUENT_CLOUD_REGION="us-east-2"
 export CONFLUENT_FLINK_API_KEY="your-key" # Flink Region API key for the above cloud/region ...
 export CONFLUENT_FLINK_API_SECRET="your-secret" # and associated secret.
+# Alternatively, a "Global" Confluent Cloud API key (used in preference to the Flink pair if both
+# are set): export CONFLUENT_GLOBAL_API_KEY / CONFLUENT_GLOBAL_API_SECRET instead.
 export CONFLUENT_TEST_DBNAME="test-db" # A database/kafka cluster name within the above cloud/region.
 export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # Optional. If set, the integration suite runs against this pool; if unset, the suite runs against the environment's default pool. The driver treats it as optional at connect() either way.
 ```

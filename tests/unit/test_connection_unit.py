@@ -3,14 +3,19 @@ import json
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import NamedTuple
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError, StatementNotFoundError
 from confluent_sql.__version__ import VERSION
-from confluent_sql.connection import Connection, RowTypeRegistry, connect
+from confluent_sql.connection import (
+    Connection,
+    RowTypeRegistry,
+    _resolve_api_credentials,
+    connect,
+)
 from confluent_sql.connection import logger as connection_module_logger
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import HIDDEN_LABEL, LABEL_PREFIX, Statement
@@ -639,27 +644,47 @@ class TestConnectChecks:
         expected_base_url = "https://flink.us-east-1.aws.confluent.cloud/sql/v1/organizations/org-456/environments/env-123/"
         assert str(conn._client.base_url) == expected_base_url
 
-    def test_requires_flink_api_key(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without a Flink API key raises an error."""
-        with pytest.raises(InterfaceError, match="Flink region API key and secret are required"):
+    def test_requires_some_api_credentials(self, connection_factory: ConnectionFactory):
+        """connect() with neither a global nor a Flink credential pair raises (#112)."""
+        with pytest.raises(
+            InterfaceError,
+            match=(
+                "Either global_api_key/global_api_secret or "
+                "flink_api_key/flink_api_secret must be provided"
+            ),
+        ):
             connection_factory(
                 environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="aws",
                 cloud_region="us-east-1",
+                # Pin every credential empty so the factory's CONFLUENT_GLOBAL_API_KEY/SECRET
+                # env-var fallback can't smuggle real credentials in and mask the raise.
+                global_api_key="",
+                global_api_secret="",
                 flink_api_key="",
+                flink_api_secret="",
             )
 
-    def test_requires_flink_api_secret(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without a Flink API secret raises an error."""
-        with pytest.raises(InterfaceError, match="Flink region API key and secret are required"):
+    def test_half_flink_pair_raises_through_connect(
+        self, connection_factory: ConnectionFactory
+    ):
+        """A lone flink_api_key (no secret) raises the half-pair error end-to-end (#112)."""
+        with pytest.raises(
+            InterfaceError,
+            match="flink_api_key and flink_api_secret must be provided together",
+        ):
             connection_factory(
                 environment_id="foo_id",
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="aws",
                 cloud_region="us-east-1",
+                # Pin global empty so an env-var fallback can't resolve real global creds and
+                # short-circuit the half-pair check regardless of helper ordering.
+                global_api_key="",
+                global_api_secret="",
                 flink_api_key="valid-key",
                 flink_api_secret="",
             )
@@ -762,6 +787,137 @@ class TestConnectChecks:
                 endpoint="https://custom.example.com",
                 cloud_region="us-east-1",
             )
+
+
+@pytest.mark.unit
+class TestApiCredentialResolution:
+    """Unit tests over _resolve_api_credentials -- the single source of truth for which
+    key/secret pair authenticates a connection (#112)."""
+
+    @pytest.mark.parametrize(
+        ("global_api_key", "global_api_secret", "flink_api_key", "flink_api_secret", "expected"),
+        [
+            ("gk", "gs", None, None, ("gk", "gs")),
+            (None, None, "fk", "fs", ("fk", "fs")),
+            # Global is the superset, so it wins when both pairs are fully supplied.
+            ("gk", "gs", "fk", "fs", ("gk", "gs")),
+            # Empty strings are as good as absent.
+            ("gk", "gs", "", "", ("gk", "gs")),
+            ("", "", "fk", "fs", ("fk", "fs")),
+        ],
+    )
+    def test_resolves_effective_pair(
+        self, global_api_key, global_api_secret, flink_api_key, flink_api_secret, expected
+    ):
+        assert (
+            _resolve_api_credentials(
+                global_api_key, global_api_secret, flink_api_key, flink_api_secret
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        ("global_api_key", "global_api_secret"),
+        [("gk", None), ("gk", ""), (None, "gs"), ("", "gs")],
+    )
+    def test_half_global_pair_raises(self, global_api_key, global_api_secret):
+        with pytest.raises(
+            InterfaceError,
+            match="global_api_key and global_api_secret must be provided together",
+        ):
+            _resolve_api_credentials(global_api_key, global_api_secret, None, None)
+
+    @pytest.mark.parametrize(
+        ("flink_api_key", "flink_api_secret"),
+        [("fk", None), ("fk", ""), (None, "fs"), ("", "fs")],
+    )
+    def test_half_flink_pair_raises(self, flink_api_key, flink_api_secret):
+        with pytest.raises(
+            InterfaceError,
+            match="flink_api_key and flink_api_secret must be provided together",
+        ):
+            _resolve_api_credentials(None, None, flink_api_key, flink_api_secret)
+
+    @pytest.mark.parametrize(
+        ("global_api_key", "global_api_secret", "flink_api_key", "flink_api_secret"),
+        [(None, None, None, None), ("", "", "", "")],
+    )
+    def test_neither_pair_raises(
+        self, global_api_key, global_api_secret, flink_api_key, flink_api_secret
+    ):
+        with pytest.raises(
+            InterfaceError,
+            match=(
+                "Either global_api_key/global_api_secret or "
+                "flink_api_key/flink_api_secret must be provided"
+            ),
+        ):
+            _resolve_api_credentials(
+                global_api_key, global_api_secret, flink_api_key, flink_api_secret
+            )
+
+    def test_both_pairs_warns_that_flink_is_ignored(self, caplog):
+        """Supplying both pairs uses global and warns the flink pair is ignored -- a confused
+        caller needs to see this, so it is a warning, not a debug line."""
+        with caplog.at_level("WARNING", logger=connection_module_logger.name):
+            resolved = _resolve_api_credentials("gk", "gs", "fk", "fs")
+        assert resolved == ("gk", "gs")
+        assert any(
+            "ignoring flink_api_key/flink_api_secret" in record.getMessage()
+            and record.levelname == "WARNING"
+            for record in caplog.records
+        )
+
+
+@pytest.mark.unit
+class TestConnectAuthWiring:
+    """End-to-end proof that the resolved pair is what gets handed to httpx for auth (#112)."""
+
+    @staticmethod
+    def _connect_spying_on_basic_auth(
+        *,
+        global_api_key: str | None = None,
+        global_api_secret: str | None = None,
+        flink_api_key: str | None = None,
+        flink_api_secret: str | None = None,
+    ) -> Mock:
+        """connect() with the given credential kwargs, returning the spy on httpx.BasicAuth so the
+        caller can assert exactly which username/password the client was wired with."""
+        with patch(
+            "confluent_sql.connection.httpx.BasicAuth", wraps=httpx.BasicAuth
+        ) as basic_auth_spy:
+            connect(
+                environment_id="env-id",
+                organization_id="org-id",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                global_api_key=global_api_key,
+                global_api_secret=global_api_secret,
+                flink_api_key=flink_api_key,
+                flink_api_secret=flink_api_secret,
+            )
+        return basic_auth_spy
+
+    def test_global_only_authenticates_with_global_creds(self):
+        spy = self._connect_spying_on_basic_auth(
+            global_api_key="global-key", global_api_secret="global-secret"
+        )
+        spy.assert_called_once_with(username="global-key", password="global-secret")
+
+    def test_flink_only_authenticates_with_flink_creds(self):
+        spy = self._connect_spying_on_basic_auth(
+            flink_api_key="flink-key", flink_api_secret="flink-secret"
+        )
+        spy.assert_called_once_with(username="flink-key", password="flink-secret")
+
+    def test_both_pairs_authenticate_with_global_creds(self):
+        spy = self._connect_spying_on_basic_auth(
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+            flink_api_key="flink-key",
+            flink_api_secret="flink-secret",
+        )
+        spy.assert_called_once_with(username="global-key", password="global-secret")
 
 
 @pytest.mark.unit
