@@ -78,13 +78,18 @@ def _connect_from_env(*, include_compute_pool: bool) -> Connection:
     cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
     database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
-    # Either a Global pair or a Flink-region pair authenticates the connection.
-    have_credentials = (global_api_key and global_api_secret) or (
-        flink_api_key and flink_api_secret
-    )
+    # Either a Global pair or a Flink-region pair authenticates the connection. A half-supplied
+    # pair (key without its secret, or vice versa) would make connect() raise, so treat it as
+    # "not configured" and skip rather than letting the whole integration suite error during
+    # fixture setup.
+    global_full = bool(global_api_key) and bool(global_api_secret)
+    flink_full = bool(flink_api_key) and bool(flink_api_secret)
+    global_half = bool(global_api_key) != bool(global_api_secret)
+    flink_half = bool(flink_api_key) != bool(flink_api_secret)
+    credentials_available = (global_full or flink_full) and not (global_half or flink_half)
     if not all(
         [
-            have_credentials,
+            credentials_available,
             environment_id,
             organization_id,
             cloud_region,

@@ -24,7 +24,7 @@ The behavior of snapshot-mode cursors, complying with dbapi semantics, are well 
   - a **"Global" Confluent Cloud API key** and secret, passed as `global_api_key` / `global_api_secret`, or
   - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`.
 
-  A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Supply exactly one pair — if both are given, the Global pair is used.
+  A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Provide at least one pair. If you supply both, the Global pair is used and the Flink pair is ignored. A half-supplied pair (a key without its secret, or vice versa) is rejected.
 
 ### How to Obtain a Flink Region API Key
 
