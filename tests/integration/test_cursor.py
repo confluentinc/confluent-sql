@@ -579,8 +579,9 @@ class TestStreamingChangelogCursor:
             assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
         finally:
             # Reap the unbounded statement before the session-scoped table fixture drops the
-            # table out from under it.
+            # table out from under it, and close the cursor to release the client-side reader.
             cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
@@ -673,8 +674,9 @@ class TestStreamingChangelogCursor:
             assert final_snapshot[1] == self.make_expected(1, 5, as_dict)
         finally:
             # Reap the unbounded statement before the session-scoped table fixture drops the
-            # table out from under it.
+            # table out from under it, and close the cursor to release the client-side reader.
             cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
@@ -764,8 +766,9 @@ class TestStreamingChangelogCursor:
             assert final_snapshot[0] == make_expected(1, 10, 10)
         finally:
             # Reap the unbounded statement before the session-scoped table fixture drops the
-            # table out from under it.
+            # table out from under it, and close the cursor to release the client-side reader.
             cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     def test_changelog_compressor_raises_on_external_deletion(
