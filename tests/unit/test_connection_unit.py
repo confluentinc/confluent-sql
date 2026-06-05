@@ -659,6 +659,10 @@ class TestConnectChecks:
                 organization_id="4567",
                 cloud_provider="aws",
                 cloud_region="us-east-1",
+                # Pin every credential empty so the factory's CONFLUENT_GLOBAL_API_KEY/SECRET
+                # env-var fallback can't smuggle real credentials in and mask the raise.
+                global_api_key="",
+                global_api_secret="",
                 flink_api_key="",
                 flink_api_secret="",
             )
@@ -677,6 +681,10 @@ class TestConnectChecks:
                 organization_id="4567",
                 cloud_provider="aws",
                 cloud_region="us-east-1",
+                # Pin global empty so an env-var fallback can't resolve real global creds and
+                # short-circuit the half-pair check regardless of helper ordering.
+                global_api_key="",
+                global_api_secret="",
                 flink_api_key="valid-key",
                 flink_api_secret="",
             )
