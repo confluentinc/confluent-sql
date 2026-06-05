@@ -432,7 +432,6 @@ class TestCursor:
         # Create the table using streaming cursor mode
         # This should wait for the statement to reach COMPLETED phase
         cursor = connection.streaming_cursor()
-        statement: Statement | None = None
         try:
             cursor.execute(f"CREATE TABLE {table_name} (id INT, name STRING)")
             statement = cursor.statement
@@ -448,9 +447,9 @@ class TestCursor:
                 results = verify_cursor.fetchall()
                 assert len(results) == 1  # Should have one row with count
         finally:
+            # cursor.close() reaps the COMPLETED CREATE statement (terminal => deletable), so no
+            # explicit delete_statement is needed here.
             cursor.close()
-            if statement is not None:
-                connection.delete_statement(statement)
             with connection.closing_cursor() as drop_cursor:
                 drop_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
