@@ -49,6 +49,8 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
 
     def _create_connection(  # noqa: PLR0913
         *,
+        global_api_key: str | None = None,
+        global_api_secret: str | None = None,
         flink_api_key: str | None = None,
         flink_api_secret: str | None = None,
         environment_id: str | None = None,
@@ -62,6 +64,10 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         http_timeout_secs: float | None = None,
         endpoint: str | None = None,
     ) -> Connection:
+        if global_api_key is None:
+            global_api_key = os.getenv("CONFLUENT_GLOBAL_API_KEY", "")
+        if global_api_secret is None:
+            global_api_secret = os.getenv("CONFLUENT_GLOBAL_API_SECRET", "")
         if flink_api_key is None:
             flink_api_key = os.getenv("CONFLUENT_FLINK_API_KEY", "")
         if flink_api_secret is None:
@@ -83,6 +89,8 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
         connection = connect(
+            global_api_key=global_api_key,
+            global_api_secret=global_api_secret,
             flink_api_key=flink_api_key,
             flink_api_secret=flink_api_secret,
             environment_id=environment_id,
