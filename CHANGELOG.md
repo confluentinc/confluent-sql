@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+- No unreleased changes.
+
+## 0.4.0, 2026-06-15
+
 ### Added
 
 - Support for "Global" Confluent Cloud API keys: `confluent_sql.connect()` (and `Connection`) now accept `global_api_key` / `global_api_secret`. A Global key works against every route this driver touches, so it is preferred over a Flink Region key when both are supplied. `flink_api_key` / `flink_api_secret` remain supported and are now optional; at least one fully-specified pair must be provided. If both pairs are supplied, the Global pair is used (and the Flink pair ignored, with a warning); a half-specified pair (key without secret, or vice versa) is rejected. (#112)
