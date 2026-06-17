@@ -22,12 +22,27 @@ from .exceptions import (
     StatementDeletedError,
     StatementNotFoundError,
     StatementStoppedError,
+    TableflowTopicAlreadyExistsError,
+    TableflowTopicNotFoundError,
     TypeMismatchError,
     Warning,
 )
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
 from .statement import HIDDEN_LABEL, Op
+from .tableflow import (
+    AzureAdlsStorage,
+    ByobAwsStorage,
+    ManagedStorage,
+    TableflowErrorHandling,
+    TableflowErrorHandlingLog,
+    TableflowErrorHandlingSkip,
+    TableflowErrorHandlingSuspend,
+    TableflowPhase,
+    TableflowTopic,
+    TableflowTopicConfig,
+    TableFormat,
+)
 from .types import PropertiesDict, SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
@@ -58,6 +73,19 @@ __all__ = [
     "ProgrammingError",
     "NotSupportedError",
     "TypeMismatchError",
+    "TableflowTopicNotFoundError",
+    "TableflowTopicAlreadyExistsError",
+    "TableFormat",
+    "TableflowPhase",
+    "TableflowTopic",
+    "TableflowTopicConfig",
+    "ManagedStorage",
+    "ByobAwsStorage",
+    "AzureAdlsStorage",
+    "TableflowErrorHandling",
+    "TableflowErrorHandlingSuspend",
+    "TableflowErrorHandlingSkip",
+    "TableflowErrorHandlingLog",
     "apilevel",
     "threadsafety",
     "paramstyle",
