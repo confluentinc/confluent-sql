@@ -95,6 +95,11 @@ class TestResolveTableflowCredentials:
         with pytest.raises(InterfaceError, match="tableflow_api_key and tableflow_api_secret"):
             _resolve_tableflow_credentials("", "", "tk", "")
 
+    def test_global_short_circuits_half_tableflow_pair(self) -> None:
+        # A usable global key wins and must not be tripped up by an incidental half-supplied
+        # Tableflow pair (e.g. one leaked in from the environment).
+        assert _resolve_tableflow_credentials("gk", "gs", "tk", "") == ("gk", "gs")
+
 
 class TestControlplaneClient:
     """Lazy control-plane client creation and the no-credentials failure path."""

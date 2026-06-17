@@ -112,18 +112,22 @@ def _resolve_tableflow_credentials(
     for the Flink client); here we only validate the Tableflow pair.
 
     Raises:
-        InterfaceError: If the Tableflow pair is half-supplied (key without secret, or vice versa).
+        InterfaceError: If no global key is supplied and the Tableflow pair is half-supplied (key
+            without secret, or vice versa).
     """
     global_key, global_secret = global_api_key or "", global_api_secret or ""
     tableflow_key, tableflow_secret = tableflow_api_key or "", tableflow_api_secret or ""
+
+    # A global key wins and covers everything, so short-circuit before validating the Tableflow
+    # pair: a caller who supplied a usable global key shouldn't be tripped up by an incidental
+    # half-supplied Tableflow pair (e.g. one leaked in from the environment).
+    if global_key:
+        return (global_key, global_secret)
 
     if bool(tableflow_key) != bool(tableflow_secret):
         raise InterfaceError(
             "tableflow_api_key and tableflow_api_secret must be provided together"
         )
-
-    if global_key:
-        return (global_key, global_secret)
     if tableflow_key:
         return (tableflow_key, tableflow_secret)
     return None
@@ -1677,6 +1681,9 @@ class Connection:
             The full TableflowTopic (phase, spec, status).
 
         Raises:
+            ProgrammingError: If the Kafka cluster id can't be resolved -- no
+                database_kafka_cluster_id was supplied and CMK resolution is unavailable
+                (no global key).
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
@@ -1716,6 +1723,9 @@ class Connection:
             timeout: Maximum seconds to wait when wait_for_removal is True.
 
         Raises:
+            ProgrammingError: If the Kafka cluster id can't be resolved -- no
+                database_kafka_cluster_id was supplied and CMK resolution is unavailable
+                (no global key).
             TableflowTopicNotFoundError: If Tableflow was not enabled for the topic (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """

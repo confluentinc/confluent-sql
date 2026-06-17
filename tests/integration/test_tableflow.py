@@ -42,7 +42,17 @@ def _tableflow_connection_from_env() -> Connection:
     compute_pool_id = os.getenv("CONFLUENT_COMPUTE_POOL_ID", "")
 
     has_global = bool(global_api_key) and bool(global_api_secret)
+    has_flink = bool(flink_api_key) and bool(flink_api_secret)
     has_tableflow = bool(tableflow_api_key) and bool(tableflow_api_secret)
+    # A half-supplied pair (key without secret, or vice versa) would make connect() raise
+    # InterfaceError; treat that as "not configured" and skip rather than erroring at setup.
+    no_half_pairs = not (
+        bool(global_api_key) != bool(global_api_secret)
+        or bool(flink_api_key) != bool(flink_api_secret)
+        or bool(tableflow_api_key) != bool(tableflow_api_secret)
+    )
+    # The connection's own (Flink) client needs a global or Flink-region pair.
+    flink_auth_ok = has_global or has_flink
     # Control-plane credential: a global key, or a dedicated tableflow pair.
     controlplane_ok = has_global or has_tableflow
     # Cluster id obtainable: a global key (CMK lookup), or a directly-supplied id.
@@ -50,7 +60,7 @@ def _tableflow_connection_from_env() -> Connection:
     base_ok = all(
         [environment_id, organization_id, cloud_provider, cloud_region, database, compute_pool_id]
     )
-    if not (controlplane_ok and cluster_ok and base_ok):
+    if not (no_half_pairs and flink_auth_ok and controlplane_ok and cluster_ok and base_ok):
         pytest.skip("Missing environment variables for a Tableflow-capable integration connection")
 
     return confluent_sql.connect(
