@@ -488,7 +488,8 @@ class Connection:
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
         )
         self._controlplane_client = None
-        # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires (det. 13).
+        # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
+        # Tableflow work with only a tableflow key pair (no global key needed for CMK).
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
 
         self._row_type_registry = RowTypeRegistry()

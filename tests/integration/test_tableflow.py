@@ -127,9 +127,9 @@ class TestTableflowLifecycle:
 
             # Push data through, then re-check health: Tableflow stayed RUNNING with no failing
             # formats *through* the insert. (We can't verify rows materialized -- see docstring.)
-            conn.execute_snapshot_ddl(
-                f"INSERT INTO `{table}` VALUES (1, 'one'), (2, 'two')"
-            )
+            # INSERT is DML, not DDL -- run it through a regular cursor, not execute_snapshot_ddl.
+            with conn.closing_cursor() as cursor:
+                cursor.execute(f"INSERT INTO `{table}` VALUES (1, 'one'), (2, 'two')")
             refreshed = conn.get_tableflow(table)
             assert refreshed.phase is TableflowPhase.RUNNING
             assert refreshed.status.failing_table_formats == []
