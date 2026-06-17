@@ -33,6 +33,16 @@ class TestNormalizeTableFormats:
     def test_singleton(self) -> None:
         assert normalize_table_formats(TableFormat.ICEBERG) == ["ICEBERG"]
 
+    def test_bare_string_treated_as_singleton(self) -> None:
+        # A plain str (not a TableFormat instance) is iterable; it must be handled as one format,
+        # not split into characters.
+        assert normalize_table_formats("ICEBERG") == ["ICEBERG"]  # type: ignore[arg-type]
+
+    def test_bare_unknown_string_error_names_whole_string(self) -> None:
+        # The error must blame the whole string ("ICEBURG"), not a stray character from splitting.
+        with pytest.raises(InterfaceError, match="ICEBURG"):
+            normalize_table_formats("ICEBURG")  # type: ignore[arg-type]
+
     def test_single_element_collection(self) -> None:
         assert normalize_table_formats([TableFormat.DELTA]) == ["DELTA"]
 

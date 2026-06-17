@@ -37,31 +37,33 @@ def normalize_table_formats(
 
     Accepts a single `TableFormat` (convenience for the common one-format case) or any collection
     of them, and orders the result canonically by `TableFormat` declaration order so the request
-    body is deterministic. `TableFormat` is a `str` subclass -- hence itself a `Collection` -- so
-    the single-format case is checked first. Duplicates are rejected rather than silently
-    collapsed: a repeated format is a caller mistake, not an intent to enable it twice.
+    body is deterministic. Any `str` -- including a `TableFormat` (a `str` subclass) or a bare
+    `"ICEBERG"` -- is treated as the single-format case; a `str` is iterable, so failing to special
+    case it would split it into characters. Duplicates are rejected rather than silently collapsed:
+    a repeated format is a caller mistake, not an intent to enable it twice.
 
     Raises:
         InterfaceError: If no formats are given (the API requires at least one), a value does not
             name a known `TableFormat`, or a format is repeated.
     """
-    raw = (
-        [tableflow_formats]
-        if isinstance(tableflow_formats, TableFormat)
-        else list(tableflow_formats)
-    )
+    raw = [tableflow_formats] if isinstance(tableflow_formats, str) else list(tableflow_formats)
     if not raw:
         raise InterfaceError("tableflow_formats must name at least one TableFormat")
     try:
         coerced = [TableFormat(fmt) for fmt in raw]
     except ValueError as e:
         raise InterfaceError(f"unknown table format in tableflow_formats: {e}") from e
-    duplicates = sorted({fmt.value for fmt in coerced if coerced.count(fmt) > 1})
+
+    chosen: set[TableFormat] = set()
+    duplicates: set[str] = set()
+    for fmt in coerced:
+        if fmt in chosen:
+            duplicates.add(fmt.value)
+        chosen.add(fmt)
     if duplicates:
         raise InterfaceError(
-            f"tableflow_formats contains duplicate formats: {', '.join(duplicates)}"
+            f"tableflow_formats contains duplicate formats: {', '.join(sorted(duplicates))}"
         )
-    chosen = set(coerced)
     return [fmt.value for fmt in TableFormat if fmt in chosen]
 
 

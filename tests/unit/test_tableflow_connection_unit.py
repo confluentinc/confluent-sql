@@ -162,6 +162,17 @@ class TestControlplaneRequest:
             conn._controlplane_request("/x")
         assert exc.value.http_status_code == 500
 
+    def test_network_error_becomes_operational_error(self) -> None:
+        # A network-level failure (no HTTP response) must surface as a DB-API OperationalError,
+        # not leak the raw httpx.RequestError -- and carry no http_status_code.
+        conn = _connect(tableflow_api_key="tk", tableflow_api_secret="ts")
+        client = Mock()
+        client.request = Mock(side_effect=httpx.ConnectError("connection refused"))
+        conn._get_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        with pytest.raises(OperationalError) as exc:
+            conn._controlplane_request("/x")
+        assert exc.value.http_status_code is None
+
 
 class TestResolveKafkaClusterId:
     """Cluster-id resolution: seeded short-circuit, CMK lookup, caching, and the raise paths."""

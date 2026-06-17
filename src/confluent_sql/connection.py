@@ -1557,6 +1557,10 @@ class Connection:
                 f"error sending request '{e.response.status_code}' - {details}",
                 http_status_code=e.response.status_code,
             ) from e
+        except httpx.RequestError as e:
+            # Network-level failures (timeout, DNS, TLS, connect) carry no HTTP response. Wrap them
+            # so callers see a DB-API OperationalError rather than a raw httpx exception leaking.
+            raise OperationalError(f"error sending request: {e}") from e
 
     def _get_controlplane_client(self) -> httpx.Client:
         """Return the control-plane httpx client, creating it on first use.
