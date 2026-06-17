@@ -200,6 +200,38 @@ class StatementNotFoundError(OperationalError):
         self.statement_name = statement_name
 
 
+class TableflowTopicNotFoundError(OperationalError):
+    """
+    Exception raised when a Tableflow topic does not exist for a table's Kafka topic.
+
+    Raised on an HTTP 404 from get_tableflow() or disable_tableflow() -- i.e. Tableflow was
+    never enabled (or has already been removed) for the named table. disable_tableflow(
+    wait_for_removal=True) polls against this 404 to confirm teardown.
+
+    Attributes:
+        table_name: The Flink table / Kafka topic name that had no Tableflow topic.
+    """
+
+    def __init__(self, message: str, table_name: str):
+        super().__init__(message)
+        self.table_name = table_name
+
+
+class TableflowTopicAlreadyExistsError(OperationalError):
+    """
+    Exception raised when enabling Tableflow on a topic that already has it enabled.
+
+    Raised on an HTTP 409 from enable_tableflow().
+
+    Attributes:
+        table_name: The Flink table / Kafka topic name that already had Tableflow enabled.
+    """
+
+    def __init__(self, message: str, table_name: str):
+        super().__init__(message)
+        self.table_name = table_name
+
+
 class IntegrityError(DatabaseError):
     """
     Exception raised when the relational integrity of the database is affected.
