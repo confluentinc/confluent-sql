@@ -6,40 +6,54 @@ import dataclasses
 
 import pytest
 
-from confluent_sql.exceptions import OperationalError
+from confluent_sql.exceptions import InterfaceError, OperationalError
 from confluent_sql.tableflow import (
     AzureAdlsStorage,
     ByobAwsStorage,
-    ErrorHandlingLog,
-    ErrorHandlingSkip,
-    ErrorHandlingSuspend,
     FailingTableFormat,
     ManagedStorage,
+    TableflowErrorHandlingLog,
+    TableflowErrorHandlingSkip,
+    TableflowErrorHandlingSuspend,
     TableflowPhase,
     TableflowTopic,
     TableflowTopicConfig,
     TableFormat,
-    TableFormatSelection,
     build_create_payload,
+    normalize_table_formats,
     storage_from_spec,
 )
 
 pytestmark = pytest.mark.unit
 
 
-class TestTableFormatSelection:
-    """The request-side selection enum expands to the wire `table_formats` array."""
+class TestNormalizeTableFormats:
+    """The `tableflow_formats` argument accepts a single TableFormat or a collection of them."""
 
-    @pytest.mark.parametrize(
-        ("selection", "expected"),
-        [
-            (TableFormatSelection.ICEBERG, ["ICEBERG"]),
-            (TableFormatSelection.DELTA, ["DELTA"]),
-            (TableFormatSelection.ICEBERG_AND_DELTA, ["ICEBERG", "DELTA"]),
-        ],
-    )
-    def test_to_wire(self, selection: TableFormatSelection, expected: list[str]) -> None:
-        assert selection.to_wire() == expected
+    def test_singleton(self) -> None:
+        assert normalize_table_formats(TableFormat.ICEBERG) == ["ICEBERG"]
+
+    def test_single_element_collection(self) -> None:
+        assert normalize_table_formats([TableFormat.DELTA]) == ["DELTA"]
+
+    def test_both_formats_canonically_ordered(self) -> None:
+        # Declaration order (ICEBERG before DELTA) regardless of input order -- deterministic body.
+        assert normalize_table_formats({TableFormat.DELTA, TableFormat.ICEBERG}) == [
+            "ICEBERG",
+            "DELTA",
+        ]
+
+    def test_duplicate_raises(self) -> None:
+        with pytest.raises(InterfaceError, match="duplicate formats: ICEBERG"):
+            normalize_table_formats([TableFormat.ICEBERG, TableFormat.ICEBERG])
+
+    def test_empty_collection_raises(self) -> None:
+        with pytest.raises(InterfaceError, match="at least one TableFormat"):
+            normalize_table_formats([])
+
+    def test_unknown_format_raises(self) -> None:
+        with pytest.raises(InterfaceError, match="unknown table format"):
+            normalize_table_formats(["ICEBURG"])  # type: ignore[list-item]
 
 
 class TestTableflowPhase:
@@ -137,20 +151,23 @@ class TestStorageFromSpec:
             storage_from_spec({"kind": "Martian"})
 
 
-class TestErrorHandlingToSpec:
+class TestTableflowErrorHandlingToSpec:
     """Error-handling option variants are discriminated on `mode`; only LOG carries a target."""
 
     def test_suspend(self) -> None:
-        assert ErrorHandlingSuspend().to_spec() == {"mode": "SUSPEND"}
+        assert TableflowErrorHandlingSuspend().to_spec() == {"mode": "SUSPEND"}
 
     def test_skip(self) -> None:
-        assert ErrorHandlingSkip().to_spec() == {"mode": "SKIP"}
+        assert TableflowErrorHandlingSkip().to_spec() == {"mode": "SKIP"}
 
     def test_log_default_target(self) -> None:
-        assert ErrorHandlingLog().to_spec() == {"mode": "LOG", "target": "error_log"}
+        assert TableflowErrorHandlingLog().to_spec() == {"mode": "LOG", "target": "error_log"}
 
     def test_log_custom_target(self) -> None:
-        assert ErrorHandlingLog(target="my_dlq").to_spec() == {"mode": "LOG", "target": "my_dlq"}
+        assert TableflowErrorHandlingLog(target="my_dlq").to_spec() == {
+            "mode": "LOG",
+            "target": "my_dlq",
+        }
 
 
 class TestTableflowTopicConfig:
@@ -168,7 +185,7 @@ class TestTableflowTopicConfig:
         config = TableflowTopicConfig(
             retention_ms="604800000",
             data_retention_ms="2592000000",
-            error_handling=ErrorHandlingLog(target="dlq"),
+            error_handling=TableflowErrorHandlingLog(target="dlq"),
         )
         assert config.to_spec() == {
             "retention_ms": "604800000",
@@ -178,12 +195,12 @@ class TestTableflowTopicConfig:
 
 
 class TestBuildCreatePayload:
-    """The POST body assembles spec from the selection, storage, config, and connection ids."""
+    """The POST body assembles spec from the wire formats, storage, config, and connection ids."""
 
     def test_minimal(self) -> None:
         payload = build_create_payload(
             table_name="orders",
-            tableflow_format=TableFormatSelection.ICEBERG,
+            table_formats=["ICEBERG"],
             storage=ManagedStorage(),
             config=None,
             environment_id="env-1",
@@ -202,7 +219,7 @@ class TestBuildCreatePayload:
     def test_both_formats_and_config(self) -> None:
         payload = build_create_payload(
             table_name="orders",
-            tableflow_format=TableFormatSelection.ICEBERG_AND_DELTA,
+            table_formats=["ICEBERG", "DELTA"],
             storage=ManagedStorage(),
             config=TableflowTopicConfig(retention_ms="604800000"),
             environment_id="env-1",
@@ -214,7 +231,7 @@ class TestBuildCreatePayload:
     def test_empty_config_omitted(self) -> None:
         payload = build_create_payload(
             table_name="orders",
-            tableflow_format=TableFormatSelection.DELTA,
+            table_formats=["DELTA"],
             storage=ManagedStorage(),
             config=TableflowTopicConfig(),
             environment_id="env-1",

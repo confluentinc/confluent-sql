@@ -10,11 +10,12 @@ many `enable_tableflow` calls without risk of mutation. The response-side models
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar
 
-from .exceptions import OperationalError
+from .exceptions import InterfaceError, OperationalError
 from .types import StrAnyDict
 
 
@@ -29,24 +30,39 @@ class TableFormat(str, Enum):
     DELTA = "DELTA"
 
 
-class TableFormatSelection(Enum):
-    """The request-side pick of which format(s) to enable.
+def normalize_table_formats(
+    tableflow_formats: TableFormat | Collection[TableFormat],
+) -> list[str]:
+    """Normalize the `enable_tableflow` `tableflow_formats` argument to the wire array.
 
-    Distinct from `TableFormat`: a topic can carry both formats at once, but there is no
-    per-format config, so the choice is expressed as a single selection rather than a set. The
-    `…Selection` suffix keeps it from being misread as `TableFormat` on a skim -- the
-    `ICEBERG_AND_DELTA` member is not itself a "format".
+    Accepts a single `TableFormat` (convenience for the common one-format case) or any collection
+    of them, and orders the result canonically by `TableFormat` declaration order so the request
+    body is deterministic. `TableFormat` is a `str` subclass -- hence itself a `Collection` -- so
+    the single-format case is checked first. Duplicates are rejected rather than silently
+    collapsed: a repeated format is a caller mistake, not an intent to enable it twice.
+
+    Raises:
+        InterfaceError: If no formats are given (the API requires at least one), a value does not
+            name a known `TableFormat`, or a format is repeated.
     """
-
-    ICEBERG = "ICEBERG"
-    DELTA = "DELTA"
-    ICEBERG_AND_DELTA = "ICEBERG_AND_DELTA"
-
-    def to_wire(self) -> list[str]:
-        """Expand the selection to the wire `spec.table_formats` array (minItems 1)."""
-        if self is TableFormatSelection.ICEBERG_AND_DELTA:
-            return [TableFormat.ICEBERG.value, TableFormat.DELTA.value]
-        return [self.value]
+    raw = (
+        [tableflow_formats]
+        if isinstance(tableflow_formats, TableFormat)
+        else list(tableflow_formats)
+    )
+    if not raw:
+        raise InterfaceError("tableflow_formats must name at least one TableFormat")
+    try:
+        coerced = [TableFormat(fmt) for fmt in raw]
+    except ValueError as e:
+        raise InterfaceError(f"unknown table format in tableflow_formats: {e}") from e
+    duplicates = sorted({fmt.value for fmt in coerced if coerced.count(fmt) > 1})
+    if duplicates:
+        raise InterfaceError(
+            f"tableflow_formats contains duplicate formats: {', '.join(duplicates)}"
+        )
+    chosen = set(coerced)
+    return [fmt.value for fmt in TableFormat if fmt in chosen]
 
 
 class TableflowPhase(str, Enum):
@@ -156,7 +172,7 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
 
 
 @dataclass(frozen=True)
-class ErrorHandling:
+class TableflowErrorHandling:
     """Base for record-failure handling (`spec.config.error_handling`, oneOf on `mode`)."""
 
     mode: ClassVar[str]
@@ -167,21 +183,21 @@ class ErrorHandling:
 
 
 @dataclass(frozen=True)
-class ErrorHandlingSuspend(ErrorHandling):
+class TableflowErrorHandlingSuspend(TableflowErrorHandling):
     """Suspend materialization on a bad record (the server default)."""
 
     mode: ClassVar[str] = "SUSPEND"
 
 
 @dataclass(frozen=True)
-class ErrorHandlingSkip(ErrorHandling):
+class TableflowErrorHandlingSkip(TableflowErrorHandling):
     """Skip bad records and continue materializing."""
 
     mode: ClassVar[str] = "SKIP"
 
 
 @dataclass(frozen=True)
-class ErrorHandlingLog(ErrorHandling):
+class TableflowErrorHandlingLog(TableflowErrorHandling):
     """Log bad records to a dead-letter topic and continue materializing."""
 
     mode: ClassVar[str] = "LOG"
@@ -203,7 +219,7 @@ class TableflowTopicConfig:
 
     retention_ms: str | int | None = None
     data_retention_ms: str | int | None = None
-    error_handling: ErrorHandling | None = None
+    error_handling: TableflowErrorHandling | None = None
 
     def to_spec(self) -> StrAnyDict:
         spec: StrAnyDict = {}
@@ -219,7 +235,7 @@ class TableflowTopicConfig:
 def build_create_payload(
     *,
     table_name: str,
-    tableflow_format: TableFormatSelection,
+    table_formats: list[str],
     storage: TableflowStorage,
     config: TableflowTopicConfig | None,
     environment_id: str,
@@ -228,12 +244,13 @@ def build_create_payload(
     """Assemble the `POST /tableflow/v1/tableflow-topics` request body.
 
     `table_name` is the Flink table, which is the backing Kafka topic name, which is
-    `spec.display_name`. An empty config is omitted entirely.
+    `spec.display_name`. `table_formats` is the wire array from `normalize_table_formats`. An
+    empty config is omitted entirely.
     """
     spec: StrAnyDict = {
         "display_name": table_name,
         "storage": storage.to_spec(),
-        "table_formats": tableflow_format.to_wire(),
+        "table_formats": table_formats,
         "environment": {"id": environment_id},
         "kafka_cluster": {"id": kafka_cluster_id},
     }

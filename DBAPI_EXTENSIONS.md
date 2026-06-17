@@ -579,15 +579,31 @@ against the table.
 In Confluent Flink a table is backed by a like-named Kafka topic, so the `table_name` you pass is
 both the Flink table and the topic — no escaping or casing translation.
 
-### Selecting formats: `TableFormatSelection` vs `TableFormat`
+### Selecting formats: `TableFormat`
 
-A topic can carry **both** formats at once, but there is no per-format config, so the request takes
-a single `TableFormatSelection`:
+There is a single format vocabulary, `TableFormat` (`ICEBERG` / `DELTA`), on both the request and
+response sides. A topic can carry **both** formats at once (there is no per-format config), so
+`enable_tableflow`'s `tableflow_formats` argument accepts either a single `TableFormat` for the
+common case or a collection for both:
 
-- `TableFormatSelection.ICEBERG`, `.DELTA`, or `.ICEBERG_AND_DELTA` — what you **ask** to enable.
-- `TableFormat.ICEBERG` / `TableFormat.DELTA` — the concrete formats that **responses** name (e.g.
-  `topic.spec.table_formats`, `topic.status.failing_table_formats`). Compare against these when
-  reading state.
+```python
+connection.enable_tableflow("orders", tableflow_formats=TableFormat.ICEBERG, storage=...)
+connection.enable_tableflow(
+    "orders", tableflow_formats={TableFormat.ICEBERG, TableFormat.DELTA}, storage=...
+)
+```
+
+Responses name the same `TableFormat`s (`topic.spec.table_formats`,
+`topic.status.failing_table_formats`), so checking what you got against what you asked for is a
+plain set comparison:
+
+```python
+topic = connection.enable_tableflow(
+    "orders", tableflow_formats={TableFormat.ICEBERG, TableFormat.DELTA},
+    storage=ManagedStorage(), wait_for_running=True,
+)
+assert set(topic.spec.table_formats) == {TableFormat.ICEBERG, TableFormat.DELTA}
+```
 
 ### Storage variants
 
@@ -611,11 +627,11 @@ The Tableflow API addresses the cluster by its `lkc-…` id, which the connectio
 ### `enable_tableflow()` — add an Iceberg/Delta sink
 
 ```python
-from confluent_sql import ManagedStorage, TableFormatSelection, TableflowPhase
+from confluent_sql import ManagedStorage, TableFormat, TableflowPhase
 
 topic = connection.enable_tableflow(
     "orders",
-    tableflow_format=TableFormatSelection.ICEBERG,
+    tableflow_formats=TableFormat.ICEBERG,
     storage=ManagedStorage(),
     wait_for_running=True,   # poll to RUNNING; raise on FAILED
 )
@@ -624,8 +640,9 @@ assert topic.phase is TableflowPhase.RUNNING
 
 **Behavior notes:**
 
-- `tableflow_format` and `storage` are required (no defaults). `config` is an optional
-  `TableflowTopicConfig` (retention, error-handling) shared across all enabled formats.
+- `tableflow_formats` and `storage` are required (no defaults); `tableflow_formats` must name at
+  least one format. `config` is an optional `TableflowTopicConfig` (retention, error-handling)
+  shared across all enabled formats.
 - Returns the `TableflowTopic` parsed from the `202` response — in `PENDING` unless
   `wait_for_running=True`, which polls until `RUNNING` and raises `OperationalError` on `FAILED`
   (surfacing `status.error_message` and `failing_table_formats`).
@@ -665,7 +682,7 @@ frozen — so hoist them out of the loop. The cluster-id lookup resolves once an
 loop hits CMK at most once:
 
 ```python
-from confluent_sql import ManagedStorage, TableFormatSelection, TableflowTopicConfig
+from confluent_sql import ManagedStorage, TableFormat, TableflowTopicConfig
 
 storage = ManagedStorage()
 config = TableflowTopicConfig(retention_ms="604800000")
@@ -673,7 +690,7 @@ config = TableflowTopicConfig(retention_ms="604800000")
 for table in ("orders", "shipments", "returns"):
     connection.enable_tableflow(
         table,
-        tableflow_format=TableFormatSelection.ICEBERG,
+        tableflow_formats=TableFormat.ICEBERG,
         storage=storage,
         config=config,
     )

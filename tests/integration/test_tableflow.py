@@ -15,14 +15,14 @@ from datetime import datetime
 import pytest
 
 import confluent_sql
-from confluent_sql import ManagedStorage, TableflowPhase, TableFormatSelection
+from confluent_sql import ManagedStorage, TableflowPhase, TableFormat
 from confluent_sql.connection import Connection
 
 
 def _tableflow_connection_from_env() -> Connection:
     """Build a Tableflow-capable Connection from env, or skip if the configuration is incomplete.
 
-    Beyond the standard Flink/environment vars, Tableflow needs a management credential (a global
+    Beyond the standard Flink/environment vars, Tableflow needs a control-plane credential (a global
     key covers it, else CONFLUENT_TABLEFLOW_API_KEY/SECRET) and a way to know the cluster id (a
     global key resolves it via CMK, else CONFLUENT_DATABASE_KAFKA_CLUSTER_ID supplies it directly).
     A compute pool is required to run the DDL/DML in the arc.
@@ -43,14 +43,14 @@ def _tableflow_connection_from_env() -> Connection:
 
     has_global = bool(global_api_key) and bool(global_api_secret)
     has_tableflow = bool(tableflow_api_key) and bool(tableflow_api_secret)
-    # Management credential: a global key, or a dedicated tableflow pair.
-    management_ok = has_global or has_tableflow
+    # Control-plane credential: a global key, or a dedicated tableflow pair.
+    controlplane_ok = has_global or has_tableflow
     # Cluster id obtainable: a global key (CMK lookup), or a directly-supplied id.
     cluster_ok = has_global or bool(database_kafka_cluster_id)
     base_ok = all(
         [environment_id, organization_id, cloud_provider, cloud_region, database, compute_pool_id]
     )
-    if not (management_ok and cluster_ok and base_ok):
+    if not (controlplane_ok and cluster_ok and base_ok):
         pytest.skip("Missing environment variables for a Tableflow-capable integration connection")
 
     return confluent_sql.connect(
@@ -118,7 +118,7 @@ class TestTableflowLifecycle:
         try:
             topic = conn.enable_tableflow(
                 table,
-                tableflow_format=TableFormatSelection.ICEBERG,
+                tableflow_formats=TableFormat.ICEBERG,
                 storage=ManagedStorage(),
                 wait_for_running=True,
             )

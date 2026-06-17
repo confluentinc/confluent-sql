@@ -12,7 +12,7 @@ import logging
 import uuid
 import warnings
 from collections import namedtuple
-from collections.abc import Generator
+from collections.abc import Collection, Generator
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from typing import Any
@@ -39,13 +39,14 @@ from .tableflow import (
     TableflowStorage,
     TableflowTopic,
     TableflowTopicConfig,
-    TableFormatSelection,
+    TableFormat,
     build_create_payload,
+    normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes
 
-DEFAULT_MANAGEMENT_ENDPOINT = "https://api.confluent.cloud"
-"""Management-plane host for Tableflow and CMK routes -- distinct from the Flink gateway."""
+DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
+"""Control-plane host for Tableflow and CMK routes -- distinct from the Flink gateway."""
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def _resolve_tableflow_credentials(
     tableflow_api_key: str | None,
     tableflow_api_secret: str | None,
 ) -> tuple[str, str] | None:
-    """Pick the (key, secret) pair the management-plane routes (Tableflow, CMK) authenticate with.
+    """Pick the (key, secret) pair the control-plane routes (Tableflow, CMK) authenticate with.
 
     A global key covers every route, so it wins. Otherwise Tableflow routes use the dedicated
     Tableflow pair (the CMK clusters route, by contrast, won't accept a Tableflow-scoped key --
@@ -144,7 +145,7 @@ def connect(  # noqa: PLR0913
     database: str | None = None,
     database_kafka_cluster_id: str | None = None,
     endpoint: str | None = None,
-    management_endpoint: str | None = None,
+    controlplane_endpoint: str | None = None,
     dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
@@ -161,7 +162,7 @@ def connect(  # noqa: PLR0913
         flink_api_key: Flink region API key, usable only against Flink routes. Used when no
             global key is supplied. Either this pair or the global_api_key pair must be provided.
         flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
-        tableflow_api_key: API key for the Tableflow management routes (enable/get/disable
+        tableflow_api_key: API key for the Tableflow control-plane routes (enable/get/disable
             Tableflow). Only consulted when no global key is supplied; a global key already
             covers Tableflow. Must be supplied together with tableflow_api_secret.
         tableflow_api_secret: Secret paired with tableflow_api_key.
@@ -192,7 +193,7 @@ def connect(  # noqa: PLR0913
             If your Kafka clusters / Flink tables require private networking, supply the base
             endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for example,
             but cases and private networking technologies vary).
-        management_endpoint: Base URL for the Confluent Cloud management plane (Tableflow and CMK
+        controlplane_endpoint: Base URL for the Confluent Cloud control plane (Tableflow and CMK
             routes), distinct from the Flink gateway `endpoint`. Defaults to
             "https://api.confluent.cloud". A trailing slash is stripped if provided.
         dbname: Deprecated alias for database parameter (optional)
@@ -266,7 +267,7 @@ def connect(  # noqa: PLR0913
         compute_pool_id=compute_pool_id,
         database=database or dbname,  # dbname is deprecated.
         database_kafka_cluster_id=database_kafka_cluster_id,
-        management_endpoint=management_endpoint,
+        controlplane_endpoint=controlplane_endpoint,
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
         http_timeout_secs=http_timeout_secs,
@@ -309,14 +310,14 @@ class Connection:
     _http_user_agent: str
     _http_timeout_secs: float | None
 
-    _management_endpoint: str
-    """Base URL for the management plane (Tableflow, CMK), distinct from the Flink gateway."""
-    _management_auth: tuple[str, str] | None
-    """(key, secret) for Tableflow/management routes, or None if no usable credential exists."""
+    _controlplane_endpoint: str
+    """Base URL for the control plane (Tableflow, CMK), distinct from the Flink gateway."""
+    _controlplane_auth: tuple[str, str] | None
+    """(key, secret) for Tableflow/control-plane routes, or None if no usable credential exists."""
     _global_credentials: tuple[str, str] | None
     """(key, secret) of the global API key if one was supplied -- the only credential CMK takes."""
-    _management_client: httpx.Client | None
-    """Lazily created on first management request; None until then."""
+    _controlplane_client: httpx.Client | None
+    """Lazily created on first control-plane request; None until then."""
     _resolved_kafka_cluster_id: str | None
     """Cached `lkc-…` id for `database`; pre-seeded by database_kafka_cluster_id, else from CMK."""
 
@@ -344,7 +345,7 @@ class Connection:
         compute_pool_id: str | None = None,
         database: str | None = None,
         database_kafka_cluster_id: str | None = None,
-        management_endpoint: str | None = None,
+        controlplane_endpoint: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
         http_timeout_secs: float | None = None,
@@ -361,8 +362,8 @@ class Connection:
                 global key is supplied. Either this pair or the global_api_key pair must be
                 provided.
             flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
-            tableflow_api_key: API key for the Tableflow management routes. Only consulted when no
-                global key is supplied. Must be supplied together with tableflow_api_secret.
+            tableflow_api_key: API key for the Tableflow control-plane routes. Only consulted
+                when no global key is supplied. Must be supplied together with tableflow_api_secret.
             tableflow_api_secret: Secret paired with tableflow_api_key.
             environment_id: Environment ID
             organization_id: Organization ID
@@ -385,7 +386,7 @@ class Connection:
                 (optional). Pre-seeds the Tableflow cluster-id cache so the CMK lookup never
                 fires; otherwise the id is resolved lazily from `database` via CMK (needs a
                 global key).
-            management_endpoint: Base URL for the management plane (Tableflow, CMK). Defaults to
+            controlplane_endpoint: Base URL for the control plane (Tableflow, CMK). Defaults to
                 "https://api.confluent.cloud". Trailing slash stripped if provided.
             result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
                 statement results. Defaults to 100ms. If most recent fetch of results for a
@@ -473,19 +474,20 @@ class Connection:
             client_kwargs["timeout"] = self._http_timeout_secs
         self._client = httpx.Client(**client_kwargs)
 
-        # Management-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
-        # connection that never touches Tableflow pays nothing, and one with no usable management
-        # credential still constructs fine -- the error surfaces only when Tableflow is invoked.
-        self._management_endpoint = (
-            management_endpoint or DEFAULT_MANAGEMENT_ENDPOINT
+        # Control-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
+        # connection that never touches Tableflow pays nothing, and one with no usable
+        # control-plane credential still constructs fine -- the error surfaces only when Tableflow
+        # is invoked.
+        self._controlplane_endpoint = (
+            controlplane_endpoint or DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
-        self._management_auth = _resolve_tableflow_credentials(
+        self._controlplane_auth = _resolve_tableflow_credentials(
             global_api_key, global_api_secret, tableflow_api_key, tableflow_api_secret
         )
         self._global_credentials = (
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
         )
-        self._management_client = None
+        self._controlplane_client = None
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires (det. 13).
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
 
@@ -501,8 +503,8 @@ class Connection:
         if not self._closed:
             self._closed = True
             self._client.close()
-            if self._management_client is not None:
-                self._management_client.close()
+            if self._controlplane_client is not None:
+                self._controlplane_client.close()
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
@@ -1517,25 +1519,25 @@ class Connection:
             raise InterfaceError("Connection is closed")
         return self._send_request(self._client, url, method, raise_for_status, **kwargs)
 
-    def _management_request(
+    def _controlplane_request(
         self, url, method="GET", raise_for_status=True, **kwargs
     ) -> httpx.Response:
-        """Issue a request against the management plane (Tableflow, CMK).
+        """Issue a request against the control plane (Tableflow, CMK).
 
-        Routes through the lazily-created management client (separate host + auth from the Flink
+        Routes through the lazily-created control-plane client (separate host + auth from the Flink
         gateway). Same error shaping as _request: an HTTP error status becomes OperationalError
         carrying the status code, unless raise_for_status is False (callers that map specific
         codes -- 404/409 -- to their own exceptions).
         """
         return self._send_request(
-            self._get_management_client(), url, method, raise_for_status, **kwargs
+            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
         )
 
     @staticmethod
     def _send_request(
         client: httpx.Client, url, method, raise_for_status, **kwargs
     ) -> httpx.Response:
-        """Shared request/response handling for the Flink and management clients."""
+        """Shared request/response handling for the Flink and control-plane clients."""
         try:
             response = client.request(method, url, **kwargs)
             logger.debug("Response: %s", response.content)
@@ -1555,26 +1557,26 @@ class Connection:
                 http_status_code=e.response.status_code,
             ) from e
 
-    def _get_management_client(self) -> httpx.Client:
-        """Return the management-plane httpx client, creating it on first use.
+    def _get_controlplane_client(self) -> httpx.Client:
+        """Return the control-plane httpx client, creating it on first use.
 
         Raises:
             InterfaceError: If the connection is closed.
             ProgrammingError: If no global key and no Tableflow key pair were supplied, so no
-                credential can authenticate the management plane.
+                credential can authenticate the control plane.
         """
         if self._closed:
             raise InterfaceError("Connection is closed")
-        if self._management_auth is None:
+        if self._controlplane_auth is None:
             raise ProgrammingError(
                 "Tableflow requires a global API key or a tableflow_api_key/tableflow_api_secret "
                 "pair; neither was supplied to connect()."
             )
-        if self._management_client is None:
-            key, secret = self._management_auth
+        if self._controlplane_client is None:
+            key, secret = self._controlplane_auth
             client_kwargs: dict[str, Any] = {
                 "auth": httpx.BasicAuth(username=key, password=secret),
-                "base_url": self._management_endpoint,
+                "base_url": self._controlplane_endpoint,
                 "headers": {
                     "Content-Type": "application/json",
                     "User-Agent": self._http_user_agent,
@@ -1582,8 +1584,8 @@ class Connection:
             }
             if self._http_timeout_secs is not None:
                 client_kwargs["timeout"] = self._http_timeout_secs
-            self._management_client = httpx.Client(**client_kwargs)
-        return self._management_client
+            self._controlplane_client = httpx.Client(**client_kwargs)
+        return self._controlplane_client
 
     _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
 
@@ -1591,7 +1593,7 @@ class Connection:
         self,
         table_name: str,
         *,
-        tableflow_format: TableFormatSelection,
+        tableflow_formats: TableFormat | Collection[TableFormat],
         storage: TableflowStorage,
         config: TableflowTopicConfig | None = None,
         wait_for_running: bool = False,
@@ -1605,8 +1607,9 @@ class Connection:
         Args:
             table_name: The Flink table, which is the backing Kafka topic name, which becomes
                 spec.display_name. Passed straight through (no escaping/casing translation).
-            tableflow_format: Which format(s) to materialize to -- ICEBERG, DELTA, or
-                ICEBERG_AND_DELTA. Expanded to the wire table_formats array. Required.
+            tableflow_formats: Which format(s) to materialize to. A single TableFormat (e.g.
+                TableFormat.ICEBERG) for the common case, or a collection for both
+                ({TableFormat.ICEBERG, TableFormat.DELTA}). Required; at least one.
             storage: The storage backend -- ManagedStorage() (zero-config), ByobAwsStorage, or
                 AzureAdlsStorage. Required.
             config: Optional topic-level config (retention, error-handling), shared across all
@@ -1618,22 +1621,26 @@ class Connection:
             The TableflowTopic parsed from the 202 response (PENDING unless waited to RUNNING).
 
         Raises:
-            ProgrammingError: If no management credential is available, or the cluster id can't be
-                resolved without a global key.
+            InterfaceError: If tableflow_formats is empty or names an unknown format.
+            ProgrammingError: If no control-plane credential is available, or the cluster id
+                can't be resolved without a global key.
             TableflowTopicAlreadyExistsError: If Tableflow is already enabled (HTTP 409).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
+        # Validate the formats argument before any network work, so a bad argument fails fast
+        # rather than after the (possibly CMK-resolving) cluster-id lookup.
+        wire_formats = normalize_table_formats(tableflow_formats)
         kafka_cluster_id = self._resolve_kafka_cluster_id()
         payload = build_create_payload(
             table_name=table_name,
-            tableflow_format=tableflow_format,
+            table_formats=wire_formats,
             storage=storage,
             config=config,
             environment_id=self.environment_id,
             kafka_cluster_id=kafka_cluster_id,
         )
         logger.info(f"Enabling Tableflow for table '{table_name}'")
-        response = self._management_request(
+        response = self._controlplane_request(
             self._TABLEFLOW_TOPICS_PATH, method="POST", json=payload, raise_for_status=False
         )
         try:
@@ -1668,7 +1675,7 @@ class Connection:
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
-        response = self._management_request(
+        response = self._controlplane_request(
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             params=self._tableflow_topic_params(),
             raise_for_status=False,
@@ -1708,7 +1715,7 @@ class Connection:
             OperationalError: On other API errors, or on wait timeout.
         """
         logger.info(f"Disabling Tableflow for table '{table_name}'")
-        response = self._management_request(
+        response = self._controlplane_request(
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             method="DELETE",
             params=self._tableflow_topic_params(),
@@ -1835,7 +1842,7 @@ class Connection:
         ids: list[str] = []
         params: dict[str, str | int] = {"environment": self.environment_id, "page_size": 100}
         while True:
-            response = self._management_request("/cmk/v2/clusters", params=params).json()
+            response = self._controlplane_request("/cmk/v2/clusters", params=params).json()
             for cluster in response.get("data", []):
                 if cluster.get("spec", {}).get("display_name") == name:
                     ids.append(cluster["id"])
