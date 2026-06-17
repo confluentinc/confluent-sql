@@ -253,7 +253,10 @@ class TestEnableTableflow:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._controlplane_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         topic = conn.enable_tableflow(
-            "orders", tableflow_formats=TableFormat.ICEBERG, storage=ManagedStorage()
+            "orders",
+            tableflow_formats=TableFormat.ICEBERG,
+            storage=ManagedStorage(),
+            wait_for_running=False,  # this test asserts request shape, not the wait loop
         )
         args, kwargs = conn._controlplane_request.call_args
         assert args[0] == "/tableflow/v1/tableflow-topics"
@@ -271,6 +274,7 @@ class TestEnableTableflow:
             "orders",
             tableflow_formats={TableFormat.DELTA, TableFormat.ICEBERG},
             storage=ManagedStorage(),
+            wait_for_running=False,  # this test asserts request shape, not the wait loop
         )
         _, kwargs = conn._controlplane_request.call_args
         assert kwargs["json"]["spec"]["table_formats"] == ["ICEBERG", "DELTA"]
@@ -283,6 +287,20 @@ class TestEnableTableflow:
                 "orders", tableflow_formats=TableFormat.ICEBERG, storage=ManagedStorage()
             )
         assert exc.value.table_name == "orders"
+
+    def test_blocks_for_running_by_default(self, mocker) -> None:
+        # No wait_for_running argument -> default (True) must poll to RUNNING, not return PENDING.
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._controlplane_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
+        conn.get_tableflow = Mock(  # type: ignore[method-assign]
+            return_value=TableflowTopic.from_response(_topic_body(phase="RUNNING"))
+        )
+        topic = conn.enable_tableflow(
+            "orders", tableflow_formats=TableFormat.ICEBERG, storage=ManagedStorage()
+        )
+        assert topic.phase is TableflowPhase.RUNNING
+        conn.get_tableflow.assert_called()
 
     def test_wait_for_running_polls_to_running(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
@@ -387,7 +405,7 @@ class TestDisableTableflow:
     def test_delete_shapes_request(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._controlplane_request = Mock(return_value=_ok_response(status_code=204))
-        conn.disable_tableflow("orders")
+        conn.disable_tableflow("orders", wait_for_removal=False)  # asserts request shape only
         args, kwargs = conn._controlplane_request.call_args
         assert args[0] == "/tableflow/v1/tableflow-topics/orders"
         assert kwargs["method"] == "DELETE"
@@ -405,6 +423,17 @@ class TestDisableTableflow:
         with pytest.raises(OperationalError) as exc:
             conn.disable_tableflow("orders")
         assert exc.value.http_status_code == 500
+
+    def test_waits_for_removal_by_default(self, mocker) -> None:
+        # No wait_for_removal argument -> the default (True) must poll until the topic 404s.
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._controlplane_request = Mock(return_value=_ok_response(status_code=204))
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([]))
+        conn.get_tableflow = Mock(  # type: ignore[method-assign]
+            side_effect=TableflowTopicNotFoundError("gone", table_name="orders")
+        )
+        conn.disable_tableflow("orders")
+        conn.get_tableflow.assert_called_once()
 
     def test_wait_for_removal_polls_until_not_found(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")

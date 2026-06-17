@@ -633,9 +633,8 @@ topic = connection.enable_tableflow(
     "orders",
     tableflow_formats=TableFormat.ICEBERG,
     storage=ManagedStorage(),
-    wait_for_running=True,   # poll to RUNNING; raise on FAILED
 )
-assert topic.phase is TableflowPhase.RUNNING
+assert topic.phase is TableflowPhase.RUNNING   # blocked to RUNNING by default
 ```
 
 **Behavior notes:**
@@ -643,9 +642,10 @@ assert topic.phase is TableflowPhase.RUNNING
 - `tableflow_formats` and `storage` are required (no defaults); `tableflow_formats` must name at
   least one format. `config` is an optional `TableflowTopicConfig` (retention, error-handling)
   shared across all enabled formats.
-- Returns the `TableflowTopic` parsed from the `202` response — in `PENDING` unless
-  `wait_for_running=True`, which polls until `RUNNING` and raises `OperationalError` on `FAILED`
-  (surfacing `status.error_message` and `failing_table_formats`).
+- Blocks until `RUNNING` by default (`wait_for_running=True`), raising `OperationalError` on
+  `FAILED` (surfacing `status.error_message` and `failing_table_formats`) — consistent with
+  `stop_statement`'s wait-by-default. Pass `wait_for_running=False` to return as soon as the create
+  is accepted (topic in `PENDING`).
 - Raises `TableflowTopicAlreadyExistsError` if Tableflow is already enabled (HTTP 409), or
   `ProgrammingError` if no management credential is available or the cluster id can't be resolved.
 
@@ -663,16 +663,18 @@ no separate health check — health is read off `get_tableflow(...).phase`.
 ### `disable_tableflow()` — tear down the sink
 
 ```python
-connection.disable_tableflow("orders", wait_for_removal=True)
+connection.disable_tableflow("orders")   # blocks until confirmed gone by default
 ```
 
 **Behavior notes:**
 
 - All-or-nothing in v1: removes the entire Tableflow topic. (Removing just one of two enabled
   formats needs a future API and is not yet supported.)
-- Deletion is asynchronous. `wait_for_removal=True` polls `get_tableflow` until it `404`s. **Gate a
-  subsequent `DROP TABLE` on this** — dropping the Flink table drops its backing topic, so confirm
-  Tableflow is gone first to avoid racing an active materialization.
+- Deletion is asynchronous. Blocks until removal is confirmed by default (`wait_for_removal=True`),
+  polling `get_tableflow` until it `404`s. This is why a following `DROP TABLE` is safe by default —
+  dropping the Flink table drops its backing topic, so Tableflow must be confirmed gone first to
+  avoid racing an active materialization. Pass `wait_for_removal=False` to return as soon as the
+  `DELETE` is accepted.
 - Raises `TableflowTopicNotFoundError` if Tableflow was not enabled (HTTP 404).
 
 ### Reusing format and config across many tables

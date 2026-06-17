@@ -1605,13 +1605,13 @@ class Connection:
         tableflow_formats: TableFormat | Collection[TableFormat],
         storage: TableflowStorage,
         config: TableflowTopicConfig | None = None,
-        wait_for_running: bool = False,
+        wait_for_running: bool = True,
         timeout: float = 300,
     ) -> TableflowTopic:
         """Enable Tableflow on the Kafka topic backing a Flink table -- add an Iceberg/Delta sink.
 
-        `POST /tableflow/v1/tableflow-topics`. The topic is created asynchronously: the call
-        returns it in PENDING unless wait_for_running is set.
+        `POST /tableflow/v1/tableflow-topics`. The topic is created asynchronously; by default this
+        blocks until it reaches RUNNING (mirroring stop_statement's wait-by-default behavior).
 
         Args:
             table_name: The Flink table, which is the backing Kafka topic name, which becomes
@@ -1623,11 +1623,13 @@ class Connection:
                 AzureAdlsStorage. Required.
             config: Optional topic-level config (retention, error-handling), shared across all
                 enabled formats.
-            wait_for_running: If True, poll until the topic reaches RUNNING; raise on FAILED.
+            wait_for_running: If True (default), poll until the topic reaches RUNNING, raising on
+                FAILED. If False, return as soon as the create is accepted (topic in PENDING).
             timeout: Maximum seconds to wait when wait_for_running is True.
 
         Returns:
-            The TableflowTopic parsed from the 202 response (PENDING unless waited to RUNNING).
+            The TableflowTopic -- RUNNING when waited (the default), otherwise the just-accepted
+            topic (typically PENDING).
 
         Raises:
             InterfaceError: If tableflow_formats is empty or names an unknown format.
@@ -1708,18 +1710,20 @@ class Connection:
         self,
         table_name: str,
         *,
-        wait_for_removal: bool = False,
+        wait_for_removal: bool = True,
         timeout: float = 300,
     ) -> None:
         """Tear down Tableflow on a table's topic -- remove the sink.
 
         `DELETE /tableflow/v1/tableflow-topics/{display_name}`. All-or-nothing in v1 (no
-        per-format disable). Deletion is asynchronous.
+        per-format disable). Deletion is asynchronous; by default this blocks until the topic is
+        confirmed gone.
 
         Args:
             table_name: The Flink table / Kafka topic name (the {display_name} path segment).
-            wait_for_removal: If True, poll get_tableflow until it 404s. Gate a subsequent
-                DROP TABLE on this so the drop doesn't race an active materialization.
+            wait_for_removal: If True (default), poll get_tableflow until it 404s, confirming the
+                topic is gone. Leaving this True before a DROP TABLE keeps the drop from racing an
+                active materialization. If False, return as soon as the DELETE is accepted.
             timeout: Maximum seconds to wait when wait_for_removal is True.
 
         Raises:
