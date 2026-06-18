@@ -244,10 +244,6 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
-    _snapshot_warning_issued: bool
-    """Internal flag to track whether the snapshot query early access warning has been issued.
-        Remove after snapshot queries reach open preview (expected May 2026)."""
-
     def __init__(  # noqa: PLR0913
         self,
         environment_id: str,
@@ -383,9 +379,6 @@ class Connection:
 
         self._row_type_registry = RowTypeRegistry()
 
-        # TODO: remove after snapshot queries reach open preview (May 2026)
-        self._snapshot_warning_issued = False
-
     def close(self) -> None:
         """
         Close the connection.
@@ -497,15 +490,6 @@ class Connection:
         """
         if self._closed:
             raise InterfaceError("Connection is closed")
-
-        # TODO: remove after snapshot queries reach open preview (May 2026)
-        if mode.is_snapshot and not self._snapshot_warning_issued:
-            self._snapshot_warning_issued = True
-            warnings.warn(
-                "Snapshot queries on Confluent Cloud Flink SQL are currently in "
-                "Early Access and may be subject to change.",
-                stacklevel=2,
-            )
 
         return Cursor(self, as_dict=as_dict, execution_mode=mode)
 

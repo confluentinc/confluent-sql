@@ -45,7 +45,7 @@ Every statement progresses through these phases:
 
 ### How Phases Progress
 
-**Snapshot queries (the default):** _(⚠️ [Early Access](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html))_
+**Snapshot queries (the default):**
 
 ```
 PENDING  → RUNNING → COMPLETED
