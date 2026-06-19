@@ -36,6 +36,7 @@ For comprehensive details on streaming queries, polling patterns, and changelog 
 - [Result Format Extensions](#result-format-extensions) - Dictionary rows, custom types
 - [Streaming Query Support](#streaming-query-support) - Comprehensive streaming guide
 - [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, naming, stopping, deletion
+- [Tableflow Lifecycle](#tableflow-lifecycle) - Enable, read, and disable Iceberg/Delta sinks
 - [Introspection and Metadata](#introspection-and-metadata) - Properties for query state
 - [Performance Monitoring](#performance-monitoring) - Fetch metrics
 - [Type System Extensions](#type-system-extensions) - Flink type support
@@ -564,6 +565,138 @@ cursor.delete_statement()
 - ✅ Freeing compute pool resources (required before closing connection)
 - ✅ Cleanup during error handling
 - ⚠️ Deletion stops the statement immediately (may cause errors if still in use)
+
+---
+
+## Tableflow Lifecycle
+
+[Tableflow](https://www.confluent.io/product/tableflow/) materializes the Kafka topic backing a
+Flink table into an Iceberg or Delta table. Three `Connection` methods manage that sink. Enabling
+it also unlocks
+[efficiency gains for snapshot queries](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html#snapshot-queries-and-tableflow)
+against the table.
+
+In Confluent Flink a table is backed by a like-named Kafka topic, so the `table_name` you pass is
+both the Flink table and the topic — no escaping or casing translation.
+
+### Selecting formats: `TableFormat`
+
+There is a single format vocabulary, `TableFormat` (`ICEBERG` / `DELTA`), on both the request and
+response sides. A topic can carry **both** formats at once (there is no per-format config), so
+`enable_tableflow`'s `tableflow_formats` argument accepts either a single `TableFormat` for the
+common case or a collection for both:
+
+```python
+connection.enable_tableflow("orders", tableflow_formats=TableFormat.ICEBERG, storage=...)
+connection.enable_tableflow(
+    "orders", tableflow_formats={TableFormat.ICEBERG, TableFormat.DELTA}, storage=...
+)
+```
+
+Responses name the same `TableFormat`s (`topic.spec.table_formats`,
+`topic.status.failing_table_formats`), so checking what you got against what you asked for is a
+plain set comparison:
+
+```python
+topic = connection.enable_tableflow(
+    "orders", tableflow_formats={TableFormat.ICEBERG, TableFormat.DELTA},
+    storage=ManagedStorage(), wait_for_running=True,
+)
+assert set(topic.spec.table_formats) == {TableFormat.ICEBERG, TableFormat.DELTA}
+```
+
+### Storage variants
+
+`enable_tableflow` requires an explicit, frozen storage spec — no silent default:
+
+- `ManagedStorage()` — Confluent-managed bucket, zero config.
+- `ByobAwsStorage(bucket_name=..., provider_integration_id=...)` — bring-your-own AWS S3 bucket.
+- `AzureAdlsStorage(storage_account_name=..., container_name=..., provider_integration_id=...)` —
+  customer-owned Azure Data Lake Storage Gen2.
+
+### Cluster-id resolution
+
+The Tableflow API addresses the cluster by its `lkc-…` id, which the connection must know. Either:
+
+- Pass `database_kafka_cluster_id` to `connect()` (works with only a `tableflow_api_key` pair), or
+- Let it resolve lazily from `database` (the cluster name) via CMK on first use — this path
+  requires a **global** API key, and the resolved id is cached for the connection's life. A name
+  that matches more than one cluster raises, listing the candidate ids so you can disambiguate with
+  `database_kafka_cluster_id`.
+
+### `enable_tableflow()` — add an Iceberg/Delta sink
+
+```python
+from confluent_sql import ManagedStorage, TableFormat, TableflowPhase
+
+topic = connection.enable_tableflow(
+    "orders",
+    tableflow_formats=TableFormat.ICEBERG,
+    storage=ManagedStorage(),
+)
+assert topic.phase is TableflowPhase.RUNNING   # blocked to RUNNING by default
+```
+
+**Behavior notes:**
+
+- `tableflow_formats` and `storage` are required (no defaults); `tableflow_formats` must name at
+  least one format. `config` is an optional `TableflowTopicConfig` (retention, error-handling)
+  shared across all enabled formats.
+- Blocks until `RUNNING` by default (`wait_for_running=True`), raising `OperationalError` on
+  `FAILED` (surfacing `status.error_message` and `failing_table_formats`) — consistent with
+  `stop_statement`'s wait-by-default. Pass `wait_for_running=False` to return as soon as the create
+  is accepted (topic in `PENDING`).
+- Raises `TableflowTopicAlreadyExistsError` if Tableflow is already enabled (HTTP 409), or
+  `ProgrammingError` if no management credential is available or the cluster id can't be resolved.
+
+### `get_tableflow()` — read current state
+
+```python
+topic = connection.get_tableflow("orders")
+print(topic.phase)                       # TableflowPhase.PENDING / RUNNING / FAILED
+print(topic.spec.table_formats)          # [TableFormat.ICEBERG, ...]
+```
+
+Raises `TableflowTopicNotFoundError` if Tableflow is not enabled for the topic (HTTP 404). There is
+no separate health check — health is read off `get_tableflow(...).phase`.
+
+### `disable_tableflow()` — tear down the sink
+
+```python
+connection.disable_tableflow("orders")   # blocks until confirmed gone by default
+```
+
+**Behavior notes:**
+
+- All-or-nothing in v1: removes the entire Tableflow topic. (Removing just one of two enabled
+  formats needs a future API and is not yet supported.)
+- Deletion is asynchronous. Blocks until removal is confirmed by default (`wait_for_removal=True`),
+  polling `get_tableflow` until it `404`s. This is why a following `DROP TABLE` is safe by default —
+  dropping the Flink table drops its backing topic, so Tableflow must be confirmed gone first to
+  avoid racing an active materialization. Pass `wait_for_removal=False` to return as soon as the
+  `DELETE` is accepted.
+- Raises `TableflowTopicNotFoundError` if Tableflow was not enabled (HTTP 404).
+
+### Reusing format and config across many tables
+
+Every input is a reusable value — the selection is an enum member, and `storage`/`config` are
+frozen — so hoist them out of the loop. The cluster-id lookup resolves once and is cached, so the
+loop hits CMK at most once:
+
+```python
+from confluent_sql import ManagedStorage, TableFormat, TableflowTopicConfig
+
+storage = ManagedStorage()
+config = TableflowTopicConfig(retention_ms="604800000")
+
+for table in ("orders", "shipments", "returns"):
+    connection.enable_tableflow(
+        table,
+        tableflow_formats=TableFormat.ICEBERG,
+        storage=storage,
+        config=config,
+    )
+```
 
 ---
 
