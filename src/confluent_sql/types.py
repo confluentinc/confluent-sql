@@ -905,6 +905,8 @@ class DaysIntervalConverter(TypeConverter[timedelta, str]):
         r"^(?P<sign>[+-])(?P<days>\d+)\s(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})(?:\.(?P<micro>\d{1,6}))?$"
     )
 
+    ZERO_TIMEDELTA = timedelta(0)
+
     def to_python_value(self, response_value: str | None) -> timedelta | None:
         """Expect string-encoded interval or None from the response value,
         return as str or raise ValueError."""
@@ -947,8 +949,6 @@ class DaysIntervalConverter(TypeConverter[timedelta, str]):
             raise ValueError(
                 f"Invalid interval string for IntervalConverter: {response_value}"
             ) from e
-
-    ZERO_TIMEDELTA = timedelta(0)
 
     @classmethod
     def to_statement_string(cls, python_value: timedelta) -> str:
