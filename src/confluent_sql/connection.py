@@ -57,7 +57,7 @@ def _resolve_api_credentials(
     """Pick the (key, secret) pair a connection authenticates with.
 
     A 'global' Confluent Cloud API key works against every route this driver touches (Flink
-    today, TableFlow and friends later), whereas a Flink-region key only works against Flink.
+    today, Tableflow and friends later), whereas a Flink-region key only works against Flink.
     The global pair therefore wins when both are supplied. Either pair may be omitted, but a
     half-supplied pair (key without secret, or vice versa) is a configuration mistake worth
     surfacing rather than silently treating as absent.
