@@ -330,7 +330,7 @@ class Connection:
     )
 
     _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
-    """Control-plane host for Tableflow, Connect, and CMK routes -- distinct from the Flink gateway."""
+    """Control-plane host (Tableflow, Connect, CMK) -- distinct from the Flink gateway."""
 
     _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
     """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
