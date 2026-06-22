@@ -270,7 +270,10 @@ class ConnectorApi:
         then repeated until RUNNING (raising on FAILED).
 
         Raises:
-            InterfaceError: If `config` lacks `connector.class` or its `name` disagrees with `name`.
+            InterfaceError: If `config` is missing a required key (`connector.class`,
+                `kafka.api.key`, `kafka.api.secret`) or its `name` disagrees with `name`.
+            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+                credential) or resolve the Kafka cluster id.
             ConnectorAlreadyExistsError: If a connector with this name exists (HTTP 409).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
@@ -301,6 +304,8 @@ class ConnectorApi:
         """Read a connector's config and lifecycle state, merging the base read with `/status`.
 
         Raises:
+            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+                credential) or resolve the Kafka cluster id.
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors.
         """
@@ -311,6 +316,8 @@ class ConnectorApi:
         """Delete a connector and, by default, block until the base read 404s.
 
         Raises:
+            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+                credential) or resolve the Kafka cluster id.
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
@@ -332,7 +339,8 @@ class ConnectorApi:
             self._wait_for_removal(name, timeout)
 
     def _read_spec(self, name: str) -> ConnectorSpec:
-        """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError."""
+        """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
+        errors -> OperationalError."""
         response = self._context.controlplane_request(
             f"{self._connectors_path()}/{name}", raise_for_status=False
         )
@@ -349,7 +357,8 @@ class ConnectorApi:
         return ConnectorSpec.from_response(response.json())
 
     def _fetch_status(self, name: str) -> ConnectorStatus:
-        """`GET .../connectors/{name}/status` -> parsed status; 404 -> ConnectorNotFoundError."""
+        """`GET .../connectors/{name}/status` -> parsed status; 404 -> ConnectorNotFoundError, other
+        HTTP errors -> OperationalError."""
         response = self._context.controlplane_request(
             f"{self._connectors_path()}/{name}/status", raise_for_status=False
         )
