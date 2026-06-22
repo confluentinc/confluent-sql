@@ -7,9 +7,18 @@ executing SQL queries against Confluent SQL services.
 
 from .changelog_compressor import ChangelogCompressor
 from .connection import Connection, connect
+from .connectors import (
+    Connector,
+    ConnectorSpec,
+    ConnectorState,
+    ConnectorStatus,
+    TaskStatus,
+)
 from .cursor import Cursor
 from .exceptions import (
     ComputePoolExhaustedError,
+    ConnectorAlreadyExistsError,
+    ConnectorNotFoundError,
     DatabaseError,
     DataError,
     Error,
@@ -75,6 +84,13 @@ __all__ = [
     "TypeMismatchError",
     "TableflowTopicNotFoundError",
     "TableflowTopicAlreadyExistsError",
+    "ConnectorNotFoundError",
+    "ConnectorAlreadyExistsError",
+    "Connector",
+    "ConnectorSpec",
+    "ConnectorStatus",
+    "ConnectorState",
+    "TaskStatus",
     "TableFormat",
     "TableflowPhase",
     "TableflowTopic",

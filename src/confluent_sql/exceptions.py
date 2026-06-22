@@ -232,6 +232,38 @@ class TableflowTopicAlreadyExistsError(OperationalError):
         self.table_name = table_name
 
 
+class ConnectorNotFoundError(OperationalError):
+    """
+    Exception raised when a connector does not exist.
+
+    Raised on an HTTP 404 from get_connector() or delete_connector() -- i.e. the connector was
+    never created (or has already been removed). delete_connector(wait_for_removal=True) polls
+    against this 404 to confirm teardown.
+
+    Attributes:
+        connector_name: The name of the connector that was not found.
+    """
+
+    def __init__(self, message: str, connector_name: str):
+        super().__init__(message)
+        self.connector_name = connector_name
+
+
+class ConnectorAlreadyExistsError(OperationalError):
+    """
+    Exception raised when creating a connector whose name is already taken.
+
+    Raised on an HTTP 409 from create_connector().
+
+    Attributes:
+        connector_name: The name of the connector that already existed.
+    """
+
+    def __init__(self, message: str, connector_name: str):
+        super().__init__(message)
+        self.connector_name = connector_name
+
+
 class IntegrityError(DatabaseError):
     """
     Exception raised when the relational integrity of the database is affected.
