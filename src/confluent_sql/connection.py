@@ -46,9 +46,6 @@ from .tableflow import (
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
 
-DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
-"""Control-plane host for Tableflow, Connect, and CMK routes -- distinct from the Flink gateway."""
-
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +58,7 @@ def _resolve_api_credentials(
     """Pick the (key, secret) pair a connection authenticates with.
 
     A 'global' Confluent Cloud API key works against every route this driver touches (Flink
-    today, TableFlow and friends later), whereas a Flink-region key only works against Flink.
+    today, Tableflow and friends later), whereas a Flink-region key only works against Flink.
     The global pair therefore wins when both are supplied. Either pair may be omitted, but a
     half-supplied pair (key without secret, or vice versa) is a configuration mistake worth
     surfacing rather than silently treating as absent.
@@ -332,6 +329,22 @@ class Connection:
         f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
     )
 
+    _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
+    """Control-plane host for Tableflow, Connect, and CMK routes -- distinct from the Flink gateway."""
+
+    _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
+    """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
+
+    _RESERVED_STATEMENT_PROPERTIES = {
+        "sql.current-catalog",
+        "sql.current-database",
+        "sql.snapshot.mode",
+    }
+    """Per-statement properties the driver owns and overlays itself from connection/execution state
+    (the active catalog, database, and snapshot mode). They are not knobs a caller may set, so
+    _resolve_properties rejects any of these appearing in a user-supplied properties dict rather
+    than silently letting the driver's overlay win."""
+
     environment_id: str
     organization_id: str
     compute_pool_id: str | None
@@ -532,7 +545,7 @@ class Connection:
         # control-plane credential still constructs fine -- the error surfaces only when Tableflow
         # is invoked.
         self._controlplane_endpoint = (
-            controlplane_endpoint or DEFAULT_CONTROLPLANE_ENDPOINT
+            controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
         self._controlplane_auth = _resolve_tableflow_credentials(
             global_api_key, global_api_secret, tableflow_api_key, tableflow_api_secret
@@ -1281,12 +1294,6 @@ class Connection:
 
         self._row_type_registry.register_row_type(class_for_flink_row)
 
-    _NEVER_USER_PROVIDED_PROPERTIES = {
-        "sql.current-catalog",
-        "sql.current-database",
-        "sql.snapshot.mode",
-    }
-
     def _resolve_properties(
         self, properties: PropertiesDict | None, execution_mode: ExecutionMode
     ) -> PropertiesDict:
@@ -1323,7 +1330,7 @@ class Connection:
                         f"properties values must be str, int, or bool, "
                         f"got {type(value).__name__} for key {key!r}"
                     )
-                if key in self._NEVER_USER_PROVIDED_PROPERTIES:
+                if key in self._RESERVED_STATEMENT_PROPERTIES:
                     raise InterfaceError(f"'{key}' is a reserved system property.")
 
         # Start with user properties (if provided), then overlay system properties
@@ -1718,8 +1725,6 @@ class Connection:
         return self._get_connector_api().delete(
             name, wait_for_removal=wait_for_removal, timeout=timeout
         )
-
-    _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
 
     def enable_tableflow(
         self,
