@@ -1678,7 +1678,7 @@ class Connection:
         return self._connect_controlplane_client
 
     def controlplane_request(
-        self, url, method="GET", raise_for_status=True, **kwargs
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
     ) -> httpx.Response:
         """Issue a Connect control-plane request -- satisfies ControlPlaneContext for ConnectorApi.
 

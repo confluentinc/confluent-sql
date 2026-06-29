@@ -384,24 +384,27 @@ class ConnectorApi:
             OperationalError: If the connector transitions to FAILED (surfacing `connector.trace`),
                 or if RUNNING is not reached within timeout.
         """
-        def raise_if_failed(candidate: Connector) -> None:
+        def settled(candidate: Connector) -> Connector | None:
+            """Resolve a create-wait terminal state: return the connector at RUNNING, raise at
+            FAILED, or None while still transient so the caller keeps polling."""
+            if not candidate.state.is_terminal:
+                return None
             if candidate.state is ConnectorState.FAILED:
                 detail = candidate.status.trace or ""
                 raise OperationalError(
                     f"Connector '{candidate.spec.name}' transitioned to FAILED: {detail}".strip()
                 )
+            return candidate
 
-        raise_if_failed(connector)
-        if connector.state is ConnectorState.RUNNING:
-            return connector
+        if (resolved := settled(connector)) is not None:
+            return resolved
 
         for _ in sleep_with_backoff(timeout):
             connector = Connector(
                 spec=connector.spec, status=self._fetch_status(connector.spec.name)
             )
-            raise_if_failed(connector)
-            if connector.state is ConnectorState.RUNNING:
-                return connector
+            if (resolved := settled(connector)) is not None:
+                return resolved
 
         raise OperationalError(
             f"Connector '{connector.spec.name}' did not reach RUNNING within {timeout} seconds"
