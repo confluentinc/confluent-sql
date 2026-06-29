@@ -158,6 +158,25 @@ class TestConnectorPassthroughs:
 
         api.delete.assert_called_once_with("c1", wait_for_removal=False, timeout=10)
 
+    @pytest.mark.parametrize(
+        ("method_name", "api_attr", "wait_kwarg"),
+        [
+            ("pause_connector", "pause", "wait_for_paused"),
+            ("resume_connector", "resume", "wait_for_running"),
+        ],
+    )
+    def test_action_connector_delegates(
+        self, method_name: str, api_attr: str, wait_kwarg: str
+    ) -> None:
+        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
+        api = Mock()
+        conn._connector_api = api
+
+        result = getattr(conn, method_name)("c1", **{wait_kwarg: False, "timeout": 10})
+
+        getattr(api, api_attr).assert_called_once_with("c1", **{wait_kwarg: False, "timeout": 10})
+        assert result is getattr(api, api_attr).return_value
+
     def test_connector_api_lazily_composed_with_self_as_context(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         first = conn._get_connector_api()
