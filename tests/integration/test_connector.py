@@ -9,6 +9,7 @@ drop it via the Flink table abstraction.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Generator
 from datetime import datetime
@@ -143,20 +144,24 @@ class TestConnectorLifecycle:
             "tasks.max": "1",
         }
 
-        connector_created = False
         try:
             connector = conn.create_connector(
                 connector_name, config=config, wait_for_running=True, timeout=600
             )
-            connector_created = True
             assert connector.state is ConnectorState.RUNNING
             assert connector.spec.connector_class == "DatagenSource"
 
             # Re-read independently: the config-read + /status-read merge stays healthy.
             refreshed = conn.get_connector(connector_name)
             assert refreshed.state is ConnectorState.RUNNING
+
+            # Delete and confirm it 404s afterward -- the teardown half of the arc under test.
+            conn.delete_connector(connector_name, wait_for_removal=True, timeout=600)
+            with pytest.raises(confluent_sql.ConnectorNotFoundError):
+                conn.get_connector(connector_name)
         finally:
-            if connector_created:
-                conn.delete_connector(connector_name, wait_for_removal=True, timeout=600)
-                with pytest.raises(confluent_sql.ConnectorNotFoundError):
-                    conn.get_connector(connector_name)
+            # Best-effort cleanup. If create_connector's RUNNING wait raised (FAILED/timeout) the
+            # connector still exists server-side, and the happy-path delete above never ran -- so
+            # tear it down here to avoid orphaning it. A no-op (404) when that delete already ran.
+            with contextlib.suppress(confluent_sql.ConnectorNotFoundError):
+                conn.delete_connector(connector_name, wait_for_removal=False)
