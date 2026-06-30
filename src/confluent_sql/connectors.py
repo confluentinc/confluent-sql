@@ -389,7 +389,8 @@ class ConnectorApi:
         """Read the connector back after an action, optionally blocking until it reaches `target`.
 
         The lifecycle actions return no connector body, so `get` supplies a real (not synthesized)
-        merged state. With `wait` false this just-requested state is returned as the opt-out.
+        merged state. With `wait` False, this returns after the single `get` (whatever state is
+        observed at that point).
         """
         connector = self.get(name)
         if not wait:

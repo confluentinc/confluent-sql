@@ -61,7 +61,6 @@ def _connector_connection_from_env() -> Connection:
     cluster_ok = has_global or bool(database_kafka_cluster_id)
     base_ok = all([environment_id, organization_id, cloud_provider, cloud_region, database])
     if not (no_half_pairs and flink_auth_ok and controlplane_ok and cluster_ok and base_ok):
-        breakpoint()
         pytest.skip("Missing environment variables for a connector-capable integration connection")
 
     return confluent_sql.connect(
