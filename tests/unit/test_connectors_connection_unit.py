@@ -27,12 +27,17 @@ def _ok_response(body: dict | None = None, status_code: int = 200) -> Mock:
     return response
 
 
-def _error_response(status_code: int) -> Mock:
-    """A response whose raise_for_status() raises an HTTPStatusError of the given code."""
+def _error_response(status_code: int, body: str = "") -> Mock:
+    """A response whose raise_for_status() raises an HTTPStatusError of the given code.
+
+    `body` populates `e.response.text` -- the server-side error detail the API methods fold into
+    their OperationalError message.
+    """
     response = Mock()
     response.status_code = status_code
     inner = Mock()
     inner.status_code = status_code
+    inner.text = body
     response.raise_for_status = Mock(
         side_effect=httpx.HTTPStatusError("boom", request=Mock(), response=inner)
     )
@@ -173,13 +178,14 @@ class TestConnectorApiCreate:
 
     def test_generic_error_raises_operational_not_already_exists(self) -> None:
         ctx = FakeControlPlane()
-        ctx.queue("create", _error_response(500))
+        ctx.queue("create", _error_response(500, body='{"message":"kafka.api.key invalid"}'))
         api = ConnectorApi(ctx)
 
         with pytest.raises(OperationalError) as exc:
             api.create("MyDatagen", config=_create_config())
         assert not isinstance(exc.value, ConnectorAlreadyExistsError)
         assert exc.value.http_status_code == 500
+        assert "kafka.api.key invalid" in str(exc.value)
 
     def test_409_raises_already_exists(self) -> None:
         ctx = FakeControlPlane()
@@ -252,12 +258,13 @@ class TestConnectorApiGet:
 
     def test_generic_read_error_raises_operational(self) -> None:
         ctx = FakeControlPlane()
-        ctx.queue("read", _error_response(500))
+        ctx.queue("read", _error_response(500, body="upstream read boom"))
         api = ConnectorApi(ctx)
 
         with pytest.raises(OperationalError) as exc:
             api.get("MyDatagen")
         assert exc.value.http_status_code == 500
+        assert "upstream read boom" in str(exc.value)
 
     def test_status_404_after_successful_read_raises_not_found(self) -> None:
         # A connector deleted between the base read and the /status read: status 404s.
@@ -273,12 +280,13 @@ class TestConnectorApiGet:
     def test_generic_status_error_raises_operational(self) -> None:
         ctx = FakeControlPlane()
         ctx.queue("read", _ok_response(_read_body()))
-        ctx.queue("status", _error_response(500))
+        ctx.queue("status", _error_response(500, body="status boom"))
         api = ConnectorApi(ctx)
 
         with pytest.raises(OperationalError) as exc:
             api.get("MyDatagen")
         assert exc.value.http_status_code == 500
+        assert "status boom" in str(exc.value)
 
 
 class TestConnectorApiDelete:
@@ -304,12 +312,13 @@ class TestConnectorApiDelete:
 
     def test_generic_error_raises_operational(self) -> None:
         ctx = FakeControlPlane()
-        ctx.queue("delete", _error_response(500))
+        ctx.queue("delete", _error_response(500, body="delete boom"))
         api = ConnectorApi(ctx)
 
         with pytest.raises(OperationalError) as exc:
             api.delete("MyDatagen")
         assert exc.value.http_status_code == 500
+        assert "delete boom" in str(exc.value)
 
     def test_polls_through_a_still_present_read_until_gone(self, no_sleep) -> None:
         # The connector is still readable on the first poll, then 404s on the second.
@@ -447,13 +456,14 @@ class TestConnectorApiActions:
         self, action, method, suffix, target, transient, wait_kwarg
     ) -> None:
         ctx = FakeControlPlane()
-        ctx.queue("action", _error_response(500))
+        ctx.queue("action", _error_response(500, body="action boom"))
         api = ConnectorApi(ctx)
 
         with pytest.raises(OperationalError) as exc:
             getattr(api, action)("MyDatagen")
         assert not isinstance(exc.value, ConnectorNotFoundError)
         assert exc.value.http_status_code == 500
+        assert "action boom" in str(exc.value)
 
     @pytest.mark.parametrize(
         ("action", "method", "suffix", "target", "transient", "wait_kwarg"),

@@ -280,7 +280,8 @@ class ConnectorApi:
                     f"Connector '{name}' already exists", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error creating connector", http_status_code=e.response.status_code
+                f"Error creating connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
 
         connector = Connector(
@@ -323,7 +324,8 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error deleting connector", http_status_code=e.response.status_code
+                f"Error deleting connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
 
         if wait_for_removal:
@@ -377,7 +379,8 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                f"Error sending '{action}' to connector", http_status_code=e.response.status_code
+                f"Error sending '{action}' to connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
 
     def _settle_after_action(
@@ -407,7 +410,8 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error reading connector", http_status_code=e.response.status_code
+                f"Error reading connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
         return ConnectorSpec.from_response(response.json())
 
@@ -425,7 +429,8 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error reading connector status", http_status_code=e.response.status_code
+                f"Error reading connector status: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
         return ConnectorStatus.from_response(response.json())
 
