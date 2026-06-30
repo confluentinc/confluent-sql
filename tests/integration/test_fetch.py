@@ -177,8 +177,8 @@ class TestCursorFetch:
                 "date_value": date(2024, 6, 15),
                 "time_value": time(12, 34, 56),
                 "time_value_micro": time(
-                    12, 34, 56
-                ),  # Sigh, the microseconds get lost in the round trip, Flink-side.
+                    12, 34, 56, 789000
+                ),
                 "timestamp_value": datetime(2025, 6, 15, 12, 34, 56),  # No micros to lose here.
                 "timestamp_value_micros": datetime(2024, 6, 15, 12, 34, 56, 123456),
                 # GMT+02:00 gets converted to UTC time in the round trip, so comes
