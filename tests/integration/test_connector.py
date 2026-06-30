@@ -1,4 +1,5 @@
-"""Integration test for the connector lifecycle: create -> wait RUNNING -> delete, end to end.
+"""Integration test for the connector lifecycle: create -> RUNNING -> pause/resume -> delete,
+end to end.
 
 Runs only when a connector-capable configuration is present in the environment. Uses a managed
 **Datagen source** connector -- free, self-contained, and needing no external system to stand up.
@@ -60,6 +61,7 @@ def _connector_connection_from_env() -> Connection:
     cluster_ok = has_global or bool(database_kafka_cluster_id)
     base_ok = all([environment_id, organization_id, cloud_provider, cloud_region, database])
     if not (no_half_pairs and flink_auth_ok and controlplane_ok and cluster_ok and base_ok):
+        breakpoint()
         pytest.skip("Missing environment variables for a connector-capable integration connection")
 
     return confluent_sql.connect(
@@ -122,7 +124,8 @@ def connector_names(
 @pytest.mark.integration
 @pytest.mark.slow
 class TestConnectorLifecycle:
-    """End-to-end arc: create Datagen source -> wait RUNNING -> assert healthy -> delete -> gone."""
+    """End-to-end arc: create Datagen source -> wait RUNNING -> assert healthy -> pause -> resume
+    -> delete -> gone."""
 
     def test_create_check_delete_arc(
         self,
@@ -153,6 +156,13 @@ class TestConnectorLifecycle:
             # Re-read independently: the config-read + /status-read merge stays healthy.
             refreshed = conn.get_connector(connector_name)
             assert refreshed.state is ConnectorState.RUNNING
+
+            # Lifecycle actions: pause -> PAUSED, resume -> RUNNING.
+            paused = conn.pause_connector(connector_name, wait_for_paused=True, timeout=600)
+            assert paused.state is ConnectorState.PAUSED
+
+            resumed = conn.resume_connector(connector_name, wait_for_running=True, timeout=600)
+            assert resumed.state is ConnectorState.RUNNING
 
             # Delete and confirm it 404s afterward -- the teardown half of the arc under test.
             conn.delete_connector(connector_name, wait_for_removal=True, timeout=600)

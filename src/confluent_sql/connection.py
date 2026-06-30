@@ -1726,6 +1726,22 @@ class Connection:
             name, wait_for_removal=wait_for_removal, timeout=timeout
         )
 
+    def pause_connector(
+        self, name: str, *, wait_for_paused: bool = True, timeout: float = 300
+    ) -> Connector:
+        """Pause a managed connector; see ConnectorApi.pause."""
+        return self._get_connector_api().pause(
+            name, wait_for_paused=wait_for_paused, timeout=timeout
+        )
+
+    def resume_connector(
+        self, name: str, *, wait_for_running: bool = True, timeout: float = 300
+    ) -> Connector:
+        """Resume a paused connector; see ConnectorApi.resume."""
+        return self._get_connector_api().resume(
+            name, wait_for_running=wait_for_running, timeout=timeout
+        )
+
     def enable_tableflow(
         self,
         table_name: str,
