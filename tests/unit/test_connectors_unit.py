@@ -47,23 +47,7 @@ def _status_body() -> dict:
 
 
 class TestConnectorState:
-    """The lifecycle enum is extensible and knows which states end a create-wait."""
-
-    @pytest.mark.parametrize(
-        ("state", "terminal"),
-        [
-            (ConnectorState.RUNNING, True),
-            (ConnectorState.FAILED, True),
-            (ConnectorState.PROVISIONING, False),
-            (ConnectorState.NONE, False),
-            (ConnectorState.DEGRADED, False),
-            (ConnectorState.PAUSED, False),
-            (ConnectorState.DELETED, False),
-            (ConnectorState.UNKNOWN, False),
-        ],
-    )
-    def test_is_terminal(self, state: ConnectorState, terminal: bool) -> None:
-        assert state.is_terminal is terminal
+    """The lifecycle enum is extensible: unrecognized server values parse to UNKNOWN."""
 
     def test_unknown_value_maps_to_unknown(self) -> None:
         assert ConnectorState("SOMETHING_NEW") is ConnectorState.UNKNOWN

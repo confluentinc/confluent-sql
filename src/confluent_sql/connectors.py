@@ -98,16 +98,6 @@ class ConnectorState(str, Enum):
     def _missing_(cls, value: object) -> ConnectorState:
         return cls.UNKNOWN
 
-    @property
-    def is_terminal(self) -> bool:
-        """True once a create-wait can stop: the connector is healthy (RUNNING) or broken (FAILED).
-
-        PROVISIONING/NONE/DEGRADED are transient during provisioning; PAUSED/DELETED don't arise
-        from a create. UNKNOWN is deliberately non-terminal -- a state we don't understand
-        shouldn't end a wait; the caller's timeout governs that instead.
-        """
-        return self in (ConnectorState.RUNNING, ConnectorState.FAILED)
-
 
 @dataclass
 class TaskStatus:
@@ -238,12 +228,13 @@ class ControlPlaneContext(Protocol):
 
 
 class ConnectorApi:
-    """Create / read / delete choreography for managed connectors against the Connect v1 API.
+    """Lifecycle choreography for managed connectors against the Connect v1 API.
 
-    Holds the stateful HTTP + polling work behind `Connection`'s flat passthroughs. Blocks by
-    default per the repo's `wait_for_<settled-state>` convention, polling via `sleep_with_backoff`.
-    Because the wire returns lifecycle state only from the `/status` sub-resource, a complete
-    `Connector` always pairs a config read with a status read.
+    Covers create / read / delete plus the pause / resume actions. Holds the stateful
+    HTTP + polling work behind `Connection`'s flat passthroughs. Blocks by default per the repo's
+    `wait_for_<settled-state>` convention, polling via `sleep_with_backoff`. Because the wire
+    returns lifecycle state only from the `/status` sub-resource, a complete `Connector` always
+    pairs a config read with a status read.
     """
 
     def __init__(self, context: ControlPlaneContext) -> None:
@@ -289,7 +280,8 @@ class ConnectorApi:
                     f"Connector '{name}' already exists", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error creating connector", http_status_code=e.response.status_code
+                f"Error creating connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
 
         connector = Connector(
@@ -297,7 +289,7 @@ class ConnectorApi:
             status=self._fetch_status(name),
         )
         if wait_for_running:
-            return self._wait_for_running(connector, timeout)
+            return self._wait_for_state(connector, ConnectorState.RUNNING, timeout)
         return connector
 
     def get(self, name: str) -> Connector:
@@ -332,11 +324,78 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error deleting connector", http_status_code=e.response.status_code
+                f"Error deleting connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
 
         if wait_for_removal:
             self._wait_for_removal(name, timeout)
+
+    def pause(
+        self, name: str, *, wait_for_paused: bool = True, timeout: float = 300
+    ) -> Connector:
+        """Pause a managed connector and, by default, block until it reaches PAUSED.
+
+        `PUT .../connectors/{name}/pause`. The action response carries no connector body, so the
+        settled `Connector` is read back via `get`.
+
+        Raises:
+            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+                credential) or resolve the Kafka cluster id.
+            ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
+            OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
+        """
+        self._connector_action(name, "pause")
+        return self._settle_after_action(name, ConnectorState.PAUSED, wait_for_paused, timeout)
+
+    def resume(
+        self, name: str, *, wait_for_running: bool = True, timeout: float = 300
+    ) -> Connector:
+        """Resume a paused connector and, by default, block until it reaches RUNNING.
+
+        `PUT .../connectors/{name}/resume`. The action response carries no connector body, so the
+        settled `Connector` is read back via `get`.
+
+        Raises:
+            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+                credential) or resolve the Kafka cluster id.
+            ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
+            OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
+        """
+        self._connector_action(name, "resume")
+        return self._settle_after_action(name, ConnectorState.RUNNING, wait_for_running, timeout)
+
+    def _connector_action(self, name: str, action: str) -> None:
+        """Issue a `PUT` lifecycle action sub-request (`pause`/`resume`); 404 ->
+        ConnectorNotFoundError, other HTTP errors -> OperationalError."""
+        response = self._context.controlplane_request(
+            f"{self._connectors_path()}/{name}/{action}", method="PUT", raise_for_status=False
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise ConnectorNotFoundError(
+                    f"Connector '{name}' does not exist", connector_name=name
+                ) from e
+            raise OperationalError(
+                f"Error sending '{action}' to connector: {e.response.text}",
+                http_status_code=e.response.status_code,
+            ) from e
+
+    def _settle_after_action(
+        self, name: str, target: ConnectorState, wait: bool, timeout: float
+    ) -> Connector:
+        """Read the connector back after an action, optionally blocking until it reaches `target`.
+
+        The lifecycle actions return no connector body, so `get` supplies a real (not synthesized)
+        merged state. With `wait` False, this returns after the single `get` (whatever state is
+        observed at that point).
+        """
+        connector = self.get(name)
+        if not wait:
+            return connector
+        return self._wait_for_state(connector, target, timeout)
 
     def _read_spec(self, name: str) -> ConnectorSpec:
         """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
@@ -352,7 +411,8 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error reading connector", http_status_code=e.response.status_code
+                f"Error reading connector: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
         return ConnectorSpec.from_response(response.json())
 
@@ -370,31 +430,35 @@ class ConnectorApi:
                     f"Connector '{name}' does not exist", connector_name=name
                 ) from e
             raise OperationalError(
-                "Error reading connector status", http_status_code=e.response.status_code
+                f"Error reading connector status: {e.response.text}",
+                http_status_code=e.response.status_code,
             ) from e
         return ConnectorStatus.from_response(response.json())
 
-    def _wait_for_running(self, connector: Connector, timeout: float) -> Connector:
-        """Poll `/status` until the connector reaches RUNNING, refreshing only its status.
+    def _wait_for_state(
+        self, connector: Connector, target: ConnectorState, timeout: float
+    ) -> Connector:
+        """Poll `/status` until the connector reaches `target`, refreshing only its status.
 
         The spec is fixed once created, so each poll rebuilds the `Connector` from the original spec
-        and the freshly-read status rather than re-reading the config.
+        and the freshly-read status rather than re-reading the config. A FAILED state always ends
+        the wait by raising (with `connector.trace`), since no `target` callers ask for is FAILED.
 
         Raises:
             OperationalError: If the connector transitions to FAILED (surfacing `connector.trace`),
-                or if RUNNING is not reached within timeout.
+                or if `target` is not reached within timeout.
         """
         def settled(candidate: Connector) -> Connector | None:
-            """Resolve a create-wait terminal state: return the connector at RUNNING, raise at
-            FAILED, or None while still transient so the caller keeps polling."""
-            if not candidate.state.is_terminal:
-                return None
+            """Resolve the wait: return the connector once at `target`, raise at FAILED, or None
+            while still transient so the caller keeps polling."""
             if candidate.state is ConnectorState.FAILED:
                 detail = candidate.status.trace or ""
                 raise OperationalError(
                     f"Connector '{candidate.spec.name}' transitioned to FAILED: {detail}".strip()
                 )
-            return candidate
+            if candidate.state is target:
+                return candidate
+            return None
 
         if (resolved := settled(connector)) is not None:
             return resolved
@@ -407,7 +471,8 @@ class ConnectorApi:
                 return resolved
 
         raise OperationalError(
-            f"Connector '{connector.spec.name}' did not reach RUNNING within {timeout} seconds"
+            f"Connector '{connector.spec.name}' did not reach {target.value} "
+            f"within {timeout} seconds"
         )
 
     def _wait_for_removal(self, name: str, timeout: float) -> None:
