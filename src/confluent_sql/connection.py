@@ -29,7 +29,11 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .polling import sleep_with_backoff
-from .retry import call_with_retries
+from .retry import (
+    DEFAULT_RETRYABLE_EXCEPTIONS,
+    DEFAULT_RETRYABLE_STATUS_CODES,
+    call_with_retries,
+)
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import PropertiesDict, RowPythonTypes
@@ -204,6 +208,15 @@ def connect(  # noqa: PLR0913
         http_user_agent=http_user_agent,
         http_timeout_secs=http_timeout_secs,
     )
+
+
+class _RetryableStatusError(Exception):
+    """Wraps a response carrying a retryable HTTP status (#140) so call_with_retries' existing
+    exception-based retry loop drives status-code retries too. Never escapes _request_get."""
+
+    def __init__(self, response: httpx.Response):
+        self.response = response
+        super().__init__(f"transient HTTP status {response.status_code}")
 
 
 class Connection:
@@ -1404,7 +1417,8 @@ class Connection:
         return (results, next_url)
 
     def _request_get(self, url, **kwargs) -> httpx.Response:
-        """Issue a GET, retrying transient transport errors (#137).
+        """Issue a GET, retrying transient transport errors (#137) and transient HTTP status
+        codes (#140) alike -- both feed the same call_with_retries backoff/attempt budget.
 
         Only for idempotent GETs -- retrying a call with side effects (POST/PATCH/DELETE) could
         double-submit or double-mutate state, so those call sites use `_request` directly.
@@ -1413,18 +1427,29 @@ class Connection:
         the retry policy just because it needs a kwarg beyond `params`.
         """
         kwargs["method"] = "GET"
-        return call_with_retries(self._request, url, **kwargs)
 
-    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
-        if self._closed:
-            raise InterfaceError("Connection is closed")
+        def _get_or_flag_retryable_status() -> httpx.Response:
+            response = self._request(url, raise_for_status=False, **kwargs)
+            if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
+                raise _RetryableStatusError(response)
+            return response
 
         try:
-            response = self._client.request(method, url, **kwargs)
-            logger.debug("Response: %s", response.content)
-            if raise_for_status:
-                response.raise_for_status()
-            return response
+            response = call_with_retries(
+                _get_or_flag_retryable_status,
+                exceptions=(*DEFAULT_RETRYABLE_EXCEPTIONS, _RetryableStatusError),
+            )
+        except _RetryableStatusError as e:
+            response = e.response
+
+        self._raise_for_status_as_operational_error(response)
+        return response
+
+    def _raise_for_status_as_operational_error(self, response: httpx.Response) -> None:
+        """Translate a non-2xx response into OperationalError, chaining the original
+        httpx.HTTPStatusError and including any server-provided error detail."""
+        try:
+            response.raise_for_status()
         except httpx.HTTPStatusError as e:
             try:
                 res = e.response.json()
@@ -1437,6 +1462,16 @@ class Connection:
                 f"error sending request '{e.response.status_code}' - {details}",
                 http_status_code=e.response.status_code,
             ) from e
+
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+        if self._closed:
+            raise InterfaceError("Connection is closed")
+
+        response = self._client.request(method, url, **kwargs)
+        logger.debug("Response: %s", response.content)
+        if raise_for_status:
+            self._raise_for_status_as_operational_error(response)
+        return response
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
         """Extract the next page token from the next_url, if present."""
