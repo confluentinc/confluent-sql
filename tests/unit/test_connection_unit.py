@@ -1562,6 +1562,116 @@ class TestGetStatement:
 
 
 @pytest.mark.unit
+class TestConnectionRetriesIdempotentGets:
+    """Tests that idempotent GET paths retry transient transport errors (#137), while
+    mutating (POST/PATCH/DELETE) paths deliberately do not."""
+
+    def test_list_statements_retries_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [statement_response_factory(name="stmt-1")],
+            "metadata": {},
+        }
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), mock_response],
+        )
+
+        statements = invalid_credential_connection.list_statements()
+
+        assert [s.name for s in statements] == ["stmt-1"]
+        assert request_mock.call_count == 2
+
+    def test_get_statement_retries_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.json.return_value = statement_response_factory(name="stmt-1")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), mock_response],
+        )
+
+        result = invalid_credential_connection._get_statement("stmt-1")
+
+        assert result["name"] == "stmt-1"
+        assert request_mock.call_count == 2
+
+    def test_get_statement_results_retries_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "results": {"data": [{"row": ["v1"]}]},
+            "metadata": {},
+        }
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), mock_response],
+        )
+
+        results, next_url = invalid_credential_connection._get_statement_results("stmt-1", None)
+
+        assert [r.row for r in results] == [["v1"]]
+        assert next_url is None
+        assert request_mock.call_count == 2
+
+    def test_idempotent_get_reraises_original_exception_after_exhausting_retries(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Documents today's unwrapped-transport-error behavior (tracked as #138): after retries
+        are exhausted, the raw httpx exception propagates rather than an OperationalError."""
+        mocker.patch("confluent_sql.retry.time.sleep")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset")] * 4,
+        )
+
+        with pytest.raises(httpx.ReadError):
+            invalid_credential_connection._get_statement("stmt-1")
+
+        assert request_mock.call_count == 4
+
+    def test_non_idempotent_path_does_not_retry_on_transient_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """delete_statement's DELETE must not be retried: retrying a mutating call after a
+        connection reset could double-mutate state, which is exactly what #137 scopes retries
+        away from."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=httpx.ReadError("reset"),
+        )
+
+        with pytest.raises(httpx.ReadError):
+            invalid_credential_connection.delete_statement("stmt-1")
+
+        request_mock.assert_called_once()
+
+
+@pytest.mark.unit
 class TestExecuteStatement:
     """Tests for _execute_statement method."""
 

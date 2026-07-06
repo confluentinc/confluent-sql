@@ -2,6 +2,12 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
+## 0.4.1
+
+### Fixed
+
+- Idempotent GET requests (`list_statements()`'s page-fetch loop, `get_statement()`, and result-page fetching) now retry transient transport errors -- connection resets (`httpx.NetworkError`) and servers that close pooled connections without responding (`httpx.RemoteProtocolError`) -- up to 3 times with a short exponential backoff, instead of failing on the first blip. POST/PATCH/DELETE requests (statement submission, `stop_statement()`, `delete_statement()`) are deliberately left unretried, since re-issuing them after a connection reset could double-submit or double-mutate state. (#137)
+
 ## 0.4.0, 2026-06-15
 
 ### Added

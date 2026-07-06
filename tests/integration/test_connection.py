@@ -8,6 +8,7 @@ Credentials must be provided via environment variables.
 import os
 import time
 
+import httpx
 import pytest
 
 import confluent_sql
@@ -271,6 +272,49 @@ class TestConnection:
 
         # Verify exception has statement name
         assert exc_info.value.statement_name == "non-existent-statement-name"
+
+
+@pytest.mark.integration
+class TestRetryOnTransientResultFetchErrors:
+    """Integration coverage for #137's retry-on-idempotent-GET behavior."""
+
+    def test_result_fetch_retries_past_simulated_econnresets_then_hits_confluent_cloud_for_real(
+        self, connection: Connection, mocker
+    ):
+        """Simulates two ECONNRESET-style drops on the results-fetch GET, then lets the third
+        attempt travel all the way through to Confluent Cloud for real.
+
+        NOTE: this is largely redundant with the fully-mocked coverage in
+        tests/unit/test_retry_unit.py and TestConnectionRetriesIdempotentGets
+        (tests/unit/test_connection_unit.py) -- those already prove call_with_retries' counting,
+        backoff, and exception-filtering, and that Connection wires it into
+        _get_statement_results correctly. It's written anyway, against a real environment, in
+        the spirit of treating #137 as a release-branch bugfix: showing the retry survives an
+        actual round trip is worth the extra network call, not just asserting it in the abstract.
+        """
+        with connection.closing_cursor() as cursor:
+            cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
+
+            # Capture the real bound method before patching so the third call can still reach
+            # Confluent Cloud for real.
+            real_request = connection._client.request
+            call_count = 0
+
+            def flaky_then_real_request(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 2:
+                    raise httpx.ReadError("[Errno 54] Connection reset by peer")
+                return real_request(*args, **kwargs)
+
+            request_mock = mocker.patch.object(
+                connection._client, "request", side_effect=flaky_then_real_request
+            )
+
+            row = cursor.fetchone()
+
+            assert row == (1,)
+            assert request_mock.call_count == 3
 
 
 @pytest.mark.integration
