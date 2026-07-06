@@ -29,7 +29,11 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .polling import sleep_with_backoff
-from .retry import DEFAULT_RETRYABLE_EXCEPTIONS, DEFAULT_RETRYABLE_STATUS_CODES, call_with_retries
+from .retry import (
+    DEFAULT_RETRYABLE_EXCEPTIONS,
+    DEFAULT_RETRYABLE_STATUS_CODES,
+    call_with_retries,
+)
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import PropertiesDict, RowPythonTypes
