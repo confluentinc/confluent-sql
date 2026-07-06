@@ -129,3 +129,16 @@ class TestCallWithRetries:
         assert httpx.NetworkError in DEFAULT_RETRYABLE_EXCEPTIONS
         assert httpx.RemoteProtocolError in DEFAULT_RETRYABLE_EXCEPTIONS
         assert httpx.TimeoutException not in DEFAULT_RETRYABLE_EXCEPTIONS
+
+    def test_default_exceptions_do_not_retry_timeout(self, no_sleep):
+        """Tuple membership alone (test_default_retryable_exceptions above) doesn't prove
+        httpx.TimeoutException is never retried -- it would still be caught if it were a
+        subclass of one of the default exceptions. Assert the actual behavior instead: a timeout
+        propagates on the first call, with no retry and no sleep."""
+        func = Mock(side_effect=httpx.TimeoutException("timed out"))
+
+        with pytest.raises(httpx.TimeoutException):
+            call_with_retries(func)
+
+        func.assert_called_once()
+        no_sleep.assert_not_called()

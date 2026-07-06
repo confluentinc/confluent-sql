@@ -1403,13 +1403,17 @@ class Connection:
 
         return (results, next_url)
 
-    def _request_get(self, url, params=None) -> httpx.Response:
+    def _request_get(self, url, **kwargs) -> httpx.Response:
         """Issue a GET, retrying transient transport errors (#137).
 
         Only for idempotent GETs -- retrying a call with side effects (POST/PATCH/DELETE) could
         double-submit or double-mutate state, so those call sites use `_request` directly.
+        Forwards arbitrary kwargs (params, headers, timeout, etc.) to `_request`, forcing
+        `method="GET"` regardless of what's passed, so a call site cannot accidentally opt out of
+        the retry policy just because it needs a kwarg beyond `params`.
         """
-        return call_with_retries(self._request, url, params=params)
+        kwargs["method"] = "GET"
+        return call_with_retries(self._request, url, **kwargs)
 
     def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:

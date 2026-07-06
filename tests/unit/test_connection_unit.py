@@ -1670,6 +1670,41 @@ class TestConnectionRetriesIdempotentGets:
 
         request_mock.assert_called_once()
 
+    def test_request_get_forwards_arbitrary_kwargs_to_request(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """A future GET call site needing e.g. headers/timeout must not have to bypass
+        _request_get (and thus the retry policy) just because _request_get only knew about
+        `params`."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=Mock()
+        )
+
+        invalid_credential_connection._request_get(
+            "/statements", headers={"X-Test": "1"}, timeout=5
+        )
+
+        request_mock.assert_called_once_with(
+            "GET", "/statements", headers={"X-Test": "1"}, timeout=5
+        )
+
+    def test_request_get_forces_get_method_even_if_caller_passes_method(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """_request_get must never issue anything but a GET, even if a caller mistakenly
+        passes a method= kwarg -- that guarantee is what makes it safe to retry."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=Mock()
+        )
+
+        invalid_credential_connection._request_get("/statements", method="POST")
+
+        request_mock.assert_called_once_with("GET", "/statements")
+
 
 @pytest.mark.unit
 class TestExecuteStatement:
