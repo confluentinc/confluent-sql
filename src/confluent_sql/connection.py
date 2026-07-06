@@ -29,6 +29,7 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .polling import sleep_with_backoff
+from .retry import call_with_retries
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .types import PropertiesDict, RowPythonTypes
@@ -811,7 +812,7 @@ class Connection:
         has_more_pages = True
         next_page_token: str | None = None
         while has_more_pages:
-            response = self._request("/statements", params=parameters)
+            response = self._request_get("/statements", params=parameters)
             resp_json = response.json()
             statements_json = resp_json.get("data", [])
             statements.extend(Statement.from_response(self, s) for s in statements_json)
@@ -1319,7 +1320,7 @@ class Connection:
             OperationalError: If other API errors occur
         """
         try:
-            return self._request(f"/statements/{statement_name}").json()
+            return self._request_get(f"/statements/{statement_name}").json()
         except OperationalError as e:
             # Check if this is a 404 error
             if e.http_status_code == 404:
@@ -1353,7 +1354,7 @@ class Connection:
             next_url = f"/statements/{statement_name}/results"
 
         try:
-            response = self._request(next_url).json()
+            response = self._request_get(next_url).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
             if e.http_status_code == 404:
@@ -1401,6 +1402,14 @@ class Connection:
         next_url = response.get("metadata", {}).get("next") or None
 
         return (results, next_url)
+
+    def _request_get(self, url, params=None) -> httpx.Response:
+        """Issue a GET, retrying transient transport errors (#137).
+
+        Only for idempotent GETs -- retrying a call with side effects (POST/PATCH/DELETE) could
+        double-submit or double-mutate state, so those call sites use `_request` directly.
+        """
+        return call_with_retries(self._request, url, params=params)
 
     def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:
