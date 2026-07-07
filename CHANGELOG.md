@@ -2,12 +2,13 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
-## 0.4.1
+## 0.4.1, 2026-07-07
 
 ### Fixed
 
 - Idempotent GET requests (`list_statements()`'s page-fetch loop, `get_statement()`, and result-page fetching) now retry transient transport errors -- connection resets (`httpx.NetworkError`) and servers that close pooled connections without responding (`httpx.RemoteProtocolError`) -- up to 3 times with a short exponential backoff, instead of failing on the first blip. POST/PATCH/DELETE requests (statement submission, `stop_statement()`, `delete_statement()`) are deliberately left unretried, since re-issuing them after a connection reset could double-submit or double-mutate state. (#137)
 - The same idempotent GET requests now also retry transient HTTP response statuses (429, 500, 502, 503, 504), not just transport-level exceptions -- a request that reaches Confluent Cloud but gets a momentarily-overloaded gateway response was previously failing on the first such response instead of being retried like a dropped connection. (#140)
+- Increased the default HTTP timeout from 5 to 10s for safety. `connect()` and `Connection.__init__()` no longer accepts explicit `None` for `http_timeout_secs`.
 
 ## 0.4.0, 2026-06-15
 
