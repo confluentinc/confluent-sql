@@ -1446,7 +1446,7 @@ class Connection:
         return response
 
     def _raise_for_status_as_operational_error(self, response: httpx.Response) -> None:
-        """Translate a non-2xx response into OperationalError, chaining the original
+        """Translate a 4xx/5xx response into OperationalError, chaining the original
         httpx.HTTPStatusError and including any server-provided error detail."""
         try:
             response.raise_for_status()
