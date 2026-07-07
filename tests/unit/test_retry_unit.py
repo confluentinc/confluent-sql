@@ -5,7 +5,11 @@ import httpx
 import pytest
 
 from confluent_sql import retry
-from confluent_sql.retry import DEFAULT_RETRYABLE_EXCEPTIONS, call_with_retries
+from confluent_sql.retry import (
+    DEFAULT_RETRYABLE_EXCEPTIONS,
+    DEFAULT_RETRYABLE_STATUS_CODES,
+    call_with_retries,
+)
 
 
 @pytest.fixture()
@@ -142,3 +146,10 @@ class TestCallWithRetries:
 
         func.assert_called_once()
         no_sleep.assert_not_called()
+
+    def test_default_retryable_status_codes(self):
+        assert frozenset({429, 500, 502, 503, 504}) == DEFAULT_RETRYABLE_STATUS_CODES
+        assert 408 not in DEFAULT_RETRYABLE_STATUS_CODES
+        assert 200 not in DEFAULT_RETRYABLE_STATUS_CODES
+        assert 404 not in DEFAULT_RETRYABLE_STATUS_CODES
+        assert 400 not in DEFAULT_RETRYABLE_STATUS_CODES
