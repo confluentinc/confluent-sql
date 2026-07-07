@@ -11,6 +11,14 @@ All notable changes to this dbapi driver will be documented in this file.
   - `Connection.get_tableflow(table_name)` returns the current `TableflowTopic` (phase, spec, status), raising `TableflowTopicNotFoundError` if Tableflow is not enabled for the topic.
   - `Connection.disable_tableflow(table_name, *, wait_for_removal=True, timeout=300)` tears the sink down (all-or-nothing in v1, no per-format disable). By default it blocks until the topic is confirmed gone; pass `wait_for_removal=False` to return as soon as the delete is accepted.
 
+## 0.4.1, 2026-07-07
+
+### Fixed
+
+- Idempotent GET requests (`list_statements()`'s page-fetch loop, `get_statement()`, and result-page fetching) now retry transient transport errors -- connection resets (`httpx.NetworkError`) and servers that close pooled connections without responding (`httpx.RemoteProtocolError`) -- up to 3 times with a short exponential backoff, instead of failing on the first blip. POST/PATCH/DELETE requests (statement submission, `stop_statement()`, `delete_statement()`) are deliberately left unretried, since re-issuing them after a connection reset could double-submit or double-mutate state. (#137)
+- The same idempotent GET requests now also retry transient HTTP response statuses (429, 500, 502, 503, 504), not just transport-level exceptions -- a request that reaches Confluent Cloud but gets a momentarily-overloaded gateway response was previously failing on the first such response instead of being retried like a dropped connection. (#140)
+- Increased the default HTTP timeout from 5 to 10s for safety. `connect()` and `Connection.__init__()` no longer accept explicit `None` for `http_timeout_secs`.
+
 ## 0.4.0, 2026-06-15
 
 ### Added

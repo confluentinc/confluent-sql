@@ -33,6 +33,11 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .polling import sleep_with_backoff
+from .retry import (
+    DEFAULT_RETRYABLE_EXCEPTIONS,
+    DEFAULT_RETRYABLE_STATUS_CODES,
+    call_with_retries,
+)
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .tableflow import (
@@ -47,6 +52,11 @@ from .tableflow import (
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_HTTP_TIMEOUT_SECS: float = 10.0
+"""Applied to the httpx client whenever a caller doesn't pass http_timeout_secs explicitly,
+so the effective default is ours to control rather than an implicit dependency on httpx's own
+default (5s)."""
 
 
 def _resolve_api_credentials(
@@ -186,7 +196,7 @@ def connect(  # noqa: PLR0913
     dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
-    http_timeout_secs: float | None = None,
+    http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
 ) -> Connection:
     """
     Create a connection to a Confluent SQL service.
@@ -252,8 +262,8 @@ def connect(  # noqa: PLR0913
                        "Confluent-SQL-Dbapi/v<version> (https://confluent.io; support@confluent.io)"
                        where version is from __version__.py
         http_timeout_secs: Timeout in seconds for HTTP requests made by the underlying httpx
-                       client. Must be a positive number. If None (default), the httpx default
-                       of 5 seconds applies to connect, read, write, and pool operations.
+                       client. Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS,
+                       applied to connect, read, write, and pool operations.
 
     Returns:
         A Connection object representing the database connection
@@ -317,6 +327,15 @@ def connect(  # noqa: PLR0913
     )
 
 
+class _RetryableStatusError(Exception):
+    """Wraps a response carrying a retryable HTTP status (#140) so call_with_retries' existing
+    exception-based retry loop drives status-code retries too. Never escapes _request_get."""
+
+    def __init__(self, response: httpx.Response):
+        self.response = response
+        super().__init__(f"transient HTTP status {response.status_code}")
+
+
 class Connection:
     """
     A connection to a Confluent SQL service.
@@ -367,7 +386,7 @@ class Connection:
     _database: str | None
     _client: httpx.Client
     _http_user_agent: str
-    _http_timeout_secs: float | None
+    _http_timeout_secs: float
 
     _controlplane_endpoint: str
     """Base URL for the control plane (Tableflow, Connect, CMK), distinct from the Flink gateway."""
@@ -411,7 +430,7 @@ class Connection:
         controlplane_endpoint: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
-        http_timeout_secs: float | None = None,
+        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -462,8 +481,7 @@ class Connection:
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
                            driver name/version, documentation URL, and support email.
             http_timeout_secs: Timeout in seconds applied to the underlying httpx client.
-                           Must be a positive number. If None (default), the httpx default
-                           of 5 seconds applies.
+                           Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS.
         """
         self.environment_id = environment_id
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
@@ -489,20 +507,14 @@ class Connection:
             http_user_agent if http_user_agent is not None else self.DEFAULT_USER_AGENT
         )
 
-        if http_timeout_secs is not None:
-            # Reject bool explicitly: bool is a subclass of int in Python, but a True/False
-            # value here is almost certainly a programming error rather than a valid timeout.
-            if isinstance(http_timeout_secs, bool) or not isinstance(
-                http_timeout_secs, (int, float)
-            ):
-                raise InterfaceError(
-                    f"http_timeout_secs must be a number, "
-                    f"got {type(http_timeout_secs).__name__}"
-                )
-            if http_timeout_secs <= 0:
-                raise InterfaceError(
-                    f"http_timeout_secs must be positive, got {http_timeout_secs}"
-                )
+        # Reject bool explicitly: bool is a subclass of int in Python, but a True/False
+        # value here is almost certainly a programming error rather than a valid timeout.
+        if isinstance(http_timeout_secs, bool) or not isinstance(http_timeout_secs, (int, float)):
+            raise InterfaceError(
+                f"http_timeout_secs must be a number, got {type(http_timeout_secs).__name__}"
+            )
+        if http_timeout_secs <= 0:
+            raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
         self._http_timeout_secs = http_timeout_secs
 
         if not endpoint and not (cloud_provider and cloud_region):
@@ -535,9 +547,8 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
+            "timeout": self._http_timeout_secs,
         }
-        if self._http_timeout_secs is not None:
-            client_kwargs["timeout"] = self._http_timeout_secs
         self._client = httpx.Client(**client_kwargs)
 
         # Control-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
@@ -985,7 +996,7 @@ class Connection:
         has_more_pages = True
         next_page_token: str | None = None
         while has_more_pages:
-            response = self._request("/statements", params=parameters)
+            response = self._request_get("/statements", params=parameters)
             resp_json = response.json()
             statements_json = resp_json.get("data", [])
             statements.extend(Statement.from_response(self, s) for s in statements_json)
@@ -1231,10 +1242,10 @@ class Connection:
         return self._closed
 
     @property
-    def http_timeout_secs(self) -> float | None:
+    def http_timeout_secs(self) -> float:
         """
-        Get the configured timeout (in seconds) for HTTP requests, or None if the
-        httpx default (5 seconds) is in effect.
+        Get the effective timeout (in seconds) applied to HTTP requests, which is
+        DEFAULT_HTTP_TIMEOUT_SECS unless a value was supplied at construction time.
         """
         return self._http_timeout_secs
 
@@ -1487,7 +1498,7 @@ class Connection:
             OperationalError: If other API errors occur
         """
         try:
-            return self._request(f"/statements/{statement_name}").json()
+            return self._request_get(f"/statements/{statement_name}").json()
         except OperationalError as e:
             # Check if this is a 404 error
             if e.http_status_code == 404:
@@ -1521,7 +1532,7 @@ class Connection:
             next_url = f"/statements/{statement_name}/results"
 
         try:
-            response = self._request(next_url).json()
+            response = self._request_get(next_url).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
             if e.http_status_code == 404:
@@ -1570,10 +1581,65 @@ class Connection:
 
         return (results, next_url)
 
+    def _request_get(self, url, **kwargs) -> httpx.Response:
+        """Issue a GET, retrying transient transport errors (#137) and transient HTTP status
+        codes (#140) alike -- both feed the same call_with_retries backoff/attempt budget.
+
+        Only for idempotent GETs -- retrying a call with side effects (POST/PATCH/DELETE) could
+        double-submit or double-mutate state, so those call sites use `_request` directly.
+        Forwards arbitrary kwargs (params, headers, timeout, etc.) to `_request`, forcing
+        `method="GET"` regardless of what's passed, so a call site cannot accidentally opt out of
+        the retry policy just because it needs a kwarg beyond `params`. `raise_for_status` is
+        dropped if present -- this method always manages it internally, since it must inspect
+        the raw response to decide whether to retry before translating a final error.
+        """
+        kwargs["method"] = "GET"
+        kwargs.pop("raise_for_status", None)
+
+        def _get_or_flag_retryable_status() -> httpx.Response:
+            response = self._request(url, raise_for_status=False, **kwargs)
+            if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
+                raise _RetryableStatusError(response)
+            return response
+
+        try:
+            response = call_with_retries(
+                _get_or_flag_retryable_status,
+                exceptions=(*DEFAULT_RETRYABLE_EXCEPTIONS, _RetryableStatusError),
+            )
+        except _RetryableStatusError as e:
+            response = e.response
+
+        self._raise_for_status_as_operational_error(response)
+        return response
+
+    def _raise_for_status_as_operational_error(self, response: httpx.Response) -> None:
+        """Translate a 4xx/5xx response into OperationalError, chaining the original
+        httpx.HTTPStatusError and including any server-provided error detail."""
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            try:
+                res = e.response.json()
+                errors = res.get("errors", [])
+                details = "; ".join([err["detail"] for err in errors])
+            except Exception:
+                details = "no more details"
+
+            raise OperationalError(
+                f"error sending request '{e.response.status_code}' - {details}",
+                http_status_code=e.response.status_code,
+            ) from e
+
     def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         if self._closed:
             raise InterfaceError("Connection is closed")
-        return self._send_request(self._client, url, method, raise_for_status, **kwargs)
+
+        response = self._client.request(method, url, **kwargs)
+        logger.debug("Response: %s", response.content)
+        if raise_for_status:
+            self._raise_for_status_as_operational_error(response)
+        return response
 
     def _controlplane_request(
         self, url, method="GET", raise_for_status=True, **kwargs
@@ -1589,29 +1655,23 @@ class Connection:
             self._get_controlplane_client(), url, method, raise_for_status, **kwargs
         )
 
-    @staticmethod
     def _send_request(
-        client: httpx.Client, url, method, raise_for_status, **kwargs
+        self, client: httpx.Client, url, method, raise_for_status, **kwargs
     ) -> httpx.Response:
-        """Shared request/response handling for the Flink and control-plane clients."""
+        """Shared request/response handling for the control-plane clients (Tableflow, Connect).
+
+        Unlike plain `_request`, also wraps network-level failures (no HTTP response) as
+        OperationalError. The Flink path (`_request`/`_request_get`) deliberately leaves those
+        unwrapped so #137's retry loop in `_request_get` can see the raw httpx exception to
+        decide whether to retry it; see `_request_get`'s docstring. Control-plane call sites have
+        no equivalent retry loop, so there's no reason to leak the raw exception to callers here.
+        """
         try:
             response = client.request(method, url, **kwargs)
             logger.debug("Response: %s", response.content)
             if raise_for_status:
-                response.raise_for_status()
+                self._raise_for_status_as_operational_error(response)
             return response
-        except httpx.HTTPStatusError as e:
-            try:
-                res = e.response.json()
-                errors = res.get("errors", [])
-                details = "; ".join([err["detail"] for err in errors])
-            except Exception:
-                details = "no more details"
-
-            raise OperationalError(
-                f"error sending request '{e.response.status_code}' - {details}",
-                http_status_code=e.response.status_code,
-            ) from e
         except httpx.RequestError as e:
             # Network-level failures (timeout, DNS, TLS, connect) carry no HTTP response. Wrap them
             # so callers see a DB-API OperationalError rather than a raw httpx exception leaking.
@@ -1631,9 +1691,8 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
+            "timeout": self._http_timeout_secs,
         }
-        if self._http_timeout_secs is not None:
-            client_kwargs["timeout"] = self._http_timeout_secs
         return httpx.Client(**client_kwargs)
 
     def _get_controlplane_client(self) -> httpx.Client:
