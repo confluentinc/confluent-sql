@@ -11,6 +11,7 @@ import pytest
 from confluent_sql import InterfaceError, OperationalError, StatementNotFoundError
 from confluent_sql.__version__ import VERSION
 from confluent_sql.connection import (
+    DEFAULT_HTTP_TIMEOUT_SECS,
     Connection,
     RowTypeRegistry,
     _resolve_api_credentials,
@@ -2415,13 +2416,18 @@ class TestHttpUserAgentProperty:
 class TestHttpTimeoutSecs:
     """Tests for the http_timeout_secs constructor parameter and property."""
 
-    def test_default_is_none_and_httpx_default_applies(
+    def test_default_reports_confluent_sql_default(
         self, invalid_credential_connection: Connection
     ):
-        """When not provided, the property is None and the httpx default (5s) is used."""
-        assert invalid_credential_connection.http_timeout_secs is None
-        # httpx's default Timeout(timeout=5.0) is wrapped in a Timeout object on the client.
-        assert invalid_credential_connection._client.timeout == httpx.Timeout(5.0)
+        """When not provided, the property reports the effective default, not None."""
+        assert invalid_credential_connection.http_timeout_secs == DEFAULT_HTTP_TIMEOUT_SECS
+        assert invalid_credential_connection._client.timeout == httpx.Timeout(
+            DEFAULT_HTTP_TIMEOUT_SECS
+        )
+
+    def test_default_http_timeout_secs_is_ten_seconds(self):
+        """Pin the exact default value so a silent change here doesn't slip by unnoticed."""
+        assert DEFAULT_HTTP_TIMEOUT_SECS == 10.0
 
     @pytest.mark.parametrize("timeout_value", [0.5, 1, 10, 30.0, 120])
     def test_custom_timeout_via_constructor(
