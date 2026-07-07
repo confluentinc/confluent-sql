@@ -547,8 +547,8 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
+            "timeout": self._http_timeout_secs,
         }
-        client_kwargs["timeout"] = self._http_timeout_secs
         self._client = httpx.Client(**client_kwargs)
 
         # Control-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
@@ -1691,8 +1691,8 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
+            "timeout": self._http_timeout_secs,
         }
-        client_kwargs["timeout"] = self._http_timeout_secs
         return httpx.Client(**client_kwargs)
 
     def _get_controlplane_client(self) -> httpx.Client:
