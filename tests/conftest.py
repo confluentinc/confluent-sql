@@ -7,6 +7,7 @@ from typing import TypeAlias
 import pytest
 
 from confluent_sql import Connection, connect
+from confluent_sql.connection import DEFAULT_HTTP_TIMEOUT_SECS
 
 
 def pytest_runtest_setup(item):
@@ -61,7 +62,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         database: str | None = None,
         result_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
-        http_timeout_secs: float | None = None,
+        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
         endpoint: str | None = None,
     ) -> Connection:
         if global_api_key is None:

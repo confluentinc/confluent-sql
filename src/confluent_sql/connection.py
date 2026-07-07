@@ -40,6 +40,11 @@ from .types import PropertiesDict, RowPythonTypes
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HTTP_TIMEOUT_SECS: float = 10.0
+"""Applied to the httpx client whenever a caller doesn't pass http_timeout_secs explicitly,
+so the effective default is ours to control rather than an implicit dependency on httpx's own
+default (5s)."""
+
 
 def _resolve_api_credentials(
     global_api_key: str | None,
@@ -101,7 +106,7 @@ def connect(  # noqa: PLR0913
     dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
-    http_timeout_secs: float | None = None,
+    http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
 ) -> Connection:
     """
     Create a connection to a Confluent SQL service.
@@ -151,8 +156,8 @@ def connect(  # noqa: PLR0913
                        "Confluent-SQL-Dbapi/v<version> (https://confluent.io; support@confluent.io)"
                        where version is from __version__.py
         http_timeout_secs: Timeout in seconds for HTTP requests made by the underlying httpx
-                       client. Must be a positive number. If None (default), the httpx default
-                       of 5 seconds applies to connect, read, write, and pool operations.
+                       client. Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS,
+                       applied to connect, read, write, and pool operations.
 
     Returns:
         A Connection object representing the database connection
@@ -253,7 +258,7 @@ class Connection:
     _database: str | None
     _client: httpx.Client
     _http_user_agent: str
-    _http_timeout_secs: float | None
+    _http_timeout_secs: float
 
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
@@ -278,7 +283,7 @@ class Connection:
         database: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
-        http_timeout_secs: float | None = None,
+        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -317,8 +322,7 @@ class Connection:
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
                            driver name/version, documentation URL, and support email.
             http_timeout_secs: Timeout in seconds applied to the underlying httpx client.
-                           Must be a positive number. If None (default), the httpx default
-                           of 5 seconds applies.
+                           Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS.
         """
         self.environment_id = environment_id
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
@@ -344,20 +348,14 @@ class Connection:
             http_user_agent if http_user_agent is not None else self.DEFAULT_USER_AGENT
         )
 
-        if http_timeout_secs is not None:
-            # Reject bool explicitly: bool is a subclass of int in Python, but a True/False
-            # value here is almost certainly a programming error rather than a valid timeout.
-            if isinstance(http_timeout_secs, bool) or not isinstance(
-                http_timeout_secs, (int, float)
-            ):
-                raise InterfaceError(
-                    f"http_timeout_secs must be a number, "
-                    f"got {type(http_timeout_secs).__name__}"
-                )
-            if http_timeout_secs <= 0:
-                raise InterfaceError(
-                    f"http_timeout_secs must be positive, got {http_timeout_secs}"
-                )
+        # Reject bool explicitly: bool is a subclass of int in Python, but a True/False
+        # value here is almost certainly a programming error rather than a valid timeout.
+        if isinstance(http_timeout_secs, bool) or not isinstance(http_timeout_secs, (int, float)):
+            raise InterfaceError(
+                f"http_timeout_secs must be a number, got {type(http_timeout_secs).__name__}"
+            )
+        if http_timeout_secs <= 0:
+            raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
         self._http_timeout_secs = http_timeout_secs
 
         if not endpoint and not (cloud_provider and cloud_region):
@@ -391,8 +389,7 @@ class Connection:
                 "User-Agent": self._http_user_agent,
             },
         }
-        if self._http_timeout_secs is not None:
-            client_kwargs["timeout"] = self._http_timeout_secs
+        client_kwargs["timeout"] = self._http_timeout_secs
         self._client = httpx.Client(**client_kwargs)
 
         self._row_type_registry = RowTypeRegistry()
@@ -1071,10 +1068,10 @@ class Connection:
         return self._closed
 
     @property
-    def http_timeout_secs(self) -> float | None:
+    def http_timeout_secs(self) -> float:
         """
-        Get the configured timeout (in seconds) for HTTP requests, or None if the
-        httpx default (5 seconds) is in effect.
+        Get the effective timeout (in seconds) applied to HTTP requests, which is
+        DEFAULT_HTTP_TIMEOUT_SECS unless a value was supplied at construction time.
         """
         return self._http_timeout_secs
 
