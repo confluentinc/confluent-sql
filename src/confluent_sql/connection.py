@@ -1424,9 +1424,12 @@ class Connection:
         double-submit or double-mutate state, so those call sites use `_request` directly.
         Forwards arbitrary kwargs (params, headers, timeout, etc.) to `_request`, forcing
         `method="GET"` regardless of what's passed, so a call site cannot accidentally opt out of
-        the retry policy just because it needs a kwarg beyond `params`.
+        the retry policy just because it needs a kwarg beyond `params`. `raise_for_status` is
+        dropped if present -- this method always manages it internally, since it must inspect
+        the raw response to decide whether to retry before translating a final error.
         """
         kwargs["method"] = "GET"
+        kwargs.pop("raise_for_status", None)
 
         def _get_or_flag_retryable_status() -> httpx.Response:
             response = self._request(url, raise_for_status=False, **kwargs)

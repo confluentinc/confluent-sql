@@ -1855,6 +1855,22 @@ class TestConnectionRetriesIdempotentGets:
 
         request_mock.assert_called_once_with("GET", "/statements")
 
+    def test_request_get_drops_caller_supplied_raise_for_status_kwarg(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """_request_get always manages raise_for_status itself (it must see the raw response
+        to decide whether to retry before translating it) -- a caller passing raise_for_status
+        in kwargs must not collide with that and blow up with a duplicate-keyword TypeError."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=Mock()
+        )
+
+        invalid_credential_connection._request_get("/statements", raise_for_status=True)
+
+        request_mock.assert_called_once_with("GET", "/statements")
+
 
 @pytest.mark.unit
 class TestExecuteStatement:
