@@ -14,6 +14,15 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Added
 
+- class `Connection` now has methods to enable / inspect / disable [Tableflow](https://www.confluent.io/product/tableflow/) materialization of the Kafka topic backing a Flink table (#117). Tableflow-enabled topics/tables can be snapshot queried in an optimized fashion.
+  - `Connection.enable_tableflow(table_name, *, tableflow_formats, storage, config=None, wait_for_running=True, timeout=300)` adds an Iceberg/Delta sink. `tableflow_formats` takes a single `TableFormat` (e.g. `TableFormat.ICEBERG`) or a collection for several; `storage` is one of `ManagedStorage()` (zero-config), `ByobAwsStorage`, or `AzureAdlsStorage`; `config` is an optional `TableflowTopicConfig`. By default it blocks until the topic reaches `RUNNING`; pass `wait_for_running=False` to return as soon as the create is accepted (topic in `PENDING`). Raises `TableflowTopicAlreadyExistsError` if Tableflow is already enabled.
+  - `Connection.get_tableflow(table_name)` returns the current `TableflowTopic` (phase, spec, status), raising `TableflowTopicNotFoundError` if Tableflow is not enabled for the topic.
+  - `Connection.disable_tableflow(table_name, *, wait_for_removal=True, timeout=300)` tears the sink down (all-or-nothing in v1, no per-format disable). By default it blocks until the topic is confirmed gone; pass `wait_for_removal=False` to return as soon as the delete is accepted.
+
+## 0.4.0, 2026-06-15
+
+### Added
+
 - Support for "Global" Confluent Cloud API keys: `confluent_sql.connect()` (and `Connection`) now accept `global_api_key` / `global_api_secret`. A Global key works against every route this driver touches, so it is preferred over a Flink Region key when both are supplied. `flink_api_key` / `flink_api_secret` remain supported and are now optional; at least one fully-specified pair must be provided. If both pairs are supplied, the Global pair is used (and the Flink pair ignored, with a warning); a half-specified pair (key without secret, or vice versa) is rejected. (#112)
 - Support for "poolless Flink": `confluent_sql.connect()` now treats `compute_pool_id` as optional. Statements submitted w/o their own overriding `compute_pool_id` via a connection w/o a default compute pool id will make use of the default compute pool in the environment+cloud region (provisioning one if necessary). See [the Confluent documentation](https://docs.confluent.io/cloud/current/flink/concepts/compute-pools.html#default-compute-pools) for more details.
 - New `Connection.stop_statement(statement, *, wait_for_stopped=True, timeout=300)` method to stop a running statement without deleting it, leaving the statement resource around for inspection (unlike `delete_statement()`, which also destroys it). Accepts a statement name or a `Statement` object. By default it blocks until the statement reaches `STOPPED`; pass `wait_for_stopped=False` to return as soon as the stop is accepted. A matching `Cursor.stop_statement()` stops the cursor's current statement. New `Statement.is_stopped`, `Statement.is_stopping`, and `Statement.stop_requested` properties expose the relevant state. (#61)
