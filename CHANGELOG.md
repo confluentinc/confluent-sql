@@ -2,7 +2,7 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
-## 0.4.1
+## 0.4.1, 2026-07-07
 
 ### Fixed
 
