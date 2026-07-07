@@ -11,6 +11,7 @@ import pytest
 from confluent_sql import InterfaceError, OperationalError, StatementNotFoundError
 from confluent_sql.__version__ import VERSION
 from confluent_sql.connection import (
+    DEFAULT_HTTP_TIMEOUT_SECS,
     Connection,
     RowTypeRegistry,
     _resolve_api_credentials,
@@ -1562,6 +1563,317 @@ class TestGetStatement:
 
 
 @pytest.mark.unit
+class TestConnectionRetriesIdempotentGets:
+    """Tests that idempotent GET paths retry transient transport errors (#137), while
+    mutating (POST/PATCH/DELETE) paths deliberately do not."""
+
+    def test_list_statements_retries_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "data": [statement_response_factory(name="stmt-1")],
+            "metadata": {},
+        }
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), mock_response],
+        )
+
+        statements = invalid_credential_connection.list_statements()
+
+        assert [s.name for s in statements] == ["stmt-1"]
+        assert request_mock.call_count == 2
+
+    def test_get_statement_retries_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.json.return_value = statement_response_factory(name="stmt-1")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), mock_response],
+        )
+
+        result = invalid_credential_connection._get_statement("stmt-1")
+
+        assert result["name"] == "stmt-1"
+        assert request_mock.call_count == 2
+
+    def test_get_statement_results_retries_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "results": {"data": [{"row": ["v1"]}]},
+            "metadata": {},
+        }
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), mock_response],
+        )
+
+        results, next_url = invalid_credential_connection._get_statement_results("stmt-1", None)
+
+        assert [r.row for r in results] == [["v1"]]
+        assert next_url is None
+        assert request_mock.call_count == 2
+
+    def test_idempotent_get_reraises_original_exception_after_exhausting_retries(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Documents today's unwrapped-transport-error behavior (tracked as #138): after retries
+        are exhausted, the raw httpx exception propagates rather than an OperationalError."""
+        mocker.patch("confluent_sql.retry.time.sleep")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset")] * 4,
+        )
+
+        with pytest.raises(httpx.ReadError):
+            invalid_credential_connection._get_statement("stmt-1")
+
+        assert request_mock.call_count == 4
+
+    def test_non_idempotent_path_does_not_retry_on_transient_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """delete_statement's DELETE must not be retried: retrying a mutating call after a
+        connection reset could double-mutate state, which is exactly what #137 scopes retries
+        away from."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=httpx.ReadError("reset"),
+        )
+
+        with pytest.raises(httpx.ReadError):
+            invalid_credential_connection.delete_statement("stmt-1")
+
+        request_mock.assert_called_once()
+
+    def test_list_statements_retries_on_retryable_status_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [statement_response_factory(name="stmt-1")],
+            "metadata": {},
+        }
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[_http_error_response(503), mock_response],
+        )
+
+        statements = invalid_credential_connection.list_statements()
+
+        assert [s.name for s in statements] == ["stmt-1"]
+        assert request_mock.call_count == 2
+
+    def test_get_statement_retries_on_retryable_status_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = statement_response_factory(name="stmt-1")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[_http_error_response(503), mock_response],
+        )
+
+        result = invalid_credential_connection._get_statement("stmt-1")
+
+        assert result["name"] == "stmt-1"
+        assert request_mock.call_count == 2
+
+    def test_get_statement_results_retries_on_retryable_status_and_succeeds(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "results": {"data": [{"row": ["v1"]}]},
+            "metadata": {},
+        }
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[_http_error_response(503), mock_response],
+        )
+
+        results, next_url = invalid_credential_connection._get_statement_results("stmt-1", None)
+
+        assert [r.row for r in results] == [["v1"]]
+        assert next_url is None
+        assert request_mock.call_count == 2
+
+    def test_idempotent_get_raises_operational_error_after_exhausting_status_retries(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """Unlike #137's transport-exception exhaustion (which leaks the raw httpx exception,
+        tracked as #138), a persistently-retryable status IS translated to OperationalError --
+        _raise_for_status_as_operational_error runs on the final response either way."""
+        mocker.patch("confluent_sql.retry.time.sleep")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[_http_error_response(503)] * 4,
+        )
+
+        with pytest.raises(OperationalError) as exc_info:
+            invalid_credential_connection._get_statement("stmt-1")
+
+        assert exc_info.value.http_status_code == 503
+        assert request_mock.call_count == 4
+
+    def test_get_statement_does_not_retry_non_retryable_status(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """A 404 must not be treated as retryable -- it's the caller's job to see
+        StatementNotFoundError on the very first response, not after a wasted retry budget."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            return_value=_http_error_response(404),
+        )
+
+        with pytest.raises(StatementNotFoundError):
+            invalid_credential_connection._get_statement("stmt-1")
+
+        request_mock.assert_called_once()
+
+    def test_get_statement_retries_share_budget_across_transient_error_and_status(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A transport exception and a retryable status draw from the same attempt/backoff
+        budget -- proof that #140's status-code retries reuse #137's call_with_retries loop
+        rather than adding a second, independent retry mechanism."""
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = statement_response_factory(name="stmt-1")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            side_effect=[httpx.ReadError("reset"), _http_error_response(503), mock_response],
+        )
+
+        result = invalid_credential_connection._get_statement("stmt-1")
+
+        assert result["name"] == "stmt-1"
+        assert request_mock.call_count == 3
+
+    def test_delete_statement_does_not_retry_on_retryable_status(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """delete_statement's DELETE must not be retried on a retryable status either -- #140's
+        status-code check must live in _request_get, not leak into _request itself."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client,
+            "request",
+            return_value=_http_error_response(503),
+        )
+
+        with pytest.raises(OperationalError, match="Error deleting statement"):
+            invalid_credential_connection.delete_statement("stmt-1")
+
+        request_mock.assert_called_once()
+
+    def test_request_get_forwards_arbitrary_kwargs_to_request(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """A future GET call site needing e.g. headers/timeout must not have to bypass
+        _request_get (and thus the retry policy) just because _request_get only knew about
+        `params`."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=Mock()
+        )
+
+        invalid_credential_connection._request_get(
+            "/statements", headers={"X-Test": "1"}, timeout=5
+        )
+
+        request_mock.assert_called_once_with(
+            "GET", "/statements", headers={"X-Test": "1"}, timeout=5
+        )
+
+    def test_request_get_forces_get_method_even_if_caller_passes_method(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """_request_get must never issue anything but a GET, even if a caller mistakenly
+        passes a method= kwarg -- that guarantee is what makes it safe to retry."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=Mock()
+        )
+
+        invalid_credential_connection._request_get("/statements", method="POST")
+
+        request_mock.assert_called_once_with("GET", "/statements")
+
+    def test_request_get_drops_caller_supplied_raise_for_status_kwarg(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+    ):
+        """_request_get always manages raise_for_status itself (it must see the raw response
+        to decide whether to retry before translating it) -- a caller passing raise_for_status
+        in kwargs must not collide with that and blow up with a duplicate-keyword TypeError."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._client, "request", return_value=Mock()
+        )
+
+        invalid_credential_connection._request_get("/statements", raise_for_status=True)
+
+        request_mock.assert_called_once_with("GET", "/statements")
+
+
+@pytest.mark.unit
 class TestExecuteStatement:
     """Tests for _execute_statement method."""
 
@@ -2104,13 +2416,18 @@ class TestHttpUserAgentProperty:
 class TestHttpTimeoutSecs:
     """Tests for the http_timeout_secs constructor parameter and property."""
 
-    def test_default_is_none_and_httpx_default_applies(
+    def test_default_reports_confluent_sql_default(
         self, invalid_credential_connection: Connection
     ):
-        """When not provided, the property is None and the httpx default (5s) is used."""
-        assert invalid_credential_connection.http_timeout_secs is None
-        # httpx's default Timeout(timeout=5.0) is wrapped in a Timeout object on the client.
-        assert invalid_credential_connection._client.timeout == httpx.Timeout(5.0)
+        """When not provided, the property reports the effective default, not None."""
+        assert invalid_credential_connection.http_timeout_secs == DEFAULT_HTTP_TIMEOUT_SECS
+        assert invalid_credential_connection._client.timeout == httpx.Timeout(
+            DEFAULT_HTTP_TIMEOUT_SECS
+        )
+
+    def test_default_http_timeout_secs_is_ten_seconds(self):
+        """Pin the exact default value so a silent change here doesn't slip by unnoticed."""
+        assert DEFAULT_HTTP_TIMEOUT_SECS == 10.0
 
     @pytest.mark.parametrize("timeout_value", [0.5, 1, 10, 30.0, 120])
     def test_custom_timeout_via_constructor(
