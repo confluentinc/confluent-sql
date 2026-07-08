@@ -661,6 +661,27 @@ class TestConnectChecks:
                 tableflow_api_secret="ts",
             )
 
+    def test_half_supplied_global_pair_with_omitted_org_reports_credential_error(
+        self, connection_factory: ConnectionFactory
+    ):
+        """A half-supplied global pair (key without secret) plus an omitted organization_id must
+        surface the specific credential-pairing error, not the generic "Organization ID is
+        required" -- the org-omission gate must not treat a half-supplied global key as "no
+        global key attempted" and mask the more accurate diagnosis (caught by Copilot on #144)."""
+        with pytest.raises(
+            InterfaceError, match="global_api_key and global_api_secret must be provided together"
+        ):
+            connection_factory(
+                environment_id="foo_id",
+                organization_id="",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                global_api_key="half-key",
+                global_api_secret="",
+                flink_api_key="",
+                flink_api_secret="",
+            )
+
     def test_construction_does_not_resolve_organization_id(self, mocker):
         """Global key + omitted organization_id: connect() must not make the /org/v2 network
         call -- inference is deferred to first use of the connection (#132)."""
@@ -2526,6 +2547,31 @@ class TestHttpUserAgentProperty:
         invalid_credential_connection.http_user_agent = new_agent
         assert invalid_credential_connection._get_flink_client() is client
         assert client.headers.get("User-Agent") == new_agent
+
+    def test_set_user_agent_updates_already_built_controlplane_clients_in_place(self):
+        """Setting http_user_agent must also update the Tableflow and Connect control-plane
+        clients' headers if they've already been lazily built -- not just the Flink client
+        (caught by Copilot on #144: the docstring promises "all HTTP requests")."""
+        conn = connect(
+            environment_id="env-id",
+            organization_id="org-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="flink-key",
+            flink_api_secret="flink-secret",
+            tableflow_api_key="tableflow-key",
+            tableflow_api_secret="tableflow-secret",
+            connect_api_key="connect-key",
+            connect_api_secret="connect-secret",
+        )
+        controlplane_client = conn._get_controlplane_client()  # force lazy build now
+        connect_client = conn._get_connect_controlplane_client()  # force lazy build now
+
+        new_agent = "updated-app/4.0"
+        conn.http_user_agent = new_agent
+
+        assert controlplane_client.headers.get("User-Agent") == new_agent
+        assert connect_client.headers.get("User-Agent") == new_agent
 
     def test_set_user_agent_accepts_boundary_values(
         self, invalid_credential_connection: Connection

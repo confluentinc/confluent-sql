@@ -282,8 +282,12 @@ def connect(  # noqa: PLR0913
     if not environment_id:
         raise InterfaceError("Environment ID is required")
 
-    has_global_credentials = bool(global_api_key) and bool(global_api_secret)
-    if not organization_id and not has_global_credentials:
+    # Any global key material (even a half-supplied pair) defers this gate to the more specific
+    # "must be provided together" error _resolve_api_credentials raises below -- otherwise a
+    # half-supplied pair plus an omitted organization_id would be misdiagnosed as a missing org
+    # id instead of the actual credential mistake (#144 review).
+    global_key_provided = bool(global_api_key) or bool(global_api_secret)
+    if not organization_id and not global_key_provided:
         raise InterfaceError("Organization ID is required")
 
     if endpoint:
@@ -519,8 +523,10 @@ class Connection:
         # Internal state
         self._closed = False
         self._database = database
-        # Must exist before the http_user_agent setter runs below, since its guard checks this.
+        # Must exist before the http_user_agent setter runs below, since its guards check these.
         self._flink_client = None
+        self._controlplane_client = None
+        self._connect_controlplane_client = None
 
         # Set user agent (validation happens in setter, default if None)
         self.http_user_agent = (
@@ -576,8 +582,6 @@ class Connection:
         self._global_credentials = (
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
         )
-        self._controlplane_client = None
-        self._connect_controlplane_client = None
         self._connector_api = None
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
         # Tableflow work with only a tableflow key pair (no global key needed for CMK).
@@ -1313,9 +1317,15 @@ class Connection:
 
         self._http_user_agent = value
 
-        # Update the httpx client headers if the (lazily-built) client is already initialized
-        if self._flink_client is not None:
-            self._flink_client.headers["User-Agent"] = value
+        # Update every existing lazily-built client's headers.
+        lazily_built_clients = (
+            self._flink_client,
+            self._controlplane_client,
+            self._connect_controlplane_client,
+        )
+        for client in lazily_built_clients:
+            if client is not None:
+                client.headers["User-Agent"] = value
 
     def register_row_type(self, class_for_flink_row: type[RowPythonTypes]) -> None:
         """Register a user-defined namedtuple, NamedTuple, or @dataclass class to be used
