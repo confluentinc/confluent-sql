@@ -700,9 +700,11 @@ class TestConnectChecks:
 
         statement_response = mocker.Mock()
         statement_response.json.return_value = {"name": "test-statement", "spec": {}}
-        mocker.patch.object(conn._get_flink_client(), "request", return_value=statement_response)
+        request_mock = mocker.patch.object(
+            conn._get_flink_client(), "request", return_value=statement_response
+        )
         conn._execute_statement("SELECT 1", ExecutionMode.SNAPSHOT)
-        payload = conn._get_flink_client().request.call_args.kwargs["json"]
+        payload = request_mock.call_args.kwargs["json"]
         assert payload["organization_id"] == "org-99"
 
     def test_organization_id_resolved_once_and_cached(self, mocker):
