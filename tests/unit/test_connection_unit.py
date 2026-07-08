@@ -73,7 +73,9 @@ class TestHTTPStatusErrorHandling:
         When the API returns a 404 error for a statement GET request,
         _get_statement should raise StatementNotFoundError with the statement name.
         """
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
 
         # Create mock response with valid JSON error structure
         response_mock = Mock()
@@ -106,7 +108,9 @@ class TestHTTPStatusErrorHandling:
         When the API returns a non-JSON response or the JSON parsing fails,
         the exception message should include a "no more details" fallback.
         """
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
 
         # Create mock response that raises when .json() is called
         response_mock = Mock()
@@ -149,7 +153,9 @@ class TestConnectionDeleteStatementErrors:
 
     def test_delete_statement_not_found(self, invalid_credential_connection: Connection, mocker):
         """Test that deleting a non-existent statement raises the appropriate error."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         response_mock = Mock()
         response_mock.raise_for_status = _create_http_error_404
         request_mock.return_value = response_mock
@@ -160,7 +166,9 @@ class TestConnectionDeleteStatementErrors:
     def test_delete_statement_other_error(self, invalid_credential_connection: Connection, mocker):
         """Test that deleting a statement that raises an error other than 404
         raises OperationalError."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         response_mock = Mock()
 
         def raise_internal_server_error():
@@ -214,7 +222,9 @@ class TestConnectionStopStatement:
         """wait_for_stopped=False issues a single RFC 6902 PATCH and returns without polling. Per
         the real API the accepted-stop response flips spec.stopped to true while status.phase may
         still read RUNNING, so the caller's reliable signal is stop_requested, not the phase."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.return_value = _ok_response(
             statement_response_factory(name="stmt-1", phase="RUNNING", stopped=True)
         )
@@ -241,7 +251,9 @@ class TestConnectionStopStatement:
     ):
         """wait_for_stopped=True polls get-statement until the phase settles to STOPPED."""
         mocker.patch("time.sleep")
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         # Per the real API, every response after the accepted stop carries spec.stopped=true; the
         # phase trails behind, transitioning STOPPING -> STOPPED asynchronously.
         request_mock.side_effect = [
@@ -269,7 +281,9 @@ class TestConnectionStopStatement:
         erroring: the blocking wait returns the COMPLETED statement, not just STOPPED. Guards the
         documented contract that any non-FAILED terminal phase is an acceptable outcome."""
         mocker.patch("time.sleep")
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.side_effect = [
             # PATCH (stop accepted while still RUNNING), then a poll that finds it COMPLETED.
             _ok_response(statement_response_factory(name="stmt-1", phase="RUNNING", stopped=True)),
@@ -291,7 +305,9 @@ class TestConnectionStopStatement:
     ):
         """If the PATCH response is already terminal, the blocking wait returns it directly,
         without an additional get-statement poll."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.return_value = _ok_response(
             statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True)
         )
@@ -312,7 +328,9 @@ class TestConnectionStopStatement:
         by_object: bool,
     ):
         """stop_statement accepts either a statement name or a Statement object."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.return_value = _ok_response(
             statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)
         )
@@ -338,7 +356,9 @@ class TestConnectionStopStatement:
         mocker,
     ):
         """A passed-in Statement already in a terminal phase returns unchanged with no API call."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         already_stopped = Statement.from_response(
             invalid_credential_connection,
             statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True),
@@ -358,7 +378,9 @@ class TestConnectionStopStatement:
         self, invalid_credential_connection: Connection, mocker
     ):
         """A 404 from the PATCH surfaces as StatementNotFoundError naming the statement."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.return_value = _http_error_response(404)
 
         with pytest.raises(StatementNotFoundError) as exc_info:
@@ -369,7 +391,9 @@ class TestConnectionStopStatement:
         self, invalid_credential_connection: Connection, mocker
     ):
         """A non-404 error from the PATCH surfaces as OperationalError carrying the status code."""
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.return_value = _http_error_response(500)
 
         with pytest.raises(OperationalError, match="Error stopping statement") as exc_info:
@@ -384,7 +408,9 @@ class TestConnectionStopStatement:
     ):
         """If the statement never reaches STOPPED within the timeout, OperationalError is raised."""
         mocker.patch("time.sleep")
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.return_value = _ok_response(
             statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)
         )
@@ -402,7 +428,9 @@ class TestConnectionStopStatement:
     ):
         """A statement that transitions to FAILED while waiting raises OperationalError."""
         mocker.patch("time.sleep")
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         request_mock.side_effect = [
             # PATCH (stop accepted), then a poll that finds it transitioned to FAILED.
             _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
@@ -601,9 +629,124 @@ class TestConnectChecks:
         assert connection.compute_pool_id is None
 
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without an organization ID raises an error."""
+        """A Flink-only key still requires organization_id (#132 regression guard): the
+        relaxation for a global key must not leak into this path. global_api_key/secret are
+        pinned empty so a CONFLUENT_GLOBAL_API_KEY env var can't smuggle real global creds in
+        and mask the raise (see test_requires_some_api_credentials for the same concern).
+        """
         with pytest.raises(InterfaceError, match="Organization ID is required"):
-            connection_factory(environment_id="foo_id", compute_pool_id="1234", organization_id="")
+            connection_factory(
+                environment_id="foo_id",
+                compute_pool_id="1234",
+                organization_id="",
+                global_api_key="",
+                global_api_secret="",
+            )
+
+    def test_requires_organization_id_for_dedicated_tableflow_key(
+        self, connection_factory: ConnectionFactory
+    ):
+        """A dedicated Tableflow key (no global key) still requires organization_id (#132
+        regression guard): it has no /org/v2 reach, so the relaxation must not apply to it."""
+        with pytest.raises(InterfaceError, match="Organization ID is required"):
+            connection_factory(
+                environment_id="foo_id",
+                compute_pool_id="1234",
+                organization_id="",
+                global_api_key="",
+                global_api_secret="",
+                flink_api_key="",
+                flink_api_secret="",
+                tableflow_api_key="tk",
+                tableflow_api_secret="ts",
+            )
+
+    def test_construction_does_not_resolve_organization_id(self, mocker):
+        """Global key + omitted organization_id: connect() must not make the /org/v2 network
+        call -- inference is deferred to first use of the connection (#132)."""
+        mock_lookup = mocker.patch.object(
+            Connection,
+            "_controlplane_request",
+            Mock(side_effect=AssertionError("must not be called during construction")),
+        )
+        connect(
+            environment_id="env-id",
+            organization_id="",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+        )
+        mock_lookup.assert_not_called()
+
+    def test_infers_organization_id_from_global_key_on_first_use(self, mocker):
+        """Global key + omitted organization_id: the org is inferred on first use, and both the
+        Flink client's base_url and the statement-create payload reflect the discovered org."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
+        mocker.patch.object(Connection, "_controlplane_request", return_value=mock_response)
+
+        conn = connect(
+            environment_id="env-id",
+            organization_id="",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+        )
+
+        assert conn.organization_id == "org-99"
+        assert "/organizations/org-99/" in str(conn._get_flink_client().base_url)
+
+        statement_response = mocker.Mock()
+        statement_response.json.return_value = {"name": "test-statement", "spec": {}}
+        mocker.patch.object(conn._get_flink_client(), "request", return_value=statement_response)
+        conn._execute_statement("SELECT 1", ExecutionMode.SNAPSHOT)
+        payload = conn._get_flink_client().request.call_args.kwargs["json"]
+        assert payload["organization_id"] == "org-99"
+
+    def test_organization_id_resolved_once_and_cached(self, mocker):
+        """The /org/v2 lookup fires at most once per connection, even across repeated access."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
+        mock_lookup = mocker.patch.object(
+            Connection, "_controlplane_request", return_value=mock_response
+        )
+
+        conn = connect(
+            environment_id="env-id",
+            organization_id="",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+        )
+
+        assert conn.organization_id == "org-99"
+        assert conn.organization_id == "org-99"
+        conn._get_flink_client()
+        mock_lookup.assert_called_once()
+
+    def test_supplied_organization_id_skips_org_lookup(self, mocker):
+        """A caller-supplied organization_id is used verbatim, with no /org/v2 call at all --
+        even though a global key is present and would otherwise make inference possible."""
+        mock_lookup = mocker.patch.object(
+            Connection,
+            "_controlplane_request",
+            Mock(side_effect=AssertionError("must not be called when organization_id is supplied")),
+        )
+        conn = connect(
+            environment_id="env-id",
+            organization_id="org-explicit",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+        )
+
+        assert conn.organization_id == "org-explicit"
+        conn._get_flink_client()
+        mock_lookup.assert_not_called()
 
     def test_requires_cloud_provider(self, connection_factory: ConnectionFactory):
         """Test that cloud provider is required when endpoint is not provided."""
@@ -643,7 +786,7 @@ class TestConnectChecks:
         )
 
         expected_base_url = "https://flink.us-east-1.aws.confluent.cloud/sql/v1/organizations/org-456/environments/env-123/"
-        assert str(conn._client.base_url) == expected_base_url
+        assert str(conn._get_flink_client().base_url) == expected_base_url
 
     def test_requires_some_api_credentials(self, connection_factory: ConnectionFactory):
         """connect() with neither a global nor a Flink credential pair raises (#112)."""
@@ -705,7 +848,7 @@ class TestConnectChecks:
         expected_base_url = (
             "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
         )
-        assert str(conn._client.base_url) == expected_base_url
+        assert str(conn._get_flink_client().base_url) == expected_base_url
 
     def test_endpoint_parameter_with_trailing_slash(self, connection_factory: ConnectionFactory):
         """Test that endpoint parameter with trailing slash is stripped correctly."""
@@ -719,7 +862,7 @@ class TestConnectChecks:
         )
 
         # Verify trailing slash was stripped and URL is clean (no double slashes)
-        base_url = str(conn._client.base_url)
+        base_url = str(conn._get_flink_client().base_url)
         assert "custom.example.com" in base_url
         # Verify no double slashes before /sql (trailing slash should be stripped)
         assert "//sql" not in base_url
@@ -740,7 +883,7 @@ class TestConnectChecks:
         )
 
         # Verify URL is clean (same result as with trailing slash)
-        base_url = str(conn._client.base_url)
+        base_url = str(conn._get_flink_client().base_url)
         assert "custom.example.com" in base_url
         # Verify no double slashes
         assert "//sql" not in base_url
@@ -1078,7 +1221,7 @@ class TestConnectionListStatements:
         mock_response.json.return_value = {"data": [statement1, statement2], "metadata": {}}
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Call list_statements
@@ -1133,7 +1276,9 @@ class TestConnectionListStatements:
             return [mock_response_page1, mock_response_page2][len(captured_params) - 1]
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", side_effect=capture_request
+            invalid_credential_connection._get_flink_client(),
+            "request",
+            side_effect=capture_request,
         )
 
         # Call list_statements with small page_size to force pagination
@@ -1172,7 +1317,7 @@ class TestConnectionListStatements:
         mock_response.json.return_value = {"data": [], "metadata": {}}
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Call list_statements with a label that doesn't match any statements
@@ -1200,7 +1345,7 @@ class TestConnectionListStatements:
         mock_response.json.return_value = {"data": [statement_response_factory()], "metadata": {}}
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Call with custom page_size
@@ -1222,7 +1367,7 @@ class TestConnectionListStatements:
         mock_response.json.return_value = {"data": [statement_response_factory()], "metadata": {}}
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Call list_statements
@@ -1243,7 +1388,7 @@ class TestConnectionListStatements:
         mock_response.json.return_value = {"data": [statement_response_factory()], "metadata": {}}
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Call list_statements with label that already has prefix
@@ -1267,7 +1412,7 @@ class TestConnectionListStatements:
         }
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         statements = invalid_credential_connection.list_statements()
@@ -1294,7 +1439,7 @@ class TestConnectionListStatements:
         }
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         invalid_credential_connection.list_statements(compute_pool_id="lfcp-xyz")
@@ -1319,7 +1464,7 @@ class TestConnectionListStatements:
         }
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         invalid_credential_connection.list_statements(
@@ -1355,7 +1500,7 @@ class TestConnectionListStatements:
         }
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         statements = invalid_credential_connection.list_statements(name_contains="report")
@@ -1386,7 +1531,7 @@ class TestConnectionListStatements:
         }
 
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         statements = invalid_credential_connection.list_statements(
@@ -1487,7 +1632,9 @@ class TestGetStatement:
     ):
         """Test that getting a non-existent statement raises StatementNotFoundError."""
         # Mock _request to raise HTTPStatusError with 404
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         response_mock = Mock()
         response_mock.status_code = 404
         response_mock.json.return_value = {"errors": [{"detail": "Statement not found"}]}
@@ -1515,7 +1662,9 @@ class TestGetStatement:
     ):
         """Test that non-404 errors remain as OperationalError."""
         # Mock _request to raise HTTPStatusError with 500
-        request_mock = mocker.patch.object(invalid_credential_connection._client, "request")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
         response_mock = Mock()
         response_mock.status_code = 500
         response_mock.json.return_value = {"errors": [{"detail": "Internal server error"}]}
@@ -1580,7 +1729,7 @@ class TestConnectionRetriesIdempotentGets:
             "metadata": {},
         }
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[httpx.ReadError("reset"), mock_response],
         )
@@ -1600,7 +1749,7 @@ class TestConnectionRetriesIdempotentGets:
         mock_response = Mock()
         mock_response.json.return_value = statement_response_factory(name="stmt-1")
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[httpx.ReadError("reset"), mock_response],
         )
@@ -1622,7 +1771,7 @@ class TestConnectionRetriesIdempotentGets:
             "metadata": {},
         }
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[httpx.ReadError("reset"), mock_response],
         )
@@ -1642,7 +1791,7 @@ class TestConnectionRetriesIdempotentGets:
         are exhausted, the raw httpx exception propagates rather than an OperationalError."""
         mocker.patch("confluent_sql.retry.time.sleep")
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[httpx.ReadError("reset")] * 4,
         )
@@ -1661,7 +1810,7 @@ class TestConnectionRetriesIdempotentGets:
         connection reset could double-mutate state, which is exactly what #137 scopes retries
         away from."""
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=httpx.ReadError("reset"),
         )
@@ -1685,7 +1834,7 @@ class TestConnectionRetriesIdempotentGets:
             "metadata": {},
         }
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[_http_error_response(503), mock_response],
         )
@@ -1706,7 +1855,7 @@ class TestConnectionRetriesIdempotentGets:
         mock_response.status_code = 200
         mock_response.json.return_value = statement_response_factory(name="stmt-1")
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[_http_error_response(503), mock_response],
         )
@@ -1729,7 +1878,7 @@ class TestConnectionRetriesIdempotentGets:
             "metadata": {},
         }
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[_http_error_response(503), mock_response],
         )
@@ -1750,7 +1899,7 @@ class TestConnectionRetriesIdempotentGets:
         _raise_for_status_as_operational_error runs on the final response either way."""
         mocker.patch("confluent_sql.retry.time.sleep")
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[_http_error_response(503)] * 4,
         )
@@ -1769,7 +1918,7 @@ class TestConnectionRetriesIdempotentGets:
         """A 404 must not be treated as retryable -- it's the caller's job to see
         StatementNotFoundError on the very first response, not after a wasted retry budget."""
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             return_value=_http_error_response(404),
         )
@@ -1793,7 +1942,7 @@ class TestConnectionRetriesIdempotentGets:
         mock_response.status_code = 200
         mock_response.json.return_value = statement_response_factory(name="stmt-1")
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             side_effect=[httpx.ReadError("reset"), _http_error_response(503), mock_response],
         )
@@ -1811,7 +1960,7 @@ class TestConnectionRetriesIdempotentGets:
         """delete_statement's DELETE must not be retried on a retryable status either -- #140's
         status-code check must live in _request_get, not leak into _request itself."""
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             "request",
             return_value=_http_error_response(503),
         )
@@ -1830,7 +1979,7 @@ class TestConnectionRetriesIdempotentGets:
         _request_get (and thus the retry policy) just because _request_get only knew about
         `params`."""
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=Mock()
+            invalid_credential_connection._get_flink_client(), "request", return_value=Mock()
         )
 
         invalid_credential_connection._request_get(
@@ -1849,7 +1998,7 @@ class TestConnectionRetriesIdempotentGets:
         """_request_get must never issue anything but a GET, even if a caller mistakenly
         passes a method= kwarg -- that guarantee is what makes it safe to retry."""
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=Mock()
+            invalid_credential_connection._get_flink_client(), "request", return_value=Mock()
         )
 
         invalid_credential_connection._request_get("/statements", method="POST")
@@ -1865,7 +2014,7 @@ class TestConnectionRetriesIdempotentGets:
         to decide whether to retry before translating it) -- a caller passing raise_for_status
         in kwargs must not collide with that and blow up with a duplicate-keyword TypeError."""
         request_mock = mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=Mock()
+            invalid_credential_connection._get_flink_client(), "request", return_value=Mock()
         )
 
         invalid_credential_connection._request_get("/statements", raise_for_status=True)
@@ -1893,7 +2042,9 @@ class TestExecuteStatement:
             "status": {"phase": "RUNNING"},
         }
 
-        return mocker.patch.object(connection._client, "request", return_value=mock_response)
+        return mocker.patch.object(
+            connection._get_flink_client(), "request", return_value=mock_response
+        )
 
     def test_no_label_omits_metadata_labels(
         self,
@@ -2341,7 +2492,8 @@ class TestHttpUserAgentProperty:
         assert invalid_credential_connection.http_user_agent == expected
         assert invalid_credential_connection.http_user_agent == Connection.DEFAULT_USER_AGENT
         # Verify the header is applied to the httpx client
-        assert invalid_credential_connection._client.headers.get("User-Agent") == expected
+        client = invalid_credential_connection._get_flink_client()
+        assert client.headers.get("User-Agent") == expected
 
     def test_custom_user_agent_via_constructor(
         self, http_agent_connection_factory: ConnectionFactory
@@ -2351,7 +2503,7 @@ class TestHttpUserAgentProperty:
         conn = http_agent_connection_factory(http_user_agent=custom_agent)
         assert conn.http_user_agent == custom_agent
         # Verify the header is applied to the httpx client at construction time
-        assert conn._client.headers.get("User-Agent") == custom_agent
+        assert conn._get_flink_client().headers.get("User-Agent") == custom_agent
 
     def test_set_user_agent_via_property(self, invalid_credential_connection: Connection):
         """Test that user agent can be set via property setter."""
@@ -2359,7 +2511,19 @@ class TestHttpUserAgentProperty:
         invalid_credential_connection.http_user_agent = new_agent
         assert invalid_credential_connection.http_user_agent == new_agent
         # Verify the header is updated in the httpx client when property is set
-        assert invalid_credential_connection._client.headers.get("User-Agent") == new_agent
+        client = invalid_credential_connection._get_flink_client()
+        assert client.headers.get("User-Agent") == new_agent
+
+    def test_set_user_agent_updates_already_built_client_in_place(
+        self, invalid_credential_connection: Connection
+    ):
+        """Setting http_user_agent after the (lazily-built) Flink client already exists must
+        update that same client's headers live, not just influence a future build."""
+        client = invalid_credential_connection._get_flink_client()  # force lazy build now
+        new_agent = "updated-app/3.0"
+        invalid_credential_connection.http_user_agent = new_agent
+        assert invalid_credential_connection._get_flink_client() is client
+        assert client.headers.get("User-Agent") == new_agent
 
     def test_set_user_agent_accepts_boundary_values(
         self, invalid_credential_connection: Connection
@@ -2421,7 +2585,7 @@ class TestHttpTimeoutSecs:
     ):
         """When not provided, the property reports the effective default, not None."""
         assert invalid_credential_connection.http_timeout_secs == DEFAULT_HTTP_TIMEOUT_SECS
-        assert invalid_credential_connection._client.timeout == httpx.Timeout(
+        assert invalid_credential_connection._get_flink_client().timeout == httpx.Timeout(
             DEFAULT_HTTP_TIMEOUT_SECS
         )
 
@@ -2446,7 +2610,7 @@ class TestHttpTimeoutSecs:
         )
         assert conn.http_timeout_secs == timeout_value
         # httpx wraps the timeout into a Timeout(connect, read, write, pool) object.
-        assert conn._client.timeout == httpx.Timeout(timeout_value)
+        assert conn._get_flink_client().timeout == httpx.Timeout(timeout_value)
 
     @pytest.mark.parametrize(
         "invalid_value,expected_error",
@@ -2520,7 +2684,7 @@ class TestComputePoolIdParameter:
             "spec": {"compute_pool_id": "lfcp-custom-pool"},
         }
         mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             'request',
             return_value=mock_response
         )
@@ -2536,8 +2700,8 @@ class TestComputePoolIdParameter:
         )
 
         # Verify the request was made
-        invalid_credential_connection._client.request.assert_called_once()
-        call_kwargs = invalid_credential_connection._client.request.call_args
+        invalid_credential_connection._get_flink_client().request.assert_called_once()
+        call_kwargs = invalid_credential_connection._get_flink_client().request.call_args
         payload = call_kwargs.kwargs['json']
 
         # Verify the compute_pool_id in the payload matches the provided one
@@ -2563,7 +2727,7 @@ class TestComputePoolIdParameter:
             "spec": {"compute_pool_id": "cp-id"},
         }
         mocker.patch.object(
-            invalid_credential_connection._client,
+            invalid_credential_connection._get_flink_client(),
             'request',
             return_value=mock_response
         )
@@ -2575,7 +2739,7 @@ class TestComputePoolIdParameter:
         )
 
         # Verify the payload uses the connection's compute_pool_id
-        call_kwargs = invalid_credential_connection._client.request.call_args
+        call_kwargs = invalid_credential_connection._get_flink_client().request.call_args
         payload = call_kwargs.kwargs['json']
         assert payload['spec']['compute_pool_id'] == "cp-id"  # from fixture
 
@@ -2585,12 +2749,14 @@ class TestComputePoolIdParameter:
         """With no per-call argument and no connection default, spec carries no pool."""
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"name": "test-statement", "spec": {}}
-        mocker.patch.object(poolless_connection._client, "request", return_value=mock_response)
+        mocker.patch.object(
+            poolless_connection._get_flink_client(), "request", return_value=mock_response
+        )
         mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
 
         poolless_connection._execute_statement("SELECT 1", ExecutionMode.SNAPSHOT)
 
-        payload = poolless_connection._client.request.call_args.kwargs["json"]
+        payload = poolless_connection._get_flink_client().request.call_args.kwargs["json"]
         assert "compute_pool_id" not in payload["spec"]
 
         # No connection default means there is nothing to "override" -- stay silent.
@@ -2608,14 +2774,16 @@ class TestComputePoolIdParameter:
             "name": "test-statement",
             "spec": {"compute_pool_id": "lfcp-explicit"},
         }
-        mocker.patch.object(poolless_connection._client, "request", return_value=mock_response)
+        mocker.patch.object(
+            poolless_connection._get_flink_client(), "request", return_value=mock_response
+        )
         mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
 
         poolless_connection._execute_statement(
             "SELECT 1", ExecutionMode.SNAPSHOT, compute_pool_id="lfcp-explicit"
         )
 
-        payload = poolless_connection._client.request.call_args.kwargs["json"]
+        payload = poolless_connection._get_flink_client().request.call_args.kwargs["json"]
         assert payload["spec"]["compute_pool_id"] == "lfcp-explicit"
 
         log_messages = [str(call) for call in mock_log_info.call_args_list]
@@ -2639,7 +2807,7 @@ class TestComputePoolIdParameter:
             "spec": {"compute_pool_id": "cp-id"},
         }
         mocker.patch.object(
-            invalid_credential_connection._client, "request", return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
         mock_log_info = mocker.patch("confluent_sql.connection.logger.info")
 
@@ -2647,7 +2815,7 @@ class TestComputePoolIdParameter:
             "SELECT 1", ExecutionMode.SNAPSHOT, compute_pool_id=falsy_per_call_pool
         )
 
-        payload = invalid_credential_connection._client.request.call_args.kwargs["json"]
+        payload = invalid_credential_connection._get_flink_client().request.call_args.kwargs["json"]
         assert payload["spec"]["compute_pool_id"] == "cp-id"  # the connection default
 
         log_messages = [str(call) for call in mock_log_info.call_args_list]

@@ -218,7 +218,13 @@ def connect(  # noqa: PLR0913
             covers Connect. Must be supplied together with connect_api_secret.
         connect_api_secret: Secret paired with connect_api_key.
         environment_id: Environment ID
-        organization_id: Organization ID
+        organization_id: Organization ID. Required unless a global_api_key/global_api_secret
+            pair is supplied, in which case it may be omitted: it's inferred lazily, on first
+            use of the connection, via GET /org/v2/organizations (only when exactly one
+            organization is visible to the key). OperationalError surfaces from that first use,
+            not from connect() itself, if zero or multiple organizations are visible. A
+            Flink-only key or a dedicated Tableflow/Connect key has no such reach and always
+            requires organization_id.
         compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
             created on this connection name no pool, so Confluent Cloud Flink runs them in
             the environment+region default compute pool (provisioning if necessary). Individual
@@ -276,7 +282,8 @@ def connect(  # noqa: PLR0913
     if not environment_id:
         raise InterfaceError("Environment ID is required")
 
-    if not organization_id:
+    has_global_credentials = bool(global_api_key) and bool(global_api_secret)
+    if not organization_id and not has_global_credentials:
         raise InterfaceError("Organization ID is required")
 
     if endpoint:
@@ -365,7 +372,6 @@ class Connection:
     than silently letting the driver's overlay win."""
 
     environment_id: str
-    organization_id: str
     compute_pool_id: str | None
     statement_results_page_fetch_pause_secs: float
     """Maximum seconds to wait between fetching pages of statement
@@ -384,7 +390,14 @@ class Connection:
 
     _closed: bool
     _database: str | None
-    _client: httpx.Client
+    _organization_id_value: str | None
+    """Supplied organization_id, or None if it must be inferred -- see the organization_id
+    property. Once resolved (supplied or inferred), holds the final value."""
+    _flink_endpoint: str
+    _flink_auth: httpx.BasicAuth
+    _flink_client: httpx.Client | None
+    """Lazily created on first Flink request (see _get_flink_client()); None until then. Deferred so
+    that construction never blocks on the network call organization_id inference may need."""
     _http_user_agent: str
     _http_timeout_secs: float
 
@@ -451,7 +464,10 @@ class Connection:
                 global key is supplied. Must be supplied together with connect_api_secret.
             connect_api_secret: Secret paired with connect_api_key.
             environment_id: Environment ID
-            organization_id: Organization ID
+            organization_id: Organization ID. If omitted ("") with a global key present, it's
+                resolved lazily from the `organization_id` property (see there) rather than
+                here; if omitted with no global key, this constructor leaves it empty rather
+                than raising -- connect() is what enforces its presence for that case.
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
                 not provided.
@@ -487,7 +503,9 @@ class Connection:
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
         self.compute_pool_id = compute_pool_id or None
-        self.organization_id = organization_id
+        # None means "not yet resolved" -- triggers inference on first organization_id access
+        # (see the organization_id property) rather than a connect()-time network call.
+        self._organization_id_value = organization_id or None
 
         if statement_results_page_fetch_pause_millis < 0:
             raise InterfaceError("result_page_fetch_pause_millis must be non-negative")
@@ -501,6 +519,8 @@ class Connection:
         # Internal state
         self._closed = False
         self._database = database
+        # Must exist before the http_user_agent setter runs below, since its guard checks this.
+        self._flink_client = None
 
         # Set user agent (validation happens in setter, default if None)
         self.http_user_agent = (
@@ -530,26 +550,15 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        base_url = (
-            f"{endpoint}/sql/v1/organizations/{organization_id}"
-            f"/environments/{environment_id}"
-        )
-
-        # Create httpx client for making API calls
+        # base_url (below, in _get_flink_client()) embeds organization_id, which for a global
+        # key that omitted it is resolved lazily via the organization_id property -- so building
+        # the Flink client itself is deferred to first use rather than done eagerly here. Only the
+        # network-free pieces are resolved now.
         auth_key, auth_secret = _resolve_api_credentials(
             global_api_key, global_api_secret, flink_api_key, flink_api_secret
         )
-        basic_auth = httpx.BasicAuth(username=auth_key, password=auth_secret)
-        client_kwargs: dict[str, Any] = {
-            "auth": basic_auth,
-            "base_url": base_url,
-            "headers": {
-                "Content-Type": "application/json",
-                "User-Agent": self._http_user_agent,
-            },
-            "timeout": self._http_timeout_secs,
-        }
-        self._client = httpx.Client(**client_kwargs)
+        self._flink_auth = httpx.BasicAuth(username=auth_key, password=auth_secret)
+        self._flink_endpoint = endpoint
 
         # Control-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
         # connection that never touches Tableflow pays nothing, and one with no usable
@@ -582,7 +591,8 @@ class Connection:
         """
         if not self._closed:
             self._closed = True
-            self._client.close()
+            if self._flink_client is not None:
+                self._flink_client.close()
             if self._controlplane_client is not None:
                 self._controlplane_client.close()
             if self._connect_controlplane_client is not None:
@@ -1242,6 +1252,22 @@ class Connection:
         return self._closed
 
     @property
+    def organization_id(self) -> str:
+        """
+        The connection's Confluent Cloud organization id.
+
+        Returned as supplied to connect()/Connection() if given. If omitted and a global API
+        key was supplied, inferred once via GET /org/v2/organizations on first access and
+        cached thereafter -- see _resolve_organization_id(). If omitted with no global key,
+        returns "".
+        """
+        if self._organization_id_value is None:
+            self._organization_id_value = (
+                self._resolve_organization_id() if self._global_credentials is not None else ""
+            )
+        return self._organization_id_value
+
+    @property
     def http_timeout_secs(self) -> float:
         """
         Get the effective timeout (in seconds) applied to HTTP requests, which is
@@ -1287,9 +1313,9 @@ class Connection:
 
         self._http_user_agent = value
 
-        # Update the httpx client headers if client is already initialized
-        if hasattr(self, "_client"):
-            self._client.headers["User-Agent"] = value
+        # Update the httpx client headers if the (lazily-built) client is already initialized
+        if self._flink_client is not None:
+            self._flink_client.headers["User-Agent"] = value
 
     def register_row_type(self, class_for_flink_row: type[RowPythonTypes]) -> None:
         """Register a user-defined namedtuple, NamedTuple, or @dataclass class to be used
@@ -1635,7 +1661,7 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        response = self._client.request(method, url, **kwargs)
+        response = self._get_flink_client().request(method, url, **kwargs)
         logger.debug("Response: %s", response.content)
         if raise_for_status:
             self._raise_for_status_as_operational_error(response)
@@ -1694,6 +1720,29 @@ class Connection:
             "timeout": self._http_timeout_secs,
         }
         return httpx.Client(**client_kwargs)
+
+    def _get_flink_client(self) -> httpx.Client:
+        """Return the Flink gateway httpx client, building it on first use.
+
+        Deferred rather than built in __init__ because base_url embeds organization_id, which
+        for a global key that omitted it is resolved lazily via the organization_id property --
+        construction must never block on that network call.
+        """
+        if self._flink_client is None:
+            base_url = (
+                f"{self._flink_endpoint}/sql/v1/organizations/{self.organization_id}"
+                f"/environments/{self.environment_id}"
+            )
+            self._flink_client = httpx.Client(
+                auth=self._flink_auth,
+                base_url=base_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": self._http_user_agent,
+                },
+                timeout=self._http_timeout_secs,
+            )
+        return self._flink_client
 
     def _get_controlplane_client(self) -> httpx.Client:
         """Return the Tableflow control-plane httpx client, creating it on first use.
@@ -2068,6 +2117,43 @@ class Connection:
             for cluster in response.get("data", []):
                 if cluster.get("spec", {}).get("display_name") == name:
                     ids.append(cluster["id"])
+            next_page_token = self._get_next_page_token(response.get("metadata", {}).get("next"))
+            if next_page_token is None:
+                break
+            params["page_token"] = next_page_token
+        return ids
+
+    def _resolve_organization_id(self) -> str:
+        """Infer organization_id via /org/v2/organizations for a global key that omitted it.
+
+        A global key is org-bound, so this route is expected to return exactly one organization
+        in practice; >1 is a defensive guard against unforeseen behaviour, not the normal case.
+
+        Raises:
+            OperationalError: If the route returns zero organizations (unexpected for a valid
+                global key) or more than one (ambiguous -- caller must disambiguate explicitly).
+        """
+        orgs = self._lookup_organization_ids()
+        if not orgs:
+            raise OperationalError(
+                "No organizations visible to this API key; cannot infer organization_id. "
+                "Pass organization_id to connect() to specify it explicitly."
+            )
+        if len(orgs) > 1:
+            raise OperationalError(
+                "Multiple organizations visible to this API key; pass organization_id to "
+                "connect() to disambiguate."
+            )
+        return orgs[0]
+
+    def _lookup_organization_ids(self) -> list[str]:
+        """List organization ids visible to the current control-plane credential, paginating
+        through /org/v2/organizations."""
+        ids: list[str] = []
+        params: dict[str, str | int] = {"page_size": 100}
+        while True:
+            response = self._controlplane_request("/org/v2/organizations", params=params).json()
+            ids.extend(org["id"] for org in response.get("data", []))
             next_page_token = self._get_next_page_token(response.get("metadata", {}).get("next"))
             if next_page_token is None:
                 break
