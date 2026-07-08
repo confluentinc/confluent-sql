@@ -87,11 +87,14 @@ def _connect_from_env(*, include_compute_pool: bool) -> Connection:
     global_half = bool(global_api_key) != bool(global_api_secret)
     flink_half = bool(flink_api_key) != bool(flink_api_secret)
     credentials_available = (global_full or flink_full) and not (global_half or flink_half)
+    # organization_id is inferable from a global key (#132), so it's only required outright when
+    # no global key is configured.
+    org_available = bool(organization_id) or global_full
     if not all(
         [
             credentials_available,
             environment_id,
-            organization_id,
+            org_available,
             cloud_region,
             cloud_provider,
             database,
