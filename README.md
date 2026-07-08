@@ -25,6 +25,7 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
   - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`.
 
   A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Provide at least one pair. If you supply both, the Global pair is used and the Flink pair is ignored. A half-supplied pair (a key without its secret, or vice versa) is rejected.
+- **Organization ID** — required, *unless* you're using a Global API key and it can see exactly one organization, in which case you can omit `organization_id` and it's inferred automatically on first use of the connection. A Flink Region key has no way to discover it, so it always requires `organization_id` explicitly.
 
 ### How to Obtain a Flink Region API Key
 
@@ -64,7 +65,7 @@ import confluent_sql
 
 # Connect to Confluent Cloud Flink SQL
 connection = confluent_sql.connect(
-    organization_id="your-org-uuid",
+    organization_id="your-org-uuid",  # optional if using a Global key -- see Prerequisites
     environment_id="env-123456",
     cloud_provider="aws",
     cloud_region="us-east-2",
@@ -206,14 +207,15 @@ Set required environment variables for integration tests.
 If any of the variables is not set, integration tests will be skipped.
 
 ```bash
-export CONFLUENT_ORG_ID="org-123456"
+export CONFLUENT_ORG_ID="org-123456" # Optional if using a Global key that can see exactly one org.
 export CONFLUENT_ENV_ID="env-123456"
 export CONFLUENT_CLOUD_PROVIDER="aws"
 export CONFLUENT_CLOUD_REGION="us-east-2"
 export CONFLUENT_FLINK_API_KEY="your-key" # Flink Region API key for the above cloud/region ...
 export CONFLUENT_FLINK_API_SECRET="your-secret" # and associated secret.
 # Alternatively, a "Global" Confluent Cloud API key (used in preference to the Flink pair if both
-# are set): export CONFLUENT_GLOBAL_API_KEY / CONFLUENT_GLOBAL_API_SECRET instead.
+# are set): export CONFLUENT_GLOBAL_API_KEY / CONFLUENT_GLOBAL_API_SECRET instead. With a Global
+# key, CONFLUENT_ORG_ID may be omitted -- the integration suite infers it, same as connect() does.
 export CONFLUENT_TEST_DBNAME="test-db" # A database/kafka cluster name within the above cloud/region.
 export CONFLUENT_COMPUTE_POOL_ID="lfcp-789012" # Optional. If set, the integration suite runs against this pool; if unset, the suite runs against the environment's default pool. The driver treats it as optional at connect() either way.
 ```

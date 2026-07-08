@@ -246,6 +246,58 @@ class TestResolveKafkaClusterId:
         assert conn._controlplane_request.call_count == 2
 
 
+class TestResolveOrganizationId:
+    """organization_id inference via /org/v2/organizations (#132): pagination, zero-org and
+    multi-org error paths. All built against a Connection with a non-empty organization_id so
+    construction needs no mocking -- the methods under test are called directly."""
+
+    def test_lookup_single_org_returns_it(self) -> None:
+        conn = _connect(global_api_key="gk", global_api_secret="gs")
+        conn._controlplane_request = Mock(
+            return_value=_ok_response({"data": [{"id": "org-99"}], "metadata": {}})
+        )
+        assert conn._resolve_organization_id() == "org-99"
+
+    def test_lookup_paginates(self) -> None:
+        conn = _connect(global_api_key="gk", global_api_secret="gs")
+        page1 = _ok_response(
+            {
+                "data": [{"id": "org-1"}],
+                "metadata": {
+                    "next": "https://api.confluent.cloud/org/v2/organizations?page_token=tok2"
+                },
+            }
+        )
+        page2 = _ok_response({"data": [{"id": "org-2"}], "metadata": {}})
+        conn._controlplane_request = Mock(side_effect=[page1, page2])
+        assert conn._lookup_organization_ids() == ["org-1", "org-2"]
+        assert conn._controlplane_request.call_count == 2
+
+    def test_zero_orgs_raises(self) -> None:
+        conn = _connect(global_api_key="gk", global_api_secret="gs")
+        conn._controlplane_request = Mock(return_value=_ok_response({"data": [], "metadata": {}}))
+        with pytest.raises(
+            OperationalError,
+            match="No organizations visible to this API key; cannot infer organization_id.",
+        ):
+            conn._resolve_organization_id()
+
+    def test_multiple_orgs_raises_naming_ambiguity(self) -> None:
+        conn = _connect(global_api_key="gk", global_api_secret="gs")
+        conn._controlplane_request = Mock(
+            return_value=_ok_response(
+                {"data": [{"id": "org-a"}, {"id": "org-b"}], "metadata": {}}
+            )
+        )
+        with pytest.raises(
+            OperationalError,
+            match="Multiple organizations visible to this API key",
+        ) as exc:
+            conn._resolve_organization_id()
+        assert "organization_id" in str(exc.value)
+        assert "connect()" in str(exc.value)
+
+
 class TestEnableTableflow:
     """enable_tableflow request shaping, 409 mapping, and the wait-for-running behavior."""
 
