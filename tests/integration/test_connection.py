@@ -297,7 +297,7 @@ class TestRetryOnTransientResultFetchErrors:
 
             # Capture the real bound method before patching so the third call can still reach
             # Confluent Cloud for real.
-            real_request = connection._client.request
+            real_request = connection._get_flink_client().request
             call_count = 0
 
             def flaky_then_real_request(*args, **kwargs):
@@ -308,7 +308,7 @@ class TestRetryOnTransientResultFetchErrors:
                 return real_request(*args, **kwargs)
 
             request_mock = mocker.patch.object(
-                connection._client, "request", side_effect=flaky_then_real_request
+                connection._get_flink_client(), "request", side_effect=flaky_then_real_request
             )
 
             row = cursor.fetchone()
