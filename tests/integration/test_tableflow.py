@@ -57,8 +57,11 @@ def _tableflow_connection_from_env() -> Connection:
     controlplane_ok = has_global or has_tableflow
     # Cluster id obtainable: a global key (CMK lookup), or a directly-supplied id.
     cluster_ok = has_global or bool(database_kafka_cluster_id)
+    # organization_id is inferable from a global key (#132), so it's only required outright when
+    # no global key is configured.
+    org_ok = has_global or bool(organization_id)
     base_ok = all(
-        [environment_id, organization_id, cloud_provider, cloud_region, database, compute_pool_id]
+        [environment_id, org_ok, cloud_provider, cloud_region, database, compute_pool_id]
     )
     if not (no_half_pairs and flink_auth_ok and controlplane_ok and cluster_ok and base_ok):
         pytest.skip("Missing environment variables for a Tableflow-capable integration connection")

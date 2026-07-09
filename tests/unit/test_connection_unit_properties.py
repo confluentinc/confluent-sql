@@ -34,7 +34,9 @@ class TestExecuteStatementProperties:
             "name": "test-statement",
             "status": {"phase": "RUNNING"},
         }
-        return mocker.patch.object(connection._client, "request", return_value=mock_response)
+        return mocker.patch.object(
+            connection._get_flink_client(), "request", return_value=mock_response
+        )
 
     def test_properties_none_uses_defaults(self, invalid_credential_connection, mocker):
         """Verify default properties are set when properties=None."""
