@@ -12,6 +12,10 @@ All notable changes to this dbapi driver will be documented in this file.
   - `Connection.disable_tableflow(table_name, *, wait_for_removal=True, timeout=300)` tears the sink down (all-or-nothing in v1, no per-format disable). By default it blocks until the topic is confirmed gone; pass `wait_for_removal=False` to return as soon as the delete is accepted.
 - `organization_id` is now optional in `connect()`/`Connection()` when a global API key is supplied: if omitted, it's inferred via `GET /org/v2/organizations` -- lazily, on first use of the connection (not at `connect()` time) -- and used when exactly one organization is visible to the key. Raises `OperationalError` on first use if zero or multiple organizations are visible. Unchanged (still required, validated eagerly by `connect()`) for a Flink-region-only key or a dedicated Tableflow/Connect key, neither of which has `/org/v2` reach. (#132)
 
+### Fixed
+
+- Every network-level transport failure from the Flink gateway (`httpx.ConnectError`, `httpx.ReadError`, `httpx.RemoteProtocolError`, timeouts, etc.) is now translated to `OperationalError` instead of leaking the raw `httpx` exception -- this applies uniformly to idempotent GETs (once #137's retry budget is exhausted) and to non-idempotent POST/PATCH/DELETE calls (statement submission, `stop_statement()`, `delete_statement()`), matching the DB-API v2 contract that every exception the driver raises is one of `confluent_sql`'s own `Error` subclasses. The original exception remains available via `__cause__`. (#138)
+
 ## 0.4.1, 2026-07-07
 
 ### Fixed
