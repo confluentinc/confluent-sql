@@ -100,15 +100,17 @@ class TestControlPlaneContextSatisfaction:
         conn = _connect(database_kafka_cluster_id="lkc-9")
         assert conn.resolve_kafka_cluster_id() == "lkc-9"
 
-    def test_controlplane_request_routes_through_connect_client(self) -> None:
+    def test_connect_controlplane_request_routes_through_connect_client(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         client = Mock()
         client.request = Mock(return_value=Mock(content=b"{}"))
         conn._get_connect_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
-        conn.controlplane_request("/x", method="POST", json={"a": 1}, raise_for_status=False)
+        conn.connect_controlplane_request(
+            "/x", method="POST", json={"a": 1}, raise_for_status=False
+        )
         client.request.assert_called_once_with("POST", "/x", json={"a": 1})
 
-    def test_controlplane_request_http_error_becomes_operational(self) -> None:
+    def test_connect_controlplane_request_http_error_becomes_operational(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         response = Mock()
         inner = Mock()
@@ -120,7 +122,7 @@ class TestControlPlaneContextSatisfaction:
         client.request = Mock(return_value=response)
         conn._get_connect_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
         with pytest.raises(OperationalError):
-            conn.controlplane_request("/x")
+            conn.connect_controlplane_request("/x")
 
 
 class TestConnectorPassthroughs:
@@ -134,9 +136,7 @@ class TestConnectorPassthroughs:
 
         result = conn.create_connector("c1", config=config, wait_for_running=False, timeout=10)
 
-        api.create.assert_called_once_with(
-            "c1", config=config, wait_for_running=False, timeout=10
-        )
+        api.create.assert_called_once_with("c1", config=config, wait_for_running=False, timeout=10)
         assert result is api.create.return_value
 
     def test_get_connector_delegates(self) -> None:

@@ -687,7 +687,7 @@ class TestConnectChecks:
         call -- inference is deferred to first use of the connection (#132)."""
         mock_lookup = mocker.patch.object(
             Connection,
-            "_controlplane_request",
+            "_organization_lookup_request",
             Mock(side_effect=AssertionError("must not be called during construction")),
         )
         connect(
@@ -705,7 +705,9 @@ class TestConnectChecks:
         Flink client's base_url and the statement-create payload reflect the discovered org."""
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
-        mocker.patch.object(Connection, "_controlplane_request", return_value=mock_response)
+        mocker.patch.object(
+            Connection, "_organization_lookup_request", return_value=mock_response
+        )
 
         conn = connect(
             environment_id="env-id",
@@ -733,7 +735,7 @@ class TestConnectChecks:
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
         mock_lookup = mocker.patch.object(
-            Connection, "_controlplane_request", return_value=mock_response
+            Connection, "_organization_lookup_request", return_value=mock_response
         )
 
         conn = connect(
@@ -755,7 +757,7 @@ class TestConnectChecks:
         even though a global key is present and would otherwise make inference possible."""
         mock_lookup = mocker.patch.object(
             Connection,
-            "_controlplane_request",
+            "_organization_lookup_request",
             Mock(side_effect=AssertionError("must not be called when organization_id is supplied")),
         )
         conn = connect(
@@ -1805,23 +1807,28 @@ class TestConnectionRetriesIdempotentGets:
         assert next_url is None
         assert request_mock.call_count == 2
 
-    def test_idempotent_get_reraises_original_exception_after_exhausting_retries(
+    def test_idempotent_get_wraps_transport_error_as_operational_error_after_exhausting_retries(
         self,
         invalid_credential_connection: Connection,
         mocker,
     ):
-        """Documents today's unwrapped-transport-error behavior (tracked as #138): after retries
-        are exhausted, the raw httpx exception propagates rather than an OperationalError."""
+        """After #137's retry budget is exhausted, the raw httpx transport exception must not
+        leak past _request_get -- it's translated to OperationalError like every other driver
+        exception (#138), chaining the original as __cause__."""
         mocker.patch("confluent_sql.retry.time.sleep")
+        original_error = httpx.ReadError("reset")
         request_mock = mocker.patch.object(
             invalid_credential_connection._get_flink_client(),
             "request",
-            side_effect=[httpx.ReadError("reset")] * 4,
+            side_effect=[original_error] * 4,
         )
 
-        with pytest.raises(httpx.ReadError):
+        with pytest.raises(OperationalError) as exc_info:
             invalid_credential_connection._get_statement("stmt-1")
 
+        assert exc_info.value.__cause__ is original_error
+        assert "ReadError" in str(exc_info.value)
+        assert exc_info.value.http_status_code is None
         assert request_mock.call_count == 4
 
     def test_non_idempotent_path_does_not_retry_on_transient_error(
@@ -1831,16 +1838,75 @@ class TestConnectionRetriesIdempotentGets:
     ):
         """delete_statement's DELETE must not be retried: retrying a mutating call after a
         connection reset could double-mutate state, which is exactly what #137 scopes retries
-        away from."""
+        away from. The transient error must still surface as OperationalError (#138), not the
+        raw httpx exception, on this very first (and only) attempt."""
+        original_error = httpx.ReadError("reset")
         request_mock = mocker.patch.object(
             invalid_credential_connection._get_flink_client(),
             "request",
-            side_effect=httpx.ReadError("reset"),
+            side_effect=original_error,
         )
 
-        with pytest.raises(httpx.ReadError):
+        with pytest.raises(OperationalError) as exc_info:
             invalid_credential_connection.delete_statement("stmt-1")
 
+        assert exc_info.value.__cause__ is original_error
+        assert "ReadError" in str(exc_info.value)
+        request_mock.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "error_cls",
+        [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.ReadTimeout],
+    )
+    def test_idempotent_get_wraps_various_transport_errors_after_exhausting_retries(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+        error_cls: type[httpx.RequestError],
+    ):
+        """Every httpx.RequestError subtype -- not just the ones in DEFAULT_RETRYABLE_EXCEPTIONS
+        -- must come out the other side of _request_get as OperationalError (#138).
+        httpx.ReadTimeout in particular is excluded from DEFAULT_RETRYABLE_EXCEPTIONS (retry.py),
+        so it propagates on the very first attempt rather than after 4; either way it must be
+        wrapped, so call_count isn't asserted here."""
+        mocker.patch("confluent_sql.retry.time.sleep")
+        original_error = error_cls("boom")
+        mocker.patch.object(
+            invalid_credential_connection._get_flink_client(),
+            "request",
+            side_effect=[original_error] * 4,
+        )
+
+        with pytest.raises(OperationalError) as exc_info:
+            invalid_credential_connection._get_statement("stmt-1")
+
+        assert exc_info.value.__cause__ is original_error
+        assert error_cls.__name__ in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "error_cls",
+        [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.ReadTimeout],
+    )
+    def test_non_idempotent_path_wraps_various_transport_errors(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+        error_cls: type[httpx.RequestError],
+    ):
+        """Every httpx.RequestError subtype leaking from a mutating call (delete_statement here)
+        must come out as OperationalError (#138), without ever being retried."""
+        original_error = error_cls("boom")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(),
+            "request",
+            side_effect=original_error,
+        )
+
+        with pytest.raises(OperationalError) as exc_info:
+            invalid_credential_connection.delete_statement("stmt-1")
+
+        assert exc_info.value.__cause__ is original_error
+        assert error_cls.__name__ in str(exc_info.value)
         request_mock.assert_called_once()
 
     def test_list_statements_retries_on_retryable_status_and_succeeds(
@@ -1917,9 +1983,10 @@ class TestConnectionRetriesIdempotentGets:
         invalid_credential_connection: Connection,
         mocker,
     ):
-        """Unlike #137's transport-exception exhaustion (which leaks the raw httpx exception,
-        tracked as #138), a persistently-retryable status IS translated to OperationalError --
-        _raise_for_status_as_operational_error runs on the final response either way."""
+        """A persistently-retryable status is translated to OperationalError via
+        _raise_for_status_as_operational_error, same as a transport exception surviving retry
+        exhaustion is translated via _wrap_request_error (#138) -- both final-attempt outcomes
+        converge on OperationalError rather than leaking their raw form."""
         mocker.patch("confluent_sql.retry.time.sleep")
         request_mock = mocker.patch.object(
             invalid_credential_connection._get_flink_client(),
