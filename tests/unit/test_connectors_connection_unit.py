@@ -96,7 +96,7 @@ class FakeControlPlane:
     def queue(self, key: str, *responses: Mock) -> None:
         self._queues[key].extend(responses)
 
-    def controlplane_request(
+    def connect_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> Mock:
         self.requests.append((method, url))

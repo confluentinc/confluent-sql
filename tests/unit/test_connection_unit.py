@@ -687,7 +687,7 @@ class TestConnectChecks:
         call -- inference is deferred to first use of the connection (#132)."""
         mock_lookup = mocker.patch.object(
             Connection,
-            "_controlplane_request",
+            "_organization_lookup_request",
             Mock(side_effect=AssertionError("must not be called during construction")),
         )
         connect(
@@ -705,7 +705,9 @@ class TestConnectChecks:
         Flink client's base_url and the statement-create payload reflect the discovered org."""
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
-        mocker.patch.object(Connection, "_controlplane_request", return_value=mock_response)
+        mocker.patch.object(
+            Connection, "_organization_lookup_request", return_value=mock_response
+        )
 
         conn = connect(
             environment_id="env-id",
@@ -733,7 +735,7 @@ class TestConnectChecks:
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
         mock_lookup = mocker.patch.object(
-            Connection, "_controlplane_request", return_value=mock_response
+            Connection, "_organization_lookup_request", return_value=mock_response
         )
 
         conn = connect(
@@ -755,7 +757,7 @@ class TestConnectChecks:
         even though a global key is present and would otherwise make inference possible."""
         mock_lookup = mocker.patch.object(
             Connection,
-            "_controlplane_request",
+            "_organization_lookup_request",
             Mock(side_effect=AssertionError("must not be called when organization_id is supplied")),
         )
         conn = connect(

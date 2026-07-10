@@ -408,13 +408,17 @@ class Connection:
     _controlplane_endpoint: str
     """Base URL for the control plane (Tableflow, Connect, CMK), distinct from the Flink gateway."""
     _controlplane_auth: tuple[str, str] | None
-    """(key, secret) for Tableflow/control-plane routes, or None if no usable credential exists."""
+    """(key, secret) shared by `_tableflow_request`, `_cmk_request`, and
+    `_organization_lookup_request` -- a global key, or (Tableflow calls only) a Tableflow-scoped
+    key pair -- or None if no usable credential exists. Distinct from `_connect_auth`, Connect's
+    own separate credential slot."""
     _connect_auth: tuple[str, str] | None
     """(key, secret) for Connect routes, or None if no usable credential exists."""
     _global_credentials: tuple[str, str] | None
     """(key, secret) of the global API key if one was supplied -- the only credential CMK takes."""
     _controlplane_client: httpx.Client | None
-    """Lazily created on first Tableflow control-plane request; None until then."""
+    """Lazily created on first request from any of `_tableflow_request`, `_cmk_request`, or
+    `_organization_lookup_request`; None until then."""
     _connect_controlplane_client: httpx.Client | None
     """Lazily created on first Connect control-plane request; None until then."""
     _connector_api: ConnectorApi | None
@@ -1617,9 +1621,19 @@ class Connection:
 
         return (results, next_url)
 
+    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+        """Issue a Flink-gateway request, translating any httpx.RequestError into
+        OperationalError so no raw httpx exception ever escapes to a caller (#138)."""
+        try:
+            return self._request_raw(
+                url, method=method, raise_for_status=raise_for_status, **kwargs
+            )
+        except httpx.RequestError as e:
+            self._wrap_request_error(e)
+
     def _request_get(self, url, **kwargs) -> httpx.Response:
-        """Issue a GET, retrying transient transport errors (#137) and transient HTTP status
-        codes (#140) alike -- both feed the same call_with_retries backoff/attempt budget. If
+        """Issue a Flink-gateway GET, retrying transient transport errors (#137) and transient 
+        HTTP status codes alike -- both feed the same call_with_retries backoff/attempt budget. If
         retries are exhausted (or the exception isn't retryable at all), the raw httpx exception
         is translated to OperationalError before it escapes (#138) -- it's never leaked raw.
 
@@ -1655,6 +1669,55 @@ class Connection:
 
         self._raise_for_status_as_operational_error(response)
         return response
+
+    def _tableflow_request(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        """Issue a request against a genuine Tableflow route (enable/get/disable).
+
+        Routes through the lazily-created control-plane client (separate host + auth from the
+        Flink gateway) shared with `_cmk_request` and `_organization_lookup_request` -- one real
+        client/connection-pool, because all three hit the same host under the same resolved
+        credential in every case that matters. This wrapper (and its two siblings) exists so each
+        call site names what it's actually requesting, rather than routing through one
+        ambiguously-named shared method.
+
+        Same error shaping as _request: an HTTP error status becomes OperationalError carrying the
+        status code, unless raise_for_status is False (callers that map specific codes -- 404/409
+        -- to their own exceptions).
+        """
+        return self._send_request(
+            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
+        )
+
+    def _cmk_request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+        """Issue a request against a CMK (Cluster Management for Kafka) route.
+
+        Only ever called by `_lookup_cluster_ids_by_name`, itself only reached from
+        `_resolve_kafka_cluster_id` once `_global_credentials is not None` -- CMK doesn't accept a
+        Tableflow-scoped key, so by the time this method runs the resolved credential is always
+        the global key. Shares the underlying control-plane client with `_tableflow_request` and
+        `_organization_lookup_request`; see that method's docstring for why they're split by name
+        rather than sharing one ambiguous entry point.
+        """
+        return self._send_request(
+            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
+        )
+
+    def _organization_lookup_request(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        """Issue a request against the /org/v2 organization-lookup route (#132).
+
+        Only ever called by `_lookup_organization_ids`, itself only reached from the
+        `organization_id` property once `_global_credentials is not None` -- inferring
+        organization_id requires a global key. Shares the underlying control-plane client with
+        `_tableflow_request` and `_cmk_request`; see that method's docstring for why they're split
+        by name rather than sharing one ambiguous entry point.
+        """
+        return self._send_request(
+            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
+        )
 
     def _raise_for_status_as_operational_error(self, response: httpx.Response) -> None:
         """Translate a 4xx/5xx response into OperationalError, chaining the original
@@ -1697,30 +1760,6 @@ class Connection:
         if raise_for_status:
             self._raise_for_status_as_operational_error(response)
         return response
-
-    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
-        """Issue a Flink-gateway request, translating any httpx.RequestError into
-        OperationalError so no raw httpx exception ever escapes to a caller (#138)."""
-        try:
-            return self._request_raw(
-                url, method=method, raise_for_status=raise_for_status, **kwargs
-            )
-        except httpx.RequestError as e:
-            self._wrap_request_error(e)
-
-    def _controlplane_request(
-        self, url, method="GET", raise_for_status=True, **kwargs
-    ) -> httpx.Response:
-        """Issue a request against the control plane (Tableflow, CMK).
-
-        Routes through the lazily-created control-plane client (separate host + auth from the Flink
-        gateway). Same error shaping as _request: an HTTP error status becomes OperationalError
-        carrying the status code, unless raise_for_status is False (callers that map specific
-        codes -- 404/409 -- to their own exceptions).
-        """
-        return self._send_request(
-            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
-        )
 
     def _send_request(
         self, client: httpx.Client, url, method, raise_for_status, **kwargs
@@ -1783,7 +1822,15 @@ class Connection:
         return self._flink_client
 
     def _get_controlplane_client(self) -> httpx.Client:
-        """Return the Tableflow control-plane httpx client, creating it on first use.
+        """Return the shared control-plane httpx client, creating it on first use.
+
+        Shared by `_tableflow_request`, `_cmk_request`, and `_organization_lookup_request` (one
+        client/connection-pool, since all three hit the same host under the same resolved
+        credential). The ProgrammingError below is worded for Tableflow specifically because it's
+        provably the only caller that can ever trigger it: both the CMK and org-lookup call paths
+        (`_resolve_kafka_cluster_id`, the `organization_id` property) already require
+        `_global_credentials` to be set before they ever reach this method, which guarantees
+        `_controlplane_auth` is the global pair (not None) by the time they get here.
 
         Raises:
             InterfaceError: If the connection is closed.
@@ -1798,7 +1845,9 @@ class Connection:
                 "pair; neither was supplied to connect()."
             )
         if self._controlplane_client is None:
-            self._controlplane_client = self._make_controlplane_client(self._controlplane_auth)
+            self._controlplane_client = self._make_controlplane_client(
+                self._controlplane_auth
+            )
         return self._controlplane_client
 
     def _get_connect_controlplane_client(self) -> httpx.Client:
@@ -1823,15 +1872,16 @@ class Connection:
             self._connect_controlplane_client = self._make_controlplane_client(self._connect_auth)
         return self._connect_controlplane_client
 
-    def controlplane_request(
+    def connect_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
     ) -> httpx.Response:
-        """Issue a Connect control-plane request -- satisfies ControlPlaneContext for ConnectorApi.
+        """Public ControlPlaneContext hook -- issues a Connect control-plane request for
+        ConnectorApi.
 
-        Routes through the connect-authed client, distinct from the Tableflow-authed
-        _controlplane_request. Same error shaping: an HTTP error status becomes OperationalError
-        carrying the status code, unless raise_for_status is False (ConnectorApi maps 404/409 to
-        its own exceptions).
+        Routes through the connect-authed client, distinct from the shared client backing
+        `_tableflow_request` / `_cmk_request` / `_organization_lookup_request`. Same error
+        shaping: an HTTP error status becomes OperationalError carrying the status code, unless
+        raise_for_status is False (ConnectorApi maps 404/409 to its own exceptions).
         """
         return self._send_request(
             self._get_connect_controlplane_client(), url, method, raise_for_status, **kwargs
@@ -1941,7 +1991,7 @@ class Connection:
             kafka_cluster_id=kafka_cluster_id,
         )
         logger.info(f"Enabling Tableflow for table '{table_name}'")
-        response = self._controlplane_request(
+        response = self._tableflow_request(
             self._TABLEFLOW_TOPICS_PATH, method="POST", json=payload, raise_for_status=False
         )
         try:
@@ -1979,7 +2029,7 @@ class Connection:
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
-        response = self._controlplane_request(
+        response = self._tableflow_request(
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             params=self._tableflow_topic_params(),
             raise_for_status=False,
@@ -2024,7 +2074,7 @@ class Connection:
             OperationalError: On other API errors, or on wait timeout.
         """
         logger.info(f"Disabling Tableflow for table '{table_name}'")
-        response = self._controlplane_request(
+        response = self._tableflow_request(
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             method="DELETE",
             params=self._tableflow_topic_params(),
@@ -2151,7 +2201,7 @@ class Connection:
         ids: list[str] = []
         params: dict[str, str | int] = {"environment": self.environment_id, "page_size": 100}
         while True:
-            response = self._controlplane_request("/cmk/v2/clusters", params=params).json()
+            response = self._cmk_request("/cmk/v2/clusters", params=params).json()
             for cluster in response.get("data", []):
                 if cluster.get("spec", {}).get("display_name") == name:
                     ids.append(cluster["id"])
@@ -2190,7 +2240,9 @@ class Connection:
         ids: list[str] = []
         params: dict[str, str | int] = {"page_size": 100}
         while True:
-            response = self._controlplane_request("/org/v2/organizations", params=params).json()
+            response = self._organization_lookup_request(
+                "/org/v2/organizations", params=params
+            ).json()
             ids.extend(org["id"] for org in response.get("data", []))
             next_page_token = self._get_next_page_token(response.get("metadata", {}).get("next"))
             if next_page_token is None:
