@@ -23,7 +23,7 @@ def _byoidc_connect(**overrides) -> Connection:
     to exercise.
     """
     params: dict = {
-        "bearer_token": "tok-xyz",
+        "external_access_token": "tok-xyz",
         "identity_pool_id": "pool-9",
         "environment_id": "env-1",
         "organization_id": "org-1",
@@ -50,22 +50,22 @@ class TestByoidcValidation:
             "connect_api_secret",
         ],
     )
-    def test_bearer_token_mutually_exclusive_with_each_api_key_param(self, key_param):
+    def test_external_access_token_mutually_exclusive_with_each_api_key_param(self, key_param):
         """A bearer token combined with any API-key param raises the specific exclusivity error."""
         with pytest.raises(
             InterfaceError,
-            match="bearer_token cannot be combined with API key credentials",
+            match="external_access_token cannot be combined with API key credentials",
         ):
             _byoidc_connect(**{key_param: "some-value"})
 
-    def test_bearer_token_without_identity_pool_id_raises(self):
+    def test_external_access_token_without_identity_pool_id_raises(self):
         """A half-supplied BYOIDC pair (token without pool) raises the specific pairing error."""
         with pytest.raises(
             InterfaceError,
-            match="bearer_token and identity_pool_id must be provided together",
+            match="external_access_token and identity_pool_id must be provided together",
         ):
             connect(
-                bearer_token="tok-xyz",
+                external_access_token="tok-xyz",
                 identity_pool_id=None,
                 environment_id="env-1",
                 organization_id="org-1",
@@ -73,14 +73,14 @@ class TestByoidcValidation:
                 cloud_region="us-east-1",
             )
 
-    def test_identity_pool_id_without_bearer_token_raises(self):
+    def test_identity_pool_id_without_external_access_token_raises(self):
         """A half-supplied BYOIDC pair (pool without token) raises the specific pairing error."""
         with pytest.raises(
             InterfaceError,
-            match="bearer_token and identity_pool_id must be provided together",
+            match="external_access_token and identity_pool_id must be provided together",
         ):
             connect(
-                bearer_token=None,
+                external_access_token=None,
                 identity_pool_id="pool-9",
                 environment_id="env-1",
                 organization_id="org-1",

@@ -23,7 +23,7 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
 - **API credentials**, one of:
   - a **"Global" Confluent Cloud API key** and secret, passed as `global_api_key` / `global_api_secret`, or
   - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`, or
-  - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `bearer_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
+  - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `external_access_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
 
   A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Provide at least one pair. If you supply both, the Global pair is used and the Flink pair is ignored. A half-supplied pair (a key without its secret, or vice versa) is rejected.
 - **Organization ID** — required, *unless* you're using a Global API key and it can see exactly one organization, in which case you can omit `organization_id` and it's inferred automatically on first use of the connection. A Flink Region key has no way to discover it, so it always requires `organization_id` explicitly.
@@ -56,7 +56,7 @@ import os
 import confluent_sql
 
 connection = confluent_sql.connect(
-    bearer_token=os.environ["MY_IDP_BEARER_TOKEN"],
+    external_access_token=os.environ["MY_IDP_BEARER_TOKEN"],
     identity_pool_id="pool-abc123",
     environment_id="env-...",
     organization_id="org-...",   # required under BYOIDC (see below)
@@ -65,11 +65,11 @@ connection = confluent_sql.connect(
 )
 ```
 
-The driver stamps `Authorization: Bearer <bearer_token>` and `Confluent-Identity-Pool-Id: <identity_pool_id>` on every Flink request. A runnable example is in [examples/byoidc_bearer_token_example.py](examples/byoidc_bearer_token_example.py).
+The driver stamps `Authorization: Bearer <external_access_token>` and `Confluent-Identity-Pool-Id: <identity_pool_id>` on every Flink request. The parameter name mirrors the Confluent Flink Table API plugin's `client.oauth.external-access-token` option. A runnable example is in [examples/byoidc_bearer_token_example.py](examples/byoidc_bearer_token_example.py).
 
 Things to know:
 
-- **`bearer_token` and `identity_pool_id` are a pair** and are **mutually exclusive** with every API-key parameter (`global_*`, `flink_*`, `tableflow_*`, `connect_*`). Supplying a bearer token alongside any API key is rejected.
+- **`external_access_token` and `identity_pool_id` are a pair** and are **mutually exclusive** with every API-key parameter (`global_*`, `flink_*`, `tableflow_*`, `connect_*`). Supplying a bearer token alongside any API key is rejected.
 - **Flink data plane only.** Confluent's authorization model does not accept a raw external token on any control-plane route this driver calls. So under BYOIDC the control-plane surfaces — Tableflow (`enable_tableflow` / `get_tableflow` / `disable_tableflow`), Connectors, and the CMK cluster-id lookup that resolves a `database` name to its `lkc-…` id — fail closed with a clear error. Use an API-key connection for those, and pass `database_kafka_cluster_id` to `connect()` if you need the driver to know the cluster id without the CMK lookup.
 - **`organization_id` is required** under BYOIDC. Inferring it needs a control-plane call an external token can't make, so it must be supplied explicitly.
 - **No token refresh.** The token is used verbatim on every request. When it expires, requests begin failing (surfaced as `OperationalError`) and the connection is effectively dead — open a fresh connection with a fresh token.
