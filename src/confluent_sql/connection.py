@@ -20,6 +20,7 @@ from typing import Any, NoReturn
 import httpx
 
 from .__version__ import VERSION
+from .auth import FlinkBearerAuth
 from .connectors import Connector, ConnectorApi
 from .cursor import Cursor
 from .exceptions import (
@@ -174,6 +175,65 @@ def _resolve_connect_credentials(
     return None
 
 
+def _resolve_flink_auth(  # noqa: PLR0913
+    bearer_token: str | None,
+    identity_pool_id: str | None,
+    global_api_key: str | None,
+    global_api_secret: str | None,
+    flink_api_key: str | None,
+    flink_api_secret: str | None,
+    tableflow_api_key: str | None,
+    tableflow_api_secret: str | None,
+    connect_api_key: str | None,
+    connect_api_secret: str | None,
+) -> tuple[httpx.Auth, bool]:
+    """Select the Flink data-plane auth, and report whether the connection is in BYOIDC mode.
+
+    A bearer_token/identity_pool_id pair selects BYOIDC mode -- the driver stamps a customer-minted
+    external token on Flink requests instead of using HTTP Basic auth. BYOIDC and API-key auth are
+    mutually exclusive, and (like the key/secret pairs) the two BYOIDC parameters must be supplied
+    together. In API-key mode the (key, secret) selection is delegated to _resolve_api_credentials.
+
+    Empty strings count as absent, matching the rest of connect()'s parameter handling.
+
+    Returns:
+        (auth, byoidc): the httpx.Auth for the Flink client, and True iff BYOIDC mode.
+
+    Raises:
+        InterfaceError: If only one of the BYOIDC pair is supplied, or if a bearer_token is
+            combined with any API-key parameter.
+    """
+    token, pool = bearer_token or "", identity_pool_id or ""
+
+    if bool(token) != bool(pool):
+        raise InterfaceError("bearer_token and identity_pool_id must be provided together")
+
+    if token:
+        if any(
+            (
+                global_api_key,
+                global_api_secret,
+                flink_api_key,
+                flink_api_secret,
+                tableflow_api_key,
+                tableflow_api_secret,
+                connect_api_key,
+                connect_api_secret,
+            )
+        ):
+            raise InterfaceError(
+                "bearer_token cannot be combined with API key credentials "
+                "(global/flink/tableflow/connect); BYOIDC bearer-token auth and API-key auth are "
+                "mutually exclusive."
+            )
+        return FlinkBearerAuth(bearer_token=token, identity_pool_id=pool), True
+
+    auth_key, auth_secret = _resolve_api_credentials(
+        global_api_key, global_api_secret, flink_api_key, flink_api_secret
+    )
+    return httpx.BasicAuth(username=auth_key, password=auth_secret), False
+
+
 def connect(  # noqa: PLR0913
     *,
     global_api_key: str | None = None,
@@ -184,6 +244,8 @@ def connect(  # noqa: PLR0913
     tableflow_api_secret: str | None = None,
     connect_api_key: str | None = None,
     connect_api_secret: str | None = None,
+    bearer_token: str | None = None,
+    identity_pool_id: str | None = None,
     environment_id: str,
     organization_id: str,
     compute_pool_id: str | None = None,
@@ -217,6 +279,23 @@ def connect(  # noqa: PLR0913
             connectors). Only consulted when no global key is supplied; a global key already
             covers Connect. Must be supplied together with connect_api_secret.
         connect_api_secret: Secret paired with connect_api_key.
+        bearer_token: A BYOIDC bearer token minted by the caller's own OAuth/OIDC identity
+            provider (an "external" token). Supplying it selects BYOIDC mode: the driver stamps
+            `Authorization: Bearer <bearer_token>` and `Confluent-Identity-Pool-Id` on every
+            Flink request instead of using HTTP Basic auth. Must be supplied together with
+            identity_pool_id, and is mutually exclusive with every API-key parameter above.
+
+            Scope: Flink data plane only. Confluent's authorization model does not accept a raw
+            external token on any control-plane route this driver calls, so Tableflow, Connect,
+            and the CMK cluster-id lookup fail closed under BYOIDC -- those surfaces require an
+            API-key connection. organization_id is therefore mandatory under BYOIDC (there is no
+            control-plane reach to infer it).
+
+            Expiry caveat: the token is used verbatim on every request with no refresh. When the
+            IdP token expires, requests start failing (surfaced as OperationalError) and the
+            connection is effectively dead -- open a fresh connection with a fresh token.
+        identity_pool_id: The Confluent identity-pool id that scopes bearer_token, stamped as the
+            `Confluent-Identity-Pool-Id` header. Must be supplied together with bearer_token.
         environment_id: Environment ID
         organization_id: Organization ID. Required unless a global_api_key/global_api_secret
             pair is supplied, in which case it may be omitted: it's inferred lazily, on first
@@ -328,6 +407,8 @@ def connect(  # noqa: PLR0913
         tableflow_api_secret=tableflow_api_secret,
         connect_api_key=connect_api_key,
         connect_api_secret=connect_api_secret,
+        bearer_token=bearer_token,
+        identity_pool_id=identity_pool_id,
         compute_pool_id=compute_pool_id,
         database=database or dbname,  # dbname is deprecated.
         database_kafka_cluster_id=database_kafka_cluster_id,
@@ -398,7 +479,12 @@ class Connection:
     """Supplied organization_id, or None if it must be inferred -- see the organization_id
     property. Once resolved (supplied or inferred), holds the final value."""
     _flink_endpoint: str
-    _flink_auth: httpx.BasicAuth
+    _flink_auth: httpx.Auth
+    """The Flink data-plane authentication: httpx.BasicAuth in API-key mode, FlinkBearerAuth in
+    BYOIDC mode. Widened to the httpx.Auth base so both fit the one polymorphic auth= slot."""
+    _byoidc: bool
+    """True when authenticating with a customer-supplied BYOIDC bearer token (Flink data plane
+    only); drives the honest fail-closed messages on the control-plane guards."""
     _flink_client: httpx.Client | None
     """Lazily created on first Flink request (see _get_flink_client()); None until then. Deferred so
     that construction never blocks on the network call organization_id inference may need."""
@@ -445,6 +531,8 @@ class Connection:
         tableflow_api_secret: str | None = None,
         connect_api_key: str | None = None,
         connect_api_secret: str | None = None,
+        bearer_token: str | None = None,
+        identity_pool_id: str | None = None,
         compute_pool_id: str | None = None,
         database: str | None = None,
         database_kafka_cluster_id: str | None = None,
@@ -471,6 +559,14 @@ class Connection:
             connect_api_key: API key for the Connect control-plane routes. Only consulted when no
                 global key is supplied. Must be supplied together with connect_api_secret.
             connect_api_secret: Secret paired with connect_api_key.
+            bearer_token: A BYOIDC bearer token (external OAuth/OIDC token) stamped on every Flink
+                request as `Authorization: Bearer <token>`. Selects BYOIDC mode; must be supplied
+                with identity_pool_id and is mutually exclusive with every API-key parameter.
+                Reaches the Flink data plane only -- control-plane surfaces (Tableflow, Connect,
+                CMK) fail closed. Used verbatim with no refresh; an expired token kills the
+                connection (reconnect with a fresh one).
+            identity_pool_id: Identity-pool id scoping bearer_token, stamped as the
+                `Confluent-Identity-Pool-Id` header. Must be supplied with bearer_token.
             environment_id: Environment ID
             organization_id: Organization ID. If omitted ("") with a global key present, it's
                 resolved lazily from the `organization_id` property (see there) rather than
@@ -564,10 +660,24 @@ class Connection:
         # key that omitted it is resolved lazily via the organization_id property -- so building
         # the Flink client itself is deferred to first use rather than done eagerly here. Only the
         # network-free pieces are resolved now.
-        auth_key, auth_secret = _resolve_api_credentials(
-            global_api_key, global_api_secret, flink_api_key, flink_api_secret
+        #
+        # _resolve_flink_auth validates the BYOIDC pair and its mutual exclusion with every API-key
+        # parameter *before* _resolve_*_credentials runs, so BYOIDC mode never reaches (and never
+        # trips) the "either global or flink" API-key check. In BYOIDC mode every key param is
+        # empty by construction, so the three control-plane resolvers below return None and the
+        # control plane fails closed -- see the guards' self._byoidc branches.
+        self._flink_auth, self._byoidc = _resolve_flink_auth(
+            bearer_token,
+            identity_pool_id,
+            global_api_key,
+            global_api_secret,
+            flink_api_key,
+            flink_api_secret,
+            tableflow_api_key,
+            tableflow_api_secret,
+            connect_api_key,
+            connect_api_secret,
         )
-        self._flink_auth = httpx.BasicAuth(username=auth_key, password=auth_secret)
         self._flink_endpoint = endpoint
 
         # Control-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
@@ -1840,6 +1950,13 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
         if self._controlplane_auth is None:
+            if self._byoidc:
+                raise ProgrammingError(
+                    "Tableflow is not reachable with a BYOIDC bearer token: Confluent's "
+                    "authorization model accepts only API keys on the control plane. Use an "
+                    "API-key connection (global or tableflow_api_key/tableflow_api_secret) for "
+                    "Tableflow."
+                )
             raise ProgrammingError(
                 "Tableflow requires a global API key or a tableflow_api_key/tableflow_api_secret "
                 "pair; neither was supplied to connect()."
@@ -1864,6 +1981,13 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
         if self._connect_auth is None:
+            if self._byoidc:
+                raise ProgrammingError(
+                    "Connectors are not reachable with a BYOIDC bearer token: Confluent's "
+                    "authorization model accepts only API keys on the control plane. Use an "
+                    "API-key connection (global or connect_api_key/connect_api_secret) for "
+                    "Connectors."
+                )
             raise ProgrammingError(
                 "Connectors require a global API key or a connect_api_key/connect_api_secret "
                 "pair; neither was supplied to connect()."
@@ -2163,13 +2287,19 @@ class Connection:
         it up once via CMK by matching `database` against cluster display names, then caches it.
 
         Raises:
-            ProgrammingError: If no id was seeded and CMK resolution isn't possible (no global key,
-                or no database name).
+            ProgrammingError: If no id was seeded and CMK resolution isn't possible -- under BYOIDC
+                (CMK accepts only API keys), with no global key, or with no database name.
             OperationalError: If no cluster, or more than one cluster, matches the database name.
         """
         if self._resolved_kafka_cluster_id is not None:
             return self._resolved_kafka_cluster_id
 
+        if self._byoidc:
+            raise ProgrammingError(
+                "Resolving the Kafka cluster id from the database name is not reachable with a "
+                "BYOIDC bearer token: the CMK route accepts only API keys. Pass "
+                "database_kafka_cluster_id to connect() to skip the lookup."
+            )
         if self._global_credentials is None:
             raise ProgrammingError(
                 "Resolving the Kafka cluster id from the database name requires a global API key; "
