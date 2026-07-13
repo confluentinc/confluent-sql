@@ -577,6 +577,12 @@ against the table.
 In Confluent Flink a table is backed by a like-named Kafka topic, so the `table_name` you pass is
 both the Flink table and the topic — no escaping or casing translation.
 
+> **Not available under BYOIDC.** Tableflow is a control-plane surface, and Confluent's
+> authorization model accepts no BYOIDC bearer token there. A connection authenticated with
+> `bearer_token` / `identity_pool_id` (see the README's [BYOIDC bearer-token
+> authentication](README.md#byoidc-bearer-token-authentication)) fails closed on these methods —
+> use an API-key connection for Tableflow.
+
 ### Selecting formats: `TableFormat`
 
 There is a single format vocabulary, `TableFormat` (`ICEBERG` / `DELTA`), on both the request and
