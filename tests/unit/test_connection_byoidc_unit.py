@@ -18,9 +18,9 @@ pytestmark = pytest.mark.unit
 def _byoidc_connect(**overrides) -> Connection:
     """connect() in BYOIDC mode with the network-free params filled in.
 
-    Every API-key param is left unset so a stray CONFLUENT_*_API_KEY env var can't smuggle in
-    credentials that would (correctly) trip the mutual-exclusion guard and mask what a test means
-    to exercise.
+    Only the BYOIDC pair and location params are supplied; every API-key param is deliberately
+    omitted so the baseline is a pure BYOIDC connection. Tests exercising the mutual-exclusion
+    guard add exactly one API-key param via ``overrides`` to isolate what they mean to trip.
     """
     params: dict = {
         "external_access_token": "tok-xyz",
