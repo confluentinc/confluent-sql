@@ -144,7 +144,12 @@ class TestByoidcFlinkRequest:
             captured["request"] = request
             return httpx.Response(200, json={"data": [], "metadata": {}})
 
-        base_url = conn._get_flink_client().base_url
+        # Build base_url the way _get_flink_client() does rather than instantiating a real client
+        # (with its own connection pool) just to read it back and then discard it unclosed.
+        base_url = (
+            f"{conn._flink_endpoint}/sql/v1/organizations/{conn.organization_id}"
+            f"/environments/{conn.environment_id}"
+        )
         conn._flink_client = httpx.Client(
             auth=conn._flink_auth,
             base_url=base_url,
