@@ -11,6 +11,7 @@ import pytest
 from confluent_sql import InterfaceError, ProgrammingError, connect
 from confluent_sql.auth import FlinkBearerAuth
 from confluent_sql.connection import Connection
+from confluent_sql.execution_mode import ExecutionMode
 
 pytestmark = pytest.mark.unit
 
@@ -176,3 +177,37 @@ class TestByoidcControlPlaneFailsClosed:
         conn = _byoidc_connect(database="mydb")
         with pytest.raises(ProgrammingError, match="BYOIDC bearer token"):
             conn._resolve_kafka_cluster_id()
+
+
+class TestByoidcDatabaseOptional:
+    """database is optional under BYOIDC. Omitted, the connection still constructs and runs Flink
+    statements (no default-database property); supplied, its name seeds sql.current-database with no
+    CMK lookup -- the name->lkc-id lookup that fails closed is Tableflow-only. The README's BYOIDC
+    example (database shown as optional) rests on both halves."""
+
+    def test_constructs_without_database(self):
+        """A BYOIDC connection built with no database name constructs and reports no database."""
+        conn = _byoidc_connect()
+        assert conn._database is None
+
+    @pytest.mark.parametrize(
+        "database, expected_current_database",
+        [
+            pytest.param(None, None, id="no-database"),
+            pytest.param("mydb", "mydb", id="with-database"),
+        ],
+    )
+    def test_current_database_property_tracks_database_param(
+        self, database, expected_current_database
+    ):
+        """sql.current-database rides along only when a database name was given -- and resolving it
+        under BYOIDC never trips the control-plane fail-closed guard (no CMK lookup involved)."""
+        conn = _byoidc_connect(database=database)
+
+        properties = conn._resolve_properties(None, ExecutionMode.SNAPSHOT)
+
+        assert properties["sql.current-catalog"] == "env-1"
+        if expected_current_database is None:
+            assert "sql.current-database" not in properties
+        else:
+            assert properties["sql.current-database"] == expected_current_database

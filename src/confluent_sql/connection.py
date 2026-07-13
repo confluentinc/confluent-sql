@@ -660,11 +660,6 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        # base_url (below, in _get_flink_client()) embeds organization_id, which for a global
-        # key that omitted it is resolved lazily via the organization_id property -- so building
-        # the Flink client itself is deferred to first use rather than done eagerly here. Only the
-        # network-free pieces are resolved now.
-        #
         # _resolve_flink_auth validates the BYOIDC pair and its mutual exclusion with every API-key
         # parameter *before* _resolve_*_credentials runs, so BYOIDC mode never reaches (and never
         # trips) the "either global or flink" API-key check. In BYOIDC mode every key param is

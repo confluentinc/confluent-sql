@@ -62,6 +62,8 @@ connection = confluent_sql.connect(
     organization_id="org-...",   # required under BYOIDC (see below)
     cloud_provider="aws",
     cloud_region="us-east-2",
+    database="your-database-name",   # optional, and works under BYOIDC: it only sets the default
+                                     # database, which needs no CMK cluster-id lookup
 )
 ```
 
