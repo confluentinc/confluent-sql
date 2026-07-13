@@ -176,7 +176,7 @@ def _resolve_connect_credentials(
 
 
 def _resolve_flink_auth(  # noqa: PLR0913
-    bearer_token: str | None,
+    external_access_token: str | None,
     identity_pool_id: str | None,
     global_api_key: str | None,
     global_api_secret: str | None,
@@ -189,10 +189,11 @@ def _resolve_flink_auth(  # noqa: PLR0913
 ) -> tuple[httpx.Auth, bool]:
     """Select the Flink data-plane auth, and report whether the connection is in BYOIDC mode.
 
-    A bearer_token/identity_pool_id pair selects BYOIDC mode -- the driver stamps a customer-minted
-    external token on Flink requests instead of using HTTP Basic auth. BYOIDC and API-key auth are
-    mutually exclusive, and (like the key/secret pairs) the two BYOIDC parameters must be supplied
-    together. In API-key mode the (key, secret) selection is delegated to _resolve_api_credentials.
+    An external_access_token/identity_pool_id pair selects BYOIDC mode -- the driver stamps a
+    customer-minted external token on Flink requests instead of using HTTP Basic auth. BYOIDC and
+    API-key auth are mutually exclusive, and (like the key/secret pairs) the two BYOIDC parameters
+    must be supplied together. In API-key mode the (key, secret) selection is delegated to
+    _resolve_api_credentials.
 
     Empty strings count as absent, matching the rest of connect()'s parameter handling.
 
@@ -200,13 +201,13 @@ def _resolve_flink_auth(  # noqa: PLR0913
         (auth, byoidc): the httpx.Auth for the Flink client, and True iff BYOIDC mode.
 
     Raises:
-        InterfaceError: If only one of the BYOIDC pair is supplied, or if a bearer_token is
-            combined with any API-key parameter.
+        InterfaceError: If only one of the BYOIDC pair is supplied, or if an external_access_token
+            is combined with any API-key parameter.
     """
-    token, pool = bearer_token or "", identity_pool_id or ""
+    token, pool = external_access_token or "", identity_pool_id or ""
 
     if bool(token) != bool(pool):
-        raise InterfaceError("bearer_token and identity_pool_id must be provided together")
+        raise InterfaceError("external_access_token and identity_pool_id must be provided together")
 
     if token:
         if any(
@@ -222,7 +223,7 @@ def _resolve_flink_auth(  # noqa: PLR0913
             )
         ):
             raise InterfaceError(
-                "bearer_token cannot be combined with API key credentials "
+                "external_access_token cannot be combined with API key credentials "
                 "(global/flink/tableflow/connect); BYOIDC bearer-token auth and API-key auth are "
                 "mutually exclusive."
             )
@@ -244,7 +245,7 @@ def connect(  # noqa: PLR0913
     tableflow_api_secret: str | None = None,
     connect_api_key: str | None = None,
     connect_api_secret: str | None = None,
-    bearer_token: str | None = None,
+    external_access_token: str | None = None,
     identity_pool_id: str | None = None,
     environment_id: str,
     organization_id: str,
@@ -279,11 +280,13 @@ def connect(  # noqa: PLR0913
             connectors). Only consulted when no global key is supplied; a global key already
             covers Connect. Must be supplied together with connect_api_secret.
         connect_api_secret: Secret paired with connect_api_key.
-        bearer_token: A BYOIDC bearer token minted by the caller's own OAuth/OIDC identity
-            provider (an "external" token). Supplying it selects BYOIDC mode: the driver stamps
-            `Authorization: Bearer <bearer_token>` and `Confluent-Identity-Pool-Id` on every
-            Flink request instead of using HTTP Basic auth. Must be supplied together with
-            identity_pool_id, and is mutually exclusive with every API-key parameter above.
+        external_access_token: A BYOIDC bearer token minted by the caller's own OAuth/OIDC
+            identity provider (an "external" token, in Confluent's authorization vocabulary --
+            the parameter mirrors the Table API plugin's `client.oauth.external-access-token`).
+            Supplying it selects BYOIDC mode: the driver stamps `Authorization: Bearer
+            <external_access_token>` and `Confluent-Identity-Pool-Id` on every Flink request
+            instead of using HTTP Basic auth. Must be supplied together with identity_pool_id,
+            and is mutually exclusive with every API-key parameter above.
 
             Scope: Flink data plane only. Confluent's authorization model does not accept a raw
             external token on any control-plane route this driver calls, so Tableflow, Connect,
@@ -294,8 +297,9 @@ def connect(  # noqa: PLR0913
             Expiry caveat: the token is used verbatim on every request with no refresh. When the
             IdP token expires, requests start failing (surfaced as OperationalError) and the
             connection is effectively dead -- open a fresh connection with a fresh token.
-        identity_pool_id: The Confluent identity-pool id that scopes bearer_token, stamped as the
-            `Confluent-Identity-Pool-Id` header. Must be supplied together with bearer_token.
+        identity_pool_id: The Confluent identity-pool id that scopes external_access_token, stamped
+            as the `Confluent-Identity-Pool-Id` header. Must be supplied together with
+            external_access_token.
         environment_id: Environment ID
         organization_id: Organization ID. Required unless a global_api_key/global_api_secret
             pair is supplied, in which case it may be omitted: it's inferred lazily, on first
@@ -407,7 +411,7 @@ def connect(  # noqa: PLR0913
         tableflow_api_secret=tableflow_api_secret,
         connect_api_key=connect_api_key,
         connect_api_secret=connect_api_secret,
-        bearer_token=bearer_token,
+        external_access_token=external_access_token,
         identity_pool_id=identity_pool_id,
         compute_pool_id=compute_pool_id,
         database=database or dbname,  # dbname is deprecated.
@@ -531,7 +535,7 @@ class Connection:
         tableflow_api_secret: str | None = None,
         connect_api_key: str | None = None,
         connect_api_secret: str | None = None,
-        bearer_token: str | None = None,
+        external_access_token: str | None = None,
         identity_pool_id: str | None = None,
         compute_pool_id: str | None = None,
         database: str | None = None,
@@ -559,14 +563,14 @@ class Connection:
             connect_api_key: API key for the Connect control-plane routes. Only consulted when no
                 global key is supplied. Must be supplied together with connect_api_secret.
             connect_api_secret: Secret paired with connect_api_key.
-            bearer_token: A BYOIDC bearer token (external OAuth/OIDC token) stamped on every Flink
-                request as `Authorization: Bearer <token>`. Selects BYOIDC mode; must be supplied
-                with identity_pool_id and is mutually exclusive with every API-key parameter.
-                Reaches the Flink data plane only -- control-plane surfaces (Tableflow, Connect,
-                CMK) fail closed. Used verbatim with no refresh; an expired token kills the
-                connection (reconnect with a fresh one).
-            identity_pool_id: Identity-pool id scoping bearer_token, stamped as the
-                `Confluent-Identity-Pool-Id` header. Must be supplied with bearer_token.
+            external_access_token: A BYOIDC bearer token (external OAuth/OIDC token) stamped on
+                every Flink request as `Authorization: Bearer <token>`. Selects BYOIDC mode; must
+                be supplied with identity_pool_id and is mutually exclusive with every API-key
+                parameter. Reaches the Flink data plane only -- control-plane surfaces (Tableflow,
+                Connect, CMK) fail closed. Used verbatim with no refresh; an expired token kills
+                the connection (reconnect with a fresh one).
+            identity_pool_id: Identity-pool id scoping external_access_token, stamped as the
+                `Confluent-Identity-Pool-Id` header. Must be supplied with external_access_token.
             environment_id: Environment ID
             organization_id: Organization ID. If omitted ("") with a global key present, it's
                 resolved lazily from the `organization_id` property (see there) rather than
@@ -667,7 +671,7 @@ class Connection:
         # empty by construction, so the three control-plane resolvers below return None and the
         # control plane fails closed -- see the guards' self._byoidc branches.
         self._flink_auth, self._byoidc = _resolve_flink_auth(
-            bearer_token,
+            external_access_token,
             identity_pool_id,
             global_api_key,
             global_api_secret,

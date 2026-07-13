@@ -579,7 +579,7 @@ both the Flink table and the topic — no escaping or casing translation.
 
 > **Not available under BYOIDC.** Tableflow is a control-plane surface, and Confluent's
 > authorization model accepts no BYOIDC bearer token there. A connection authenticated with
-> `bearer_token` / `identity_pool_id` (see the README's [BYOIDC bearer-token
+> `external_access_token` / `identity_pool_id` (see the README's [BYOIDC bearer-token
 > authentication](README.md#byoidc-bearer-token-authentication)) fails closed on these methods —
 > use an API-key connection for Tableflow.
 
