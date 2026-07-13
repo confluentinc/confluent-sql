@@ -156,7 +156,10 @@ class TestByoidcFlinkRequest:
             transport=httpx.MockTransport(handler),
         )
 
-        conn.list_statements()
+        try:
+            conn.list_statements()
+        finally:
+            conn.close()  # closes the live _flink_client the test installed above
 
         request = captured["request"]
         assert request.headers["Authorization"] == "Bearer tok-xyz"
