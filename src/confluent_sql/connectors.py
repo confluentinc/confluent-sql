@@ -220,7 +220,7 @@ class ControlPlaneContext(Protocol):
         """Return the `lkc-…` id of the Kafka cluster the connectors run against."""
         ...
 
-    def controlplane_request(
+    def connect_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
     ) -> httpx.Response:
         """Issue a request against the connector control-plane routes, authed for Connect."""
@@ -269,7 +269,7 @@ class ConnectorApi:
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
         payload = build_create_payload(name=name, config=config)
-        response = self._context.controlplane_request(
+        response = self._context.connect_controlplane_request(
             self._connectors_path(), method="POST", json=payload, raise_for_status=False
         )
         try:
@@ -313,7 +313,7 @@ class ConnectorApi:
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
-        response = self._context.controlplane_request(
+        response = self._context.connect_controlplane_request(
             f"{self._connectors_path()}/{name}", method="DELETE", raise_for_status=False
         )
         try:
@@ -368,7 +368,7 @@ class ConnectorApi:
     def _connector_action(self, name: str, action: str) -> None:
         """Issue a `PUT` lifecycle action sub-request (`pause`/`resume`); 404 ->
         ConnectorNotFoundError, other HTTP errors -> OperationalError."""
-        response = self._context.controlplane_request(
+        response = self._context.connect_controlplane_request(
             f"{self._connectors_path()}/{name}/{action}", method="PUT", raise_for_status=False
         )
         try:
@@ -400,7 +400,7 @@ class ConnectorApi:
     def _read_spec(self, name: str) -> ConnectorSpec:
         """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
         errors -> OperationalError."""
-        response = self._context.controlplane_request(
+        response = self._context.connect_controlplane_request(
             f"{self._connectors_path()}/{name}", raise_for_status=False
         )
         try:
@@ -419,7 +419,7 @@ class ConnectorApi:
     def _fetch_status(self, name: str) -> ConnectorStatus:
         """`GET .../connectors/{name}/status` -> parsed status; 404 -> ConnectorNotFoundError, other
         HTTP errors -> OperationalError."""
-        response = self._context.controlplane_request(
+        response = self._context.connect_controlplane_request(
             f"{self._connectors_path()}/{name}/status", raise_for_status=False
         )
         try:
