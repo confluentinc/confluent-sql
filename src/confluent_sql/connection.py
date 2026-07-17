@@ -41,6 +41,7 @@ from .retry import (
 )
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
+from .statement_properties import Property, SnapshotMode
 from .tableflow import (
     TableflowPhase,
     TableflowStorage,
@@ -50,7 +51,6 @@ from .tableflow import (
     build_create_payload,
     normalize_table_formats,
 )
-from .statement_properties import Property, SnapshotMode
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
 
 logger = logging.getLogger(__name__)
