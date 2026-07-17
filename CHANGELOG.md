@@ -17,6 +17,12 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - Every network-level transport failure from the Flink gateway (`httpx.ConnectError`, `httpx.ReadError`, `httpx.RemoteProtocolError`, timeouts, etc.) is now translated to `OperationalError` instead of leaking the raw `httpx` exception -- this applies uniformly to idempotent GETs (once #137's retry budget is exhausted) and to non-idempotent POST/PATCH/DELETE calls (statement submission, `stop_statement()`, `delete_statement()`), matching the DB-API v2 contract that every exception the driver raises is one of `confluent_sql`'s own `Error` subclasses. The original exception remains available via `__cause__`. (#138)
 
+## 0.4.2, 2026-07-17
+
+### Changed
+
+- Snapshot queries on Confluent Cloud Flink SQL are now Generally Available. Removed the Early Access warning previously emitted on first creation of a snapshot-mode cursor, along with the Early Access advisories throughout the documentation (`README.md`, `ARCHITECTURE.md`, `DBAPI_EXTENSIONS.md`, `STREAMING.md`). (#119, #160)
+
 ## 0.4.1, 2026-07-07
 
 ### Fixed
