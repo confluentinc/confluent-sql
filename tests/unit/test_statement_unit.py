@@ -250,9 +250,7 @@ class TestStatementProperties:
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that is_ddl() returns True for impure DDL (CTAS)."""
-        statement_json = statement_response_factory(
-            sql_kind="CREATE_TABLE_AS", null_schema=True
-        )
+        statement_json = statement_response_factory(sql_kind="CREATE_TABLE_AS", null_schema=True)
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.is_ddl is True
         assert statement.has_schema() is False  # CTAS has no schema
@@ -269,9 +267,7 @@ class TestStatementProperties:
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that has_schema() returns False for CTAS statements."""
-        statement_json = statement_response_factory(
-            sql_kind="CREATE_TABLE_AS", null_schema=True
-        )
+        statement_json = statement_response_factory(sql_kind="CREATE_TABLE_AS", null_schema=True)
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.has_schema() is False
         assert statement.schema is None
@@ -280,9 +276,7 @@ class TestStatementProperties:
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
         """Test that CTAS is DDL but not pure DDL (impure DDL that can stream)."""
-        statement_json = statement_response_factory(
-            sql_kind="CREATE_TABLE_AS", null_schema=True
-        )
+        statement_json = statement_response_factory(sql_kind="CREATE_TABLE_AS", null_schema=True)
         statement = Statement.from_response(mock_connection, statement_json)
 
         # CTAS is impure DDL: is_ddl=True, is_pure_ddl=False

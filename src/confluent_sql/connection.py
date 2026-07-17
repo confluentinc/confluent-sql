@@ -41,6 +41,7 @@ from .retry import (
 )
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
+from .statement_properties import Property, SnapshotMode
 from .tableflow import (
     TableflowPhase,
     TableflowStorage,
@@ -99,8 +100,7 @@ def _resolve_api_credentials(
         return (flink_key, flink_secret)
 
     raise InterfaceError(
-        "Either global_api_key/global_api_secret or flink_api_key/flink_api_secret "
-        "must be provided"
+        "Either global_api_key/global_api_secret or flink_api_key/flink_api_secret must be provided"
     )
 
 
@@ -134,9 +134,7 @@ def _resolve_tableflow_credentials(
         return (global_key, global_secret)
 
     if bool(tableflow_key) != bool(tableflow_secret):
-        raise InterfaceError(
-            "tableflow_api_key and tableflow_api_secret must be provided together"
-        )
+        raise InterfaceError("tableflow_api_key and tableflow_api_secret must be provided together")
     if tableflow_key:
         return (tableflow_key, tableflow_secret)
     return None
@@ -451,9 +449,9 @@ class Connection:
     """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
 
     _RESERVED_STATEMENT_PROPERTIES = {
-        "sql.current-catalog",
-        "sql.current-database",
-        "sql.snapshot.mode",
+        Property.CURRENT_CATALOG,
+        Property.CURRENT_DATABASE,
+        Property.SNAPSHOT_MODE,
     }
     """Per-statement properties the driver owns and overlays itself from connection/execution state
     (the active catalog, database, and snapshot mode). They are not knobs a caller may set, so
@@ -1336,6 +1334,7 @@ class Connection:
             OperationalError: If the statement transitions to FAILED, or if STOPPED is not reached
                 within the timeout.
         """
+
         def raise_if_failed(candidate: Statement) -> None:
             if candidate.is_failed:
                 raise OperationalError(
@@ -1502,15 +1501,15 @@ class Connection:
             merged_properties.update(properties)
 
         # Connection-level properties overlay (always set, cannot be overridden by user)
-        merged_properties["sql.current-catalog"] = self.environment_id
+        merged_properties[Property.CURRENT_CATALOG] = self.environment_id
 
         if self._database is not None:
-            merged_properties["sql.current-database"] = self._database
+            merged_properties[Property.CURRENT_DATABASE] = self._database
 
         # Cursor-level execution mode properties overlay (always set when applicable)
         if execution_mode.is_snapshot:
             # Ask for snapshot mode behavior -- point-in-time results.
-            merged_properties["sql.snapshot.mode"] = "now"
+            merged_properties[Property.SNAPSHOT_MODE] = SnapshotMode.NOW
 
         return merged_properties
 
@@ -1741,7 +1740,7 @@ class Connection:
             self._wrap_request_error(e)
 
     def _request_get(self, url, **kwargs) -> httpx.Response:
-        """Issue a Flink-gateway GET, retrying transient transport errors (#137) and transient 
+        """Issue a Flink-gateway GET, retrying transient transport errors (#137) and transient
         HTTP status codes alike -- both feed the same call_with_retries backoff/attempt budget. If
         retries are exhausted (or the exception isn't retryable at all), the raw httpx exception
         is translated to OperationalError before it escapes (#138) -- it's never leaked raw.
@@ -1961,9 +1960,7 @@ class Connection:
                 "pair; neither was supplied to connect()."
             )
         if self._controlplane_client is None:
-            self._controlplane_client = self._make_controlplane_client(
-                self._controlplane_auth
-            )
+            self._controlplane_client = self._make_controlplane_client(self._controlplane_auth)
         return self._controlplane_client
 
     def _get_connect_controlplane_client(self) -> httpx.Client:
@@ -2231,6 +2228,7 @@ class Connection:
             OperationalError: If the topic transitions to FAILED (surfacing the error message and
                 failing formats), or if RUNNING is not reached within timeout.
         """
+
         def raise_if_failed(candidate: TableflowTopic) -> None:
             if candidate.phase is TableflowPhase.FAILED:
                 failing = "; ".join(

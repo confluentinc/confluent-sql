@@ -1575,9 +1575,7 @@ class TestMayHaveResults:
         """Test that may_have_results propagates InterfaceError from has_schema()."""
         # Mock a statement where has_schema() raises (e.g., FAILED statement)
         mock_statement = mocker.Mock()
-        mock_statement.has_schema.side_effect = InterfaceError(
-            "Statement traits are not available"
-        )
+        mock_statement.has_schema.side_effect = InterfaceError("Statement traits are not available")
         mock_connection_cursor._statement = mock_statement
 
         # may_have_results should propagate the exception
@@ -1685,15 +1683,12 @@ class TestComputePoolIdParameter:
         mock_execute = mocker.Mock(side_effect=original_method)
         mock_connection_cursor._connection._execute_statement = mock_execute
 
-        mock_connection_cursor.execute(
-            "SELECT 1",
-            compute_pool_id="lfcp-test-pool"
-        )
+        mock_connection_cursor.execute("SELECT 1", compute_pool_id="lfcp-test-pool")
 
         # Verify _execute_statement was called with the compute_pool_id
         mock_execute.assert_called_once()
         call_kwargs = mock_execute.call_args.kwargs
-        assert call_kwargs['compute_pool_id'] == "lfcp-test-pool"
+        assert call_kwargs["compute_pool_id"] == "lfcp-test-pool"
 
     def test_cursor_execute_defaults_to_none_when_not_provided(
         self, mock_connection_cursor: Cursor, mocker
@@ -1710,7 +1705,7 @@ class TestComputePoolIdParameter:
 
         # Should be called with None, which triggers default behavior in _execute_statement
         call_kwargs = mock_execute.call_args.kwargs
-        assert call_kwargs.get('compute_pool_id') is None
+        assert call_kwargs.get("compute_pool_id") is None
 
     def test_cursor_submit_statement_passes_compute_pool_id(
         self, mock_connection_cursor: Cursor, mocker
@@ -1723,25 +1718,18 @@ class TestComputePoolIdParameter:
         mock_execute = mocker.Mock(side_effect=original_method)
         mock_connection_cursor._connection._execute_statement = mock_execute
 
-        mock_connection_cursor._submit_statement(
-            "SELECT 1",
-            compute_pool_id="lfcp-custom-pool"
-        )
+        mock_connection_cursor._submit_statement("SELECT 1", compute_pool_id="lfcp-custom-pool")
 
         call_kwargs = mock_execute.call_args.kwargs
-        assert call_kwargs['compute_pool_id'] == "lfcp-custom-pool"
+        assert call_kwargs["compute_pool_id"] == "lfcp-custom-pool"
 
-    def test_cursor_execute_rejects_non_string_compute_pool_id(
-        self, mock_connection_factory
-    ):
+    def test_cursor_execute_rejects_non_string_compute_pool_id(self, mock_connection_factory):
         """Test that Cursor.execute() rejects non-string compute_pool_id values."""
         # Create a mock connection but bind the REAL _execute_statement method
         # so that validation logic runs
         mock_conn = mock_connection_factory(None, None)
         # Replace the mocked _execute_statement with the real one
-        mock_conn._execute_statement = types.MethodType(
-            Connection._execute_statement, mock_conn
-        )
+        mock_conn._execute_statement = types.MethodType(Connection._execute_statement, mock_conn)
 
         with (
             mock_conn.closing_cursor() as cursor,
@@ -1749,7 +1737,7 @@ class TestComputePoolIdParameter:
         ):
             cursor.execute(
                 "SELECT 1",
-                compute_pool_id=12345  # Invalid: int instead of str
+                compute_pool_id=12345,  # Invalid: int instead of str
             )
 
 

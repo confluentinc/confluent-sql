@@ -173,9 +173,7 @@ class ConnectorStatus:
                 raw=data,
             )
         except KeyError as e:
-            raise OperationalError(
-                f"Error parsing connector status response, missing {e}."
-            ) from e
+            raise OperationalError(f"Error parsing connector status response, missing {e}.") from e
 
 
 @dataclass
@@ -331,9 +329,7 @@ class ConnectorApi:
         if wait_for_removal:
             self._wait_for_removal(name, timeout)
 
-    def pause(
-        self, name: str, *, wait_for_paused: bool = True, timeout: float = 300
-    ) -> Connector:
+    def pause(self, name: str, *, wait_for_paused: bool = True, timeout: float = 300) -> Connector:
         """Pause a managed connector and, by default, block until it reaches PAUSED.
 
         `PUT .../connectors/{name}/pause`. The action response carries no connector body, so the
@@ -448,6 +444,7 @@ class ConnectorApi:
             OperationalError: If the connector transitions to FAILED (surfacing `connector.trace`),
                 or if `target` is not reached within timeout.
         """
+
         def settled(candidate: Connector) -> Connector | None:
             """Resolve the wait: return the connector once at `target`, raise at FAILED, or None
             while still transient so the caller keeps polling."""
