@@ -239,7 +239,6 @@ def mock_connection_factory(mocker, statement_response_factory) -> MockConnectio
         mock_conn.closing_cursor = types.MethodType(Connection.closing_cursor, mock_conn)
 
         mock_conn._row_type_registry = RowTypeRegistry()
-        mock_conn._snapshot_warning_issued = False
 
         return mock_conn
 
