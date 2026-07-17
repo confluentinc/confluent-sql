@@ -31,6 +31,7 @@ from .result_readers import (
     ResultTupleOrDict,
 )
 from .statement import Statement
+from .statement_properties import StatementProperties
 from .types import PropertiesDict, convert_statement_parameters
 
 if TYPE_CHECKING:
@@ -182,7 +183,7 @@ class Cursor:
         timeout: int = 3000,
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
-        properties: PropertiesDict | None = None,
+        properties: PropertiesDict | StatementProperties | None = None,
         compute_pool_id: str | None = None,
     ) -> None:
         """
@@ -202,7 +203,8 @@ class Cursor:
                              Use Connection.list_statements(label=...) to retrieve statements
                              by label. The special HIDDEN_LABEL constant can be used to mark
                              statements as hidden from default views in UIs and monitoring tools.
-            properties: Optional dictionary of statement properties to set for this execution.
+            properties: Optional statement properties to set for this execution -- a raw dict or a
+                       `StatementProperties` (downgraded to a dict, then validated identically).
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
@@ -803,7 +805,7 @@ class Cursor:
         parameters: tuple | list | None = None,
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
-        properties: PropertiesDict | None = None,
+        properties: PropertiesDict | StatementProperties | None = None,
         *,
         compute_pool_id: str | None = None,
     ) -> Statement:
@@ -817,7 +819,7 @@ class Cursor:
                             not provided)
             statement_labels: Optional list of labels for the statement for easier identification
                              in server logs and UIs (defaults to None)
-            properties: Optional dictionary of statement properties (optional)
+            properties: Optional statement properties -- a raw dict or a `StatementProperties`
             compute_pool_id: Optional compute pool ID to use for this statement execution.
                             If not provided, uses the Connection's default compute_pool_id,
                             if any; otherwise Confluent Cloud Flink runs the statement in the
