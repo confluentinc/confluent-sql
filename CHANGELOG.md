@@ -2,6 +2,12 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
+## 0.4.2, 2026-07-17
+
+### Changed
+
+- Snapshot queries on Confluent Cloud Flink SQL are now Generally Available. Removed the Early Access warning previously emitted on first creation of a snapshot-mode cursor, along with the Early Access advisories throughout the documentation (`README.md`, `ARCHITECTURE.md`, `DBAPI_EXTENSIONS.md`, `STREAMING.md`). (#119, #160)
+
 ## 0.4.1, 2026-07-07
 
 ### Fixed
