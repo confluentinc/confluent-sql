@@ -97,8 +97,8 @@ class TestPropertyValues:
     def test_bare_members_json_serialize_to_wire_strings(self):
         """A dict keyed/valued by bare enum members serializes to the exact wire JSON --
         no .value unwrapping required by callers."""
-        payload = {Property.STATE_TTL: SnapshotWriteMode.FAST_WRITE}
-        assert json.loads(json.dumps(payload)) == {"sql.state-ttl": "fast-write"}
+        payload = {Property.SNAPSHOT_WRITE_MODE: SnapshotWriteMode.FAST_WRITE}
+        assert json.loads(json.dumps(payload)) == {"sql.snapshot.write-mode": "fast-write"}
 
 
 @pytest.mark.unit
