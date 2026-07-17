@@ -1,5 +1,6 @@
 """Unit tests for statement properties parameter support (Issue #68)."""
 
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from confluent_sql import InterfaceError, connect
 from confluent_sql.connection import Connection
 from confluent_sql.execution_mode import ExecutionMode
+from confluent_sql.statement_properties import Property, SnapshotWriteMode
 
 
 @pytest.fixture()
@@ -162,6 +164,29 @@ class TestExecuteStatementProperties:
         assert "sql.current-catalog" in props
         assert "sql.snapshot.mode" in props
 
+    def test_properties_enum_key_and_value_reach_wire_as_strings(
+        self, invalid_credential_connection, mocker
+    ):
+        """A bare Property key and PropertyValue value survive _resolve_properties and serialize to
+        their wire strings -- guards the public #162 promise (enum members are usable directly in
+        properties=) against a future normalization/re-validation step in the merge dropping or
+        mangling them. Wire strings are asserted as literals, independent of the enums under
+        test."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.SNAPSHOT,
+            properties={Property.SNAPSHOT_WRITE_MODE: SnapshotWriteMode.FAST_WRITE},
+        )
+
+        payload = request_mock.call_args[1]["json"]
+        # Present under the wire-string key with the wire-string value, though keyed by an enum.
+        assert payload["spec"]["properties"]["sql.snapshot.write-mode"] == "fast-write"
+        # ...and it round-trips through JSON as a bare string, not an enum repr.
+        serialized = json.loads(json.dumps(payload))
+        assert serialized["spec"]["properties"]["sql.snapshot.write-mode"] == "fast-write"
+
     def test_properties_streaming_mode_no_snapshot(self, invalid_credential_connection, mocker):
         """Verify snapshot.mode is not set in streaming mode."""
         request_mock = self.install_request_mock(invalid_credential_connection, mocker)
@@ -199,4 +224,26 @@ class TestExecuteStatementProperties:
                 "SELECT 1",
                 ExecutionMode.SNAPSHOT,
                 properties={reserved_property: "user-value"},
+            )
+
+    @pytest.mark.parametrize(
+        ("reserved_member", "wire_key"),
+        [
+            (Property.CURRENT_CATALOG, "sql.current-catalog"),
+            (Property.CURRENT_DATABASE, "sql.current-database"),
+            (Property.SNAPSHOT_MODE, "sql.snapshot.mode"),
+        ],
+    )
+    def test_properties_rejects_reserved_property_passed_as_enum_member(
+        self, invalid_credential_connection, reserved_member, wire_key
+    ):
+        """A reserved key supplied as a Property member is rejected identically to its raw string,
+        naming the wire key -- pins the enum/reserved-set interop the connection.py adoption relies
+        on (enum members hash and compare as their wire string)."""
+
+        with pytest.raises(InterfaceError, match=f"'{wire_key}' is a reserved system property"):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.SNAPSHOT,
+                properties={reserved_member: "user-value"},
             )

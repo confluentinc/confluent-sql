@@ -359,7 +359,5 @@ class TableflowTopic:
             status = TableflowTopicStatus.from_response(response["status"])
             metadata = response.get("metadata", {})
         except KeyError as e:
-            raise OperationalError(
-                f"Error parsing Tableflow topic response, missing {e}."
-            ) from e
+            raise OperationalError(f"Error parsing Tableflow topic response, missing {e}.") from e
         return cls(spec=spec, status=status, metadata=metadata)

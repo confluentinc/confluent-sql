@@ -14,6 +14,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
 from confluent_sql.exceptions import InterfaceError, TypeMismatchError
+from confluent_sql.statement_properties import Property, PropertyValue
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -61,9 +62,11 @@ nested row types.
 
 StrAnyDict: TypeAlias = dict[str, Any]
 
-PropertiesDict: TypeAlias = dict[str, str | int | bool]
-"""Type for statement properties dictionary. Keys are property names, values can be
-strings, integers, or booleans."""
+PropertiesDict: TypeAlias = dict[str | Property, str | int | bool | PropertyValue]
+"""Type for a statement properties dictionary. Keys are property names -- a raw str or a
+`Property` member; values are str/int/bool or a `PropertyValue` member. The enum arms are
+redundant to the type checker (both subclass str) but document the discoverable options and
+enable autocomplete."""
 
 
 @dataclass
@@ -522,9 +525,9 @@ class SqlNone:
             # Strip trailing "NOT NULL" constraint if present (case-insensitive).
             # This assists integrations (like dbt adapters) that may provide
             # type names with nullability constraints from schema metadata.
-            python_or_flink_type = (
-                SqlNone._not_null_suffix_regex.sub("", python_or_flink_type).rstrip()
-            )
+            python_or_flink_type = SqlNone._not_null_suffix_regex.sub(
+                "", python_or_flink_type
+            ).rstrip()
 
             # Validate the provided Flink type name using case-insensitive regexes.
 

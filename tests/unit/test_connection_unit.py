@@ -416,9 +416,7 @@ class TestConnectionStopStatement:
         )
 
         with pytest.raises(OperationalError, match="did not reach STOPPED within"):
-            invalid_credential_connection.stop_statement(
-                "stmt-1", wait_for_stopped=True, timeout=0
-            )
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True, timeout=0)
 
     def test_blocking_failed_raises(
         self,
@@ -705,9 +703,7 @@ class TestConnectChecks:
         Flink client's base_url and the statement-create payload reflect the discovered org."""
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
-        mocker.patch.object(
-            Connection, "_organization_lookup_request", return_value=mock_response
-        )
+        mocker.patch.object(Connection, "_organization_lookup_request", return_value=mock_response)
 
         conn = connect(
             environment_id="env-id",
@@ -836,9 +832,7 @@ class TestConnectChecks:
                 flink_api_secret="",
             )
 
-    def test_half_flink_pair_raises_through_connect(
-        self, connection_factory: ConnectionFactory
-    ):
+    def test_half_flink_pair_raises_through_connect(self, connection_factory: ConnectionFactory):
         """A lone flink_api_key (no secret) raises the half-pair error end-to-end (#112)."""
         with pytest.raises(
             InterfaceError,
@@ -2695,9 +2689,7 @@ class TestHttpUserAgentProperty:
 class TestHttpTimeoutSecs:
     """Tests for the http_timeout_secs constructor parameter and property."""
 
-    def test_default_reports_confluent_sql_default(
-        self, invalid_credential_connection: Connection
-    ):
+    def test_default_reports_confluent_sql_default(self, invalid_credential_connection: Connection):
         """When not provided, the property reports the effective default, not None."""
         assert invalid_credential_connection.http_timeout_secs == DEFAULT_HTTP_TIMEOUT_SECS
         assert invalid_credential_connection._get_flink_client().timeout == httpx.Timeout(
@@ -2788,9 +2780,7 @@ class TestHttpTimeoutSecs:
 class TestComputePoolIdParameter:
     """Test the compute_pool_id parameter for Connection methods."""
 
-    def test_execute_statement_with_compute_pool_id(
-        self, invalid_credential_connection, mocker
-    ):
+    def test_execute_statement_with_compute_pool_id(self, invalid_credential_connection, mocker):
         """Test that _execute_statement uses provided compute_pool_id and logs override."""
         # Mock the HTTP request
         mock_response = mocker.Mock()
@@ -2799,9 +2789,7 @@ class TestComputePoolIdParameter:
             "spec": {"compute_pool_id": "lfcp-custom-pool"},
         }
         mocker.patch.object(
-            invalid_credential_connection._get_flink_client(),
-            'request',
-            return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Patch logger.info to verify override message
@@ -2809,25 +2797,22 @@ class TestComputePoolIdParameter:
 
         # Call _execute_statement with a custom compute_pool_id
         invalid_credential_connection._execute_statement(
-            "SELECT 1",
-            ExecutionMode.SNAPSHOT,
-            compute_pool_id="lfcp-custom-pool"
+            "SELECT 1", ExecutionMode.SNAPSHOT, compute_pool_id="lfcp-custom-pool"
         )
 
         # Verify the request was made
         invalid_credential_connection._get_flink_client().request.assert_called_once()
         call_kwargs = invalid_credential_connection._get_flink_client().request.call_args
-        payload = call_kwargs.kwargs['json']
+        payload = call_kwargs.kwargs["json"]
 
         # Verify the compute_pool_id in the payload matches the provided one
-        assert payload['spec']['compute_pool_id'] == "lfcp-custom-pool"
+        assert payload["spec"]["compute_pool_id"] == "lfcp-custom-pool"
 
         # Verify logger.info was called with the override message
         assert mock_log_info.called, "Expected logger.info to be called"
         log_messages = [str(call) for call in mock_log_info.call_args_list]
         assert any(
-            "Overriding connection compute_pool_id" in msg
-            and "lfcp-custom-pool" in msg
+            "Overriding connection compute_pool_id" in msg and "lfcp-custom-pool" in msg
             for msg in log_messages
         ), f"Expected override log message not found in: {log_messages}"
 
@@ -2842,25 +2827,18 @@ class TestComputePoolIdParameter:
             "spec": {"compute_pool_id": "cp-id"},
         }
         mocker.patch.object(
-            invalid_credential_connection._get_flink_client(),
-            'request',
-            return_value=mock_response
+            invalid_credential_connection._get_flink_client(), "request", return_value=mock_response
         )
 
         # Call _execute_statement without compute_pool_id
-        invalid_credential_connection._execute_statement(
-            "SELECT 1",
-            ExecutionMode.SNAPSHOT
-        )
+        invalid_credential_connection._execute_statement("SELECT 1", ExecutionMode.SNAPSHOT)
 
         # Verify the payload uses the connection's compute_pool_id
         call_kwargs = invalid_credential_connection._get_flink_client().request.call_args
-        payload = call_kwargs.kwargs['json']
-        assert payload['spec']['compute_pool_id'] == "cp-id"  # from fixture
+        payload = call_kwargs.kwargs["json"]
+        assert payload["spec"]["compute_pool_id"] == "cp-id"  # from fixture
 
-    def test_execute_statement_omits_pool_when_none_resolved(
-        self, poolless_connection, mocker
-    ):
+    def test_execute_statement_omits_pool_when_none_resolved(self, poolless_connection, mocker):
         """With no per-call argument and no connection default, spec carries no pool."""
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"name": "test-statement", "spec": {}}
@@ -2876,9 +2854,9 @@ class TestComputePoolIdParameter:
 
         # No connection default means there is nothing to "override" -- stay silent.
         log_messages = [str(call) for call in mock_log_info.call_args_list]
-        assert not any(
-            "Overriding connection compute_pool_id" in msg for msg in log_messages
-        ), f"Override log should not fire without a connection default: {log_messages}"
+        assert not any("Overriding connection compute_pool_id" in msg for msg in log_messages), (
+            f"Override log should not fire without a connection default: {log_messages}"
+        )
 
     def test_execute_statement_per_call_pool_without_connection_default(
         self, poolless_connection, mocker
@@ -2902,9 +2880,9 @@ class TestComputePoolIdParameter:
         assert payload["spec"]["compute_pool_id"] == "lfcp-explicit"
 
         log_messages = [str(call) for call in mock_log_info.call_args_list]
-        assert not any(
-            "Overriding connection compute_pool_id" in msg for msg in log_messages
-        ), f"Override log should not fire without a connection default: {log_messages}"
+        assert not any("Overriding connection compute_pool_id" in msg for msg in log_messages), (
+            f"Override log should not fire without a connection default: {log_messages}"
+        )
 
     @pytest.mark.parametrize("falsy_per_call_pool", [None, ""])
     def test_execute_statement_falsy_per_call_pool_defers_to_default(
@@ -2934,42 +2912,37 @@ class TestComputePoolIdParameter:
         assert payload["spec"]["compute_pool_id"] == "cp-id"  # the connection default
 
         log_messages = [str(call) for call in mock_log_info.call_args_list]
-        assert not any(
-            "Overriding connection compute_pool_id" in msg for msg in log_messages
-        ), f"Falsy per-call pool should not fire the override log: {log_messages}"
+        assert not any("Overriding connection compute_pool_id" in msg for msg in log_messages), (
+            f"Falsy per-call pool should not fire the override log: {log_messages}"
+        )
 
-    def test_execute_statement_validates_compute_pool_type(
-        self, invalid_credential_connection
-    ):
+    def test_execute_statement_validates_compute_pool_type(self, invalid_credential_connection):
         """Test that invalid compute_pool_id type raises InterfaceError."""
         with pytest.raises(InterfaceError, match="compute_pool_id must be a string"):
             invalid_credential_connection._execute_statement(
                 "SELECT 1",
                 ExecutionMode.SNAPSHOT,
-                compute_pool_id=12345  # Invalid: int instead of str
+                compute_pool_id=12345,  # Invalid: int instead of str
             )
 
-    def test_execute_snapshot_ddl_with_compute_pool_id(
-        self, invalid_credential_connection, mocker
-    ):
+    def test_execute_snapshot_ddl_with_compute_pool_id(self, invalid_credential_connection, mocker):
         """Test that execute_snapshot_ddl passes compute_pool_id to cursor.execute."""
         # Mock the cursor and its execute method
         mock_cursor = mocker.Mock()
         mocker.patch.object(
             invalid_credential_connection,
-            'closing_cursor',
-            return_value=mocker.MagicMock(__enter__=mocker.Mock(return_value=mock_cursor))
+            "closing_cursor",
+            return_value=mocker.MagicMock(__enter__=mocker.Mock(return_value=mock_cursor)),
         )
 
         invalid_credential_connection.execute_snapshot_ddl(
-            "CREATE TABLE foo (id INT)",
-            compute_pool_id="lfcp-custom-pool"
+            "CREATE TABLE foo (id INT)", compute_pool_id="lfcp-custom-pool"
         )
 
         # Verify cursor.execute was called with compute_pool_id
         mock_cursor.execute.assert_called_once()
         call_kwargs = mock_cursor.execute.call_args.kwargs
-        assert call_kwargs['compute_pool_id'] == "lfcp-custom-pool"
+        assert call_kwargs["compute_pool_id"] == "lfcp-custom-pool"
 
     def test_execute_streaming_ddl_with_compute_pool_id(
         self, invalid_credential_connection, mocker
@@ -2979,16 +2952,16 @@ class TestComputePoolIdParameter:
         mock_cursor = mocker.Mock()
         mocker.patch.object(
             invalid_credential_connection,
-            'closing_cursor',
-            return_value=mocker.MagicMock(__enter__=mocker.Mock(return_value=mock_cursor))
+            "closing_cursor",
+            return_value=mocker.MagicMock(__enter__=mocker.Mock(return_value=mock_cursor)),
         )
 
         invalid_credential_connection.execute_streaming_ddl(
             "CREATE MATERIALIZED TABLE foo AS SELECT * FROM bar",
-            compute_pool_id="lfcp-streaming-pool"
+            compute_pool_id="lfcp-streaming-pool",
         )
 
         # Verify cursor.execute was called with compute_pool_id
         mock_cursor.execute.assert_called_once()
         call_kwargs = mock_cursor.execute.call_args.kwargs
-        assert call_kwargs['compute_pool_id'] == "lfcp-streaming-pool"
+        assert call_kwargs["compute_pool_id"] == "lfcp-streaming-pool"

@@ -156,9 +156,7 @@ class TestConnectorApiCreate:
         ctx.queue("status", _ok_response(_status_body("PROVISIONING")))
         api = ConnectorApi(ctx)
 
-        connector = api.create(
-            "MyDatagen", config=_create_config(), wait_for_running=False
-        )
+        connector = api.create("MyDatagen", config=_create_config(), wait_for_running=False)
 
         assert connector.state is ConnectorState.PROVISIONING
         assert ctx.count("status") == 1
