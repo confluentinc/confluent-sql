@@ -50,6 +50,7 @@ from .tableflow import (
     build_create_payload,
     normalize_table_formats,
 )
+from .statement_properties import Property, SnapshotMode
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
 
 logger = logging.getLogger(__name__)
@@ -451,9 +452,9 @@ class Connection:
     """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
 
     _RESERVED_STATEMENT_PROPERTIES = {
-        "sql.current-catalog",
-        "sql.current-database",
-        "sql.snapshot.mode",
+        Property.CURRENT_CATALOG,
+        Property.CURRENT_DATABASE,
+        Property.SNAPSHOT_MODE,
     }
     """Per-statement properties the driver owns and overlays itself from connection/execution state
     (the active catalog, database, and snapshot mode). They are not knobs a caller may set, so
@@ -1502,15 +1503,15 @@ class Connection:
             merged_properties.update(properties)
 
         # Connection-level properties overlay (always set, cannot be overridden by user)
-        merged_properties["sql.current-catalog"] = self.environment_id
+        merged_properties[Property.CURRENT_CATALOG] = self.environment_id
 
         if self._database is not None:
-            merged_properties["sql.current-database"] = self._database
+            merged_properties[Property.CURRENT_DATABASE] = self._database
 
         # Cursor-level execution mode properties overlay (always set when applicable)
         if execution_mode.is_snapshot:
             # Ask for snapshot mode behavior -- point-in-time results.
-            merged_properties["sql.snapshot.mode"] = "now"
+            merged_properties[Property.SNAPSHOT_MODE] = SnapshotMode.NOW
 
         return merged_properties
 
