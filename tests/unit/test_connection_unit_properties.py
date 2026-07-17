@@ -241,9 +241,7 @@ class TestExecuteStatementProperties:
         naming the wire key -- pins the enum/reserved-set interop the connection.py adoption relies
         on (enum members hash and compare as their wire string)."""
 
-        with pytest.raises(
-            InterfaceError, match=f"'{wire_key}' is a reserved system property"
-        ):
+        with pytest.raises(InterfaceError, match=f"'{wire_key}' is a reserved system property"):
             invalid_credential_connection._execute_statement(
                 "SELECT 1",
                 ExecutionMode.SNAPSHOT,

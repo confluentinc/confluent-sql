@@ -187,9 +187,7 @@ class TestResolveKafkaClusterId:
 
     def test_seeded_id_skips_cmk(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-seed")
-        conn._cmk_request = Mock(
-            side_effect=AssertionError("CMK must not be called")
-        )
+        conn._cmk_request = Mock(side_effect=AssertionError("CMK must not be called"))
         assert conn._resolve_kafka_cluster_id() == "lkc-seed"
 
     def test_lookup_single_match_and_caches(self) -> None:
@@ -204,9 +202,7 @@ class TestResolveKafkaClusterId:
 
     def test_zero_match_raises(self) -> None:
         conn = _connect(global_api_key="gk", global_api_secret="gs", database="Missing")
-        conn._cmk_request = Mock(
-            return_value=_ok_response({"data": [], "metadata": {}})
-        )
+        conn._cmk_request = Mock(return_value=_ok_response({"data": [], "metadata": {}}))
         with pytest.raises(OperationalError, match="No Kafka cluster named 'Missing'"):
             conn._resolve_kafka_cluster_id()
 
@@ -310,9 +306,7 @@ class TestEnableTableflow:
 
     def test_posts_expected_body(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._tableflow_request = Mock(
-            return_value=_ok_response(_topic_body(), status_code=202)
-        )
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         topic = conn.enable_tableflow(
             "orders",
             tableflow_formats=TableFormat.ICEBERG,
@@ -330,9 +324,7 @@ class TestEnableTableflow:
 
     def test_both_formats_collection_reaches_body(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._tableflow_request = Mock(
-            return_value=_ok_response(_topic_body(), status_code=202)
-        )
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         conn.enable_tableflow(
             "orders",
             tableflow_formats={TableFormat.DELTA, TableFormat.ICEBERG},
@@ -354,9 +346,7 @@ class TestEnableTableflow:
     def test_blocks_for_running_by_default(self, mocker) -> None:
         # No wait_for_running argument -> default (True) must poll to RUNNING, not return PENDING.
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._tableflow_request = Mock(
-            return_value=_ok_response(_topic_body(), status_code=202)
-        )
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
         conn.get_tableflow = Mock(  # type: ignore[method-assign]
             return_value=TableflowTopic.from_response(_topic_body(phase="RUNNING"))
@@ -369,9 +359,7 @@ class TestEnableTableflow:
 
     def test_wait_for_running_polls_to_running(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._tableflow_request = Mock(
-            return_value=_ok_response(_topic_body(), status_code=202)
-        )
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
         conn.get_tableflow = Mock(  # type: ignore[method-assign]
             return_value=TableflowTopic.from_response(_topic_body(phase="RUNNING"))
@@ -386,9 +374,7 @@ class TestEnableTableflow:
 
     def test_wait_for_running_raises_on_failed(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._tableflow_request = Mock(
-            return_value=_ok_response(_topic_body(), status_code=202)
-        )
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         failed = _topic_body(phase="FAILED")
         failed["status"]["error_message"] = "schema boom"
         failed["status"]["failing_table_formats"] = [
@@ -406,9 +392,7 @@ class TestEnableTableflow:
 
     def test_wait_for_running_times_out(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._tableflow_request = Mock(
-            return_value=_ok_response(_topic_body(), status_code=202)
-        )
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         # No backoff iterations: the topic never leaves PENDING, so the wait gives up.
         mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([]))
         with pytest.raises(OperationalError, match="did not reach RUNNING within"):

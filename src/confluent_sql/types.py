@@ -525,9 +525,9 @@ class SqlNone:
             # Strip trailing "NOT NULL" constraint if present (case-insensitive).
             # This assists integrations (like dbt adapters) that may provide
             # type names with nullability constraints from schema metadata.
-            python_or_flink_type = (
-                SqlNone._not_null_suffix_regex.sub("", python_or_flink_type).rstrip()
-            )
+            python_or_flink_type = SqlNone._not_null_suffix_regex.sub(
+                "", python_or_flink_type
+            ).rstrip()
 
             # Validate the provided Flink type name using case-insensitive regexes.
 
