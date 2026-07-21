@@ -1,6 +1,7 @@
 """Unit tests for the statement_properties enumerations (Issue #162)."""
 
 import json
+import re
 from datetime import timedelta
 
 import pytest
@@ -252,6 +253,53 @@ class TestStatementProperties:
         """A Property member used as an extra key collides just like its raw string would."""
         with pytest.raises(InterfaceError, match=r"extra may not contain 'sql\.state-ttl'"):
             StatementProperties(extra={Property.STATE_TTL: "3600 s"})
+
+    @pytest.mark.parametrize(
+        ("kwargs", "field_name", "description"),
+        [
+            ({"state_ttl": "100 ms"}, "state_ttl", "a timedelta or None"),
+            ({"local_time_zone": 5}, "local_time_zone", "a str or None"),
+            (
+                {"snapshot_write_mode": 5},
+                "snapshot_write_mode",
+                "a SnapshotWriteMode, a raw str, or None",
+            ),
+            (
+                {"scan_startup_mode": 5},
+                "scan_startup_mode",
+                "a ScanStartupMode, a raw str, or None",
+            ),
+        ],
+    )
+    def test_wrong_field_type_raises_at_construction(self, kwargs, field_name, description):
+        """A field given the wrong Python type is rejected at construction with a consistent
+        InterfaceError -- not left to blow up as a TypeError deep in rendering (e.g. a str
+        state_ttl reaching _to_flink_duration)."""
+        got = type(next(iter(kwargs.values()))).__name__
+        with pytest.raises(
+            InterfaceError,
+            match=rf"{field_name} must be {re.escape(description)}, got {got}",
+        ):
+            StatementProperties(**kwargs)
+
+    def test_non_dict_extra_raises_at_construction(self):
+        with pytest.raises(InterfaceError, match=r"extra must be a dict, got list"):
+            StatementProperties(extra=[("sql.dry-run", True)])  # type: ignore[arg-type]
+
+    def test_extra_is_read_only_after_construction(self):
+        """extra is snapshotted into a read-only mapping, so the one-spelling-per-property
+        invariant enforced at construction can't be broken by mutating extra afterward."""
+        sp = StatementProperties(extra={"sql.some.future-option": "x"})
+        with pytest.raises(TypeError):
+            sp.extra["sql.state-ttl"] = "3600 s"  # type: ignore[index]
+
+    def test_source_extra_dict_is_copied_not_aliased(self):
+        """extra is copied at construction, so later mutation of the caller's own dict does not
+        leak into the (advertised-frozen) instance."""
+        source: dict = {"sql.some.future-option": "x"}
+        sp = StatementProperties(extra=source)
+        source["sql.another-future-option"] = "y"
+        assert sp.to_properties_dict() == {"sql.some.future-option": "x"}
 
 
 @pytest.mark.unit

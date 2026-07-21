@@ -195,8 +195,13 @@ class TestCursor:
 
         LOCALTIMESTAMP yields a plain TIMESTAMP (tz-naive) in the session's local time zone, so
         reading it under US Eastern vs US Central -- zones that always sit exactly one hour apart,
-        DST transitions and all -- gives wall-clock values ~1h apart. The two queries run a few
-        seconds apart, hence the +/- 1 minute slack.
+        DST transitions and all -- gives wall-clock values ~1h apart.
+
+        The two queries run sequentially, so `eastern` is sampled before `central`: their naive
+        difference is `1h - dt`, where `dt` is the real time that elapsed between the two server-side
+        evaluations. We bracket both queries with a client-side clock and bound the acceptable skew
+        by that measured elapsed (plus a small cushion for sub-second rounding), so a slow backend
+        can stretch `dt` without failing a correct result.
         """
 
         def local_wall_clock(time_zone: str) -> datetime:
@@ -213,10 +218,13 @@ class TestCursor:
             assert value.tzinfo is None
             return value
 
+        started = time.monotonic()
         eastern = local_wall_clock("America/New_York")
         central = local_wall_clock("America/Chicago")
+        elapsed = timedelta(seconds=time.monotonic() - started)
 
-        assert abs((eastern - central) - timedelta(hours=1)) <= timedelta(minutes=1)
+        skew = abs((eastern - central) - timedelta(hours=1))
+        assert skew <= elapsed + timedelta(seconds=1)
 
     def test_cursor_description_raises_if_closed(self, cursor: Cursor):
         cursor.close()

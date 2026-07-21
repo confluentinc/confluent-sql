@@ -12,8 +12,9 @@ All notable changes to this dbapi driver will be documented in this file.
   as `"3600 s"`), `scan_startup_mode`, `local_time_zone`, plus an `extra` dict escape hatch for
   options not yet modeled. Only set fields are emitted, so an instance never pins a default nor
   collides with the driver-owned overlay. The enum-typed fields also accept a bare `str` so a
-  Flink value newer than this driver can still be passed; a wrong-property enum value, or an `extra`
-  key that duplicates a modeled field, raises at construction. Pass one anywhere a `properties=`
+  Flink value newer than this driver can still be passed; a wrong-property enum value, a field of
+  the wrong Python type, or an `extra` key that duplicates a modeled field, raises at construction.
+  `extra` is copied into a read-only mapping, so the frozen guarantee holds after construction too. Pass one anywhere a `properties=`
   dict is accepted (`Cursor.execute`, `execute_snapshot_ddl`, `execute_streaming_ddl`, ...); it is
   downgraded to a dict and validated identically. Adds the `ScanStartupMode` value enum
   (`earliest-offset`/`latest-offset`/`timestamp`/`specific-offsets`). (#163)

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar
 
 from .exceptions import InterfaceError
@@ -100,7 +101,8 @@ class ScanStartupMode(PropertyValue):
     This is Confluent's set, which is deliberately *not* Apache Flink's: Flink additionally offers
     `group-offsets` and defaults to it, whereas Confluent omits it and defaults to
     `earliest-offset`. `timestamp` and `specific-offsets` each require their companion option
-    (`scan.startup.timestamp-millis` / `scan.startup.specific-offsets`) to be set as well.
+    (`sql.tables.scan.startup.timestamp-millis` / `sql.tables.scan.startup.specific-offsets`) to be
+    set as well.
     """
 
     EARLIEST_OFFSET = "earliest-offset"
@@ -168,7 +170,8 @@ class StatementProperties:
 
     extra: PropertiesDict = field(default_factory=dict)
     """Escape hatch for SET options not modeled as a typed field above -- raw wire keys to values.
-    May not carry a key a typed field already models; doing so raises at construction."""
+    May not carry a key a typed field already models; doing so raises at construction. The dict is
+    copied into a read-only mapping at construction, so the instance stays as frozen as the fields."""
 
     _MODELED_KEY_TO_FIELD: ClassVar[dict[Property, str]] = {
         Property.SNAPSHOT_WRITE_MODE: "snapshot_write_mode",
@@ -182,7 +185,11 @@ class StatementProperties:
     def __post_init__(self) -> None:
         self._reject_wrong_enum("snapshot_write_mode", self.snapshot_write_mode, SnapshotWriteMode)
         self._reject_wrong_enum("scan_startup_mode", self.scan_startup_mode, ScanStartupMode)
+        self._reject_wrong_field_types()
         self._reject_extra_collisions()
+        # Snapshot extra into a read-only mapping so the collision check above can't be voided by
+        # mutating extra after construction. object.__setattr__ is the frozen-dataclass escape hatch.
+        object.__setattr__(self, "extra", MappingProxyType(dict(self.extra)))
 
     @staticmethod
     def _reject_wrong_enum(field_name: str, value: object, expected: type[PropertyValue]) -> None:
@@ -191,6 +198,33 @@ class StatementProperties:
             raise InterfaceError(
                 f"{field_name} was given a {type(value).__name__}; "
                 f"expected a {expected.__name__} or a raw str"
+            )
+
+    def _reject_wrong_field_types(self) -> None:
+        """Reject a field given the wrong Python type, so a bad value surfaces as a consistent
+        InterfaceError here rather than a TypeError deep in rendering (e.g. a str `state_ttl`
+        reaching `_to_flink_duration`). Enum-typed fields accept their bare `str` too."""
+        self._reject_wrong_type(
+            "snapshot_write_mode", self.snapshot_write_mode, str,
+            "a SnapshotWriteMode, a raw str, or None",
+        )
+        self._reject_wrong_type(
+            "scan_startup_mode", self.scan_startup_mode, str,
+            "a ScanStartupMode, a raw str, or None",
+        )
+        self._reject_wrong_type("state_ttl", self.state_ttl, timedelta, "a timedelta or None")
+        self._reject_wrong_type("local_time_zone", self.local_time_zone, str, "a str or None")
+        if not isinstance(self.extra, dict):
+            raise InterfaceError(f"extra must be a dict, got {type(self.extra).__name__}")
+
+    @staticmethod
+    def _reject_wrong_type(
+        field_name: str, value: object, expected: type, description: str
+    ) -> None:
+        """Reject a non-None field value that isn't an instance of `expected`; None is always ok."""
+        if value is not None and not isinstance(value, expected):
+            raise InterfaceError(
+                f"{field_name} must be {description}, got {type(value).__name__}"
             )
 
     def _reject_extra_collisions(self) -> None:
