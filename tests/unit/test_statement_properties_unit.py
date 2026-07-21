@@ -214,10 +214,20 @@ class TestStatementProperties:
                 "SnapshotWriteMode",
                 "ScanStartupMode",
             ),
+            # A Property key member is also a str, so it must be rejected as an Enum -- not waved
+            # through by the str-based type check and serialized as a bogus wire value.
+            (
+                {"snapshot_write_mode": Property.SNAPSHOT_WRITE_MODE},
+                "Property",
+                "SnapshotWriteMode",
+            ),
+            ({"scan_startup_mode": Property.SCAN_STARTUP_MODE}, "Property", "ScanStartupMode"),
         ],
     )
     def test_wrong_enum_member_raises(self, kwargs, wrong_type, expected_type):
-        """A PropertyValue from the wrong property is a category error, rejected at construction."""
+        """Any Enum that isn't the field's own value enum is a category error, rejected at
+        construction -- including a str-based Enum like Property that would otherwise pass the
+        str type check and serialize as a bogus wire value. A raw str still passes."""
         field_name = next(iter(kwargs))
         with pytest.raises(
             InterfaceError,

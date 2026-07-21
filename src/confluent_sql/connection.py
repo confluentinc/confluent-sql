@@ -958,7 +958,9 @@ class Connection:
                              Use HIDDEN_LABEL to mark statements as hidden from default views.
             properties: Optional statement properties to set for this execution -- a raw dict or a
                        `StatementProperties` (downgraded to a dict, then validated identically).
-                       Keys must be strings, values must be str, int, or bool.
+                       In a raw dict, keys must be strings and values str, int, or bool;
+                       `StatementProperties` accepts richer Python types (e.g. a `timedelta`
+                       state_ttl) and renders them to wire values before that validation.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
                             If not provided, uses the Connection's default compute_pool_id,
                             if any; otherwise Confluent Cloud Flink runs the statement in the
@@ -1019,7 +1021,9 @@ class Connection:
                              Use HIDDEN_LABEL to mark statements as hidden from default views.
             properties: Optional statement properties to set for this execution -- a raw dict or a
                        `StatementProperties` (downgraded to a dict, then validated identically).
-                       Keys must be strings, values must be str, int, or bool.
+                       In a raw dict, keys must be strings and values str, int, or bool;
+                       `StatementProperties` accepts richer Python types (e.g. a `timedelta`
+                       state_ttl) and renders them to wire values before that validation.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
                             If not provided, uses the Connection's default compute_pool_id,
                             if any; otherwise Confluent Cloud Flink runs the statement in the

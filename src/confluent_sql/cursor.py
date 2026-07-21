@@ -205,7 +205,9 @@ class Cursor:
                              statements as hidden from default views in UIs and monitoring tools.
             properties: Optional statement properties to set for this execution -- a raw dict or a
                        `StatementProperties` (downgraded to a dict, then validated identically).
-                       Keys must be strings, values must be str, int, or bool. System
+                       In a raw dict, keys must be strings and values str, int, or bool;
+                       `StatementProperties` accepts richer Python types (e.g. a `timedelta`
+                       state_ttl) and renders them to wire values before that validation. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
             compute_pool_id: Optional compute pool ID to use for this statement execution.

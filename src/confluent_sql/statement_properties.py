@@ -194,8 +194,13 @@ class StatementProperties:
 
     @staticmethod
     def _reject_wrong_enum(field_name: str, value: object, expected: type[PropertyValue]) -> None:
-        """Reject a `PropertyValue` belonging to a different property; a raw str always passes."""
-        if isinstance(value, PropertyValue) and not isinstance(value, expected):
+        """Reject any Enum that isn't the field's own value enum; a raw str always passes.
+
+        Checks `Enum`, not just `PropertyValue`: every `_PropertyEnum` member (including a
+        `Property` *key*) is also a `str`, so narrowing to `PropertyValue` would let a stray
+        `Property` slip past both this and the str type check and serialize as a bogus wire value.
+        """
+        if isinstance(value, Enum) and not isinstance(value, expected):
             raise InterfaceError(
                 f"{field_name} was given a {type(value).__name__}; "
                 f"expected a {expected.__name__} or a raw str"
