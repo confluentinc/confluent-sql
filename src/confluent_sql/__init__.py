@@ -39,7 +39,14 @@ from .exceptions import (
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
 from .statement import HIDDEN_LABEL, Op
-from .statement_properties import Property, PropertyValue, SnapshotMode, SnapshotWriteMode
+from .statement_properties import (
+    Property,
+    PropertyValue,
+    ScanStartupMode,
+    SnapshotMode,
+    SnapshotWriteMode,
+    StatementProperties,
+)
 from .tableflow import (
     AzureAdlsStorage,
     ByobAwsStorage,
@@ -53,7 +60,7 @@ from .tableflow import (
     TableflowTopicConfig,
     TableFormat,
 )
-from .types import PropertiesDict, SqlNone, YearMonthInterval
+from .types import PropertiesDict, PropertiesMapping, SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -107,10 +114,13 @@ __all__ = [
     "threadsafety",
     "paramstyle",
     "PropertiesDict",
+    "PropertiesMapping",
     "Property",
     "PropertyValue",
+    "ScanStartupMode",
     "SnapshotMode",
     "SnapshotWriteMode",
+    "StatementProperties",
     "SqlNone",
     "YearMonthInterval",
     "HIDDEN_LABEL",
