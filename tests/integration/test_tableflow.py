@@ -60,9 +60,7 @@ def _tableflow_connection_from_env() -> Connection:
     # organization_id is inferable from a global key (#132), so it's only required outright when
     # no global key is configured.
     org_ok = has_global or bool(organization_id)
-    base_ok = all(
-        [environment_id, org_ok, cloud_provider, cloud_region, database, compute_pool_id]
-    )
+    base_ok = all([environment_id, org_ok, cloud_provider, cloud_region, database, compute_pool_id])
     if not (no_half_pairs and flink_auth_ok and controlplane_ok and cluster_ok and base_ok):
         pytest.skip("Missing environment variables for a Tableflow-capable integration connection")
 
@@ -123,9 +121,7 @@ class TestTableflowLifecycle:
         table = tableflow_table_name
 
         # Create the Flink table (and its backing Kafka topic) Tableflow will materialize.
-        conn.execute_snapshot_ddl(
-            f"CREATE TABLE `{table}` (id INT, description STRING)"
-        )
+        conn.execute_snapshot_ddl(f"CREATE TABLE `{table}` (id INT, description STRING)")
 
         tableflow_enabled = False
         try:

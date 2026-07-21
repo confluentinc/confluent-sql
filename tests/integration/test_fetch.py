@@ -176,9 +176,7 @@ class TestCursorFetch:
                 "double_value": 191.2342342,
                 "date_value": date(2024, 6, 15),
                 "time_value": time(12, 34, 56),
-                "time_value_micro": time(
-                    12, 34, 56, 789000
-                ),
+                "time_value_micro": time(12, 34, 56, 789000),
                 "timestamp_value": datetime(2025, 6, 15, 12, 34, 56),  # No micros to lose here.
                 "timestamp_value_micros": datetime(2024, 6, 15, 12, 34, 56, 123456),
                 # GMT+02:00 gets converted to UTC time in the round trip, so comes
@@ -656,9 +654,7 @@ class TestExecuteDDL:
                 with suppress(Exception):
                     connection.delete_statement(statement)
 
-    def test_ctas_statement_properties(
-        self, connection: Connection, auto_dropped_table_name: str
-    ):
+    def test_ctas_statement_properties(self, connection: Connection, auto_dropped_table_name: str):
         """Prove that CTAS statement is DDL but not pure DDL, with no schema.
 
         CTAS (CREATE TABLE AS SELECT) is a hybrid DDL:
