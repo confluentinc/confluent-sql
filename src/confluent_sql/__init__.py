@@ -39,7 +39,14 @@ from .exceptions import (
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
 from .statement import HIDDEN_LABEL, Op
-from .statement_properties import Property, PropertyValue, SnapshotMode, SnapshotWriteMode
+from .statement_properties import (
+    Property,
+    PropertyValue,
+    ScanStartupMode,
+    SnapshotMode,
+    SnapshotWriteMode,
+    StatementProperties,
+)
 from .tableflow import (
     AzureAdlsStorage,
     ByobAwsStorage,
@@ -109,8 +116,10 @@ __all__ = [
     "PropertiesDict",
     "Property",
     "PropertyValue",
+    "ScanStartupMode",
     "SnapshotMode",
     "SnapshotWriteMode",
+    "StatementProperties",
     "SqlNone",
     "YearMonthInterval",
     "HIDDEN_LABEL",
