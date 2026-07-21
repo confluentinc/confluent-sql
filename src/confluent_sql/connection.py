@@ -41,7 +41,7 @@ from .retry import (
 )
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
-from .statement_properties import Property, SnapshotMode
+from .statement_properties import Property, SnapshotMode, StatementProperties
 from .tableflow import (
     TableflowPhase,
     TableflowStorage,
@@ -930,7 +930,7 @@ class Connection:
         timeout: int = 3000,
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
-        properties: PropertiesDict | None = None,
+        properties: PropertiesDict | StatementProperties | None = None,
         *,
         compute_pool_id: str | None = None,
     ) -> Statement:
@@ -956,8 +956,11 @@ class Connection:
                              prefixed with "user.confluent.io/" when stored but you only
                              need to provide the label values (e.g., ["my-ddl-batch", "daily"]).
                              Use HIDDEN_LABEL to mark statements as hidden from default views.
-            properties: Optional dictionary of statement properties to set for this execution.
-                       Keys must be strings, values must be str, int, or bool.
+            properties: Optional statement properties to set for this execution -- a raw dict or a
+                       `StatementProperties` (downgraded to a dict, then validated identically).
+                       In a raw dict, keys must be strings and values str, int, or bool;
+                       `StatementProperties` accepts richer Python types (e.g. a `timedelta`
+                       state_ttl) and renders them to wire values before that validation.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
                             If not provided, uses the Connection's default compute_pool_id,
                             if any; otherwise Confluent Cloud Flink runs the statement in the
@@ -994,7 +997,7 @@ class Connection:
         timeout: int = 3000,
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
-        properties: PropertiesDict | None = None,
+        properties: PropertiesDict | StatementProperties | None = None,
         *,
         compute_pool_id: str | None = None,
     ) -> Statement:
@@ -1016,8 +1019,11 @@ class Connection:
                              prefixed with "user.confluent.io/" when stored but you only
                              need to provide the label values (e.g., ["streaming-jobs", "daily"]).
                              Use HIDDEN_LABEL to mark statements as hidden from default views.
-            properties: Optional dictionary of statement properties to set for this execution.
-                       Keys must be strings, values must be str, int, or bool.
+            properties: Optional statement properties to set for this execution -- a raw dict or a
+                       `StatementProperties` (downgraded to a dict, then validated identically).
+                       In a raw dict, keys must be strings and values str, int, or bool;
+                       `StatementProperties` accepts richer Python types (e.g. a `timedelta`
+                       state_ttl) and renders them to wire values before that validation.
             compute_pool_id: Optional compute pool ID to use for this statement execution.
                             If not provided, uses the Connection's default compute_pool_id,
                             if any; otherwise Confluent Cloud Flink runs the statement in the
@@ -1454,7 +1460,9 @@ class Connection:
         self._row_type_registry.register_row_type(class_for_flink_row)
 
     def _resolve_properties(
-        self, properties: PropertiesDict | None, execution_mode: ExecutionMode
+        self,
+        properties: PropertiesDict | StatementProperties | None,
+        execution_mode: ExecutionMode,
     ) -> PropertiesDict:
         """
         Validate and merge user properties with system properties.
@@ -1464,8 +1472,10 @@ class Connection:
         and cannot be overridden by user input.
 
         Args:
-            properties: Optional dictionary of user-provided statement properties.
-                       Keys must be strings, values must be str, int, or bool.
+            properties: Optional user-provided statement properties -- either a raw dict (keys
+                       strings, values str/int/bool) or a `StatementProperties`, which is
+                       downgraded to a dict up front and then validated identically (so a
+                       reserved key smuggled through its `extra` is rejected the same way).
             execution_mode: The execution mode (determines if snapshot.mode is set).
 
         Returns:
@@ -1474,6 +1484,9 @@ class Connection:
         Raises:
             InterfaceError: If properties parameter is invalid (not a dict, invalid keys/values).
         """
+        if isinstance(properties, StatementProperties):
+            properties = properties.to_properties_dict()
+
         # Validate properties parameter if provided
         if properties is not None:
             if not isinstance(properties, dict):
@@ -1519,7 +1532,7 @@ class Connection:
         execution_mode: ExecutionMode,
         statement_name: str | None = None,
         statement_labels: list[str] | None = None,
-        properties: PropertiesDict | None = None,
+        properties: PropertiesDict | StatementProperties | None = None,
         *,
         compute_pool_id: str | None = None,
     ) -> dict[str, Any]:
@@ -1535,7 +1548,8 @@ class Connection:
             statement_labels: Optional list of labels for the statement for easier identification
                              in server logs and UIs (defaults to None). Use HIDDEN_LABEL to mark
                              statements as hidden from default views.
-            properties: Optional dictionary of statement properties to set for this execution.
+            properties: Optional statement properties to set for this execution -- a raw dict or a
+                       `StatementProperties` (downgraded to a dict, then validated identically).
                        Keys must be strings, values must be str, int, or bool. System
                        properties (sql.current-catalog, sql.current-database, sql.snapshot.mode)
                        are always set by the driver and cannot be overridden.
