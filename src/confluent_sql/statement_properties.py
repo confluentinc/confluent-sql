@@ -171,7 +171,8 @@ class StatementProperties:
     extra: PropertiesDict = field(default_factory=dict)
     """Escape hatch for SET options not modeled as a typed field above -- raw wire keys to values.
     May not carry a key a typed field already models; doing so raises at construction. The dict is
-    copied into a read-only mapping at construction, so the instance stays as frozen as the fields."""
+    copied into a read-only mapping at construction, so the instance stays as frozen as its
+    fields."""
 
     _MODELED_KEY_TO_FIELD: ClassVar[dict[Property, str]] = {
         Property.SNAPSHOT_WRITE_MODE: "snapshot_write_mode",
@@ -188,7 +189,7 @@ class StatementProperties:
         self._reject_wrong_field_types()
         self._reject_extra_collisions()
         # Snapshot extra into a read-only mapping so the collision check above can't be voided by
-        # mutating extra after construction. object.__setattr__ is the frozen-dataclass escape hatch.
+        # mutating extra after construction. object.__setattr__ is the frozen escape hatch.
         object.__setattr__(self, "extra", MappingProxyType(dict(self.extra)))
 
     @staticmethod

@@ -198,8 +198,8 @@ class TestCursor:
         DST transitions and all -- gives wall-clock values ~1h apart.
 
         The two queries run sequentially, so `eastern` is sampled before `central`: their naive
-        difference is `1h - dt`, where `dt` is the real time that elapsed between the two server-side
-        evaluations. We bracket both queries with a client-side clock and bound the acceptable skew
+        difference is `1h - dt`, where `dt` is the real time that elapsed between the two
+        server-side evaluations. We bracket both queries with a client-side clock and bound the skew
         by that measured elapsed (plus a small cushion for sub-second rounding), so a slow backend
         can stretch `dt` without failing a correct result.
         """
