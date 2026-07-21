@@ -17,6 +17,7 @@ stringify to it in logs and error messages too -- all with no `.value` unwrappin
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
@@ -28,7 +29,7 @@ from .exceptions import InterfaceError
 if TYPE_CHECKING:
     # Imported for annotations only: types.py imports the enums below, so a runtime import here
     # would close a cycle. `from __future__ import annotations` keeps the references lazy.
-    from .types import PropertiesDict
+    from .types import PropertiesDict, PropertiesMapping
 
 
 class _PropertyEnum(str, Enum):
@@ -168,11 +169,11 @@ class StatementProperties:
     `TIMESTAMP_LTZ` to types without a zone (`TIMESTAMP`, `TIME`, or `STRING`). A TZDB id like
     `"America/Los_Angeles"` or a fixed offset like `"GMT+03:00"`."""
 
-    extra: PropertiesDict = field(default_factory=dict)
+    extra: PropertiesMapping = field(default_factory=dict)
     """Escape hatch for SET options not modeled as a typed field above -- raw wire keys to values.
-    May not carry a key a typed field already models; doing so raises at construction. The dict is
-    copied into a read-only mapping at construction, so the instance stays as frozen as its
-    fields."""
+    May not carry a key a typed field already models; doing so raises at construction. Accepts any
+    mapping at construction and is copied into a read-only one, so the instance stays as frozen as
+    its fields -- hence the read-only `PropertiesMapping` annotation (not `PropertiesDict`)."""
 
     _MODELED_KEY_TO_FIELD: ClassVar[dict[Property, str]] = {
         Property.SNAPSHOT_WRITE_MODE: "snapshot_write_mode",
@@ -220,8 +221,8 @@ class StatementProperties:
         )
         self._reject_wrong_type("state_ttl", self.state_ttl, timedelta, "a timedelta or None")
         self._reject_wrong_type("local_time_zone", self.local_time_zone, str, "a str or None")
-        if not isinstance(self.extra, dict):
-            raise InterfaceError(f"extra must be a dict, got {type(self.extra).__name__}")
+        if not isinstance(self.extra, Mapping):
+            raise InterfaceError(f"extra must be a mapping, got {type(self.extra).__name__}")
 
     @staticmethod
     def _reject_wrong_type(

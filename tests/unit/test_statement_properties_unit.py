@@ -292,8 +292,8 @@ class TestStatementProperties:
         ):
             StatementProperties(**kwargs)
 
-    def test_non_dict_extra_raises_at_construction(self):
-        with pytest.raises(InterfaceError, match=r"extra must be a dict, got list"):
+    def test_non_mapping_extra_raises_at_construction(self):
+        with pytest.raises(InterfaceError, match=r"extra must be a mapping, got list"):
             StatementProperties(extra=[("sql.dry-run", True)])  # type: ignore[arg-type]
 
     def test_extra_is_read_only_after_construction(self):

@@ -60,7 +60,7 @@ from .tableflow import (
     TableflowTopicConfig,
     TableFormat,
 )
-from .types import PropertiesDict, SqlNone, YearMonthInterval
+from .types import PropertiesDict, PropertiesMapping, SqlNone, YearMonthInterval
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -114,6 +114,7 @@ __all__ = [
     "threadsafety",
     "paramstyle",
     "PropertiesDict",
+    "PropertiesMapping",
     "Property",
     "PropertyValue",
     "ScanStartupMode",

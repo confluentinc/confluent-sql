@@ -14,10 +14,11 @@ All notable changes to this dbapi driver will be documented in this file.
   collides with the driver-owned overlay. The enum-typed fields also accept a bare `str` so a
   Flink value newer than this driver can still be passed; a wrong-property enum value, a field of
   the wrong Python type, or an `extra` key that duplicates a modeled field, raises at construction.
-  `extra` is copied into a read-only mapping, so the frozen guarantee holds after construction too. Pass one anywhere a `properties=`
-  dict is accepted (`Cursor.execute`, `execute_snapshot_ddl`, `execute_streaming_ddl`, ...); it is
-  downgraded to a dict and validated identically. Adds the `ScanStartupMode` value enum
-  (`earliest-offset`/`latest-offset`/`timestamp`/`specific-offsets`). (#163)
+  `extra` is copied into a read-only mapping, so the frozen guarantee holds after construction too.
+  Pass one anywhere a `properties=` dict is accepted (`Cursor.execute`, `execute_snapshot_ddl`,
+  `execute_streaming_ddl`, ...); it is downgraded to a dict and validated identically. Adds the
+  `ScanStartupMode` value enum (`earliest-offset`/`latest-offset`/`timestamp`/`specific-offsets`).
+  (#163)
 - New module `confluent_sql.statement_properties` gives statement `SET` options a discoverable,
   type-checkable face alongside the existing open-ended `PropertiesDict`. `Property` is a `str`
   enum of the `sql.*` option keys from the [SET-options reference](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html)
