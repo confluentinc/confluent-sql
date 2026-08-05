@@ -41,7 +41,12 @@ from .retry import (
 )
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
-from .statement_properties import Property, SnapshotMode, StatementProperties
+from .statement_properties import (
+    Property,
+    SnapshotMode,
+    StatementProperties,
+    validate_properties_dict,
+)
 from .tableflow import (
     TableflowPhase,
     TableflowStorage,
@@ -447,16 +452,6 @@ class Connection:
 
     _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
     """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
-
-    _RESERVED_STATEMENT_PROPERTIES = {
-        Property.CURRENT_CATALOG,
-        Property.CURRENT_DATABASE,
-        Property.SNAPSHOT_MODE,
-    }
-    """Per-statement properties the driver owns and overlays itself from connection/execution state
-    (the active catalog, database, and snapshot mode). They are not knobs a caller may set, so
-    _resolve_properties rejects any of these appearing in a user-supplied properties dict rather
-    than silently letting the driver's overlay win."""
 
     environment_id: str
     compute_pool_id: str | None
@@ -1459,17 +1454,20 @@ class Connection:
 
         self._row_type_registry.register_row_type(class_for_flink_row)
 
-    def _resolve_properties(
+    def _build_statement_properties(
         self,
         properties: PropertiesDict | StatementProperties | None,
         execution_mode: ExecutionMode,
     ) -> PropertiesDict:
         """
-        Validate and merge user properties with system properties.
+        Normalize/validate user properties, then overlay system properties on top.
 
-        Validates the properties parameter and merges it with system-level properties
-        (catalog, database, snapshot mode). System properties always have precedence
-        and cannot be overridden by user input.
+        Normalization and validation (is it dict-shaped, are keys strings and values
+        str/int/bool, are any driver-owned keys present) is pure property-domain policy and
+        lives in `validate_properties_dict` -- this method just calls it, then stamps the
+        connection/execution overlay (catalog, database, snapshot mode) that only `Connection`
+        has the identity and execution-mode context to know. System properties always have
+        precedence and cannot be overridden by user input.
 
         Args:
             properties: Optional user-provided statement properties -- either a raw dict (keys
@@ -1484,34 +1482,7 @@ class Connection:
         Raises:
             InterfaceError: If properties parameter is invalid (not a dict, invalid keys/values).
         """
-        if isinstance(properties, StatementProperties):
-            properties = properties.to_properties_dict()
-
-        # Validate properties parameter if provided
-        if properties is not None:
-            if not isinstance(properties, dict):
-                raise InterfaceError(f"properties must be a dict, got {type(properties).__name__}")
-
-            for key, value in properties.items():
-                if not isinstance(key, str):
-                    raise InterfaceError(
-                        f"properties keys must be strings, got {type(key).__name__} for key {key!r}"
-                    )
-                if not isinstance(value, (str, int, bool)):
-                    raise InterfaceError(
-                        f"properties values must be str, int, or bool, "
-                        f"got {type(value).__name__} for key {key!r}"
-                    )
-                if key in self._RESERVED_STATEMENT_PROPERTIES:
-                    raise InterfaceError(f"'{key}' is a reserved system property.")
-
-        # Start with user properties (if provided), then overlay system properties
-        # This ensures system properties always win and cannot be overridden
-        merged_properties: PropertiesDict = {}
-
-        if properties is not None:
-            # User properties applied first
-            merged_properties.update(properties)
+        merged_properties = validate_properties_dict(properties)
 
         # Connection-level properties overlay (always set, cannot be overridden by user)
         merged_properties[Property.CURRENT_CATALOG] = self.environment_id
@@ -1581,7 +1552,7 @@ class Connection:
             )
 
         # Resolve and merge user properties with system properties
-        merged_properties = self._resolve_properties(properties, execution_mode)
+        merged_properties = self._build_statement_properties(properties, execution_mode)
 
         # Prefer the per-call compute pool over the connection default; either may be absent.
         # A falsy per-call value (None or "") means "unspecified" -- matching connect()'s
