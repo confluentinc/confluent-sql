@@ -316,3 +316,98 @@ class TestDriverOwnedPropertiesInvariant:
         merged = conn._build_statement_properties({}, ExecutionMode.SNAPSHOT)
 
         assert set(merged.keys()) == DRIVER_OWNED_PROPERTIES
+
+
+@pytest.mark.unit
+class TestConnectionLocalTimeZoneDefault:
+    """Connection-level `local_time_zone` default (#168): fills in `sql.local-time-zone` when a
+    call's own properties are silent, never overrides an explicit per-call value, and emits
+    nothing when unset."""
+
+    def test_unset_by_default_emits_nothing(self, invalid_credential_connection):
+        """No local_time_zone kwarg was passed to connect() -- the property defaults to None and
+        no sql.local-time-zone key is stamped."""
+        assert invalid_credential_connection.local_time_zone is None
+
+        merged = invalid_credential_connection._build_statement_properties(
+            None, ExecutionMode.SNAPSHOT
+        )
+
+        assert Property.LOCAL_TIME_ZONE not in merged
+
+    def test_connect_kwarg_seeds_property_and_reaches_wire(self):
+        """connect(local_time_zone=...) wires through to the property, and fills in the merged
+        properties when a call omits its own local_time_zone."""
+        conn = connect(
+            environment_id="env-id",
+            organization_id="org-id",
+            compute_pool_id="cp-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="key",
+            flink_api_secret="secret",
+            local_time_zone="America/New_York",
+        )
+
+        assert conn.local_time_zone == "America/New_York"
+
+        merged = conn._build_statement_properties(None, ExecutionMode.SNAPSHOT)
+
+        assert merged[Property.LOCAL_TIME_ZONE] == "America/New_York"
+
+    def test_per_call_value_overrides_connection_default(self, invalid_credential_connection):
+        """An explicit per-call sql.local-time-zone wins over the connection-level default."""
+        invalid_credential_connection.local_time_zone = "America/New_York"
+
+        merged = invalid_credential_connection._build_statement_properties(
+            {Property.LOCAL_TIME_ZONE: "America/Chicago"}, ExecutionMode.SNAPSHOT
+        )
+
+        assert merged[Property.LOCAL_TIME_ZONE] == "America/Chicago"
+
+    def test_per_call_statement_properties_overrides_connection_default(
+        self, invalid_credential_connection
+    ):
+        """Same override, but via a StatementProperties(local_time_zone=...) rather than a raw
+        dict key -- exercises the downgrade-then-merge path."""
+        invalid_credential_connection.local_time_zone = "America/New_York"
+
+        merged = invalid_credential_connection._build_statement_properties(
+            StatementProperties(local_time_zone="America/Chicago"), ExecutionMode.SNAPSHOT
+        )
+
+        assert merged[Property.LOCAL_TIME_ZONE] == "America/Chicago"
+
+    def test_mutating_property_affects_only_subsequent_calls(self, invalid_credential_connection):
+        """Mutating Connection.local_time_zone has no retroactive effect on already-built
+        properties, and takes effect for calls made after the mutation."""
+        before = invalid_credential_connection._build_statement_properties(
+            None, ExecutionMode.SNAPSHOT
+        )
+        assert Property.LOCAL_TIME_ZONE not in before
+
+        invalid_credential_connection.local_time_zone = "America/Chicago"
+
+        after = invalid_credential_connection._build_statement_properties(
+            None, ExecutionMode.SNAPSHOT
+        )
+        assert after[Property.LOCAL_TIME_ZONE] == "America/Chicago"
+        # The dict already built before the mutation is untouched.
+        assert Property.LOCAL_TIME_ZONE not in before
+
+    def test_setter_rejects_non_str_non_none(self, invalid_credential_connection):
+        with pytest.raises(InterfaceError, match="local_time_zone must be a str or None"):
+            invalid_credential_connection.local_time_zone = 5  # type: ignore[assignment]
+
+    def test_connect_kwarg_rejects_non_str_non_none(self):
+        with pytest.raises(InterfaceError, match="local_time_zone must be a str or None"):
+            connect(
+                environment_id="env-id",
+                organization_id="org-id",
+                compute_pool_id="cp-id",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                flink_api_key="key",
+                flink_api_secret="secret",
+                local_time_zone=5,  # type: ignore[arg-type]
+            )

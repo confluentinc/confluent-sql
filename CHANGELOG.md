@@ -6,27 +6,9 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Added
 
-- `StatementProperties` -- a frozen, keyword-only dataclass giving a typed, autocomplete-friendly
-  way to set the curated statement options instead of hand-building a `sql.*` dict. Fields (all
-  optional): `snapshot_write_mode`, `state_ttl` (a `timedelta`, rendered to a Flink duration such
-  as `"3600 s"`), `scan_startup_mode`, `local_time_zone`, plus an `extra` dict escape hatch for
-  options not yet modeled. Only set fields are emitted, so an instance never pins a default nor
-  collides with the driver-owned overlay. The enum-typed fields also accept a bare `str` so a
-  Flink value newer than this driver can still be passed; a wrong-property enum value, a field of
-  the wrong Python type, or an `extra` key that duplicates a modeled field, raises at construction.
-  `extra` is copied into a read-only mapping, so the frozen guarantee holds after construction too.
-  Pass one anywhere a `properties=` dict is accepted (`Cursor.execute`, `execute_snapshot_ddl`,
-  `execute_streaming_ddl`, ...); it is downgraded to a dict and validated identically. Adds the
-  `ScanStartupMode` value enum (`earliest-offset`/`latest-offset`/`timestamp`/`specific-offsets`).
-  (#163)
-- New module `confluent_sql.statement_properties` gives statement `SET` options a discoverable,
-  type-checkable face alongside the existing open-ended `PropertiesDict`. `Property` is a `str`
-  enum of the `sql.*` option keys from the [SET-options reference](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html)
-  (e.g. `Property.SNAPSHOT_WRITE_MODE`); `SnapshotWriteMode` (`default`/`fast-write`) and
-  `SnapshotMode` (`now`/`off`) enumerate the fixed value sets, sharing the `PropertyValue` base.
-  Members are `str` instances that compare, hash, JSON-serialize, and stringify as their wire
-  string, so they drop straight into a `properties=` dict with no `.value` unwrapping. `PropertiesDict`
-  now advertises `Property` keys and `PropertyValue` values. (#162)
+- `connect()`/`Connection()` accept a `local_time_zone` keyword argument that seeds a read/write `Connection.local_time_zone` property: a connection-level default for the `sql.local-time-zone` statement property, applied to every statement created by the connection unless that statement's own `properties=`/`StatementProperties` sets `local_time_zone`, which takes precedence.
+- `StatementProperties` -- a frozen, keyword-only dataclass giving a typed, autocomplete-friendly way to set the curated statement options instead of hand-building a `sql.*` dict. Fields (all optional): `snapshot_write_mode`, `state_ttl` (a `timedelta`, rendered to a Flink duration such as `"3600 s"`), `scan_startup_mode`, `local_time_zone`, plus an `extra` dict escape hatch for options not yet modeled. Only set fields are emitted, so an instance never pins a default nor collides with the driver-owned overlay. The enum-typed fields also accept a bare `str` so a Flink value newer than this driver can still be passed; a wrong-property enum value, a field of the wrong Python type, or an `extra` key that duplicates a modeled field, raises at construction. `extra` is copied into a read-only mapping, so the frozen guarantee holds after construction too. Pass one anywhere a `properties=` dict is accepted (`Cursor.execute`, `execute_snapshot_ddl`, `execute_streaming_ddl`, ...); it is downgraded to a dict and validated identically. Adds the `ScanStartupMode` value enum (`earliest-offset`/`latest-offset`/`timestamp`/`specific-offsets`). (#163)
+- New module `confluent_sql.statement_properties` gives statement `SET` options a discoverable, type-checkable face alongside the existing open-ended `PropertiesDict`. `Property` is a `str` enum of the `sql.*` option keys from the [SET-options reference](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html) (e.g. `Property.SNAPSHOT_WRITE_MODE`); `SnapshotWriteMode` (`default`/`fast-write`) and `SnapshotMode` (`now`/`off`) enumerate the fixed value sets, sharing the `PropertyValue` base. Members are `str` instances that compare, hash, JSON-serialize, and stringify as their wire string, so they drop straight into a `properties=` dict with no `.value` unwrapping. `PropertiesDict` now advertises `Property` keys and `PropertyValue` values. (#162)
 - class `Connection` now has methods to enable / inspect / disable [Tableflow](https://www.confluent.io/product/tableflow/) materialization of the Kafka topic backing a Flink table (#117). Tableflow-enabled topics/tables can be snapshot queried in an optimized fashion.
   - `Connection.enable_tableflow(table_name, *, tableflow_formats, storage, config=None, wait_for_running=True, timeout=300)` adds an Iceberg/Delta sink. `tableflow_formats` takes a single `TableFormat` (e.g. `TableFormat.ICEBERG`) or a collection for several; `storage` is one of `ManagedStorage()` (zero-config), `ByobAwsStorage`, or `AzureAdlsStorage`; `config` is an optional `TableflowTopicConfig`. By default it blocks until the topic reaches `RUNNING`; pass `wait_for_running=False` to return as soon as the create is accepted (topic in `PENDING`). Raises `TableflowTopicAlreadyExistsError` if Tableflow is already enabled.
   - `Connection.get_tableflow(table_name)` returns the current `TableflowTopic` (phase, spec, status), raising `TableflowTopicNotFoundError` if Tableflow is not enabled for the topic.
