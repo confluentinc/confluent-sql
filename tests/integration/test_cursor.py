@@ -226,6 +226,41 @@ class TestCursor:
         skew = abs((eastern - central) - timedelta(hours=1))
         assert skew <= elapsed + timedelta(seconds=1)
 
+    def test_connection_local_time_zone_default_shifts_naive_timestamp(
+        self, connection: Connection
+    ):
+        """Same round-trip as test_local_time_zone_shifts_naive_timestamp (#168), but driven by
+        the connection-level `Connection.local_time_zone` default instead of a per-call
+        `StatementProperties` -- exercises the connection-default layer in
+        `Connection._build_statement_properties` end to end.
+
+        `connection` is a session-scoped fixture shared with every other integration test, so the
+        mutation is restored in a finally block rather than left set for later tests.
+        """
+        assert connection.local_time_zone is None
+
+        def local_wall_clock(time_zone: str) -> datetime:
+            connection.local_time_zone = time_zone
+            cursor = connection.cursor()
+            cursor.execute("SELECT LOCALTIMESTAMP")
+            row = cursor.fetchone()
+            assert row is not None
+            value = row[0]  # type: ignore[index]
+            assert isinstance(value, datetime)
+            assert value.tzinfo is None
+            return value
+
+        try:
+            started = time.monotonic()
+            eastern = local_wall_clock("America/New_York")
+            central = local_wall_clock("America/Chicago")
+            elapsed = timedelta(seconds=time.monotonic() - started)
+
+            skew = abs((eastern - central) - timedelta(hours=1))
+            assert skew <= elapsed + timedelta(seconds=1)
+        finally:
+            connection.local_time_zone = None
+
     def test_cursor_description_raises_if_closed(self, cursor: Cursor):
         cursor.close()
         with pytest.raises(InterfaceError, match="Cursor is closed"):
