@@ -8,7 +8,12 @@ import pytest
 from confluent_sql import InterfaceError, connect
 from confluent_sql.connection import Connection
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement_properties import Property, SnapshotWriteMode
+from confluent_sql.statement_properties import (
+    Property,
+    ScanStartupMode,
+    SnapshotWriteMode,
+    StatementProperties,
+)
 
 
 @pytest.fixture()
@@ -186,6 +191,44 @@ class TestExecuteStatementProperties:
         # ...and it round-trips through JSON as a bare string, not an enum repr.
         serialized = json.loads(json.dumps(payload))
         assert serialized["spec"]["properties"]["sql.snapshot.write-mode"] == "fast-write"
+
+    def test_statement_properties_object_downgrades_and_reaches_wire(
+        self, invalid_credential_connection, mocker
+    ):
+        """A StatementProperties passed as `properties` is downgraded via to_properties_dict and its
+        options reach the wire alongside the driver's system overlay."""
+        request_mock = self.install_request_mock(invalid_credential_connection, mocker)
+
+        invalid_credential_connection._execute_statement(
+            "SELECT 1",
+            ExecutionMode.SNAPSHOT,
+            properties=StatementProperties(
+                snapshot_write_mode=SnapshotWriteMode.FAST_WRITE,
+                scan_startup_mode=ScanStartupMode.LATEST_OFFSET,
+            ),
+        )
+
+        props = request_mock.call_args[1]["json"]["spec"]["properties"]
+        assert props["sql.snapshot.write-mode"] == "fast-write"
+        assert props["sql.tables.scan.startup.mode"] == "latest-offset"
+        # System overlay still applied on top of the downgraded dict.
+        assert "sql.current-catalog" in props
+        assert props["sql.snapshot.mode"] == "now"
+
+    def test_statement_properties_extra_reserved_key_still_rejected(
+        self, invalid_credential_connection
+    ):
+        """A reserved/driver-owned key smuggled through StatementProperties.extra is rejected by
+        the same wire-validation a raw dict faces -- the downgrade doesn't launder it past the
+        reserved-property check."""
+        with pytest.raises(
+            InterfaceError, match="'sql.snapshot.mode' is a reserved system property"
+        ):
+            invalid_credential_connection._execute_statement(
+                "SELECT 1",
+                ExecutionMode.SNAPSHOT,
+                properties=StatementProperties(extra={"sql.snapshot.mode": "off"}),
+            )
 
     def test_properties_streaming_mode_no_snapshot(self, invalid_credential_connection, mocker):
         """Verify snapshot.mode is not set in streaming mode."""

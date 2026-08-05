@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ColumnTypeDefinition",
     "PropertiesDict",
+    "PropertiesMapping",
     "StrAnyDict",
     "StatementTypeConverter",
     "TypeConverter",
@@ -67,6 +68,11 @@ PropertiesDict: TypeAlias = dict[str | Property, str | int | bool | PropertyValu
 `Property` member; values are str/int/bool or a `PropertyValue` member. The enum arms are
 redundant to the type checker (both subclass str) but document the discoverable options and
 enable autocomplete."""
+
+PropertiesMapping: TypeAlias = Mapping[str | Property, str | int | bool | PropertyValue]
+"""Read-only counterpart to `PropertiesDict` -- same keys and values, but immutable. For a field
+that hands back a snapshot the caller must not mutate (e.g. `StatementProperties.extra`), so type
+checkers reject item assignment rather than allowing a mutation that fails at runtime."""
 
 
 @dataclass
