@@ -257,6 +257,7 @@ def connect(  # noqa: PLR0913
     cloud_region: str | None = None,
     database: str | None = None,
     database_kafka_cluster_id: str | None = None,
+    local_time_zone: str | None = None,
     endpoint: str | None = None,
     controlplane_endpoint: str | None = None,
     dbname: str | None = None,  # deprecated, use database parameter
@@ -327,6 +328,13 @@ def connect(  # noqa: PLR0913
             name→id lookup (which needs a global/cloud key), so they work with only their
             dedicated key pair. Omitted, the id is resolved lazily from `database` via CMK on
             first such use, which requires a global key.
+        local_time_zone: Seeds the read/write `Connection.local_time_zone` property (optional).
+            When set, every statement submitted on this connection carries `sql.local-time-zone`
+            unless the call's own `properties=`/`StatementProperties` already sets it, which takes
+            precedence. `None` (the default) emits nothing -- the server default (`"UTC"`) applies,
+            unchanged from before this parameter existed. Mutate `Connection.local_time_zone` later
+            to change the default for statements submitted afterward; this kwarg is only the
+            initial value.
         endpoint: The base URL for Confluent Cloud API (optional). If not provided, the public
             networking endpoint will be constructed based on the cloud_provider and cloud_region
             parameters in the format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
@@ -419,6 +427,7 @@ def connect(  # noqa: PLR0913
         compute_pool_id=compute_pool_id,
         database=database or dbname,  # dbname is deprecated.
         database_kafka_cluster_id=database_kafka_cluster_id,
+        local_time_zone=local_time_zone,
         controlplane_endpoint=controlplane_endpoint,
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
@@ -472,6 +481,9 @@ class Connection:
 
     _closed: bool
     _database: str | None
+    _local_time_zone: str | None
+    """Connection-level default for `sql.local-time-zone`, or None if unset -- see the
+    local_time_zone property."""
     _organization_id_value: str | None
     """Supplied organization_id, or None if it must be inferred -- see the organization_id
     property. Once resolved (supplied or inferred), holds the final value."""
@@ -533,6 +545,7 @@ class Connection:
         compute_pool_id: str | None = None,
         database: str | None = None,
         database_kafka_cluster_id: str | None = None,
+        local_time_zone: str | None = None,
         controlplane_endpoint: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
@@ -588,6 +601,8 @@ class Connection:
                 (optional). Pre-seeds the Tableflow cluster-id cache so the CMK lookup never
                 fires; otherwise the id is resolved lazily from `database` via CMK (needs a
                 global key).
+            local_time_zone: Seeds the read/write `local_time_zone` property (optional). See the
+                property's docstring for the precedence rules and mutation semantics.
             controlplane_endpoint: Base URL for the control plane (Tableflow, Connect, CMK).
                 Defaults to "https://api.confluent.cloud". Trailing slash stripped if provided.
             result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
@@ -620,6 +635,7 @@ class Connection:
         # Internal state
         self._closed = False
         self._database = database
+        self.local_time_zone = local_time_zone
         # Must exist before the http_user_agent setter runs below, since its guards check these.
         self._flink_client = None
         self._controlplane_client = None
@@ -1385,6 +1401,50 @@ class Connection:
         return self._organization_id_value
 
     @property
+    def local_time_zone(self) -> str | None:
+        """
+        Get the connection-level default for `sql.local-time-zone`, or None if unset.
+
+        Returns:
+            The current default time zone (a TZDB id like "America/Los_Angeles" or a fixed
+            offset like "GMT+03:00"), or None if no connection-level default is set -- in which
+            case the server default ("UTC") applies unless a statement sets its own
+            `local_time_zone` via `properties=`/`StatementProperties`.
+        """
+        return self._local_time_zone
+
+    @local_time_zone.setter
+    def local_time_zone(self, value: str | None) -> None:
+        """
+        Set the connection-level default for `sql.local-time-zone`.
+
+        Every statement submitted after this assignment carries `sql.local-time-zone` set to
+        `value`, unless that statement's own `properties=`/`StatementProperties` already sets
+        `local_time_zone`, which takes precedence. Set to None to stop emitting a connection
+        default (the server default, "UTC", then applies unless a per-statement value is given).
+
+        There is no server-side session to update, so this affects only statements submitted
+        *after* the assignment -- consistent with `threadsafety = 1` (connections are not shared
+        across threads, so there's no concurrent-mutation hazard to guard against here).
+
+        Args:
+            value: The time zone to default to, or None to unset. No format validation is
+                   performed beyond the Python type -- an invalid TZDB id/offset surfaces as a
+                   server-side error on the next statement submission.
+
+        Raises:
+            InterfaceError: If value is not a string or None.
+
+        Example:
+            conn.local_time_zone = "America/Chicago"
+        """
+        if value is not None and not isinstance(value, str):
+            raise InterfaceError(
+                f"local_time_zone must be a str or None, got {type(value).__name__}"
+            )
+        self._local_time_zone = value
+
+    @property
     def http_timeout_secs(self) -> float:
         """
         Get the effective timeout (in seconds) applied to HTTP requests, which is
@@ -1460,14 +1520,18 @@ class Connection:
         execution_mode: ExecutionMode,
     ) -> PropertiesDict:
         """
-        Normalize/validate user properties, then overlay system properties on top.
+        Normalize/validate user properties, fill in connection-level defaults, then overlay
+        system properties on top.
 
         Normalization and validation (is it dict-shaped, are keys strings and values
         str/int/bool, are any driver-owned keys present) is pure property-domain policy and
-        lives in `validate_properties_dict` -- this method just calls it, then stamps the
-        connection/execution overlay (catalog, database, snapshot mode) that only `Connection`
-        has the identity and execution-mode context to know. System properties always have
-        precedence and cannot be overridden by user input.
+        lives in `validate_properties_dict` -- this method just calls it, then fills in any unset
+        connection-level defaults (`local_time_zone`, #168), then stamps the connection/execution
+        overlay (catalog, database, snapshot mode) that only `Connection` has the identity and
+        execution-mode context to know. System properties always have precedence and cannot be
+        overridden by user input; a connection-level default sits below that -- it fills in only
+        where the caller's own properties are silent, and never displaces an explicit per-call
+        value.
 
         Args:
             properties: Optional user-provided statement properties -- either a raw dict (keys
@@ -1477,12 +1541,17 @@ class Connection:
             execution_mode: The execution mode (determines if snapshot.mode is set).
 
         Returns:
-            Merged properties dictionary with system properties overlaid.
+            Merged properties dictionary with connection-level defaults and system properties
+            overlaid.
 
         Raises:
             InterfaceError: If properties parameter is invalid (not a dict, invalid keys/values).
         """
         merged_properties = validate_properties_dict(properties)
+
+        # Connection-level default (#168): fills in only when the caller didn't already set it.
+        if self._local_time_zone is not None and Property.LOCAL_TIME_ZONE not in merged_properties:
+            merged_properties[Property.LOCAL_TIME_ZONE] = self._local_time_zone
 
         # Connection-level properties overlay (always set, cannot be overridden by user)
         merged_properties[Property.CURRENT_CATALOG] = self.environment_id
