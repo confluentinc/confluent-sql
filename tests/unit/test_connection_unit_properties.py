@@ -9,6 +9,7 @@ from confluent_sql import InterfaceError, connect
 from confluent_sql.connection import Connection
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement_properties import (
+    DRIVER_OWNED_PROPERTIES,
     Property,
     ScanStartupMode,
     SnapshotWriteMode,
@@ -172,11 +173,11 @@ class TestExecuteStatementProperties:
     def test_properties_enum_key_and_value_reach_wire_as_strings(
         self, invalid_credential_connection, mocker
     ):
-        """A bare Property key and PropertyValue value survive _resolve_properties and serialize to
-        their wire strings -- guards the public #162 promise (enum members are usable directly in
-        properties=) against a future normalization/re-validation step in the merge dropping or
-        mangling them. Wire strings are asserted as literals, independent of the enums under
-        test."""
+        """A bare Property key and PropertyValue value survive _build_statement_properties and
+        serialize to their wire strings -- guards the public #162 promise (enum members are usable
+        directly in properties=) against a future normalization/re-validation step in the merge
+        dropping or mangling them. Wire strings are asserted as literals, independent of the enums
+        under test."""
         request_mock = self.install_request_mock(invalid_credential_connection, mocker)
 
         invalid_credential_connection._execute_statement(
@@ -290,3 +291,28 @@ class TestExecuteStatementProperties:
                 ExecutionMode.SNAPSHOT,
                 properties={reserved_member: "user-value"},
             )
+
+
+@pytest.mark.unit
+class TestDriverOwnedPropertiesInvariant:
+    """`DRIVER_OWNED_PROPERTIES` and the overlay it gates must stay in lockstep (#166): every key
+    the overlay stamps is rejected from caller input, and vice versa."""
+
+    def test_overlay_stamped_keys_match_driver_owned_properties(self):
+        """Drives the overlay for real (database set, snapshot mode) with no user properties, so
+        the resulting key set is exactly what `_build_statement_properties` stamps -- not a
+        hand-duplicated literal that could drift from `DRIVER_OWNED_PROPERTIES` unnoticed."""
+        conn = connect(
+            environment_id="env-id",
+            organization_id="org-id",
+            compute_pool_id="cp-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            flink_api_key="key",
+            flink_api_secret="secret",
+            database="mydb",
+        )
+
+        merged = conn._build_statement_properties({}, ExecutionMode.SNAPSHOT)
+
+        assert set(merged.keys()) == DRIVER_OWNED_PROPERTIES

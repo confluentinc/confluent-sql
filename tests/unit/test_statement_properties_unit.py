@@ -9,6 +9,7 @@ import pytest
 import confluent_sql
 from confluent_sql import InterfaceError
 from confluent_sql.statement_properties import (
+    DRIVER_OWNED_PROPERTIES,
     Property,
     PropertyValue,
     ScanStartupMode,
@@ -16,6 +17,7 @@ from confluent_sql.statement_properties import (
     SnapshotWriteMode,
     StatementProperties,
     _to_flink_duration,
+    validate_properties_dict,
 )
 
 # Every sql.* statement key from the "Available SET options" table, verbatim off the wire.
@@ -310,6 +312,77 @@ class TestStatementProperties:
         sp = StatementProperties(extra=source)
         source["sql.another-future-option"] = "y"
         assert sp.to_properties_dict() == {"sql.some.future-option": "x"}
+
+
+@pytest.mark.unit
+class TestDriverOwnedProperties:
+    """The frozenset of keys `validate_properties_dict` rejects from caller input (#166)."""
+
+    def test_is_exactly_catalog_database_and_snapshot_mode(self):
+        expected = {Property.CURRENT_CATALOG, Property.CURRENT_DATABASE, Property.SNAPSHOT_MODE}
+        assert expected == DRIVER_OWNED_PROPERTIES
+
+
+@pytest.mark.unit
+class TestValidatePropertiesDict:
+    """Normalization + validation of a caller-supplied `properties` argument (#166): downgrades a
+    `StatementProperties`, treats `None` as empty, and otherwise enforces the same dict/key/value
+    shape and driver-owned-key rejection `Connection._build_statement_properties` used to inline."""
+
+    def test_none_becomes_empty_dict(self):
+        assert validate_properties_dict(None) == {}
+
+    def test_statement_properties_is_downgraded(self):
+        sp = StatementProperties(snapshot_write_mode=SnapshotWriteMode.FAST_WRITE)
+        assert validate_properties_dict(sp) == {"sql.snapshot.write-mode": "fast-write"}
+
+    def test_plain_dict_passes_through_by_value(self):
+        """The returned dict is a distinct object from the caller's, so a subsequent overlay step
+        can add keys without mutating the caller's own dict."""
+        source: dict = {"custom-prop": "value"}
+        result = validate_properties_dict(source)
+        assert result == source
+        assert result is not source
+        result["another-prop"] = "other-value"
+        assert "another-prop" not in source
+
+    def test_rejects_non_dict(self):
+        with pytest.raises(
+            InterfaceError, match="properties must be a dict or StatementProperties, got str"
+        ):
+            validate_properties_dict("not-a-dict")  # type: ignore[arg-type]
+
+    def test_rejects_non_string_key(self):
+        with pytest.raises(InterfaceError, match="properties keys must be strings, got int"):
+            validate_properties_dict({123: "value"})  # type: ignore[dict-item]
+
+    @pytest.mark.parametrize(
+        "invalid_value",
+        [[1, 2, 3], {"nested": "dict"}, 3.14, None],
+    )
+    def test_rejects_invalid_value_type(self, invalid_value):
+        with pytest.raises(InterfaceError, match="properties values must be str, int, or bool"):
+            validate_properties_dict({"key": invalid_value})
+
+    @pytest.mark.parametrize(
+        ("key", "wire_key"),
+        [
+            ("sql.current-catalog", "sql.current-catalog"),
+            (Property.CURRENT_DATABASE, "sql.current-database"),
+            (Property.SNAPSHOT_MODE, "sql.snapshot.mode"),
+        ],
+    )
+    def test_rejects_driver_owned_key(self, key, wire_key):
+        """A driver-owned key is rejected whether supplied as a raw string or a `Property`
+        member."""
+        with pytest.raises(InterfaceError, match=f"'{wire_key}' is a reserved system property"):
+            validate_properties_dict({key: "user-value"})
+
+    def test_rejects_driver_owned_key_smuggled_through_statement_properties_extra(self):
+        with pytest.raises(
+            InterfaceError, match="'sql.snapshot.mode' is a reserved system property"
+        ):
+            validate_properties_dict(StatementProperties(extra={"sql.snapshot.mode": "off"}))
 
 
 @pytest.mark.unit
