@@ -212,7 +212,7 @@ class TestByoidcDatabaseOptional:
         under BYOIDC never trips the control-plane fail-closed guard (no CMK lookup involved)."""
         conn = _byoidc_connect(database=database)
 
-        properties = conn._resolve_properties(None, ExecutionMode.SNAPSHOT)
+        properties = conn._build_statement_properties(None, ExecutionMode.SNAPSHOT)
 
         assert properties["sql.current-catalog"] == "env-1"
         if expected_current_database is None:

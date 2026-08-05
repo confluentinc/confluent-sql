@@ -11,7 +11,7 @@ string semantics -- rather than `enum.StrEnum`, because the repo floor is Python
 is 3.11+ (`(str, Enum)` is also the house style: `TableFormat`, `ConnectorState`, `TableflowPhase`).
 Members are genuine `str` instances: they compare and hash as their wire string, so they drop
 straight into `PropertiesDict`, satisfy the `isinstance(v, (str, int, bool))` validation in
-`Connection._resolve_properties`, JSON-serialize to the bare wire string, and (via `_PropertyEnum`)
+`validate_properties_dict`, JSON-serialize to the bare wire string, and (via `_PropertyEnum`)
 stringify to it in logs and error messages too -- all with no `.value` unwrapping at the call site.
 """
 
@@ -71,6 +71,17 @@ class Property(_PropertyEnum):
     SCAN_WATERMARK_ALIGNMENT_MAX_ALLOWED_DRIFT = (
         "sql.tables.scan.watermark-alignment.max-allowed-drift"
     )
+
+
+DRIVER_OWNED_PROPERTIES: frozenset[Property] = frozenset(
+    {Property.CURRENT_CATALOG, Property.CURRENT_DATABASE, Property.SNAPSHOT_MODE}
+)
+"""Statement properties the driver owns and overlays itself from connection/execution state (the
+active catalog, database, and snapshot mode). They are not knobs a caller may set, so
+`validate_properties_dict` rejects any of these appearing in a user-supplied properties dict rather
+than silently letting the driver's overlay win. Kept in lockstep with the overlay that stamps
+these keys (`Connection._build_statement_properties`) -- see the invariant test asserting the two
+sets are equal."""
 
 
 class PropertyValue(_PropertyEnum):
@@ -259,3 +270,51 @@ class StatementProperties:
         if self.local_time_zone is not None:
             props[Property.LOCAL_TIME_ZONE] = self.local_time_zone
         return props
+
+
+def validate_properties_dict(
+    properties: PropertiesDict | StatementProperties | None,
+) -> PropertiesDict:
+    """Normalize and validate a caller-supplied `properties` argument into a fresh wire dict.
+
+    Accepts a raw `PropertiesDict`, a `StatementProperties` (downgraded via `to_properties_dict()`),
+    or `None` (treated as empty). Validates that the result is a dict, every key is a `str`, every
+    value is `str | int | bool`, and no key is in `DRIVER_OWNED_PROPERTIES` -- those are stamped by
+    the driver's own connection/execution overlay and are not a caller knob.
+
+    Always returns a dict distinct from any dict the caller passed in, so a subsequent overlay step
+    can add keys without mutating caller state.
+
+    Raises:
+        InterfaceError: if `properties` is not a dict/StatementProperties/None, a key isn't a str,
+            a value isn't str/int/bool, or a key is driver-owned.
+    """
+    if properties is None:
+        return {}
+
+    if not isinstance(properties, (dict, StatementProperties)):
+        raise InterfaceError(
+            f"properties must be a dict or StatementProperties, got {type(properties).__name__}"
+        )
+
+    # to_properties_dict() already hands back a dict fresh from this call, owned by no one else --
+    # copying it again below would just be a second allocation for nothing. A raw dict, in
+    # contrast, is the caller's own object and must be copied before we or the overlay step touch
+    # it.
+    if downgraded_from_statement_properties := isinstance(properties, StatementProperties):
+        properties = properties.to_properties_dict()
+
+    for key, value in properties.items():
+        if not isinstance(key, str):
+            raise InterfaceError(
+                f"properties keys must be strings, got {type(key).__name__} for key {key!r}"
+            )
+        if not isinstance(value, (str, int, bool)):
+            raise InterfaceError(
+                f"properties values must be str, int, or bool, "
+                f"got {type(value).__name__} for key {key!r}"
+            )
+        if key in DRIVER_OWNED_PROPERTIES:
+            raise InterfaceError(f"'{key}' is a reserved system property.")
+
+    return properties if downgraded_from_statement_properties else dict(properties)
