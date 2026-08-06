@@ -223,11 +223,15 @@ class StatementProperties:
         InterfaceError here rather than a TypeError deep in rendering (e.g. a str `state_ttl`
         reaching `_to_flink_duration`). Enum-typed fields accept their bare `str` too."""
         self._reject_wrong_type(
-            "snapshot_write_mode", self.snapshot_write_mode, str,
+            "snapshot_write_mode",
+            self.snapshot_write_mode,
+            str,
             "a SnapshotWriteMode, a raw str, or None",
         )
         self._reject_wrong_type(
-            "scan_startup_mode", self.scan_startup_mode, str,
+            "scan_startup_mode",
+            self.scan_startup_mode,
+            str,
             "a ScanStartupMode, a raw str, or None",
         )
         self._reject_wrong_type("state_ttl", self.state_ttl, timedelta, "a timedelta or None")
@@ -241,9 +245,7 @@ class StatementProperties:
     ) -> None:
         """Reject a non-None field value that isn't an instance of `expected`; None is always ok."""
         if value is not None and not isinstance(value, expected):
-            raise InterfaceError(
-                f"{field_name} must be {description}, got {type(value).__name__}"
-            )
+            raise InterfaceError(f"{field_name} must be {description}, got {type(value).__name__}")
 
     def _reject_extra_collisions(self) -> None:
         """Reject any `extra` key a typed field already models -- one spelling per property."""
