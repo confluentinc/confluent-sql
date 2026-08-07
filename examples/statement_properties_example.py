@@ -29,8 +29,8 @@ try:
     # StatementProperties (recommended): typed fields, validated at construction. Only fields you
     # set are emitted, so unset ones never pin a server default.
 
-    # This example is a bit silly, considering these particular properties would not affect this query,
-    # but it illustrates the API.
+    # This example is a bit silly, considering these particular properties would not affect this
+    # query, but it illustrates the API.
     cursor.execute(
         "SELECT * FROM orders WHERE status = %s",
         ("pending",),
@@ -43,7 +43,8 @@ try:
             extra={Property.SCAN_IDLE_TIMEOUT: "30 s"},
         ),
     )
-    # See the concrete submitted properties, including the connection-level default for local_time_zone.
+    # See the concrete submitted properties, including the connection-level default for
+    # local_time_zone.
     print(f"statement.properties: {cursor.statement.properties}")
 
     # The equivalent raw dict form -- useful for a one-off option StatementProperties doesn't
