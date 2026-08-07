@@ -1037,6 +1037,7 @@ cursor.execute(
     statement_name: str | None = None,
     statement_labels: list[str] | None = None,
     properties: dict[str, str | int | bool] | StatementProperties | None = None,
+    compute_pool_id: str | None = None,
 ) -> None
 ```
 
@@ -1050,6 +1051,7 @@ cursor.execute(
 | `statement_name`   | `str \| None`                     | None       | Custom statement identifier (defaults to UUID)                     |
 | `statement_labels` | `list[str] \| None`               | None       | List of labels for grouping related statements                     |
 | `properties`       | `dict[str, str \| int \| bool] \| StatementProperties \| None` | None | [Statement properties](#statement-properties) to set for execution |
+| `compute_pool_id`  | `str \| None`                     | None       | Compute pool to run this statement on, overriding the connection's default |
 
 ### Statement Properties
 
@@ -1114,7 +1116,7 @@ raw dict would be.
 
 **Accessing Properties After Execution:**
 The properties are stored in the cursor-captured Statement object and can be accessed via
-`statement.properties`. It will be a dict of str -> [str | bool | int]:
+`statement.properties`, a `dict[str, str | int | bool]`:
 
 ```python
 cursor.execute(query, properties={"sql.state-ttl": "100 ms"})
