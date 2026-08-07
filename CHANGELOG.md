@@ -4,6 +4,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+## 0.5.0, 2026-08-07
+
 ### Added
 
 - `connect()`/`Connection()` accept a `local_time_zone` keyword argument that seeds a read/write `Connection.local_time_zone` property: a connection-level default for the `sql.local-time-zone` statement property, applied to every statement created by the connection unless that statement's own `properties=`/`StatementProperties` sets `local_time_zone`, which takes precedence.
