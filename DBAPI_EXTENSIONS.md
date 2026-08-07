@@ -1108,7 +1108,7 @@ raw dict would be.
 **Important Precedence Rules:**
 - System properties are always applied and cannot be overridden by the caller: the connection's
   catalog/database and the cursor's execution mode (e.g. `sql.snapshot.mode` for snapshot queries).
-- The connection-level `local_time_zone` default (see [`Connection.local_time_zone`](#connection-level-local-time-zone-default) below) fills in `sql.local-time-zone` only when the
+- The connection-level `local_time_zone` default (see [`Connection.local_time_zone`](#connection-level-local_time_zone-default) below) fills in `sql.local-time-zone` only when the
   call's own `properties` didn't already set it.
 - User-provided properties in the `properties` parameter can set anything not covered by the two
   rules above, but attempting to set a system property (e.g. `sql.current-catalog`) raises

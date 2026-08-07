@@ -39,7 +39,9 @@ try:
             snapshot_write_mode=SnapshotWriteMode.FAST_WRITE,
             scan_startup_mode=ScanStartupMode.EARLIEST_OFFSET,
             # `extra` escape hatch for a property not yet a typed field; `Property` still gives
-            # the key autocomplete and validation even though the value stays a raw string.
+            # the key autocomplete and validation even though the value stays a raw string. A
+            # bare string key works here too (e.g. "sql.tables.scan.idle-timeout") -- `Property`
+            # members are plain str instances, not a special type `extra` requires.
             extra={Property.SCAN_IDLE_TIMEOUT: "30 s"},
         ),
     )
