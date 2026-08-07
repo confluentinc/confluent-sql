@@ -577,6 +577,9 @@ against the table.
 In Confluent Flink a table is backed by a like-named Kafka topic, so the `table_name` you pass is
 both the Flink table and the topic — no escaping or casing translation.
 
+A runnable example covering the full enable/get/disable lifecycle is in
+[examples/tableflow_lifecycle_example.py](examples/tableflow_lifecycle_example.py).
+
 > **Not available under BYOIDC.** Tableflow is a control-plane surface, and Confluent's
 > authorization model accepts no BYOIDC bearer token there. A connection authenticated with
 > `external_access_token` / `identity_pool_id` (see the README's [BYOIDC bearer-token
@@ -1033,7 +1036,8 @@ cursor.execute(
     timeout: int = 3000,
     statement_name: str | None = None,
     statement_labels: list[str] | None = None,
-    properties: dict[str, str | int | bool] | None = None,
+    properties: dict[str, str | int | bool] | StatementProperties | None = None,
+    compute_pool_id: str | None = None,
 ) -> None
 ```
 
@@ -1046,20 +1050,73 @@ cursor.execute(
 | `timeout`          | `int`                             | 3000       | Max seconds to wait for statement to reach RUNNING/COMPLETED phase |
 | `statement_name`   | `str \| None`                     | None       | Custom statement identifier (defaults to UUID)                     |
 | `statement_labels` | `list[str] \| None`               | None       | List of labels for grouping related statements                     |
-| `properties`       | `dict[str, str \| int \| bool] \| None` | None | [Statement properties](#statement-properties) to set for execution |
+| `properties`       | `dict[str, str \| int \| bool] \| StatementProperties \| None` | None | [Statement properties](#statement-properties) to set for execution |
+| `compute_pool_id`  | `str \| None`                     | None       | Compute pool to run this statement on, overriding the connection's default |
 
 ### Statement Properties
 
-The `properties` parameter allows you to set [Flink SQL statement properties](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html#table-options) at query execution time. These are the same properties that can be set with Flink SQL `SET` statements.
+The `properties` parameter sets [Flink SQL statement properties](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html#table-options) at query execution time — the same properties Flink SQL `SET` statements control. There are two ways to provide them:
+
+- **`StatementProperties`** (recommended) — a frozen, keyword-only dataclass covering the curated
+  options below, discoverable via autocomplete and validated at construction time instead of at
+  the server. A wrong-property enum value (e.g. a `SnapshotMode` passed to `scan_startup_mode`), a
+  field of the wrong Python type, or an `extra` key that duplicates a modeled field all raise
+  immediately:
+
+  ```python
+  from confluent_sql import Property, ScanStartupMode, SnapshotWriteMode, StatementProperties
+  from datetime import timedelta
+
+  cursor.execute(
+      "SELECT * FROM orders WHERE status = %s",
+      ("pending",),
+      properties=StatementProperties(
+          state_ttl=timedelta(hours=1),                  # -> "3600 s"
+          snapshot_write_mode=SnapshotWriteMode.FAST_WRITE,
+          scan_startup_mode=ScanStartupMode.EARLIEST_OFFSET,
+          # `extra` escape hatch for a property not yet a typed field; Keys can
+          # either be Property enums or strings.
+          extra={Property.SCAN_IDLE_TIMEOUT: "30 s"},
+      ),
+  )
+  ```
+
+  The set of modeled fields grows over time -- see the `StatementProperties` docstring/source for
+  the current list -- but the shape is uniform: only fields you actually set are emitted, so an
+  unset field never pins a server default or collides with the driver's own overlay, and each
+  enum-typed field also accepts a bare `str`, so a Flink value newer than this driver's enum can
+  still be passed through without waiting for a driver release.
+
+- **A raw `dict[str, str | int | bool]`** — the original, open-ended form. Any `sql.*` key is
+  accepted, keyed by the string from the [SET-options
+  reference](https://docs.confluent.io/cloud/current/flink/reference/statements/set.html), which is
+  useful for options `StatementProperties` doesn't model yet (equivalent to `extra` above, without
+  needing to go via the dataclass):
+
+  ```python
+  cursor.execute(query, properties={"sql.state-ttl": "3600 s"})
+  ```
+
+  `confluent_sql.Property` enumerates the known `sql.*` keys (e.g. `Property.STATE_TTL`) if you
+  want autocomplete on the keys without adopting the full dataclass; members are plain `str`
+  instances, so they drop straight into the dict with no `.value` unwrapping.
+
+Both forms are validated identically — a `StatementProperties` is downgraded to a dict internally
+before the same checks run, so a reserved key smuggled through `extra` is rejected the same way a
+raw dict would be.
 
 **Important Precedence Rules:**
-- Connection-level defaults (catalog, database) are always applied
-- Cursor execution mode settings (e.g., `sql.snapshot.mode` for snapshot queries) are always applied
-- User-provided properties in the `properties` parameter can extend these settings but cannot override system properties
-
+- System properties are always applied and cannot be overridden by the caller: the connection's
+  catalog/database and the cursor's execution mode (e.g. `sql.snapshot.mode` for snapshot queries).
+- The connection-level `local_time_zone` default (see [`Connection.local_time_zone`](#connection-level-local_time_zone-default) below) fills in `sql.local-time-zone` only when the
+  call's own `properties` didn't already set it.
+- User-provided properties in the `properties` parameter can set anything not covered by the two
+  rules above, but attempting to set a system property (e.g. `sql.current-catalog`) raises
+  `InterfaceError` rather than being silently overridden.
 
 **Accessing Properties After Execution:**
-The properties are stored in the Statement object and can be accessed via `statement.properties`:
+The properties are stored in the cursor-captured Statement object and can be accessed via
+`statement.properties`, a `dict[str, str | int | bool]`:
 
 ```python
 cursor.execute(query, properties={"sql.state-ttl": "100 ms"})
@@ -1067,7 +1124,31 @@ props = cursor.statement.properties
 assert props["sql.state-ttl"] == "100 ms"
 ```
 
-**Examples:**
+### Connection-level `local_time_zone` default
+
+`Connection.local_time_zone` (also settable via `connect(local_time_zone=...)`) is a read/write
+property that seeds `sql.local-time-zone` for every statement the connection executes, so you don't
+have to repeat it on each `execute()` call:
+
+```python
+connection.local_time_zone = "America/Chicago"
+cursor.execute("SELECT CURRENT_TIMESTAMP")  # runs with sql.local-time-zone = America/Chicago
+
+# A statement can still override it for itself:
+cursor.execute(
+    "SELECT CURRENT_TIMESTAMP",
+    properties=StatementProperties(local_time_zone="America/Los_Angeles"),
+)
+```
+
+The connection-level value only fills in where a statement's own `properties`
+(dict or `StatementProperties`) didn't already set `sql.local-time-zone` — it never overrides an
+explicit per-call value. Set it to `None` to stop emitting a default.
+
+A runnable example covering both property forms and the connection-level default is in
+[examples/statement_properties_example.py](examples/statement_properties_example.py).
+
+**General Usage Examples:**
 
 ```python
 # Basic execution
@@ -1079,7 +1160,7 @@ cursor.execute("SELECT * FROM users WHERE age > %s", (18,))
 # With custom timeout
 cursor.execute(
     "SELECT * FROM users",
-    timeout=5000  # Wait up to 5000 seconds
+    timeout=100  # Wait up to 100 seconds
 )
 
 # With statement naming
@@ -1089,7 +1170,7 @@ cursor.execute(
     statement_name="completed-orders-daily"
 )
 
-# With statement labeling (for batch operations)
+# With statement labeling
 cursor.execute(
     "CREATE TABLE orders_backup AS SELECT * FROM orders",
     statement_labels=["daily-backups", "batch-job"]
@@ -1104,12 +1185,20 @@ cursor.execute(
     statement_labels=["analytics", "hourly"]
 )
 
-# With statement properties
+# With statement properties (raw dict)
 cursor.execute(
     "SELECT * FROM orders WHERE status = %s",
     ("pending",),
     statement_name="pending-orders-query",
     properties={"sql.state-ttl": "100 ms"}
+)
+
+# With statement properties (StatementProperties)
+cursor.execute(
+    "SELECT * FROM orders WHERE status = %s",
+    ("pending",),
+    statement_name="pending-orders-query",
+    properties=StatementProperties(state_ttl=timedelta(milliseconds=100)),
 )
 ```
 
