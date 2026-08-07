@@ -179,6 +179,7 @@ This driver extends the standard DB-API v2 interface with additional features:
 - **Streaming cursors** - Non-blocking result consumption from continuous queries
 - **Changelog compression** - Automatic state management for aggregations and joins
 - **Statement lifecycle management** - Named statements, labels, and resource management
+- **Statement properties** - execution controls not expressable inline within the SQL statement
 - **Type system** - Full support for all Flink SQL types including streaming-specific types
 - **Performance monitoring** - Built-in fetch metrics and introspection
 
