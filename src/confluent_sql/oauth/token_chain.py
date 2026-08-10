@@ -17,13 +17,10 @@ claim out of the returned token itself -- standard client-side practice for read
 stated lifetime (no signature verification needed; we are not authorizing anything with the
 decode), and it self-corrects if Confluent ever changes the server-side lifetime.
 
-Every exchange funnels its request through `_post_json`, which is what keeps this module's DB-API
-promise: only `Error` subclasses (here, always `OperationalError`) ever escape to a caller. Left
-unwrapped, a transport failure would raise a bare `httpx.RequestError`, and a malformed or
-short-of-a-required-field response body would raise `json.JSONDecodeError`/`KeyError` -- all
-non-DB-API exceptions with no place in this driver's public surface. `_post_json` normalizes the
-first two; `_required_field` normalizes the third for every `dict` field this module reads out of
-a parsed response.
+Every exchange funnels its request through `http_json.post_json`, which is what keeps this
+module's DB-API promise: only `Error` subclasses (here, always `OperationalError`) ever escape to
+a caller -- see that module's docstring for the shared hardening this and later oauth-package
+modules (#152's callback server, #153's provider) build on.
 """
 
 from __future__ import annotations
@@ -31,15 +28,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 import httpx
 
 from ..exceptions import OperationalError
 from .config import CCloudOAuthConfig
+from .http_json import best_effort_json_object, optional_object_field, post_json, require_field
 
 
 @dataclass(frozen=True)
@@ -77,7 +73,7 @@ def exchange_code_for_tokens(
 ) -> CodeExchangeResult:
     """Hop 1's code leg: POST config.token_url with the PKCE verifier, trading the
     authorization code the callback server captured for an id_token + refresh_token."""
-    body = _post_json(
+    body = post_json(
         client,
         config.token_url,
         check_response=_raise_for_auth0_error,
@@ -91,8 +87,8 @@ def exchange_code_for_tokens(
     )
     context = "the code exchange"
     return CodeExchangeResult(
-        id_token=_required_field(body, "id_token", context=context),
-        refresh_token=_required_field(body, "refresh_token", context=context),
+        id_token=require_field(body, "id_token", context=context),
+        refresh_token=require_field(body, "refresh_token", context=context),
     )
 
 
@@ -104,7 +100,7 @@ def exchange_refresh_token(
     that must replace the one just spent. This function performs the exchange only; persisting
     the rotated token before anything else is the caller's responsibility (see
     oauth-research-and-plan.md §2's persist-before-exchange ordering, landing with #153)."""
-    body = _post_json(
+    body = post_json(
         client,
         config.token_url,
         check_response=_raise_for_auth0_error,
@@ -116,8 +112,8 @@ def exchange_refresh_token(
     )
     context = "the refresh exchange"
     return CodeExchangeResult(
-        id_token=_required_field(body, "id_token", context=context),
-        refresh_token=_required_field(body, "refresh_token", context=context),
+        id_token=require_field(body, "id_token", context=context),
+        refresh_token=require_field(body, "refresh_token", context=context),
     )
 
 
@@ -135,14 +131,14 @@ def exchange_id_token_for_cp_token(
     request_body: dict[str, str] = {"id_token": id_token}
     if org_resource_id is not None:
         request_body["org_resource_id"] = org_resource_id
-    payload = _post_json(
+    payload = post_json(
         client,
         f"{config.api_host}/api/sessions",
         check_response=_raise_for_confluent_api_error,
         json=request_body,
     )
-    token = _required_field(payload, "token", context="the control-plane token exchange")
-    organization = payload.get("organization") or {}
+    token = require_field(payload, "token", context="the control-plane token exchange")
+    organization = optional_object_field(payload, "organization")
     return ControlPlaneTokenResult(
         token=token,
         expires_at=_jwt_exp(token),
@@ -156,71 +152,38 @@ def exchange_cp_for_dp_token(
     """Hop 3: POST {api_host}/api/access_tokens, bearing the control-plane token, minting a
     data-plane token. The response's regional_token is unused -- Flink, like every other
     data-plane consumer, wants the plain token (see oauth-research-and-plan.md)."""
-    payload = _post_json(
+    payload = post_json(
         client,
         f"{config.api_host}/api/access_tokens",
         check_response=_raise_for_confluent_api_error,
         headers={"Authorization": f"Bearer {cp_token}"},
         json={},
     )
-    token = _required_field(payload, "token", context="the data-plane token exchange")
+    token = require_field(payload, "token", context="the data-plane token exchange")
     return DataPlaneTokenResult(token=token, expires_at=_jwt_exp(token))
-
-
-def _post_json(
-    client: httpx.Client,
-    url: str,
-    *,
-    check_response: Callable[[httpx.Response], None],
-    **kwargs: Any,
-) -> dict[str, Any]:
-    """POST url and return its parsed JSON body, translating every failure mode into
-    OperationalError so no bare httpx or json exception escapes this module: a transport-level
-    failure (no response at all), check_response's non-2xx handling (_raise_for_auth0_error /
-    _raise_for_confluent_api_error), and a 2xx body that isn't valid JSON are all normalized
-    here."""
-    try:
-        response = client.post(url, **kwargs)
-    except httpx.RequestError as e:
-        raise OperationalError(f"error sending OAuth request: {type(e).__name__}: {e}") from e
-    check_response(response)
-    try:
-        return response.json()
-    except ValueError as e:
-        raise OperationalError(f"Could not parse OAuth response as JSON: {e}") from e
-
-
-def _required_field(body: dict[str, Any], field: str, *, context: str) -> Any:
-    """Read body[field], raising OperationalError instead of KeyError if a 2xx response is
-    missing a field this module depends on -- a server contract violation, which belongs in the
-    same DB-API exception hierarchy as every other OAuth chain failure, not a bare KeyError."""
-    try:
-        return body[field]
-    except KeyError as e:
-        raise OperationalError(f"OAuth response for {context} is missing '{field}'") from e
 
 
 def _jwt_exp(token: str) -> datetime:
     """Decode the unverified `exp` claim out of a JWT's payload segment. Raises OperationalError
-    if the token isn't a decodable JWT or carries no `exp` claim -- fail fast on a data-shape
-    mismatch rather than silently guessing a fallback lifetime."""
+    if the token isn't a decodable JWT, its payload isn't an object, its `exp` claim is missing
+    or non-numeric, or `exp` is out of datetime's representable range -- fail fast on any of
+    those data-shape mismatches rather than silently guessing a fallback lifetime. The
+    fromtimestamp conversion is deliberately inside the try: an out-of-range exp raises
+    OverflowError/OSError there, which must be caught same as a decode failure."""
     try:
         _header, payload_segment, _signature = token.split(".")
         padded = payload_segment + "=" * (-len(payload_segment) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded))
         exp = payload["exp"]
-    except (ValueError, KeyError, binascii.Error) as e:
+        return datetime.fromtimestamp(exp, tz=timezone.utc)
+    except (ValueError, KeyError, TypeError, OverflowError, OSError, binascii.Error) as e:
         raise OperationalError(f"Could not parse 'exp' claim from token: {e}") from e
-    return datetime.fromtimestamp(exp, tz=timezone.utc)
 
 
 def _raise_for_auth0_error(response: httpx.Response) -> None:
     if response.is_success:
         return
-    try:
-        body = response.json()
-    except ValueError:
-        body = {}
+    body = best_effort_json_object(response)
     message = body.get("error_description") or body.get("error") or response.text
     raise OperationalError(
         f"Auth0 token request failed: {message}", http_status_code=response.status_code
@@ -230,10 +193,7 @@ def _raise_for_auth0_error(response: httpx.Response) -> None:
 def _raise_for_confluent_api_error(response: httpx.Response) -> None:
     if response.is_success:
         return
-    try:
-        body = response.json()
-    except ValueError:
-        body = {}
+    body = best_effort_json_object(response)
     message = body.get("message") or body.get("error") or response.text
     raise OperationalError(
         f"Confluent Cloud API request failed: {message}", http_status_code=response.status_code

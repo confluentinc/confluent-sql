@@ -104,6 +104,23 @@ class TestExchangeCodeForTokens:
         with _client(handler) as client, pytest.raises(OperationalError, match="id_token"):
             exchange_code_for_tokens(client, CONFIG, code="auth-code-123", verifier="verifier-abc")
 
+    def test_non_object_response_raises_operational_error_not_attribute_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=["id-tok", "refresh-tok"])
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="object"):
+            exchange_code_for_tokens(client, CONFIG, code="auth-code-123", verifier="verifier-abc")
+
+    def test_non_object_auth0_error_body_still_raises_operational_error(self):
+        """A non-2xx response whose valid JSON body is a list, not an object, must still surface
+        as OperationalError -- not AttributeError out of _raise_for_auth0_error's own body.get()."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json=["unexpected", "error", "shape"])
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="Auth0"):
+            exchange_code_for_tokens(client, CONFIG, code="bad-code", verifier="verifier-abc")
+
 
 class TestExchangeRefreshToken:
     def test_sends_expected_request_and_parses_response(self):
@@ -205,6 +222,63 @@ class TestExchangeIdTokenForCpToken:
 
         with _client(handler) as client, pytest.raises(OperationalError, match="token"):
             exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
+
+    def test_non_object_organization_field_raises_operational_error_not_attribute_error(self):
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"token": cp_jwt, "organization": "not-an-object"})
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="not an object"):
+            exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
+
+
+class TestJwtExpHardening:
+    """_jwt_exp must turn every malformed-token shape into OperationalError, never a bare
+    TypeError/OverflowError/OSError -- exercised through exchange_cp_for_dp_token since both hops
+    2 and 3 route their token through the same _jwt_exp helper."""
+
+    def _dp_token_response(self, token: str) -> httpx.Response:
+        return httpx.Response(200, json={"token": token})
+
+    def test_non_object_payload_raises_operational_error(self):
+        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
+        payload = base64.urlsafe_b64encode(json.dumps(["not", "an", "object"]).encode()).rstrip(
+            b"="
+        )
+        token = f"{header.decode()}.{payload.decode()}.sig"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return self._dp_token_response(token)
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
+            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
+
+    def test_non_numeric_exp_raises_operational_error(self):
+        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": "not-a-number"}).encode()).rstrip(
+            b"="
+        )
+        token = f"{header.decode()}.{payload.decode()}.sig"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return self._dp_token_response(token)
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
+            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
+
+    def test_out_of_range_exp_raises_operational_error(self):
+        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": 99999999999999999}).encode()).rstrip(
+            b"="
+        )
+        token = f"{header.decode()}.{payload.decode()}.sig"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return self._dp_token_response(token)
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
+            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
 
 
 class TestExchangeCpForDpToken:
