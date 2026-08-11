@@ -15,7 +15,13 @@ Hops 2 and 3 (`exchange_id_token_for_cp_token`, `exchange_cp_for_dp_token`) hit 
 rather than hardcode a guessed lifetime constant, `_jwt_exp` decodes the **unverified** `exp`
 claim out of the returned token itself -- standard client-side practice for reading a token's own
 stated lifetime (no signature verification needed; we are not authorizing anything with the
-decode), and it self-corrects if Confluent ever changes the server-side lifetime.
+decode), and it self-corrects if Confluent ever changes the server-side lifetime. This assumes CP
+and DP are three-segment JWTs rather than opaque bearer strings -- flagged as unconfirmed in PR
+#178 review, since the mcp-confluent prior art models both as opaque with a separate `expires_at`.
+**Confirmed empirically against production** (2026-08-11, via a one-off diagnostic making raw
+requests independent of this module's own code): both tokens are genuine JWTs carrying `exp`
+(CP payload keys: `aud, exp, iat, iss, jti, may_act, orgResourceId, organizationId, scope, sub,
+userId, userResourceId`; DP adds `authenticated_identity, clusters` in place of `aud`/`scope`).
 
 Every exchange funnels its request through `http_json.post_json`, which is what keeps this
 module's DB-API promise: only `Error` subclasses (here, always `OperationalError`) ever escape to
