@@ -57,15 +57,19 @@ def require_field(
     """Read body[field], raising OperationalError -- not KeyError/TypeError -- if the field is
     missing or not an instance of type_. A 2xx response missing or misshaping a field a caller
     depends on is a server-contract violation, which belongs in this driver's own Error
-    hierarchy like every other OAuth chain failure, not a bare KeyError."""
+    hierarchy like every other OAuth chain failure, not a bare KeyError.
+
+    bool is deliberately excluded unless explicitly requested via type_=bool (or a tuple
+    containing it): Python's `isinstance(True, int)` is True, so a plain `type_=int` would
+    otherwise silently accept a JSON `true`/`false` where a caller almost certainly means a
+    genuine integer."""
     try:
         value = body[field]
     except KeyError as e:
         raise OperationalError(f"OAuth response for {context} is missing '{field}'") from e
-    if not isinstance(value, type_):
-        expected = (
-            type_.__name__ if isinstance(type_, type) else " or ".join(t.__name__ for t in type_)
-        )
+    allowed = type_ if isinstance(type_, tuple) else (type_,)
+    if not isinstance(value, allowed) or (isinstance(value, bool) and bool not in allowed):
+        expected = " or ".join(t.__name__ for t in allowed)
         raise OperationalError(
             f"OAuth response for {context} has '{field}' of type {type(value).__name__}, "
             f"expected {expected}"
@@ -74,13 +78,15 @@ def require_field(
 
 
 def optional_object_field(body: dict[str, Any], field: str) -> dict[str, Any]:
-    """Read body.get(field), defaulting to {} if absent -- but raising OperationalError, not
-    letting a caller's later .get() raise AttributeError, if the field is present but not an
-    object. Use for optional nested blocks like /api/sessions' `organization`, where the field
-    being present-but-wrong-shaped is still a server-contract violation worth surfacing."""
-    value = body.get(field)
-    if value is None:
+    """Read body[field], defaulting to {} only if the key is absent entirely -- but raising
+    OperationalError, not letting a caller's later .get() raise AttributeError, if the key is
+    present with any non-object value, including JSON `null`. Use for optional nested blocks
+    like /api/sessions' `organization`: an absent key means "no organization" (a valid, expected
+    shape), but a present-and-null or present-and-wrong-typed key is still a server-contract
+    violation worth surfacing, not something to quietly fold into the same default."""
+    if field not in body:
         return {}
+    value = body[field]
     if not isinstance(value, dict):
         raise OperationalError(
             f"OAuth response field '{field}' was present but not an object "

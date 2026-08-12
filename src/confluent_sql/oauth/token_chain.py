@@ -145,10 +145,15 @@ def exchange_id_token_for_cp_token(
     )
     token = require_field(payload, "token", context="the control-plane token exchange")
     organization = optional_object_field(payload, "organization")
+    organization_resource_id = (
+        require_field(organization, "resource_id", context="the control-plane token's organization")
+        if organization
+        else None
+    )
     return ControlPlaneTokenResult(
         token=token,
         expires_at=_jwt_exp(token),
-        organization_resource_id=organization.get("resource_id"),
+        organization_resource_id=organization_resource_id,
     )
 
 

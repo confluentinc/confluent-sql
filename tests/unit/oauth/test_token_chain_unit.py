@@ -27,14 +27,20 @@ CONFIG = CCloudOAuthConfig(
 )
 
 
+def _jwt_segment(value: object) -> str:
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode("ascii")
+
+
+def _jwt_with_payload(payload: object) -> str:
+    """Build a token (header.payload.sig) with an arbitrary -- possibly malformed -- JSON
+    payload segment, for testing _jwt_exp's handling of shapes a real JWT would never have."""
+    return f"{_jwt_segment({'alg': 'none'})}.{_jwt_segment(payload)}.sig"
+
+
 def _make_jwt(exp: int) -> str:
     """A hand-built, unsigned JWT carrying only an `exp` claim -- enough for _jwt_exp to decode,
     since we never verify the signature (see token_chain.py's docstring)."""
-
-    def _segment(payload: dict) -> str:
-        return base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode("ascii")
-
-    return f"{_segment({'alg': 'none'})}.{_segment({'exp': exp})}.sig"
+    return _jwt_with_payload({"exp": exp})
 
 
 def _client(handler) -> httpx.Client:
@@ -43,16 +49,18 @@ def _client(handler) -> httpx.Client:
 
 class TestExchangeCodeForTokens:
     def test_sends_expected_request_and_parses_response(self):
+        code = "auth-code-123"
+        verifier = "verifier-abc"
+        id_token = "id-tok"
+        refresh_token = "refresh-tok"
         captured = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["request"] = request
-            return httpx.Response(200, json={"id_token": "id-tok", "refresh_token": "refresh-tok"})
+            return httpx.Response(200, json={"id_token": id_token, "refresh_token": refresh_token})
 
         with _client(handler) as client:
-            result = exchange_code_for_tokens(
-                client, CONFIG, code="auth-code-123", verifier="verifier-abc"
-            )
+            result = exchange_code_for_tokens(client, CONFIG, code=code, verifier=verifier)
 
         request = captured["request"]
         assert request.method == "POST"
@@ -60,22 +68,23 @@ class TestExchangeCodeForTokens:
         body = urllib.parse.parse_qs(request.content.decode())
         assert body["grant_type"] == ["authorization_code"]
         assert body["client_id"] == [CONFIG.client_id]
-        assert body["code"] == ["auth-code-123"]
-        assert body["code_verifier"] == ["verifier-abc"]
+        assert body["code"] == [code]
+        assert body["code_verifier"] == [verifier]
         assert body["redirect_uri"] == [CONFIG.redirect_uri]
-        assert result.id_token == "id-tok"
-        assert result.refresh_token == "refresh-tok"
+        assert result.id_token == id_token
+        assert result.refresh_token == refresh_token
 
     def test_auth0_error_body_raises_operational_error(self):
+        error_description = "Invalid authorization code"
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
-                403,
-                json={"error": "invalid_grant", "error_description": "Invalid authorization code"},
+                403, json={"error": "invalid_grant", "error_description": error_description}
             )
 
         with (
             _client(handler) as client,
-            pytest.raises(OperationalError, match="Invalid authorization code"),
+            pytest.raises(OperationalError, match=error_description),
         ):
             exchange_code_for_tokens(client, CONFIG, code="bad-code", verifier="verifier-abc")
 
@@ -124,39 +133,46 @@ class TestExchangeCodeForTokens:
 
 class TestExchangeRefreshToken:
     def test_sends_expected_request_and_parses_response(self):
+        old_refresh_token = "old-refresh-tok"
+        new_id_token = "new-id-tok"
+        rotated_refresh_token = "rotated-refresh-tok"
         captured = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["request"] = request
             return httpx.Response(
-                200, json={"id_token": "new-id-tok", "refresh_token": "rotated-refresh-tok"}
+                200, json={"id_token": new_id_token, "refresh_token": rotated_refresh_token}
             )
 
         with _client(handler) as client:
-            result = exchange_refresh_token(client, CONFIG, refresh_token="old-refresh-tok")
+            result = exchange_refresh_token(client, CONFIG, refresh_token=old_refresh_token)
 
         body = urllib.parse.parse_qs(captured["request"].content.decode())
         assert body["grant_type"] == ["refresh_token"]
         assert body["client_id"] == [CONFIG.client_id]
-        assert body["refresh_token"] == ["old-refresh-tok"]
-        assert result.id_token == "new-id-tok"
-        assert result.refresh_token == "rotated-refresh-tok"
+        assert body["refresh_token"] == [old_refresh_token]
+        assert result.id_token == new_id_token
+        assert result.refresh_token == rotated_refresh_token
 
     def test_auth0_error_body_raises_operational_error(self):
+        error_description = "Refresh token expired"
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
-                401, json={"error": "invalid_grant", "error_description": "Refresh token expired"}
+                401, json={"error": "invalid_grant", "error_description": error_description}
             )
 
         with (
             _client(handler) as client,
-            pytest.raises(OperationalError, match="Refresh token expired"),
+            pytest.raises(OperationalError, match=error_description),
         ):
             exchange_refresh_token(client, CONFIG, refresh_token="dead-refresh-tok")
 
 
 class TestExchangeIdTokenForCpToken:
     def test_sends_id_token_and_parses_response(self):
+        id_token = "id-tok-xyz"
+        returned_org_resource_id = "org-resource-abc"
         exp = int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp())
         cp_jwt = _make_jwt(exp)
         captured = {}
@@ -165,48 +181,49 @@ class TestExchangeIdTokenForCpToken:
             captured["request"] = request
             return httpx.Response(
                 200,
-                json={
-                    "token": cp_jwt,
-                    "organization": {"resource_id": "org-resource-abc"},
-                },
+                json={"token": cp_jwt, "organization": {"resource_id": returned_org_resource_id}},
             )
 
         with _client(handler) as client:
             result = exchange_id_token_for_cp_token(
-                client, CONFIG, id_token="id-tok-xyz", org_resource_id=None
+                client, CONFIG, id_token=id_token, org_resource_id=None
             )
 
         request = captured["request"]
         assert str(request.url) == f"{CONFIG.api_host}/api/sessions"
         sent_body = json.loads(request.content.decode())
-        assert sent_body == {"id_token": "id-tok-xyz"}
+        assert sent_body == {"id_token": id_token}
         assert result.token == cp_jwt
         assert result.expires_at == datetime.fromtimestamp(exp, tz=timezone.utc)
-        assert result.organization_resource_id == "org-resource-abc"
+        assert result.organization_resource_id == returned_org_resource_id
 
     def test_supplied_org_resource_id_is_sent_in_body(self):
+        id_token = "id-tok-xyz"
+        org_resource_id = "org-1"
         cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
         captured = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["request"] = request
             return httpx.Response(
-                200, json={"token": cp_jwt, "organization": {"resource_id": "org-1"}}
+                200, json={"token": cp_jwt, "organization": {"resource_id": org_resource_id}}
             )
 
         with _client(handler) as client:
             exchange_id_token_for_cp_token(
-                client, CONFIG, id_token="id-tok-xyz", org_resource_id="org-1"
+                client, CONFIG, id_token=id_token, org_resource_id=org_resource_id
             )
 
         sent_body = json.loads(captured["request"].content.decode())
-        assert sent_body == {"id_token": "id-tok-xyz", "org_resource_id": "org-1"}
+        assert sent_body == {"id_token": id_token, "org_resource_id": org_resource_id}
 
     def test_confluent_api_error_raises_operational_error(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(400, json={"message": "invalid id_token"})
+        error_message = "invalid id_token"
 
-        with _client(handler) as client, pytest.raises(OperationalError, match="invalid id_token"):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"message": error_message})
+
+        with _client(handler) as client, pytest.raises(OperationalError, match=error_message):
             exchange_id_token_for_cp_token(client, CONFIG, id_token="bad", org_resource_id=None)
 
     def test_token_with_unparseable_exp_raises_operational_error(self):
@@ -232,6 +249,41 @@ class TestExchangeIdTokenForCpToken:
         with _client(handler) as client, pytest.raises(OperationalError, match="not an object"):
             exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
 
+    def test_absent_organization_yields_none_resource_id(self):
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"token": cp_jwt})
+
+        with _client(handler) as client:
+            result = exchange_id_token_for_cp_token(
+                client, CONFIG, id_token="id-tok", org_resource_id=None
+            )
+        assert result.organization_resource_id is None
+
+    def test_organization_present_without_resource_id_raises_operational_error(self):
+        """organization_resource_id is documented as None only when the organization block is
+        entirely absent -- a present-but-incomplete block is a server-contract violation, not
+        another way to spell "no org"."""
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"token": cp_jwt, "organization": {"id": 542039}})
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="resource_id"):
+            exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
+
+    def test_organization_resource_id_wrong_type_raises_operational_error(self):
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"token": cp_jwt, "organization": {"resource_id": 12345}}
+            )
+
+        with _client(handler) as client, pytest.raises(OperationalError, match="expected str"):
+            exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
+
 
 class TestJwtExpHardening:
     """_jwt_exp must turn every malformed-token shape into OperationalError, never a bare
@@ -242,11 +294,7 @@ class TestJwtExpHardening:
         return httpx.Response(200, json={"token": token})
 
     def test_non_object_payload_raises_operational_error(self):
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
-        payload = base64.urlsafe_b64encode(json.dumps(["not", "an", "object"]).encode()).rstrip(
-            b"="
-        )
-        token = f"{header.decode()}.{payload.decode()}.sig"
+        token = _jwt_with_payload(["not", "an", "object"])
 
         def handler(request: httpx.Request) -> httpx.Response:
             return self._dp_token_response(token)
@@ -255,11 +303,7 @@ class TestJwtExpHardening:
             exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
 
     def test_non_numeric_exp_raises_operational_error(self):
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
-        payload = base64.urlsafe_b64encode(json.dumps({"exp": "not-a-number"}).encode()).rstrip(
-            b"="
-        )
-        token = f"{header.decode()}.{payload.decode()}.sig"
+        token = _jwt_with_payload({"exp": "not-a-number"})
 
         def handler(request: httpx.Request) -> httpx.Response:
             return self._dp_token_response(token)
@@ -268,11 +312,7 @@ class TestJwtExpHardening:
             exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
 
     def test_out_of_range_exp_raises_operational_error(self):
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
-        payload = base64.urlsafe_b64encode(json.dumps({"exp": 99999999999999999}).encode()).rstrip(
-            b"="
-        )
-        token = f"{header.decode()}.{payload.decode()}.sig"
+        token = _jwt_with_payload({"exp": 99999999999999999})
 
         def handler(request: httpx.Request) -> httpx.Response:
             return self._dp_token_response(token)
@@ -283,6 +323,7 @@ class TestJwtExpHardening:
 
 class TestExchangeCpForDpToken:
     def test_sends_bearer_cp_token_and_parses_response(self):
+        cp_token = "cp-tok-xyz"
         exp = int(datetime(2026, 8, 10, 12, 10, tzinfo=timezone.utc).timestamp())
         dp_jwt = _make_jwt(exp)
         captured = {}
@@ -292,17 +333,19 @@ class TestExchangeCpForDpToken:
             return httpx.Response(200, json={"token": dp_jwt, "regional_token": "unused"})
 
         with _client(handler) as client:
-            result = exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok-xyz")
+            result = exchange_cp_for_dp_token(client, CONFIG, cp_token=cp_token)
 
         request = captured["request"]
         assert str(request.url) == f"{CONFIG.api_host}/api/access_tokens"
-        assert request.headers["Authorization"] == "Bearer cp-tok-xyz"
+        assert request.headers["Authorization"] == f"Bearer {cp_token}"
         assert result.token == dp_jwt
         assert result.expires_at == datetime.fromtimestamp(exp, tz=timezone.utc)
 
     def test_confluent_api_error_raises_operational_error(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(401, json={"message": "cp token expired"})
+        error_message = "cp token expired"
 
-        with _client(handler) as client, pytest.raises(OperationalError, match="cp token expired"):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"message": error_message})
+
+        with _client(handler) as client, pytest.raises(OperationalError, match=error_message):
             exchange_cp_for_dp_token(client, CONFIG, cp_token="expired-cp-tok")
