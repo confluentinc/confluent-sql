@@ -330,6 +330,21 @@ class TestJwtExpHardening:
         the malformed-payload cases above, which are still well-formed 3-segment JWTs."""
         self._assert_falls_back("opaque-bearer-token-abc123")
 
+    def test_naive_now_still_yields_tz_aware_utc_expiry(self):
+        """A caller passing a naive `now` must not get back a naive expiry -- the JWT-decode
+        path always returns tz-aware UTC, and a fallback expiry that silently went naive would
+        later raise TypeError when compared against it (e.g. TokenSet's *_valid helpers)."""
+        naive_now = datetime(2026, 8, 11, 9, 0)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return self._dp_token_response("opaque-bearer-token-abc123")
+
+        with _client(handler) as client:
+            result = exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok", now=naive_now)
+
+        assert result.expires_at == naive_now.replace(tzinfo=timezone.utc) + FALLBACK_DP_LIFETIME
+        assert result.expires_at.tzinfo is not None
+
 
 class TestExchangeCpForDpToken:
     def test_sends_bearer_cp_token_and_parses_response(self):

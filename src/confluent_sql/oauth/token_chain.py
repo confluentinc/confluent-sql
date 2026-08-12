@@ -208,7 +208,8 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
     -- an opaque bearer token should degrade the caller's expiry tracking, not hard-fail the
     login/refresh (#179). The fromtimestamp conversion is deliberately inside the try: an
     out-of-range exp raises OverflowError/OSError there, which must be caught same as a decode
-    failure."""
+    failure. `now` is anchored to UTC before use in the fallback so this always returns tz-aware
+    UTC, same as the JWT-decode path, regardless of whether the caller's `now` was naive."""
     try:
         _header, payload_segment, _signature = token.split(".")
         padded = payload_segment + "=" * (-len(payload_segment) % 4)
@@ -216,7 +217,12 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
         exp = payload["exp"]
         return datetime.fromtimestamp(exp, tz=timezone.utc)
     except (ValueError, KeyError, TypeError, OverflowError, OSError, binascii.Error):
-        return now + fallback_lifetime
+        anchor = (
+            now.astimezone(timezone.utc)
+            if now.tzinfo is not None
+            else now.replace(tzinfo=timezone.utc)
+        )
+        return anchor + fallback_lifetime
 
 
 def _raise_for_auth0_error(response: httpx.Response) -> None:
