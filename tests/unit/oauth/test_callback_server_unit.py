@@ -558,6 +558,15 @@ class TestBrowserDisconnectingMidResponse:
 
 
 def _raise_listener_failure(self, *args, **kwargs):
+    """Injected into `service_actions`, which the real `serve_forever` calls once per poll
+    iteration -- so the genuine loop runs, and its `finally` still sets the event `shutdown()`
+    waits on.
+
+    Replacing `serve_forever` itself would be the obvious way to fake a dead listener and is a
+    trap: `BaseServer.shutdown()` waits on that event *without a timeout*, so a fake that never
+    sets it makes `stop()` block forever whenever the serving thread happens to still be alive.
+    That hung a CI run to its 1-hour limit while passing locally every time.
+    """
     raise OSError("the listener socket exploded")
 
 
@@ -566,7 +575,7 @@ class TestListenerFailure:
         """A listener that dies after a successful bind must fail the wait, not leave the user
         staring at a browser tab until the 120s timeout expires."""
         monkeypatch.setattr(
-            "confluent_sql.oauth.callback_server._CallbackHTTPServer.serve_forever",
+            "confluent_sql.oauth.callback_server._CallbackHTTPServer.service_actions",
             _raise_listener_failure,
         )
         with _running_server() as server, pytest.raises(OAuthLoginError) as exc_info:
@@ -581,7 +590,7 @@ class TestListenerFailure:
         instance believing a shutdown was requested -- `_serve` suppresses failure reporting when
         it was, which would turn a dead listener back into a full-timeout hang."""
         monkeypatch.setattr(
-            "confluent_sql.oauth.callback_server._CallbackHTTPServer.serve_forever",
+            "confluent_sql.oauth.callback_server._CallbackHTTPServer.service_actions",
             _raise_listener_failure,
         )
         server = CallbackServer(_config(), EXPECTED_STATE)

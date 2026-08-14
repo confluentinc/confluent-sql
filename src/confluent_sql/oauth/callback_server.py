@@ -228,11 +228,15 @@ class CallbackServer:
             return
 
         self._stopped = True
-        # Only ask a live loop to exit: `shutdown()` waits on an event that `serve_forever` sets
-        # as it unwinds, so calling it after the thread has already gone would have nothing left
-        # to wake it.
-        if thread is not None and thread.is_alive():
-            httpd.shutdown()
+        # Unconditional, and deliberately *not* guarded by `thread.is_alive()`. `shutdown()` waits
+        # -- with no timeout -- on an event that `serve_forever` sets from a `finally`, so that
+        # event is set whether the loop ended normally or by exception, and `shutdown()` therefore
+        # always returns. It is also safe before the thread has reached `serve_forever`: the loop
+        # observes the shutdown request on entry and unwinds immediately. A liveness guard here
+        # reads as extra safety but is really a race, and it is worse than useless -- it hides a
+        # `serve_forever` that never sets the event, turning a deterministic hang into one that
+        # only strikes when the thread happens to still be alive.
+        httpd.shutdown()
         httpd.server_close()
         if thread is not None:
             thread.join(timeout=_STOP_JOIN_TIMEOUT_SECS)
