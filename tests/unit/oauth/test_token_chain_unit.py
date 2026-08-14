@@ -9,6 +9,8 @@ import pytest
 from confluent_sql.exceptions import OperationalError
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.token_chain import (
+    FALLBACK_CP_LIFETIME,
+    FALLBACK_DP_LIFETIME,
     exchange_code_for_tokens,
     exchange_cp_for_dp_token,
     exchange_id_token_for_cp_token,
@@ -25,6 +27,10 @@ CONFIG = CCloudOAuthConfig(
     callback_port=26640,
     callback_path="/gateway/v1/callback-local-mcp-docs",
 )
+
+
+def _now() -> datetime:
+    return datetime(2026, 8, 11, 9, 0, tzinfo=timezone.utc)
 
 
 def _jwt_segment(value: object) -> str:
@@ -226,12 +232,18 @@ class TestExchangeIdTokenForCpToken:
         with _client(handler) as client, pytest.raises(OperationalError, match=error_message):
             exchange_id_token_for_cp_token(client, CONFIG, id_token="bad", org_resource_id=None)
 
-    def test_token_with_unparseable_exp_raises_operational_error(self):
+    def test_token_with_unparseable_exp_falls_back_to_fixed_lifetime(self):
+        now = _now()
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"token": "not-a-jwt", "organization": {}})
 
-        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
-            exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
+        with _client(handler) as client:
+            result = exchange_id_token_for_cp_token(
+                client, CONFIG, id_token="id-tok", org_resource_id=None, now=now
+            )
+
+        assert result.expires_at == now + FALLBACK_CP_LIFETIME
 
     def test_response_missing_token_raises_operational_error_not_key_error(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -286,39 +298,52 @@ class TestExchangeIdTokenForCpToken:
 
 
 class TestJwtExpHardening:
-    """_jwt_exp must turn every malformed-token shape into OperationalError, never a bare
-    TypeError/OverflowError/OSError -- exercised through exchange_cp_for_dp_token since both hops
-    2 and 3 route their token through the same _jwt_exp helper."""
+    """_jwt_exp must turn every malformed-token shape into the fixed-lifetime fallback, never a
+    bare TypeError/OverflowError/OSError -- exercised through exchange_cp_for_dp_token since both
+    hops 2 and 3 route their token through the same _jwt_exp helper."""
 
     def _dp_token_response(self, token: str) -> httpx.Response:
         return httpx.Response(200, json={"token": token})
 
-    def test_non_object_payload_raises_operational_error(self):
-        token = _jwt_with_payload(["not", "an", "object"])
+    def _assert_falls_back(self, token: str) -> None:
+        now = _now()
 
         def handler(request: httpx.Request) -> httpx.Response:
             return self._dp_token_response(token)
 
-        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
-            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
+        with _client(handler) as client:
+            result = exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok", now=now)
 
-    def test_non_numeric_exp_raises_operational_error(self):
-        token = _jwt_with_payload({"exp": "not-a-number"})
+        assert result.expires_at == now + FALLBACK_DP_LIFETIME
+
+    def test_non_object_payload_falls_back_to_fixed_lifetime(self):
+        self._assert_falls_back(_jwt_with_payload(["not", "an", "object"]))
+
+    def test_non_numeric_exp_falls_back_to_fixed_lifetime(self):
+        self._assert_falls_back(_jwt_with_payload({"exp": "not-a-number"}))
+
+    def test_out_of_range_exp_falls_back_to_fixed_lifetime(self):
+        self._assert_falls_back(_jwt_with_payload({"exp": 99999999999999999}))
+
+    def test_opaque_non_jwt_token_falls_back_to_fixed_lifetime(self):
+        """A plainly opaque bearer token -- no dots at all -- is a different failure shape than
+        the malformed-payload cases above, which are still well-formed 3-segment JWTs."""
+        self._assert_falls_back("opaque-bearer-token-abc123")
+
+    def test_naive_now_still_yields_tz_aware_utc_expiry(self):
+        """A caller passing a naive `now` must not get back a naive expiry -- the JWT-decode
+        path always returns tz-aware UTC, and a fallback expiry that silently went naive would
+        later raise TypeError when compared against it (e.g. TokenSet's *_valid helpers)."""
+        naive_now = datetime(2026, 8, 11, 9, 0)
 
         def handler(request: httpx.Request) -> httpx.Response:
-            return self._dp_token_response(token)
+            return self._dp_token_response("opaque-bearer-token-abc123")
 
-        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
-            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
+        with _client(handler) as client:
+            result = exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok", now=naive_now)
 
-    def test_out_of_range_exp_raises_operational_error(self):
-        token = _jwt_with_payload({"exp": 99999999999999999})
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return self._dp_token_response(token)
-
-        with _client(handler) as client, pytest.raises(OperationalError, match="exp"):
-            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
+        assert result.expires_at == naive_now.replace(tzinfo=timezone.utc) + FALLBACK_DP_LIFETIME
+        assert result.expires_at.tzinfo is not None
 
 
 class TestExchangeCpForDpToken:
