@@ -138,7 +138,7 @@ sequenceDiagram
     W1->>B: webbrowser.open(authorize_url)
     W1->>CS: wait_for_code(120s) — blocks on _settled
     B->>CS: GET /callback?code=…&state=…
-    Note over CS: handler thread: state OK → send page,<br/>record code, set _settled
+    Note over CS: handler thread: state OK → record code,<br/>set _settled, then send page
     CS-->>W1: code
     W1->>CS: stop() — port released
     W1->>W1: 3 token hops → TokenSet

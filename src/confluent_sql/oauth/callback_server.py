@@ -137,10 +137,26 @@ class CallbackServer:
         self._httpd.callback_server = self
         self._httpd.callback_path = self._config.callback_path
         self._httpd.expected_state = self._expected_state
+        # Published before the thread starts, because `_serve` reads `self._httpd`.
         self._thread = threading.Thread(
             target=self._serve, name="confluent-sql-oauth-callback", daemon=True
         )
-        self._thread.start()
+        try:
+            self._thread.start()
+        except Exception as e:
+            # The socket is already bound but nothing will ever serve it. Letting this escape as-is
+            # would strand the fixed callback port for the life of the process: a failed `__enter__`
+            # means `__exit__` -- and so `stop()` -- never runs, and every later login would hit
+            # PORT_IN_USE against a listener nobody can reach. Release it, and reset the instance so
+            # a retry is possible, exactly as after a failed bind. Caught broadly on purpose: the
+            # cleanup matters regardless of which failure got us here.
+            httpd, self._httpd, self._thread = self._httpd, None, None
+            httpd.server_close()
+            raise OAuthLoginError(
+                f"Could not start the OAuth callback listener's serving thread: "
+                f"{type(e).__name__}: {e}",
+                OAuthLoginFailure.SERVER_ERROR,
+            ) from e
 
     @property
     def host(self) -> str:

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import socket
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -324,6 +326,55 @@ class TestOnlyLoopbackIsBound:
     def test_the_loopback_literal_is_accepted(self):
         with CallbackServer(_config(host="127.0.0.1"), EXPECTED_STATE) as server:
             assert server.host == "127.0.0.1"
+
+
+def _reserve_then_release_a_port() -> int:
+    """A port that was free a moment ago, for the cases that need to name one up front rather than
+    read it back off a bound listener."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _refuse_to_start_a_thread(self, *args, **kwargs):
+    raise RuntimeError("can't start new thread")
+
+
+class TestServingThreadFailsToStart:
+    """The socket is bound before the serving thread exists. If the thread cannot be created, the
+    listener must not be left holding the fixed callback port -- a failed `__enter__` means
+    `__exit__` never runs, so nothing else would ever release it and every later login in the
+    process would hit PORT_IN_USE."""
+
+    def test_the_failure_is_translated_and_the_port_released(self, monkeypatch):
+        port = _reserve_then_release_a_port()
+        server = CallbackServer(_config(port=port), EXPECTED_STATE)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(threading.Thread, "start", _refuse_to_start_a_thread)
+            with pytest.raises(OAuthLoginError) as exc_info:
+                server.start()
+
+        assert exc_info.value.reason is OAuthLoginFailure.SERVER_ERROR
+        # Re-binding the same port is the proof that the half-started listener let go of it.
+        with CallbackServer(_config(port=port), EXPECTED_STATE) as reborn:
+            assert reborn.port == port
+
+    def test_the_instance_is_still_startable(self, monkeypatch):
+        """A start that failed is not a use, so the single-use rule must not have been consumed --
+        the same instance can try again, exactly as it can after a failed bind."""
+        server = CallbackServer(_config(), EXPECTED_STATE)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(threading.Thread, "start", _refuse_to_start_a_thread)
+            with pytest.raises(OAuthLoginError):
+                server.start()
+
+        try:
+            server.start()
+            assert server.port != 0
+        finally:
+            server.stop()
 
 
 def _refuse_to_write(self, *args, **kwargs):
