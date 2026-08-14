@@ -1,7 +1,10 @@
 """Custom httpx authentication schemes for Confluent SQL connections.
 
 Today this holds BYOIDC bearer-token auth for the Flink data plane (#100). The interactive-login
-OAuth effort will add its own httpx.Auth adapters alongside FlinkBearerAuth here.
+OAuth effort's two adapters deliberately live elsewhere -- in `oauth/provider.py`, next to the
+`CCloudOAuth` whose lock-guarded token slot and refresh gate they reach into. A `FlinkBearerAuth`
+is self-contained (it holds its own token and never refreshes); those are views onto a shared,
+mutating provider, and splitting them from it would buy nothing but an import cycle.
 """
 
 from __future__ import annotations
