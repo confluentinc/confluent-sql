@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import errno
 import html
+import ipaddress
 import logging
 import threading
 import urllib.parse
@@ -107,11 +108,13 @@ class CallbackServer:
         failure.
 
         Raises `ProgrammingError` if called more than once on the same instance (a CallbackServer
-          is explicitly single-use).
+          is explicitly single-use), or if `config.callback_host` is not an IPv4 loopback literal
+          (see `_require_ipv4_loopback`) -- checked before anything is bound.
         """
         if self._httpd is not None:
             raise ProgrammingError("This CallbackServer has already been started")
 
+        _require_ipv4_loopback(self._config.callback_host)
         address = (self._config.callback_host, self._config.callback_port)
         try:
             self._httpd = _CallbackHTTPServer(address, _CallbackRequestHandler)
@@ -312,14 +315,16 @@ class _CallbackRequestHandler(BaseHTTPRequestHandler):
             description = _first(params, "error_description")
             detail = f"{error}: {description}" if description else error
             logger.warning(f"Confluent Cloud login was not granted -- {detail}")
-            self._send_page(
-                HTTPStatus.BAD_REQUEST, _error_page(f"Confluent Cloud login failed -- {detail}")
-            )
+            # Record before responding, same as the success branch below: the waiter's verdict must
+            # not depend on the page write surviving.
             callback_server._record_failure(
                 OAuthLoginError(
                     f"Confluent Cloud login was not granted -- {detail}",
                     OAuthLoginFailure.AUTHORIZATION_DENIED,
                 )
+            )
+            self._send_page(
+                HTTPStatus.BAD_REQUEST, _error_page(f"Confluent Cloud login failed -- {detail}")
             )
             return
 
@@ -335,10 +340,13 @@ class _CallbackRequestHandler(BaseHTTPRequestHandler):
             return
 
         logger.info("Received the Confluent Cloud login redirect; captured the authorization code")
-        # Respond before recording: the waiter resolves the moment the code lands and its
-        # `stop()` closes the listener, so the page has to be on the wire first.
-        self._send_page(HTTPStatus.OK, _SUCCESS_PAGE)
+        # Record before responding. The code is the whole point of this request, and it is
+        # single-use: if the browser resets the connection mid-write, recording afterwards would
+        # discard a perfectly good code and cost the user an entire fresh login. Nothing about the
+        # response depends on recording later, either -- the waiter's `stop()` closes the
+        # *listening* socket, not this handler's already-accepted connection.
         callback_server._record_code(code)
+        self._send_page(HTTPStatus.OK, _SUCCESS_PAGE)
 
     def log_message(self, format: str, *args: Any) -> None:
         """Silence the default stderr access log.
@@ -354,12 +362,59 @@ class _CallbackRequestHandler(BaseHTTPRequestHandler):
         """
 
     def _send_page(self, status: HTTPStatus, body: str) -> None:
+        """Write one HTML page, treating a broken connection as unremarkable.
+
+        By the time this runs the login's outcome is already recorded, so a browser that closed
+        its tab mid-write has cost us nothing. Letting the `OSError` escape would hand it to
+        socketserver's default `handle_error`, which dumps a traceback to stderr -- alarming
+        output in the caller's terminal for what is, on the success path, a *completed* login.
+        """
+        try:
+            self._write_page(status, body)
+        except OSError as e:
+            logger.debug(
+                f"Could not write the OAuth callback page (the browser most likely closed the "
+                f"connection): {type(e).__name__}: {e}"
+            )
+
+    def _write_page(self, status: HTTPStatus, body: str) -> None:
         encoded = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+
+def _require_ipv4_loopback(host: str) -> None:
+    """Refuse to bind anything but an IPv4 loopback literal.
+
+    `callback_host` is public config, and this listener receives a live authorization code over
+    plain HTTP with no transport security at all -- so "loopback only" has to be enforced rather
+    than merely documented. A value like `0.0.0.0` or `""` would publish the callback endpoint on
+    every interface on the machine.
+
+    Three kinds of value are refused, all deliberately:
+
+    - **Non-loopback addresses**, the case this exists for.
+    - **Names, `localhost` included.** What a name resolves to is decided by the host's resolver
+      configuration rather than by us; RFC 8252 §8.3 recommends the literal address for native-app
+      loopback redirects for exactly that reason.
+    - **IPv6, `::1` included.** `ThreadingHTTPServer` is `AF_INET`, so an IPv6 literal cannot be
+      bound at all; refusing it here turns an obscure bind-time `OSError` into a clear message.
+      The registered `redirect_uri` is IPv4 regardless.
+    """
+    try:
+        address = ipaddress.ip_address(host)
+        acceptable = address.version == 4 and address.is_loopback
+    except ValueError:
+        acceptable = False
+    if not acceptable:
+        raise ProgrammingError(
+            f"The OAuth callback listener refuses to bind {host!r}: it must be an IPv4 loopback "
+            "address literal, such as 127.0.0.1. The redirect carries a live authorization code "
+            "over plain HTTP, so this listener must not be reachable from off the machine."
+        )
 
 
 def _first(params: dict[str, list[str]], key: str) -> str | None:

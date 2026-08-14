@@ -14,6 +14,7 @@ one case that needs a known-taken port, and it makes one for itself.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -41,12 +42,12 @@ PENDING_TIMEOUT = 0.1
 pending. Nothing is being raced -- we only need long enough to prove the event was never set."""
 
 
-def _config(port: int = 0) -> CCloudOAuthConfig:
+def _config(port: int = 0, host: str = "127.0.0.1") -> CCloudOAuthConfig:
     return CCloudOAuthConfig(
         auth_service_domain="login.confluent.io",
         api_host="https://confluent.cloud",
         client_id="test-client-id",
-        callback_host="127.0.0.1",
+        callback_host=host,
         callback_port=port,
         callback_path=CALLBACK_PATH,
     )
@@ -294,6 +295,88 @@ class TestWaitingAfterStop:
         with pytest.raises(OAuthLoginError) as exc_info:
             server.wait_for_code(timeout=BRIEF_TIMEOUT)
         assert exc_info.value.reason is OAuthLoginFailure.AUTHORIZATION_DENIED
+
+
+class TestOnlyLoopbackIsBound:
+    """`callback_host` is public config, so "loopback only" has to be enforced, not just
+    documented: this listener takes a live authorization code over plain HTTP."""
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "0.0.0.0",  # every interface -- the case worth failing loudly
+            "192.168.1.10",  # a specific routable address
+            "::",  # the IPv6 wildcard
+            "::1",  # loopback, but unbindable: ThreadingHTTPServer is AF_INET
+            "localhost",  # a name, and what it resolves to is not ours to decide
+            "",  # empty means "all interfaces" to bind(2)
+        ],
+    )
+    def test_non_loopback_host_is_refused_before_binding(self, host):
+        server = CallbackServer(_config(host=host), EXPECTED_STATE)
+        try:
+            with pytest.raises(ProgrammingError):
+                server.start()
+        finally:
+            # Cleans up in case the guard is missing and the bind actually succeeded.
+            server.stop()
+
+    def test_the_loopback_literal_is_accepted(self):
+        with CallbackServer(_config(host="127.0.0.1"), EXPECTED_STATE) as server:
+            assert server.host == "127.0.0.1"
+
+
+def _refuse_to_write(self, *args, **kwargs):
+    raise BrokenPipeError("the browser closed the tab mid-response")
+
+
+class TestBrowserDisconnectingMidResponse:
+    """The outcome is recorded before the page is written. A browser that vanishes mid-response
+    must not cost the user a captured authorization code, nor downgrade a real authorization
+    failure into a timeout. Closing the listening socket does not close an already-accepted
+    handler connection, so nothing about the page write depends on recording later."""
+
+    def test_a_captured_code_survives_a_failed_page_write(self, monkeypatch):
+        monkeypatch.setattr(
+            "confluent_sql.oauth.callback_server._CallbackRequestHandler.send_response",
+            _refuse_to_write,
+        )
+        with _running_server() as server:
+            with contextlib.suppress(httpx.HTTPError):
+                _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
+
+            assert server.wait_for_code(timeout=BRIEF_TIMEOUT) == AUTH_CODE
+
+    def test_a_denial_survives_a_failed_page_write(self, monkeypatch):
+        monkeypatch.setattr(
+            "confluent_sql.oauth.callback_server._CallbackRequestHandler.send_response",
+            _refuse_to_write,
+        )
+        with _running_server() as server:
+            with contextlib.suppress(httpx.HTTPError):
+                _get(server, state=EXPECTED_STATE, error="access_denied")
+
+            with pytest.raises(OAuthLoginError) as exc_info:
+                server.wait_for_code(timeout=BRIEF_TIMEOUT)
+
+        assert exc_info.value.reason is OAuthLoginFailure.AUTHORIZATION_DENIED
+
+    def test_a_failed_page_write_does_not_spew_a_traceback(self, monkeypatch, capfd):
+        """socketserver's default `handle_error` prints a traceback per failed handler. A closed
+        browser tab is an ordinary end to a *successful* login, not something to dump a stack for
+        -- and the noise would land in the caller's terminal mid-login."""
+        monkeypatch.setattr(
+            "confluent_sql.oauth.callback_server._CallbackRequestHandler.send_response",
+            _refuse_to_write,
+        )
+        with _running_server() as server:
+            with contextlib.suppress(httpx.HTTPError):
+                _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
+            assert server.wait_for_code(timeout=BRIEF_TIMEOUT) == AUTH_CODE
+
+        captured = capfd.readouterr()
+        assert "Traceback" not in captured.err
+        assert "BrokenPipeError" not in captured.err
 
 
 def _raise_listener_failure(self, *args, **kwargs):
