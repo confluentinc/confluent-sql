@@ -14,32 +14,36 @@ request checks its token's validity, and a stale one is refreshed through the si
 before the header is stamped. A connection that sat idle for an hour re-mints from the long-lived
 refresh token on its next request, however long the short-lived (~5-min) tokens have been lapsed.
 
-Two locks, with sharply different hold times, and they are always acquired in this order --
-`_refresh_lock` first, `_token_lock` second, never the reverse:
+**The refresh single-flight is a shared `Future`, not a lock held across the chain.** One thread
+wins the right to run the refresh and publishes its outcome into the `Future`; everyone who
+arrives while it is in flight joins that same `Future` and receives the winner's result -- or has
+the winner's exception re-raised on their own thread. Nothing is held across network I/O.
 
-- **`_token_lock`, held for microseconds.** Guards the reference slot and the failure flag.
-  Nothing but read-the-reference and rebind-the-reference happens under it, and it is never held
-  across network I/O. Because a `TokenSet` is immutable, a reader that has copied the reference
-  can then read its fields with no lock at all and no risk of a torn read: refresh builds a
-  brand-new snapshot rather than mutating one.
-- **`_refresh_lock`, held across the ~4-call chain.** The single-flight gate, and `login()`'s gate
-  too (#156's re-auth will reuse it, so that N threads at the 8h wall collapse to one browser
-  bounce). It is separate from `_token_lock` precisely because a refresh is four sequential HTTP
-  round-trips; holding the reference lock across those would block every reader.
+That shape is the point, and it is the one #154 also mandates for the login single-flight. A lock
+only says *"you may proceed"*: a thread waking from one holds no handle on what the winner did and
+has to reconstruct it by re-reading shared mutable state. Reconstruction is where this went wrong
+twice -- a mid-chain checkpoint could be misread as somebody's finished work (see
+`_interim_snapshot`), and a *failed* attempt taught the waiters nothing, so eight waiters against
+one outage ran eight chains and spent eight rotations against the service's ~50-refresh cap. A
+`Future` carries success, failure, and in-flight-ness in one object, so waiters learn all three.
+
+Two locks remain, both short, always acquired in this order and never the reverse:
+
+- **`_refresh_lock`, held for microseconds.** Guards the in-flight `Future` slot -- who wins, who
+  joins -- and nothing else. Explicitly *not* held across the chain.
+- **`_token_lock`, held for microseconds.** Guards the snapshot reference, the interim marker, and
+  the failure flag. Nothing but read-the-reference and rebind-the-reference happens under it.
+  Because a `TokenSet` is immutable, a reader that has copied the reference can then read its
+  fields with no lock at all and no risk of a torn read.
+
+`login()` takes its own `_login_lock`, since it *does* hold across a multi-minute browser
+round-trip and must never sit on a lock the request path needs.
 
 **Refresh tokens are single-use and rotating**, and two threads spending the same one leaves the
-second refused and the session dead. Two distinct mechanisms keep that from happening, and it is
-worth being precise about which does what, because the epic's design notes conflate them:
-
-- **What makes a double-spend impossible** is that `_refresh` reads the token to spend out of the
-  slot *inside* the gate, rather than out of the snapshot its caller arrived with. Whatever a
-  waiter was holding when it queued, by the time it runs it spends the current token or none.
-- **What the double-check buys** is avoiding *redundant* chain runs. Without it, N waiters each
-  run their own four-call chain -- each spending a legitimate, freshly-rotated token, so no
-  lockout, but burning N refreshes against the service's ~50-refresh cap and paying four round
-  trips apiece for a token they already have.
-
-Both matter; only the first is about the token being single-use.
+second refused and the session dead. What makes that impossible is that the chain reads the token
+to spend out of the slot at the moment it runs, never out of the snapshot its caller arrived
+with -- so whatever a waiter was holding when it queued, the chain spends the current token or
+none. The `Future` is what keeps waiters from running redundant chains at all.
 
 Prior art: mcp-confluent's `oauth/auth-context.ts` (`refresh()` single-flight, and `doRefresh()`
 persisting the rotated refresh token *before* the CP/DP legs -- the ordering `_refresh` copies
@@ -56,6 +60,7 @@ import threading
 import urllib.parse
 import webbrowser
 from collections.abc import Callable, Generator
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -142,11 +147,13 @@ class CCloudOAuth:
         self._client = http_client if http_client is not None else httpx.Client()
         self._open_browser = open_browser
 
-        # Lock ordering, everywhere in this class: _refresh_lock before _token_lock, never the
-        # reverse. Nothing acquires the refresh gate while holding the reference lock.
+        # Lock ordering, everywhere in this class: _login_lock, then _refresh_lock, then
+        # _token_lock -- never the reverse. Only _login_lock is ever held across I/O.
+        self._login_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
         self._token_lock = threading.Lock()
 
+        self._inflight_refresh: Future[TokenSet] | None = None
         self._token_set: TokenSet | None = None
         self._interim_snapshot: TokenSet | None = None
         self._failure: tuple[str, ReauthenticationReason] | None = None
@@ -207,9 +214,11 @@ class CCloudOAuth:
         unavailable callback port), `OperationalError` if a token exchange fails, and
         `ProgrammingError` if this provider has already logged in.
         """
-        # The same gate a refresh runs under: a login and a refresh must never overlap, and
-        # #156's re-auth reuses this method behind this very lock.
-        with self._refresh_lock:
+        # A dedicated lock, deliberately not the refresh gate: this one is held across a
+        # multi-minute human round-trip, and the request path must never queue behind that. The
+        # two cannot overlap anyway -- login runs only when there is no token set, refresh only
+        # when there is. #156's re-auth breaks that invariant and will need to reconcile them.
+        with self._login_lock:
             if self._token_set is not None:
                 raise ProgrammingError(
                     "This CCloudOAuth provider has already logged in. One provider is one "
@@ -320,104 +329,143 @@ class CCloudOAuth:
         return snapshot
 
     def _refresh(self, stale: TokenSet) -> TokenSet:
-        """Mint a fresh token set, through the single-flight gate. Returns the current snapshot.
+        """Mint a fresh token set, through the single-flight `Future`. Returns a live snapshot.
 
-        `stale` is the snapshot the caller found wanting. Inside the gate it is double-checked
-        against the slot: if the slot holds a *different, completed* snapshot, another thread
-        refreshed while this one waited, and that result is returned rather than a second chain
-        being run. "Completed" is the load-bearing word -- persist-before-exchange publishes a
-        mid-chain checkpoint into the same slot, and handing that to a waiter as somebody else's
-        finished work would give it back the very tokens it came here to replace.
+        `stale` is the snapshot the caller found wanting. Exactly one caller runs the chain; any
+        other that arrives while it is in flight joins the same `Future` and receives the
+        winner's snapshot, or has the winner's exception re-raised on its own thread. So N
+        threads meeting a lapsed token produce one chain run, one refresh-token rotation, and --
+        when it fails -- one failure rather than N independent attempts.
 
-        Note what does *not* depend on that check: the refresh token actually spent is read from
-        the slot below, not from `stale`, so a waiter can never re-spend a token the winner
-        already rotated away no matter what it arrived holding. The double-check is what keeps N
-        waiters from each running a redundant four-call chain -- real cost against the service's
-        ~50-refresh cap, but not the lockout the single-use rule threatens.
+        The refresh token actually spent is read from the slot at the moment the chain runs,
+        never from `stale`, so a waiter can never re-spend a token the winner already rotated
+        away, whatever it arrived holding.
         """
-        with self._refresh_lock:
+        flight, is_winner = self._enter_flight(stale)
+        if not is_winner:
+            # The winner's outcome verbatim, including its exception. Deliberately untimed: the
+            # chain is already bounded by the HTTP client's own timeouts, and a second, arbitrary
+            # deadline here would only invent a failure mode the winner never had.
+            return flight.result()
+        try:
+            refreshed = self._run_refresh_chain()
+        except BaseException as e:
+            flight.set_exception(e)
+            raise
+        else:
+            flight.set_result(refreshed)
+            return refreshed
+        finally:
+            # Cleared unconditionally, so a *rejected* flight is never left in the slot for later
+            # callers to inherit -- they must be free to try again on their own.
+            with self._refresh_lock:
+                self._inflight_refresh = None
+
+    def _enter_flight(self, stale: TokenSet) -> tuple[Future[TokenSet], bool]:
+        """Decide whether this caller runs the chain or joins one already running.
+
+        Returns the `Future` to publish into (winner) or wait on (joiner). A caller whose `stale`
+        snapshot has already been superseded by a *completed* refresh gets that result handed
+        back in an already-resolved `Future` without any chain running at all.
+        """
+        with self._refresh_lock, self._token_lock:
+            if self._failure is not None:
+                message, reason = self._failure
+                raise ReauthenticationRequired(message, reason)
             current = self._token_set
             if current is None:
                 raise ProgrammingError(
                     "This CCloudOAuth provider has no tokens to refresh -- it must log in first."
                 )
+            if self._inflight_refresh is not None:
+                return self._inflight_refresh, False
             if current is not stale and current is not self._interim_snapshot:
-                # Somebody else already ran the chain while this thread waited its turn.
-                return current
-            if self._failure is not None:
-                message, reason = self._failure
-                raise ReauthenticationRequired(message, reason)
+                # Already superseded by a finished refresh -- no chain needed. "Finished" is the
+                # load-bearing word: persist-before-exchange publishes a mid-chain checkpoint into
+                # this same slot, and handing that back as somebody's completed work would return
+                # the very tokens this caller came to replace.
+                settled: Future[TokenSet] = Future()
+                settled.set_result(current)
+                return settled, False
+            self._inflight_refresh = Future()
+            return self._inflight_refresh, True
 
-            if not current.refresh_token_valid(datetime.now(timezone.utc)):
-                # Known dead locally. Spending a round trip to be told so is pure latency on an
-                # error path, and the answer cannot come back any other way.
-                raise self._latch_failure(
-                    "This Confluent Cloud login has passed its maximum session lifetime and can "
-                    "no longer be refreshed. Sign in again to continue.",
-                    ReauthenticationReason.ABSOLUTE_EXPIRY,
-                )
+    def _run_refresh_chain(self) -> TokenSet:
+        """The four exchanges, run by the single-flight winner outside every lock."""
+        with self._token_lock:
+            current = self._token_set
+        # Only the flight winner reaches here, and `login()` cannot be running concurrently (it
+        # requires an empty slot), so the snapshot just read is stable for the chain's duration.
+        assert current is not None
 
-            try:
-                exchanged = exchange_refresh_token(
-                    self._client, self._config, refresh_token=current.refresh_token
-                )
-            except OAuthTokenEndpointError as e:
-                if e.error_code != _INVALID_GRANT:
-                    # Anything else -- a 429, a 5xx, an unclassified body -- is treated as a
-                    # blip. It propagates to this request's caller but leaves the session
-                    # intact, so the next request tries again rather than demanding a browser.
-                    raise
-                raise self._latch_failure(
-                    "Confluent Cloud rejected this session's refresh token, so it can no longer "
-                    "be refreshed -- it has expired through inactivity, been revoked, or already "
-                    f"been used. Sign in again to continue. ({e})",
-                    ReauthenticationReason.REFRESH_REJECTED,
-                ) from e
-
-            # Persist the rotated refresh token *before* the CP/DP legs. The one just spent is
-            # already dead server-side; if a leg below fails and we still held the old value,
-            # the session would be unrecoverable rather than merely one request short. The
-            # interim snapshot keeps the old (stale) CP/DP tokens, which is honest -- they are
-            # exactly what is still in hand.
-            rotated = dataclasses.replace(current, refresh_token=exchanged.refresh_token)
-            with self._token_lock:
-                self._token_set = rotated
-                # Remembered so the double-check above can tell this checkpoint apart from a
-                # finished refresh. It carries a *new* refresh token but the *old* CP/DP tokens,
-                # so a waiter handed it would send a token it already knew was dead -- and on the
-                # 401 path would re-stamp the very bearer that was just rejected, spend its one
-                # retry, and surface a second 401 with a usable refresh token sitting right here.
-                self._interim_snapshot = rotated
-
-            control_plane = exchange_id_token_for_cp_token(
-                self._client,
-                self._config,
-                id_token=exchanged.id_token,
-                # The org this login settled on, never a re-resolved default: re-resolving would
-                # silently move a multi-org user to a different organization mid-session.
-                # Written once under `_token_lock` during `login()`, which happens-before any
-                # refresh by way of this same gate.
-                org_resource_id=self._organization_id,
-            )
-            data_plane = exchange_cp_for_dp_token(
-                self._client, self._config, cp_token=control_plane.token
+        if not current.refresh_token_valid(datetime.now(timezone.utc)):
+            # Known dead locally. Spending a round trip to be told so is pure latency on an
+            # error path, and the answer cannot come back any other way.
+            raise self._latch_failure(
+                "This Confluent Cloud login has passed its maximum session lifetime and can "
+                "no longer be refreshed. Sign in again to continue.",
+                ReauthenticationReason.ABSOLUTE_EXPIRY,
             )
 
-            refreshed = TokenSet(
-                refresh_token=exchanged.refresh_token,
-                # The absolute wall does not move. Rotation resets the *idle* timer, but the ~8h
-                # cap is a server-side policy dated from the interactive login; letting it ride
-                # forward on each refresh would mean it never arrives until a request fails.
-                refresh_token_expires_at=current.refresh_token_expires_at,
-                cp_token=control_plane.token,
-                cp_token_expires_at=control_plane.expires_at,
-                dp_token=data_plane.token,
-                dp_token_expires_at=data_plane.expires_at,
+        try:
+            exchanged = exchange_refresh_token(
+                self._client, self._config, refresh_token=current.refresh_token
             )
-            with self._token_lock:
-                self._token_set = refreshed
-                self._interim_snapshot = None
-            return refreshed
+        except OAuthTokenEndpointError as e:
+            if e.error_code != _INVALID_GRANT:
+                # Anything else -- a 429, a 5xx, an unclassified body -- is treated as a blip. It
+                # propagates to this flight's callers but leaves the session intact, so the next
+                # request tries again rather than demanding a browser.
+                raise
+            raise self._latch_failure(
+                "Confluent Cloud rejected this session's refresh token, so it can no longer "
+                "be refreshed -- it has expired through inactivity, been revoked, or already "
+                f"been used. Sign in again to continue. ({e})",
+                ReauthenticationReason.REFRESH_REJECTED,
+            ) from e
+
+        # Persist the rotated refresh token *before* the CP/DP legs. The one just spent is
+        # already dead server-side; if a leg below fails and we still held the old value, the
+        # session would be unrecoverable rather than merely one request short. The interim
+        # snapshot keeps the old (stale) CP/DP tokens, which is honest -- they are exactly what
+        # is still in hand.
+        rotated = dataclasses.replace(current, refresh_token=exchanged.refresh_token)
+        with self._token_lock:
+            self._token_set = rotated
+            # Remembered so `_enter_flight` can tell this checkpoint apart from a finished
+            # refresh. It carries a *new* refresh token but the *old* CP/DP tokens, so a caller
+            # handed it would send a token it already knew was dead -- and on the 401 path would
+            # re-stamp the very bearer just rejected, spend its one retry, and surface a second
+            # 401 with a usable refresh token sitting right here.
+            self._interim_snapshot = rotated
+
+        control_plane = exchange_id_token_for_cp_token(
+            self._client,
+            self._config,
+            id_token=exchanged.id_token,
+            # The org this login settled on, never a re-resolved default: re-resolving would
+            # silently move a multi-org user to a different organization mid-session.
+            org_resource_id=self._organization_id,
+        )
+        data_plane = exchange_cp_for_dp_token(
+            self._client, self._config, cp_token=control_plane.token
+        )
+
+        refreshed = TokenSet(
+            refresh_token=exchanged.refresh_token,
+            # The absolute wall does not move. Rotation resets the *idle* timer, but the ~8h cap
+            # is a server-side policy dated from the interactive login; letting it ride forward
+            # on each refresh would mean it never arrives until a request fails.
+            refresh_token_expires_at=current.refresh_token_expires_at,
+            cp_token=control_plane.token,
+            cp_token_expires_at=control_plane.expires_at,
+            dp_token=data_plane.token,
+            dp_token_expires_at=data_plane.expires_at,
+        )
+        with self._token_lock:
+            self._token_set = refreshed
+            self._interim_snapshot = None
+        return refreshed
 
     def _latch_failure(
         self, message: str, reason: ReauthenticationReason
