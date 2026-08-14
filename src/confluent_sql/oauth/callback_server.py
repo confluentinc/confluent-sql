@@ -85,7 +85,7 @@ class CallbackServer:
         self._lock = threading.Lock()
         self._settled = threading.Event()
         self._code: str | None = None
-        self._failure: OAuthLoginError | None = None
+        self._failure: tuple[str, OAuthLoginFailure] | None = None
 
     def __enter__(self) -> CallbackServer:
         self.start()
@@ -207,11 +207,17 @@ class CallbackServer:
                 OAuthLoginFailure.TIMED_OUT,
             )
         with self._lock:
-            if self._failure is not None:
-                raise self._failure
-            # _settled is only ever set alongside one of the two slots, so this is a code.
-            assert self._code is not None
-            return self._code
+            failure, code = self._failure, self._code
+        if failure is not None:
+            # Built fresh per call rather than stored and re-raised: `raise` appends the raising
+            # frames to the exception's own `__traceback__`, so one shared instance would grow a
+            # traceback on every read and let a caller holding on to it see frames from somebody
+            # else's wait.
+            message, reason = failure
+            raise OAuthLoginError(message, reason)
+        # _settled is only ever set alongside one of the two slots, so this is a code.
+        assert code is not None
+        return code
 
     def stop(self) -> None:
         """Stop serving and release the port. Idempotent, and safe before `start()`."""
@@ -244,11 +250,8 @@ class CallbackServer:
         except Exception as e:
             if not self._stopped:
                 self._record_failure(
-                    OAuthLoginError(
-                        f"The OAuth callback listener failed after binding: "
-                        f"{type(e).__name__}: {e}",
-                        OAuthLoginFailure.SERVER_ERROR,
-                    )
+                    f"The OAuth callback listener failed after binding: {type(e).__name__}: {e}",
+                    OAuthLoginFailure.SERVER_ERROR,
                 )
 
     def _record_code(self, code: str) -> None:
@@ -258,11 +261,18 @@ class CallbackServer:
             self._code = code
             self._settled.set()
 
-    def _record_failure(self, failure: OAuthLoginError) -> None:
+    def _record_failure(self, message: str, reason: OAuthLoginFailure) -> None:
+        """Record *why* the login failed, as the facts rather than a built exception.
+
+        Storing the message and reason is what lets `wait_for_code` mint a fresh
+        `OAuthLoginError` per waiter (see the note there), and it keeps the exception's
+        construction on the thread that will actually raise it rather than on a handler thread
+        that only observed the failure.
+        """
         with self._lock:
             if self._settled.is_set():
                 return
-            self._failure = failure
+            self._failure = (message, reason)
             self._settled.set()
 
     def _require_started(self) -> _CallbackHTTPServer:
@@ -334,10 +344,8 @@ class _CallbackRequestHandler(BaseHTTPRequestHandler):
             # Record before responding, same as the success branch below: the waiter's verdict must
             # not depend on the page write surviving.
             callback_server._record_failure(
-                OAuthLoginError(
-                    f"Confluent Cloud login was not granted -- {detail}",
-                    OAuthLoginFailure.AUTHORIZATION_DENIED,
-                )
+                f"Confluent Cloud login was not granted -- {detail}",
+                OAuthLoginFailure.AUTHORIZATION_DENIED,
             )
             self._send_page(
                 HTTPStatus.BAD_REQUEST, _error_page(f"Confluent Cloud login failed -- {detail}")

@@ -328,6 +328,58 @@ class TestOnlyLoopbackIsBound:
             assert server.host == "127.0.0.1"
 
 
+def _read_failure(server: CallbackServer) -> OAuthLoginError:
+    with pytest.raises(OAuthLoginError) as exc_info:
+        server.wait_for_code(timeout=BRIEF_TIMEOUT)
+    return exc_info.value
+
+
+def _traceback_depth(error: BaseException) -> int:
+    depth, frame = 0, error.__traceback__
+    while frame is not None:
+        depth += 1
+        frame = frame.tb_next
+    return depth
+
+
+def _read_failure_traceback_depth(server: CallbackServer) -> int:
+    """Read a recorded failure and measure its traceback depth *at once*.
+
+    Measuring later would be useless: if the same object is raised repeatedly, every reference to
+    it -- including one captured earlier -- reports whatever depth it has grown to by the time the
+    measurement happens, so the comparison would trivially hold.
+    """
+    return _traceback_depth(_read_failure(server))
+
+
+class TestRepeatedFailureReads:
+    """Every read of a recorded failure raises its own exception object.
+
+    A single shared instance would be mutated by each `raise`: Python appends frames to
+    `__traceback__` as an exception propagates, so a caller holding on to one could watch its
+    traceback change underneath it when another waiter raised, and repeated reads would pile up
+    retained frames (and the locals they keep alive) without bound.
+    """
+
+    def test_each_read_raises_a_distinct_object_carrying_the_same_detail(self):
+        with _running_server() as server:
+            _get(server, state=EXPECTED_STATE, error="access_denied")
+            first = _read_failure(server)
+            second = _read_failure(server)
+
+        assert first is not second
+        assert first.reason is second.reason is OAuthLoginFailure.AUTHORIZATION_DENIED
+        assert str(first) == str(second)
+
+    def test_repeated_reads_do_not_accumulate_traceback_frames(self):
+        with _running_server() as server:
+            _get(server, state=EXPECTED_STATE, error="access_denied")
+            depths = [_read_failure_traceback_depth(server) for _ in range(3)]
+
+        assert depths[1] == depths[0]
+        assert depths[2] == depths[0]
+
+
 def _reserve_then_release_a_port() -> int:
     """A port that was free a moment ago, for the cases that need to name one up front rather than
     read it back off a bound listener."""
