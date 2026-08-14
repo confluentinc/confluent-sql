@@ -130,6 +130,16 @@ Both are worth having; only the first is what the single-use rule demands. Both 
 refresh and (later) the daemon's scheduled refresh funnel through the one `_refresh()`, so they
 coordinate instead of dueling.
 
+**The double-check's predicate is "a different *completed* snapshot", not merely "a different
+snapshot"** (caught in review of #182). Persist-before-exchange publishes a mid-chain checkpoint —
+the rotated refresh token alongside the *old* CP/DP tokens — into the same slot the double-check
+reads. If the chain then fails, that checkpoint sits there, and a waiter holding the pre-failure
+snapshot would take it for finished work and be handed back exactly the tokens it came to replace:
+on the expiry path it would send a token already known dead, and on the 401 path it would re-stamp
+the bearer that was just rejected, spend its one retry, and surface a second 401 — with a perfectly
+usable rotated refresh token sitting in the slot. `_interim_snapshot` records the checkpoint so the
+gate can tell the two apart.
+
 The failure flag is checked in **two** places, and both are load-bearing: in the request path's
 microsecond critical section (the fast path — a session already known dead never reaches the gate),
 and again *inside* the gate. The second covers the race where a thread reads a healthy snapshot,

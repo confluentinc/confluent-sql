@@ -148,6 +148,7 @@ class CCloudOAuth:
         self._token_lock = threading.Lock()
 
         self._token_set: TokenSet | None = None
+        self._interim_snapshot: TokenSet | None = None
         self._failure: tuple[str, ReauthenticationReason] | None = None
         self._organization_id: str | None = None
 
@@ -258,6 +259,7 @@ class CCloudOAuth:
                     dp_token_expires_at=data_plane.expires_at,
                 )
                 self._organization_id = control_plane.organization_resource_id
+                self._interim_snapshot = None
                 self._failure = None
 
         logger.info(
@@ -321,8 +323,11 @@ class CCloudOAuth:
         """Mint a fresh token set, through the single-flight gate. Returns the current snapshot.
 
         `stale` is the snapshot the caller found wanting. Inside the gate it is double-checked
-        against the slot: if it no longer matches, another thread refreshed while this one
-        waited, and that result is returned rather than a second chain being run.
+        against the slot: if the slot holds a *different, completed* snapshot, another thread
+        refreshed while this one waited, and that result is returned rather than a second chain
+        being run. "Completed" is the load-bearing word -- persist-before-exchange publishes a
+        mid-chain checkpoint into the same slot, and handing that to a waiter as somebody else's
+        finished work would give it back the very tokens it came here to replace.
 
         Note what does *not* depend on that check: the refresh token actually spent is read from
         the slot below, not from `stale`, so a waiter can never re-spend a token the winner
@@ -336,7 +341,7 @@ class CCloudOAuth:
                 raise ProgrammingError(
                     "This CCloudOAuth provider has no tokens to refresh -- it must log in first."
                 )
-            if current is not stale:
+            if current is not stale and current is not self._interim_snapshot:
                 # Somebody else already ran the chain while this thread waited its turn.
                 return current
             if self._failure is not None:
@@ -377,6 +382,12 @@ class CCloudOAuth:
             rotated = dataclasses.replace(current, refresh_token=exchanged.refresh_token)
             with self._token_lock:
                 self._token_set = rotated
+                # Remembered so the double-check above can tell this checkpoint apart from a
+                # finished refresh. It carries a *new* refresh token but the *old* CP/DP tokens,
+                # so a waiter handed it would send a token it already knew was dead -- and on the
+                # 401 path would re-stamp the very bearer that was just rejected, spend its one
+                # retry, and surface a second 401 with a usable refresh token sitting right here.
+                self._interim_snapshot = rotated
 
             control_plane = exchange_id_token_for_cp_token(
                 self._client,
@@ -405,6 +416,7 @@ class CCloudOAuth:
             )
             with self._token_lock:
                 self._token_set = refreshed
+                self._interim_snapshot = None
             return refreshed
 
     def _latch_failure(
