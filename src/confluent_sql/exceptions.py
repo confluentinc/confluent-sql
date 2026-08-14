@@ -7,6 +7,7 @@ Confluent SQL driver.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -262,6 +263,45 @@ class ConnectorAlreadyExistsError(OperationalError):
     def __init__(self, message: str, connector_name: str):
         super().__init__(message)
         self.connector_name = connector_name
+
+
+class OAuthLoginFailure(Enum):
+    """Why an interactive OAuth browser login could not complete.
+
+    Members are added as later children of the OAuth epic grow new failure modes; the callback
+    server (#152) raises the four here.
+    """
+
+    TIMED_OUT = "timed_out"
+    """The user never completed the browser login within the allotted time."""
+
+    PORT_IN_USE = "port_in_use"
+    """The fixed loopback callback port was already bound. Because the port is baked into the
+    auth service client's whitelisted redirect_uri, there is no alternate port to fall back to."""
+
+    AUTHORIZATION_DENIED = "authorization_denied"
+    """The auth service redirected back with an `error` -- the user declined consent, or the
+    authorization request itself was rejected."""
+
+    SERVER_ERROR = "server_error"
+    """The local callback listener could not be established, or died after binding."""
+
+
+class OAuthLoginError(OperationalError):
+    """
+    Exception raised when an interactive OAuth browser login cannot complete.
+
+    This is a subclass of OperationalError.
+
+    Attributes:
+        reason: An `OAuthLoginFailure` naming the cause, for callers that need to react to it
+            (e.g. re-prompting on a timeout but not on a denied authorization) rather than
+            matching on message text.
+    """
+
+    def __init__(self, message: str, reason: OAuthLoginFailure):
+        super().__init__(message)
+        self.reason = reason
 
 
 class IntegrityError(DatabaseError):
