@@ -27,8 +27,9 @@ fixed lifetime (`FALLBACK_CP_LIFETIME`/`FALLBACK_DP_LIFETIME`, matching mcp-conf
 `token-lifetimes.ts`) rather than hard-failing the login/refresh (#179).
 
 Every exchange funnels its request through `http_json.post_json`, which is what keeps this
-module's DB-API promise: only `Error` subclasses (here, always `OperationalError`) ever escape to
-a caller -- see that module's docstring for the shared hardening this and later oauth-package
+module's DB-API promise: only `Error` subclasses ever escape to a caller -- `OperationalError`,
+or its `OAuthTokenEndpointError` subclass when the auth service's token endpoint itself refuses
+the grant. See `http_json`'s docstring for the shared hardening this and later oauth-package
 modules (#152's callback server, #153's provider) build on.
 """
 
@@ -42,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from ..exceptions import OperationalError
+from ..exceptions import OAuthTokenEndpointError, OperationalError
 from .config import CCloudOAuthConfig
 from .http_json import best_effort_json_object, optional_object_field, post_json, require_field
 
@@ -226,12 +227,24 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
 
 
 def _raise_for_auth_service_error(response: httpx.Response) -> None:
+    """Translate a non-2xx from the auth service's token endpoint into OAuthTokenEndpointError.
+
+    The OAuth 2.0 `error` field (RFC 6749 section 5.2) is carried through as `error_code`, not
+    just folded into the message: `invalid_grant` is the token endpoint's way of saying the
+    refresh token is expired, revoked, or already spent, and that is the one failure a retry can
+    never fix. The refresh path branches on exactly that distinction, so the code has to reach it
+    as data. A body with no usable `error` string yields `error_code=None`, which callers treat
+    as "unclassified, so assume retryable" -- the safe direction, since the alternative is
+    permanently wedging a session over a transient 502.
+    """
     if response.is_success:
         return
     body = best_effort_json_object(response)
-    message = body.get("error_description") or body.get("error") or response.text
-    raise OperationalError(
+    error_code = body.get("error")
+    message = body.get("error_description") or error_code or response.text
+    raise OAuthTokenEndpointError(
         f"Confluent auth service token request failed: {message}",
+        error_code=error_code if isinstance(error_code, str) else None,
         http_status_code=response.status_code,
     )
 
