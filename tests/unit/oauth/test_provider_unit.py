@@ -606,6 +606,66 @@ class TestRefresh:
             assert len(results) == thread_count
             assert all(result is results[0] for result in results)
 
+    def test_concurrent_waiters_share_one_failed_attempt(self):
+        """A failed refresh must cost *one* rotation, not one per waiter.
+
+        This is what the shared `Future` buys over a lock: a thread waking from a lock knows only
+        that it may proceed, so it re-derives the outcome by running its own chain -- and every
+        such chain spends another rotation against the service's ~50-refresh cap. During a real
+        outage that is how a session gets bricked by the very lockout the gate exists to prevent.
+        Joining a `Future` instead, the waiters receive the winner's failure verbatim.
+
+        The chain is slowed deliberately: `MockTransport` answers instantly, so without it the
+        winner finishes before the other threads arrive and nothing is concurrent at all -- the
+        test would pass against a design that collapses nothing.
+        """
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _doctor_token_set(provider, cp_token_expires_at=_past(), dp_token_expires_at=_past())
+            stale = _tokens(provider)
+
+            sessions_entered = threading.Event()
+            release_sessions = threading.Event()
+            answer_sessions = fake._sessions  # noqa: SLF001
+
+            def slow_failing_sessions(request: httpx.Request) -> httpx.Response:
+                sessions_entered.set()
+                release_sessions.wait(timeout=BRIEF_TIMEOUT)
+                return answer_sessions(request)
+
+            fake._sessions = slow_failing_sessions  # noqa: SLF001
+            fake.fail_sessions_with = 500
+
+            thread_count = 8
+            raised: list[BaseException] = []
+            raised_lock = threading.Lock()
+
+            def refresh() -> None:
+                try:
+                    provider._refresh(stale)  # noqa: SLF001
+                except BaseException as e:  # noqa: BLE001
+                    with raised_lock:
+                        raised.append(e)
+
+            threads = [threading.Thread(target=refresh) for _ in range(thread_count)]
+            threads[0].start()
+            # Only once the winner is demonstrably inside the chain do the rest pile on, so they
+            # are guaranteed to arrive while the flight is genuinely in progress.
+            assert sessions_entered.wait(timeout=BRIEF_TIMEOUT)
+            for thread in threads[1:]:
+                thread.start()
+            release_sessions.set()
+            for thread in threads:
+                thread.join(timeout=BRIEF_TIMEOUT * 2)
+
+            assert not any(thread.is_alive() for thread in threads)
+            assert len(raised) == thread_count
+            assert len(fake.refresh_grants) == 1
+            assert len(fake.sessions_requests) == 2  # the login's, plus this one attempt
+            # Every waiter saw the winner's actual failure, not one it re-derived itself.
+            assert all(isinstance(e, OperationalError) for e in raised)
+            assert len({id(e) for e in raised}) == 1
+
     def test_interim_snapshot_is_not_mistaken_for_a_completed_refresh(self):
         """The mid-chain checkpoint must not satisfy another thread's double-check.
 

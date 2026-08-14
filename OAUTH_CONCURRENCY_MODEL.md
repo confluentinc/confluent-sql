@@ -107,45 +107,49 @@ across threads with zero serialization**. Hence two locks with sharply different
   one. Never held across network I/O. Because a `TokenSet` is an immutable snapshot, a reader that
   has copied the reference can read its fields lock-free, and no torn read is possible — refresh
   builds a new snapshot rather than mutating one.
-- **`_refresh_lock` — held across the ~4-call chain.** The single-flight gate. A *separate* lock
-  because a refresh is four sequential HTTP round-trips; holding `_token_lock` across them would
-  block every reader. `_refresh()` acquires it, **double-checks** whether another thread already
-  swapped in a newer snapshot while we waited (if so, bail and use theirs), runs the chain, then
-  briefly takes `_token_lock` to swap.
+- **`_refresh_lock` — held for microseconds, guarding the in-flight `Future` slot.** The
+  single-flight gate is the **`Future`**, not the lock: one caller wins and runs the chain outside
+  every lock, and everyone arriving meanwhile joins that same `Future`, receiving the winner's
+  snapshot or having the winner's exception re-raised on their own thread. Before starting a
+  flight, a caller whose snapshot was already superseded by a **completed** refresh gets that
+  result handed straight back.
+- **`_login_lock`** — the only lock held across I/O, and only by `login()`, whose browser
+  round-trip can take minutes. Deliberately not the refresh gate, so the request path never queues
+  behind a human.
 
 **The auth service's refresh tokens are single-use and rotating**, so two threads both spending the
-same one means a hard lockout. Building #153 sharpened which mechanism actually prevents that, and
-it is worth stating precisely, because the epic's design notes (and earlier drafts of this
-document) credited the wrong one:
+same one means a hard lockout. What prevents that is that the chain reads the token it will spend
+out of the slot *at the moment it runs*, never out of the snapshot its caller arrived holding. A
+waiter therefore spends the current token or none, whatever it queued with.
 
-- **What makes a double-spend impossible** is that `_refresh()` reads the token it will spend out
-  of the slot *inside* the gate, never out of the snapshot its caller arrived holding. A waiter
-  therefore spends the current token or none, whatever it queued with.
-- **What the double-check buys** is skipping *redundant* chain runs. Removing it (verified by
-  mutating the code and watching the tests) does not produce a lockout — eight concurrent waiters
-  each complete a legitimate refresh against a freshly-rotated token. What it produces is eight
-  four-call chains where one would do, and eight spends against the service's ~50-refresh cap.
+### Why a `Future` and not a lock
 
-Both are worth having; only the first is what the single-use rule demands. Both the on-request
-refresh and (later) the daemon's scheduled refresh funnel through the one `_refresh()`, so they
-coordinate instead of dueling.
+#153 first built this gate as a lock held across the chain, with waiters double-checking the slot
+on wake-up. Two defects in a row came from that shape, and both trace to the same root: **a lock
+only says "you may proceed", so a waking thread has to reconstruct the outcome by re-reading shared
+mutable state.**
 
-**The double-check's predicate is "a different *completed* snapshot", not merely "a different
-snapshot"** (caught in review of #182). Persist-before-exchange publishes a mid-chain checkpoint —
-the rotated refresh token alongside the *old* CP/DP tokens — into the same slot the double-check
-reads. If the chain then fails, that checkpoint sits there, and a waiter holding the pre-failure
-snapshot would take it for finished work and be handed back exactly the tokens it came to replace:
-on the expiry path it would send a token already known dead, and on the 401 path it would re-stamp
-the bearer that was just rejected, spend its one retry, and surface a second 401 — with a perfectly
-usable rotated refresh token sitting in the slot. `_interim_snapshot` records the checkpoint so the
-gate can tell the two apart.
+1. A waiter could misread the mid-chain checkpoint — persist-before-exchange publishes the rotated
+   refresh token alongside the *old* CP/DP tokens — as somebody's finished refresh, and be handed
+   back the very tokens it came to replace (caught reviewing #182).
+2. A *failed* attempt taught the waiters nothing, so each ran its own chain. Measured: eight
+   waiters against one outage produced **eight** rotations and eight `/api/sessions` attempts.
+   Against the service's ~50-refresh cap that is a path to the very lockout the gate exists to
+   prevent.
+
+A `Future` carries in-flight-ness, success, *and* failure in one object, so waiters learn all
+three instead of re-deriving them. Same scenario after the change: **one** rotation, one attempt,
+and all eight waiters raising the winner's own exception object. It is also the idiom #154 already
+mandates for the login single-flight — worth keeping the two consistent.
+
+`_interim_snapshot` survives the change, for the narrower job of the pre-flight fast path: a caller
+whose snapshot was superseded skips starting a chain, and that check must recognise a *completed*
+refresh rather than a checkpoint left behind by a failed one.
 
 The failure flag is checked in **two** places, and both are load-bearing: in the request path's
-microsecond critical section (the fast path — a session already known dead never reaches the gate),
-and again *inside* the gate. The second covers the race where a thread reads a healthy snapshot,
-finds its token stale, and is queued on the gate at the moment another thread latches the failure —
-it arrives holding a snapshot that still matches the slot, so the double-check would otherwise wave
-it through into another doomed exchange.
+microsecond critical section (the fast path — a session already known dead never starts a flight),
+and again when entering a flight. The second covers the race where a thread reads a healthy
+snapshot, finds its token stale, and reaches the gate just as another thread latches the failure.
 
 The upshot for a shared `Connection`: the driver declares `threadsafety = 1` and OAuth doesn't
 change that — the weak link is the `Connection`'s own per-statement/cursor state. But **auth is not
@@ -177,8 +181,9 @@ sequenceDiagram
 
 Workers 2–8 never touch the port, never open a browser, and never run the token chain. Roughly
 five minutes later, when the ~5-minute CP token lapses and several workers issue requests at once,
-they all enter `_refresh()`, one wins the gate, the rest double-check and reuse its snapshot — one
-chain run, one refresh-token spend.
+they all enter `_refresh()`, one wins the flight, the rest join its `Future` and take its result —
+one chain run, one refresh-token spend. Had it failed instead, they would share that one failure
+too, rather than each running a chain of their own.
 
 ## Where the fixed port still bites
 
@@ -203,12 +208,15 @@ Items 3 and 5 are #153's and are covered by `tests/unit/oauth/test_provider_unit
 1. N concurrent OAuth `connect()`s → login mock fires **once**; all N share one provider.
 2. Login failure clears the holder slot; a later `connect()` retries with a fresh browser.
 3. ✅ Two threads hitting a stale token concurrently → refresh chain runs **once** (assert the mock
-   was hit once), and the refresh token is spent once.
-   *Pinned by `test_concurrent_refreshes_of_one_stale_snapshot_run_the_chain_once`, driven at
-   `_refresh()` rather than through the request path: routed through httpx, the losers re-read the
-   slot and find a fresh token before ever reaching the gate, so the contention almost never
-   materializes and the test passes vacuously. This was caught by mutation — the first version of
-   the test survived deleting the double-check entirely.*
+   was hit once), and the refresh token is spent once. A *failed* chain likewise costs one attempt
+   shared by every waiter, not one apiece.
+   *Pinned by `test_concurrent_refreshes_of_one_stale_snapshot_run_the_chain_once` and
+   `test_concurrent_waiters_share_one_failed_attempt`. Two traps, both learned the hard way:
+   drive these at `_refresh()` rather than through the request path, since routed through httpx
+   the losers re-read the slot and find a fresh token before ever reaching the gate (the first
+   version of the test survived deleting the gate's short-circuit entirely); and make the chain
+   take measurable time, since `MockTransport` answers instantly and the winner would otherwise
+   finish before any other thread arrives, leaving nothing concurrent to observe.*
 4. The module lock is not held across `login()` — a waiter can be observed blocking on the future
    while the winner is still inside the browser round-trip.
 5. ✅ `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
