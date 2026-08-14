@@ -12,13 +12,13 @@ server is torn down and all N resolve to the same outcome. Failure clears the sl
 
 ## Status of each layer
 
-Only the bottom layer is code today. The two above it are designed (epic #150) but unbuilt, so
-everything about them here describes intent, not observed behavior.
+The bottom two layers are code today. The two above them are designed (epic #150) but unbuilt, so
+everything about those describes intent, not observed behavior.
 
 | Layer | Owns | State |
 | --- | --- | --- |
 | `CallbackServer` (`oauth/callback_server.py`) | one login attempt's redirect capture | **built** (#152) |
-| `CCloudOAuth` provider | the shared `TokenSet`, refresh single-flight | designed, #153 |
+| `CCloudOAuth` provider (`oauth/provider.py`) | the shared `TokenSet`, refresh single-flight | **built** (#153) |
 | Module-level holder | one login + one provider per process | designed, #154 |
 | Refresh daemon, refcount/park | latency optimization | designed, #157 |
 
@@ -96,7 +96,7 @@ There is also a **one-identity guard**: one browser session means one `(user, or
 `connect()` naming a *different* `organization_id` raises `InterfaceError` rather than borrowing the
 wrong-org token; one that omits it inherits whatever the first login established.
 
-## Layer 3 — the provider's two locks (#153, designed)
+## Layer 3 — the provider's two locks (#153, built)
 
 Past login, every request stamps a header from the shared `TokenSet`. `httpx.Auth.sync_auth_flow`
 does no locking of its own — it just defers to `auth_flow` — so our `auth_flow` runs **concurrently
@@ -113,10 +113,29 @@ across threads with zero serialization**. Hence two locks with sharply different
   swapped in a newer snapshot while we waited (if so, bail and use theirs), runs the chain, then
   briefly takes `_token_lock` to swap.
 
-The double-check is a correctness requirement, not an optimization: **the auth service's refresh tokens are
-single-use and rotating**, so two threads both spending the same one means a hard lockout. Both the
-on-request refresh and (later) the daemon's scheduled refresh funnel through the one `_refresh()`,
-so they coordinate instead of dueling.
+**The auth service's refresh tokens are single-use and rotating**, so two threads both spending the
+same one means a hard lockout. Building #153 sharpened which mechanism actually prevents that, and
+it is worth stating precisely, because the epic's design notes (and earlier drafts of this
+document) credited the wrong one:
+
+- **What makes a double-spend impossible** is that `_refresh()` reads the token it will spend out
+  of the slot *inside* the gate, never out of the snapshot its caller arrived holding. A waiter
+  therefore spends the current token or none, whatever it queued with.
+- **What the double-check buys** is skipping *redundant* chain runs. Removing it (verified by
+  mutating the code and watching the tests) does not produce a lockout — eight concurrent waiters
+  each complete a legitimate refresh against a freshly-rotated token. What it produces is eight
+  four-call chains where one would do, and eight spends against the service's ~50-refresh cap.
+
+Both are worth having; only the first is what the single-use rule demands. Both the on-request
+refresh and (later) the daemon's scheduled refresh funnel through the one `_refresh()`, so they
+coordinate instead of dueling.
+
+The failure flag is checked in **two** places, and both are load-bearing: in the request path's
+microsecond critical section (the fast path — a session already known dead never reaches the gate),
+and again *inside* the gate. The second covers the race where a thread reads a healthy snapshot,
+finds its token stale, and is queued on the gate at the moment another thread latches the failure —
+it arrives holding a snapshot that still matches the slot, so the double-check would otherwise wave
+it through into another doomed exchange.
 
 The upshot for a shared `Connection`: the driver declares `threadsafety = 1` and OAuth doesn't
 change that — the weak link is the `Connection`'s own per-statement/cursor state. But **auth is not
@@ -168,13 +187,27 @@ chain run, one refresh-token spend.
 
 ## Invariants worth pinning in #153 / #154 tests
 
+Items 3 and 5 are #153's and are covered by `tests/unit/oauth/test_provider_unit.py`; the rest are
+#154's, still to come.
+
 1. N concurrent OAuth `connect()`s → login mock fires **once**; all N share one provider.
 2. Login failure clears the holder slot; a later `connect()` retries with a fresh browser.
-3. Two threads hitting a stale token concurrently → refresh chain runs **once** (assert the mock
+3. ✅ Two threads hitting a stale token concurrently → refresh chain runs **once** (assert the mock
    was hit once), and the refresh token is spent once.
+   *Pinned by `test_concurrent_refreshes_of_one_stale_snapshot_run_the_chain_once`, driven at
+   `_refresh()` rather than through the request path: routed through httpx, the losers re-read the
+   slot and find a fresh token before ever reaching the gate, so the contention almost never
+   materializes and the test passes vacuously. This was caught by mutation — the first version of
+   the test survived deleting the double-check entirely.*
 4. The module lock is not held across `login()` — a waiter can be observed blocking on the future
    while the winner is still inside the browser round-trip.
-5. `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
+5. ✅ `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
 6. A second `connect()` supplying a different `organization_id` raises `InterfaceError`.
 7. Tests reset the module holder between cases — a leaked provider (and, later, daemon) across
    cases is the failure this guards.
+
+#153 additionally pins, beyond the list above: the rotated refresh token is persisted **before**
+the CP/DP legs (and survives a mid-chain failure, so a crash there is one lost request rather than
+a lockout); a refresh does **not** move the 8h absolute wall; a `403 invalid_grant` latches
+`ReauthenticationRequired` while a `503` leaves the session recoverable; a `401` forces exactly one
+refresh and one retry; and the callback port is released after a successful login.
