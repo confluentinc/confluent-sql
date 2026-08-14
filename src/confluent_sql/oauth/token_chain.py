@@ -6,9 +6,9 @@ provider landing in #153) decides the client's lifetime, and this module never t
 `Connection`'s three request clients.
 
 Hop 1 (`exchange_code_for_tokens`) and the refresh exchange (`exchange_refresh_token`) both hit
-Auth0's token endpoint and differ only in `grant_type`, so they share one result type,
-`CodeExchangeResult`. Per oauth-research-and-plan.md, the Auth0 `access_token`/`expires_in` in
-that response are unused downstream and dropped.
+the auth service's token endpoint and differ only in `grant_type`, so they share one result type,
+`CodeExchangeResult`. Per oauth-research-and-plan.md, the auth service's
+`access_token`/`expires_in` in that response are unused downstream and dropped.
 
 Hops 2 and 3 (`exchange_id_token_for_cp_token`, `exchange_cp_for_dp_token`) hit Confluent Cloud's
 `/api/sessions` and `/api/access_tokens`. Neither response documents an `expires_in` field, so
@@ -82,7 +82,7 @@ def exchange_code_for_tokens(
     body = post_json(
         client,
         config.token_url,
-        check_response=_raise_for_auth0_error,
+        check_response=_raise_for_auth_service_error,
         data={
             "grant_type": "authorization_code",
             "client_id": config.client_id,
@@ -101,15 +101,15 @@ def exchange_code_for_tokens(
 def exchange_refresh_token(
     client: httpx.Client, config: CCloudOAuthConfig, *, refresh_token: str
 ) -> CodeExchangeResult:
-    """The refresh leg: POST config.token_url with grant_type=refresh_token. Auth0 refresh
-    tokens are single-use and rotating -- the returned refresh_token is a *different* string
-    that must replace the one just spent. This function performs the exchange only; persisting
-    the rotated token before anything else is the caller's responsibility (see
+    """The refresh leg: POST config.token_url with grant_type=refresh_token. The auth service's
+    refresh tokens are single-use and rotating -- the returned refresh_token is a *different*
+    string that must replace the one just spent. This function performs the exchange only;
+    persisting the rotated token before anything else is the caller's responsibility (see
     oauth-research-and-plan.md §2's persist-before-exchange ordering, landing with #153)."""
     body = post_json(
         client,
         config.token_url,
-        check_response=_raise_for_auth0_error,
+        check_response=_raise_for_auth_service_error,
         data={
             "grant_type": "refresh_token",
             "client_id": config.client_id,
@@ -191,13 +191,14 @@ def _jwt_exp(token: str) -> datetime:
         raise OperationalError(f"Could not parse 'exp' claim from token: {e}") from e
 
 
-def _raise_for_auth0_error(response: httpx.Response) -> None:
+def _raise_for_auth_service_error(response: httpx.Response) -> None:
     if response.is_success:
         return
     body = best_effort_json_object(response)
     message = body.get("error_description") or body.get("error") or response.text
     raise OperationalError(
-        f"Auth0 token request failed: {message}", http_status_code=response.status_code
+        f"Confluent auth service token request failed: {message}",
+        http_status_code=response.status_code,
     )
 
 

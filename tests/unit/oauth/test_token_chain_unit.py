@@ -18,7 +18,7 @@ from confluent_sql.oauth.token_chain import (
 pytestmark = pytest.mark.unit
 
 CONFIG = CCloudOAuthConfig(
-    auth0_domain="login.confluent.io",
+    auth_service_domain="login.confluent.io",
     api_host="https://confluent.cloud",
     client_id="test-client-id",
     callback_host="127.0.0.1",
@@ -74,7 +74,7 @@ class TestExchangeCodeForTokens:
         assert result.id_token == id_token
         assert result.refresh_token == refresh_token
 
-    def test_auth0_error_body_raises_operational_error(self):
+    def test_auth_service_error_body_raises_operational_error(self):
         error_description = "Invalid authorization code"
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -120,14 +120,15 @@ class TestExchangeCodeForTokens:
         with _client(handler) as client, pytest.raises(OperationalError, match="object"):
             exchange_code_for_tokens(client, CONFIG, code="auth-code-123", verifier="verifier-abc")
 
-    def test_non_object_auth0_error_body_still_raises_operational_error(self):
+    def test_non_object_auth_service_error_body_still_raises_operational_error(self):
         """A non-2xx response whose valid JSON body is a list, not an object, must still surface
-        as OperationalError -- not AttributeError out of _raise_for_auth0_error's own body.get()."""
+        as OperationalError -- not AttributeError out of _raise_for_auth_service_error's own
+        body.get()."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(403, json=["unexpected", "error", "shape"])
 
-        with _client(handler) as client, pytest.raises(OperationalError, match="Auth0"):
+        with _client(handler) as client, pytest.raises(OperationalError, match="auth service"):
             exchange_code_for_tokens(client, CONFIG, code="bad-code", verifier="verifier-abc")
 
 
@@ -154,7 +155,7 @@ class TestExchangeRefreshToken:
         assert result.id_token == new_id_token
         assert result.refresh_token == rotated_refresh_token
 
-    def test_auth0_error_body_raises_operational_error(self):
+    def test_auth_service_error_body_raises_operational_error(self):
         error_description = "Refresh token expired"
 
         def handler(request: httpx.Request) -> httpx.Response:
