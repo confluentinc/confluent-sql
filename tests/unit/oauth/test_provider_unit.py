@@ -606,6 +606,48 @@ class TestRefresh:
             assert len(results) == thread_count
             assert all(result is results[0] for result in results)
 
+    def test_interim_snapshot_is_not_mistaken_for_a_completed_refresh(self):
+        """The mid-chain checkpoint must not satisfy another thread's double-check.
+
+        Persist-before-exchange publishes a snapshot carrying the rotated refresh token but the
+        *old* CP/DP tokens. If the chain then fails, that checkpoint sits in the slot -- and a
+        waiter that entered holding the pre-failure snapshot would see "the slot changed, someone
+        refreshed" and take it as finished work. It isn't: its CP/DP tokens are the very ones the
+        waiter already knew were stale (or that had just been 401'd), so the waiter would either
+        send a knowingly-dead token or, on the 401 path, re-stamp the same rejected bearer, burn
+        its one retry, and surface a second 401 -- all while a perfectly usable rotated refresh
+        token sat in the slot.
+        """
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            # What a waiter queued at the gate would be holding.
+            stale = _tokens(provider)
+
+            _doctor_token_set(provider, cp_token_expires_at=_past(), dp_token_expires_at=_past())
+            fake.fail_sessions_with = 500
+            resource = FakeResource()
+            with (
+                _resource_client(provider.data_plane_auth, resource) as client,
+                pytest.raises(OperationalError, match="sessions is down"),
+            ):
+                client.get(RESOURCE_URL)
+
+            interim = _tokens(provider)
+            assert interim.refresh_token != stale.refresh_token  # rotated, and persisted
+            assert interim.dp_token == stale.dp_token  # ...but the plane tokens are untouched
+            assert len(fake.refresh_grants) == 1
+
+            fake.fail_sessions_with = None
+            recovered = provider._refresh(stale)  # noqa: SLF001
+
+            # The waiter must get genuinely new plane tokens, not the checkpoint handed back.
+            assert recovered is not interim
+            assert recovered.dp_token != stale.dp_token
+            assert recovered.cp_token != stale.cp_token
+            assert len(fake.refresh_grants) == 2
+            # ...and it spent the rotated token from the slot, never the one already consumed.
+            assert fake.refresh_grants[1]["refresh_token"] == interim.refresh_token
+
     def test_one_chain_run_serves_both_planes(self):
         """A refresh re-mints CP *and* DP together, so a control-plane request that finds both
         lapsed leaves nothing for a following data-plane request to refresh."""
