@@ -96,9 +96,10 @@ class TestSuccessfulRedirect:
         assert "href=" not in response.text
         assert "@import" not in response.text
 
-    def test_code_is_returned_to_every_waiter(self):
+    def test_the_code_can_be_read_repeatedly(self):
         """wait_for_code is not a one-shot consume: #153's login() reads the code once, but a
-        second read (a retry path, a test) must see the same value rather than hang."""
+        second *sequential* read (a retry path, a test) must see the same value rather than hang.
+        Concurrent readers are covered separately, by TestConcurrentWaiters."""
         with _running_server() as server:
             _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
 
@@ -326,6 +327,80 @@ class TestOnlyLoopbackIsBound:
     def test_the_loopback_literal_is_accepted(self):
         with CallbackServer(_config(host="127.0.0.1"), EXPECTED_STATE) as server:
             assert server.host == "127.0.0.1"
+
+
+_Outcome = tuple[str | None, BaseException | None]
+"""One waiter's result: either the code it received, or the exception it caught."""
+
+
+@contextmanager
+def _blocked_waiters(server: CallbackServer, count: int) -> Iterator[list[_Outcome]]:
+    """Park `count` threads inside `wait_for_code`, then yield the list they report into.
+
+    The barrier releases every thread at the call site before the body runs, and the body is what
+    triggers the outcome. Nothing can settle the login until then, so the `outcomes == []` check
+    below is a real assertion rather than a formality: a waiter that has already returned would be
+    a lost wakeup, not a slow test.
+
+    Threads are joined on exit, so the caller's assertions run against a complete list.
+    """
+    outcomes: list[_Outcome] = []
+    reporting = threading.Lock()
+    at_the_call_site = threading.Barrier(count + 1)
+
+    def wait() -> None:
+        at_the_call_site.wait(timeout=BRIEF_TIMEOUT)
+        try:
+            code = server.wait_for_code(timeout=BRIEF_TIMEOUT)
+        except BaseException as e:  # noqa: BLE001 -- reported to the test, not swallowed
+            with reporting:
+                outcomes.append((None, e))
+        else:
+            with reporting:
+                outcomes.append((code, None))
+
+    threads = [threading.Thread(target=wait, name=f"waiter-{n}", daemon=True) for n in range(count)]
+    for thread in threads:
+        thread.start()
+    at_the_call_site.wait(timeout=BRIEF_TIMEOUT)
+    assert outcomes == []
+    try:
+        yield outcomes
+    finally:
+        for thread in threads:
+            thread.join(timeout=BRIEF_TIMEOUT)
+
+
+class TestConcurrentWaiters:
+    """Several threads blocked in `wait_for_code` at the moment the redirect lands.
+
+    Not how #153 drives this class -- one login thread does the waiting, and the N-waiter fan-out
+    belongs to #154's holder -- but `wait_for_code` blocks on an `Event`, which permits any number
+    of waiters, so the behavior is pinned rather than left to chance.
+    """
+
+    WAITER_COUNT = 4
+
+    def test_every_blocked_waiter_receives_the_same_code(self):
+        with _running_server() as server, _blocked_waiters(server, self.WAITER_COUNT) as outcomes:
+            _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
+
+        assert [code for code, _ in outcomes] == [AUTH_CODE] * self.WAITER_COUNT
+        assert [error for _, error in outcomes] == [None] * self.WAITER_COUNT
+
+    def test_every_blocked_waiter_gets_its_own_copy_of_the_failure(self):
+        with _running_server() as server, _blocked_waiters(server, self.WAITER_COUNT) as outcomes:
+            _get(server, state=EXPECTED_STATE, error="access_denied")
+
+        errors = [error for _, error in outcomes]
+        assert len(errors) == self.WAITER_COUNT
+        assert {type(error) for error in errors} == {OAuthLoginError}
+        assert {error.reason for error in errors} == {  # type: ignore[union-attr]
+            OAuthLoginFailure.AUTHORIZATION_DENIED
+        }
+        # Distinct instances: sharing one would mean each raise mutating the traceback the other
+        # waiters are holding.
+        assert len({id(error) for error in errors}) == self.WAITER_COUNT
 
 
 def _read_failure(server: CallbackServer) -> OAuthLoginError:
