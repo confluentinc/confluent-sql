@@ -1,14 +1,16 @@
 """Interactive human-login OAuth for Confluent Cloud (epic #150).
 
-This package holds the three-hop Auth0 PKCE token chain that mints Confluent's own control-plane
-and data-plane tokens. #151 (this ticket) builds the pure, network- and thread-free core: PKCE
-parameter generation, the token chain's four exchanges, the immutable TokenSet snapshot, and the
-per-environment config. Nothing here is wired into `connect()` yet -- that starts with the
-callback server (#152) and the stateful provider (#153), and lands in `connect()` at #155.
+This package holds the three-hop PKCE token chain that mints Confluent's own control-plane
+and data-plane tokens. #151 built the pure, network- and thread-free core: PKCE parameter
+generation, the token chain's four exchanges, the immutable TokenSet snapshot, and the
+per-environment config. #152 added the loopback CallbackServer that catches the auth service's
+redirect. Nothing here is wired into `connect()` yet -- the stateful provider that drives a login
+end to end arrives with #153, and lands in `connect()` at #155.
 """
 
 from __future__ import annotations
 
+from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import PROD, CCloudOAuthConfig
 from .pkce import challenge_for, generate_state, generate_verifier
 from .token_chain import (
@@ -23,8 +25,10 @@ from .token_chain import (
 from .token_set import TokenSet
 
 __all__ = [
+    "DEFAULT_LOGIN_TIMEOUT_SECS",
     "PROD",
     "CCloudOAuthConfig",
+    "CallbackServer",
     "CodeExchangeResult",
     "ControlPlaneTokenResult",
     "DataPlaneTokenResult",
