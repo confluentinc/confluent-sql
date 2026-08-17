@@ -21,13 +21,16 @@ what it built lets a test assert "exactly one provider, one login" directly.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future
 
 import httpx
 import pytest
 
 from confluent_sql.exceptions import InterfaceError, OAuthLoginError, OAuthLoginFailure
+from confluent_sql.oauth import holder as holder_module
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, shutdown_all
 from confluent_sql.oauth.provider import OAuthProvider
@@ -42,6 +45,18 @@ CONFIG = CCloudOAuthConfig(
     callback_port=26640,
     callback_path="/gateway/v1/callback-local-mcp-docs",
 )
+
+OTHER_ENV_CONFIG = CCloudOAuthConfig(
+    auth_service_domain="login-stag.confluent-dev.io",
+    api_host="https://stag.cpdev.cloud",
+    client_id="stag-client-id",
+    callback_host="127.0.0.1",
+    callback_port=26640,
+    callback_path="/gateway/v1/callback-local-mcp-docs",
+)
+"""A *different* Confluent Cloud environment -- different issuer, API host, and client -- for
+pinning that the holder refuses to hand one environment's provider to a connection asking for
+another."""
 
 DEFAULT_ORG = "org-resolved-from-the-session"
 """What a `FakeProvider` reports when `login()` is handed no org -- the analogue of Confluent
@@ -132,7 +147,7 @@ def _reset_holder():
 
 
 class TestSingleFlight:
-    def test_concurrent_acquires_log_in_once_and_share_one_provider(self):
+    def test_concurrent_acquires_log_in_once_and_share_one_provider(self, monkeypatch):
         """N Connections opening at once -> one browser bounce, one provider for all of them.
 
         The login is gated shut until every waiter has piled on, so the win is the *join* path --
@@ -140,6 +155,8 @@ class TestSingleFlight:
         provider. `login_calls == 1` and one built provider is the single-flight property; every
         thread leaving with the *same object* is the sharing property.
         """
+        joiner_count = 4
+        all_joined = _arm_join_barrier(monkeypatch, joiner_count)
         release = threading.Event()
         entered = threading.Event()
 
@@ -168,10 +185,10 @@ class TestSingleFlight:
         winner.start()
         assert entered.wait(timeout=BRIEF_TIMEOUT)
 
-        joiners = [threading.Thread(target=worker) for _ in range(4)]
+        joiners = [threading.Thread(target=worker) for _ in range(joiner_count)]
         for joiner in joiners:
             joiner.start()
-        _settle()
+        assert all_joined.wait(timeout=BRIEF_TIMEOUT)  # every joiner is now parked on the flight
         with sink:  # nothing can complete while the login is gated shut
             assert not results and not errors
         release.set()
@@ -232,12 +249,61 @@ class TestLoginFailure:
 
         assert built and built[0].closed
 
-    def test_concurrent_waiters_share_one_failed_login(self):
+    def test_a_provider_factory_that_raises_does_not_wedge_the_holder(self):
+        """A factory that throws *before* login even starts must still settle the flight and clear
+        the slot. Otherwise `_inflight` stays populated and every joiner / later caller blocks on
+        an abandoned Future forever -- the wedge that comes from building the provider outside the
+        guarded region.
+        """
+        holder = ProcessOAuthHolder.instance()
+
+        def exploding_factory(config: CCloudOAuthConfig) -> OAuthProvider:
+            raise RuntimeError("factory blew up before any login")
+
+        with pytest.raises(RuntimeError, match="factory blew up"):
+            holder.acquire(CONFIG, provider_factory=exploding_factory)
+
+        # Not wedged: a later acquire runs a fresh login rather than blocking on the dead flight.
+        # Driven on a thread so a regression fails as a live thread instead of hanging the suite.
+        self._assert_acquire_completes(holder)
+
+    def test_cleanup_that_itself_throws_still_settles_the_flight(self):
+        """If discarding a failed login's provider throws from `close()`, the flight must still be
+        settled and the slot cleared -- the close error is logged, never left to wedge the holder.
+        """
+        holder = ProcessOAuthHolder.instance()
+
+        def factory(config: CCloudOAuthConfig) -> FakeProvider:
+            provider = FakeProvider(config, gate=_raising(DENIED_LOGIN))
+            provider.close = _raising(RuntimeError("close blew up"))  # type: ignore[method-assign]
+            return provider
+
+        # The login failure still surfaces (not the close error), and the holder is not wedged.
+        with pytest.raises(OAuthLoginError):
+            holder.acquire(CONFIG, provider_factory=factory)
+        self._assert_acquire_completes(holder)
+
+    @staticmethod
+    def _assert_acquire_completes(holder: ProcessOAuthHolder) -> None:
+        """Acquire on a thread and assert it returns promptly -- a wedged holder leaves it alive."""
+        retry = RecordingFactory()
+        got: list[OAuthProvider] = []
+        thread = threading.Thread(
+            target=lambda: got.append(holder.acquire(CONFIG, provider_factory=retry))
+        )
+        thread.start()
+        thread.join(timeout=BRIEF_TIMEOUT)
+        assert not thread.is_alive(), "holder wedged: acquire blocked on an abandoned flight"
+        assert got and got[0] is retry.providers[0]
+
+    def test_concurrent_waiters_share_one_failed_login(self, monkeypatch):
         """A failed login costs *one* attempt shared by every waiter, not one browser per thread.
 
         The winner is held inside a gate until the joiners have queued on its Future, then fails;
         the joiners must receive that same failure rather than each launching its own login.
         """
+        joiner_count = 4
+        all_joined = _arm_join_barrier(monkeypatch, joiner_count)
         release = threading.Event()
         entered = threading.Event()
 
@@ -272,12 +338,13 @@ class TestLoginFailure:
                 with sink:
                     joiner_errors.append(e)
 
-        joiners = [threading.Thread(target=run_joiner) for _ in range(4)]
+        joiners = [threading.Thread(target=run_joiner) for _ in range(joiner_count)]
         for joiner in joiners:
             joiner.start()
-        # Give the joiners a moment to pass acquire()'s lock section and capture the live Future
-        # before the winner's failure clears it.
-        _settle()
+        # Only once every joiner is provably parked on the winner's Future do we let the winner
+        # fail -- otherwise a late joiner could reach the slot after the failure cleared it and
+        # start a second login.
+        assert all_joined.wait(timeout=BRIEF_TIMEOUT)
         release.set()
 
         winner.join(timeout=BRIEF_TIMEOUT)
@@ -289,12 +356,36 @@ class TestLoginFailure:
         assert len(factory.providers) == 1  # one attempt, not one per waiter
         assert factory.providers[0].login_calls == 1
         assert len(winner_error) == 1
-        assert len(joiner_errors) == 4
+        assert len(joiner_errors) == joiner_count
         # Every waiter saw the winner's actual failure object, re-raised on its own thread.
         assert all(error is winner_error[0] for error in joiner_errors)
 
 
 class TestIdentityGuard:
+    def test_a_second_environment_is_refused(self):
+        """A later acquire naming a *different* Confluent Cloud environment must be refused, not
+        silently handed the first environment's provider -- whose tokens a different issuer minted
+        for a different API host. The org axis is not enough; environment is guarded too."""
+        factory = RecordingFactory()
+        holder = ProcessOAuthHolder.instance()
+
+        holder.acquire(CONFIG, provider_factory=factory)
+        with pytest.raises(InterfaceError, match="environment"):
+            holder.acquire(OTHER_ENV_CONFIG, provider_factory=factory)
+
+        # Refusal fails only that caller; the established (CONFIG) login is intact and reusable.
+        assert holder.acquire(CONFIG, provider_factory=factory) is factory.providers[0]
+        assert len(factory.providers) == 1
+
+    def test_the_same_environment_by_value_is_accepted(self):
+        """The environment check is by value, not identity: a distinct but equal config matches."""
+        factory = RecordingFactory()
+        holder = ProcessOAuthHolder.instance()
+
+        first = holder.acquire(CONFIG, provider_factory=factory)
+        assert holder.acquire(dataclasses.replace(CONFIG), provider_factory=factory) is first
+        assert len(factory.providers) == 1
+
     def test_a_second_organization_is_refused(self):
         factory = RecordingFactory()
         holder = ProcessOAuthHolder.instance()
@@ -331,11 +422,14 @@ class TestIdentityGuard:
         second = holder.acquire(CONFIG, organization_id=DEFAULT_ORG, provider_factory=factory)
         assert second is first
 
-    def test_a_joiner_wanting_a_different_org_is_refused_while_the_winner_succeeds(self):
+    def test_a_joiner_wanting_a_different_org_is_refused_while_the_winner_succeeds(
+        self, monkeypatch
+    ):
         """The guard holds even across the single-flight race: a thread that joins a login it did
         not start, but wanted a different org than that login settled on, is refused -- without
         disturbing the winner or the shared provider.
         """
+        all_joined = _arm_join_barrier(monkeypatch, 1)
         release = threading.Event()
         entered = threading.Event()
 
@@ -364,7 +458,7 @@ class TestIdentityGuard:
 
         joiner = threading.Thread(target=run_joiner)
         joiner.start()
-        _settle()
+        assert all_joined.wait(timeout=BRIEF_TIMEOUT)  # joiner is parked on the winner's flight
         release.set()
 
         winner.join(timeout=BRIEF_TIMEOUT)
@@ -481,14 +575,29 @@ def _raising(exc: BaseException) -> Callable[[], None]:
     return gate
 
 
-def _settle() -> None:
-    """Yield the GIL long enough for freshly-started threads to clear `acquire()`'s short lock
-    section and capture the in-flight Future, before the test releases the winner.
+def _arm_join_barrier(monkeypatch: pytest.MonkeyPatch, expected: int) -> threading.Event:
+    """Make the holder's in-flight Future signal once `expected` joiners are parked on it.
 
-    Not load-bearing for correctness -- only for making the *race* the intended one -- so a tiny
-    join on a no-op thread (a scheduler yield without a bare `sleep`) is enough.
+    A real happens-before in place of a timing guess: a test waits on the returned event and
+    thereby *knows* every joiner has captured the flight and is blocked in `result()` before it
+    lets the gated winner finish or fail. Without it a late joiner could reach the slot only after
+    the winner cleared a failed flight, and start a second login -- a genuine flake.
+
+    Patches the `Future` the holder constructs, so it must be armed *before* the winner starts
+    (the winner is what builds the Future); only joiners call `result()`, so the count is exactly
+    the number of threads that have joined the flight.
     """
-    for _ in range(5):
-        settler = threading.Thread(target=lambda: None)
-        settler.start()
-        settler.join()
+    all_waiting = threading.Event()
+    arrived = [0]
+    lock = threading.Lock()
+
+    class _CountingFuture(Future[OAuthProvider]):
+        def result(self, timeout: float | None = None) -> OAuthProvider:
+            with lock:
+                arrived[0] += 1
+                if arrived[0] >= expected:
+                    all_waiting.set()
+            return super().result(timeout)
+
+    monkeypatch.setattr(holder_module, "Future", _CountingFuture)
+    return all_waiting
