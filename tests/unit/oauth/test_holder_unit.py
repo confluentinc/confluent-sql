@@ -510,9 +510,10 @@ class TestLockNotHeldAcrossLogin:
 
         Observed behaviorally through `shutdown()`, which needs that lock: while the winner is
         parked inside `login()`, a `shutdown()` on another thread must complete promptly. Were the
-        lock held across the login, it would block until the browser returned. The winner then
-        finds its slot cleared and discards the provider it built rather than installing it into a
-        torn-down holder.
+        lock held across the login, it would block until the browser returned.
+
+        `shutdown()` cannot abort the in-flight login -- the fixed callback port means only one
+        login runs at a time -- so the login is left to settle and install normally, not discarded.
         """
         release = threading.Event()
         entered = threading.Event()
@@ -524,11 +525,12 @@ class TestLockNotHeldAcrossLogin:
         factory = RecordingFactory(gate)
         holder = ProcessOAuthHolder.instance()
 
+        winner_result: list[OAuthProvider] = []
         winner_error: list[BaseException] = []
 
         def run_winner() -> None:
             try:
-                holder.acquire(CONFIG, provider_factory=factory)
+                winner_result.append(holder.acquire(CONFIG, provider_factory=factory))
             except BaseException as e:  # noqa: BLE001
                 winner_error.append(e)
 
@@ -546,10 +548,54 @@ class TestLockNotHeldAcrossLogin:
         winner.join(timeout=BRIEF_TIMEOUT)
         assert not winner.is_alive()
 
-        # The winner's provider was discarded (closed, not installed) because shutdown cleared the
-        # slot while it was still logging in.
-        assert factory.providers[0].closed
-        assert len(winner_error) == 1
+        # shutdown could not abort the in-flight login, so it installed normally: not discarded,
+        # not errored.
+        assert not winner_error
+        assert winner_result == [factory.providers[0]]
+        assert not factory.providers[0].closed
+
+    def test_shutdown_during_a_login_does_not_let_a_new_acquire_start_a_second_login(
+        self, monkeypatch
+    ):
+        """The single-login invariant under the fixed callback port: `shutdown()` mid-login must
+        not free the slot for a concurrent `acquire()` to start a *second* login -- which would
+        collide on the port, or open a second browser. The later acquire joins the in-flight login.
+        """
+        all_joined = _arm_join_barrier(monkeypatch, 1)
+        release = threading.Event()
+        entered = threading.Event()
+
+        def gate() -> None:
+            entered.set()
+            assert release.wait(timeout=BRIEF_TIMEOUT)
+
+        factory = RecordingFactory(gate)
+        holder = ProcessOAuthHolder.instance()
+
+        winner = threading.Thread(target=lambda: holder.acquire(CONFIG, provider_factory=factory))
+        winner.start()
+        assert entered.wait(timeout=BRIEF_TIMEOUT)  # winner is inside the gated login
+
+        holder.shutdown()  # mid-login teardown -- must not free the slot for a competing login
+
+        joined: list[OAuthProvider] = []
+        joiner = threading.Thread(
+            target=lambda: joined.append(holder.acquire(CONFIG, provider_factory=factory))
+        )
+        joiner.start()
+        # The barrier fires only once the joiner is parked on the *existing* flight; if it had
+        # instead started a second login it would never reach that flight's result().
+        assert all_joined.wait(timeout=BRIEF_TIMEOUT)
+        release.set()
+
+        winner.join(timeout=BRIEF_TIMEOUT)
+        joiner.join(timeout=BRIEF_TIMEOUT)
+        assert not winner.is_alive() and not joiner.is_alive()
+
+        # Exactly one login ran; the joiner shared its provider rather than launching another.
+        assert len(factory.providers) == 1
+        assert factory.providers[0].login_calls == 1
+        assert joined == [factory.providers[0]]
 
 
 class TestShutdown:
