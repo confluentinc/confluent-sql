@@ -214,6 +214,40 @@ class TestSingleFlight:
 
         assert first is second
         assert len(factory.providers) == 1
+
+    def test_a_joiner_honors_its_own_timeout_while_the_winner_is_slow(self):
+        """A joiner waits on the shared login, but no longer than its *own* `timeout`.
+
+        The winner is parked in a gated login; a joiner asking for only a brief wait must surface a
+        login timeout instead of being bound to the winner's longer deadline -- and doing so must
+        neither disturb the winner's in-flight login nor start a second one.
+        """
+        release = threading.Event()
+        entered = threading.Event()
+
+        def gate() -> None:
+            entered.set()
+            assert release.wait(timeout=BRIEF_TIMEOUT)
+
+        factory = RecordingFactory(gate)
+        holder = ProcessOAuthHolder.instance()
+
+        winner = threading.Thread(
+            target=lambda: holder.acquire(CONFIG, provider_factory=factory, timeout=BRIEF_TIMEOUT)
+        )
+        winner.start()
+        assert entered.wait(timeout=BRIEF_TIMEOUT)  # winner is now inside the gated login
+
+        # A joiner (winner already owns the flight) with a tiny timeout: it must give up quickly.
+        with pytest.raises(OAuthLoginError) as caught:
+            holder.acquire(CONFIG, provider_factory=factory, timeout=0.05)
+        assert caught.value.reason is OAuthLoginFailure.TIMED_OUT
+
+        # The winner's login was untouched: release it and confirm it completes as the one login.
+        release.set()
+        winner.join(timeout=BRIEF_TIMEOUT)
+        assert not winner.is_alive()
+        assert len(factory.providers) == 1
         assert factory.providers[0].login_calls == 1
 
 

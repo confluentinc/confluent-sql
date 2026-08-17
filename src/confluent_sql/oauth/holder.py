@@ -4,8 +4,8 @@ every `Connection`.
 #153's `CCloudOAuth` is one login and one shared `TokenSet`; this is the layer above it that makes
 the login itself singular across a whole process. The motivating case is **dbt in multi-threaded
 mode**, where each worker thread opens its own DB-API `Connection`: without this holder that is N
-browser bounces and N refresh loops; with it, the user sees the browser **exactly once** and every
-`Connection` shares the one provider it produces.
+browser bounces and N independently-refreshing providers; with it, the user sees the browser
+**exactly once** and every `Connection` shares the one provider it produces.
 
 There is a single module-level holder, deliberately not a registry keyed by org or client. One
 browser session is one `(user, organization)` identity, so "one login per process" and "one
@@ -14,10 +14,10 @@ identity per process" are the same statement. The holder does three things:
 - **Login single-flight.** The first `acquire()` to find the slot empty becomes the *winner*: it
   marks a shared `Future` in-flight, **releases the lock**, and runs `login()` -- a multi-minute
   human round-trip. Every other `acquire()` arriving meanwhile joins that same `Future` and
-  receives the winner's provider, or has the winner's login failure re-raised on its own thread.
-  This is the same `Future`-as-single-flight idiom #153 uses for token refresh, lifted one level:
-  one browser, never N. On failure the slot is cleared so a later `acquire()` retries with a fresh
-  browser.
+  receives the winner's provider, has the winner's login failure re-raised on its own thread, or
+  gives up if its *own* `timeout` elapses first. This is the same `Future`-as-single-flight idiom
+  #153 uses for token refresh, lifted one level: one browser, never N. On failure the slot is
+  cleared so a later `acquire()` retries with a fresh browser.
 
 - **One-identity guard.** Every caller, winner or joiner, checks the `(environment, organization)`
   it asked for against what the login settled on. A caller naming a different environment
@@ -48,9 +48,15 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TypeAlias
 
-from ..exceptions import InterfaceError, OperationalError
+from ..exceptions import (
+    InterfaceError,
+    OAuthLoginError,
+    OAuthLoginFailure,
+    OperationalError,
+)
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS
 from .config import CCloudOAuthConfig
 from .provider import CCloudOAuth, OAuthProvider
@@ -149,12 +155,16 @@ class ProcessOAuthHolder:
             organization_id: the organization this caller expects. Supplying one that disagrees
                 with the established login raises `InterfaceError`; omitting it inherits the
                 established org. The first caller's value (or None) is what the login scopes to.
-            timeout: seconds to wait for the browser round-trip, passed through to `login()`.
+            timeout: seconds this caller will wait for the login -- the browser round-trip if it
+                runs the login, or the in-progress shared login if it joins one. Its own timeout
+                either way, so a brief-timeout caller is never bound to another's longer deadline.
             provider_factory: builds the provider the winner logs in. Defaults to `CCloudOAuth`.
 
         Raises:
             InterfaceError: this caller named a different Confluent Cloud environment (`config`)
                 or `organization_id` than the process's established login.
+            OAuthLoginError: this caller's `timeout` elapsed while it waited on another's
+                in-progress login (`reason=TIMED_OUT`).
             OperationalError: the holder was shut down while this call's login was in flight.
             Exception: whatever `login()` raised, re-raised on every waiter of a failed login.
         """
@@ -212,7 +222,19 @@ class ProcessOAuthHolder:
         if is_winner:
             return self._run_login(config, organization_id, timeout, provider_factory, flight)
 
-        return flight.result()  # the winner's provider, or its login exception re-raised here
+        # Joiner: wait for the winner's login, but no longer than *this* caller's own timeout, so a
+        # caller that asked to wait only briefly is not silently bound to the winner's (possibly
+        # longer) deadline. The winner's flight is always settled within its own login timeout, so
+        # this only actually fires when the joiner's timeout is the shorter of the two.
+        try:
+            return flight.result(timeout=timeout)  # winner's provider, or its exception re-raised
+        except FuturesTimeoutError as e:
+            raise OAuthLoginError(
+                "Timed out waiting for this process's in-progress Confluent Cloud login to "
+                "complete. Another connection is running the browser login; retry, or allow a "
+                "longer timeout.",
+                OAuthLoginFailure.TIMED_OUT,
+            ) from e
 
     def _run_login(
         self,
