@@ -190,7 +190,7 @@ class ProcessOAuthHolder:
         # (or re-raise its login exception on my own thread).
         if is_winner:
             return self._run_login(config, organization_id, timeout, provider_factory, flight)
-        
+
         return flight.result()  # the winner's provider, or its login exception re-raised here
 
     def _run_login(
@@ -220,6 +220,7 @@ class ProcessOAuthHolder:
             if not superseded:
                 self._provider = provider
                 self._inflight = None
+
         if superseded:
             # shutdown() cleared the slot while we were still logging in. Discard rather than
             # install into a torn-down holder; the caller and any joiners get a clear error.
