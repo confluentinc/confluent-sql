@@ -19,11 +19,13 @@ identity per process" are the same statement. The holder does three things:
   one browser, never N. On failure the slot is cleared so a later `acquire()` retries with a fresh
   browser.
 
-- **One-identity guard.** Every caller, winner or joiner, checks the org it asked for against the
-  org the login settled on. A caller that *supplies* a different `organization_id` is refused with
-  `InterfaceError` rather than handed a wrong-org token; one that omits it inherits whatever the
-  first login established (supplied by that first caller, or resolved by Confluent Cloud as the
-  user's default). The refusal fails only that caller -- the shared login is untouched.
+- **One-identity guard.** Every caller, winner or joiner, checks the `(environment, organization)`
+  it asked for against what the login settled on. A caller naming a different environment
+  (`config`) or a different `organization_id` is refused with `InterfaceError` rather than handed
+  tokens minted for the wrong Confluent Cloud or the wrong org; one that omits the org inherits
+  whatever the first login established (supplied by that first caller, or resolved by Confluent
+  Cloud as the user's default). The refusal fails only that caller -- the shared login is
+  untouched.
 
 - **Teardown.** `shutdown_all()` closes the provider and resets the holder to pristine. It is an
   escape hatch for test isolation and tidy long-lived hosts, not a mechanism the request path
@@ -117,10 +119,13 @@ class ProcessOAuthHolder:
             return cls._instance
 
     def __init__(self) -> None:
-        # Guards the two-field slot below and nothing else. Held for microseconds, never across
-        # login() -- the whole point of the single-flight release.
+        # Guards the slot below and nothing else. Held for microseconds, never across login() --
+        # the whole point of the single-flight release.
         self._lock = threading.Lock()
         self._provider: OAuthProvider | None = None
+        # The config the established login was run against, kept so a later acquire() naming a
+        # *different* environment is refused rather than silently handed wrong-environment tokens.
+        self._config: CCloudOAuthConfig | None = None
         self._inflight: Future[OAuthProvider] | None = None
 
     def acquire(
@@ -138,8 +143,9 @@ class ProcessOAuthHolder:
         login failure); afterward it returns immediately.
 
         Args:
-            config: the environment to authenticate against. Used only by the login the *first*
-                caller triggers; later callers reuse the established provider regardless.
+            config: the environment to authenticate against. The *first* caller's config is what
+                the login runs against; a later caller naming a different environment is refused
+                (see Raises), and one naming the same environment reuses the established provider.
             organization_id: the organization this caller expects. Supplying one that disagrees
                 with the established login raises `InterfaceError`; omitting it inherits the
                 established org. The first caller's value (or None) is what the login scopes to.
@@ -147,13 +153,29 @@ class ProcessOAuthHolder:
             provider_factory: builds the provider the winner logs in. Defaults to `CCloudOAuth`.
 
         Raises:
-            InterfaceError: this caller named a different `organization_id` than the process's
-                established login.
+            InterfaceError: this caller named a different Confluent Cloud environment (`config`)
+                or `organization_id` than the process's established login.
             OperationalError: the holder was shut down while this call's login was in flight.
             Exception: whatever `login()` raised, re-raised on every waiter of a failed login.
         """
         provider = self._obtain(config, organization_id, timeout, provider_factory)
 
+        # One-identity guard, applied after obtaining the provider by whichever path (reuse / join
+        # / win). The process holds a single (environment, organization) identity; a caller that
+        # disagrees on either axis is refused -- failing only that caller, never disturbing the
+        # shared login. The environment check comes first: a config mismatch means a wholly
+        # different issuer/API host/client, so returning the established provider would hand this
+        # connection tokens minted for the wrong Confluent Cloud.
+        with self._lock:
+            established_config = self._config
+        if established_config is not None and config != established_config:
+            raise InterfaceError(
+                "This process already has an interactive OAuth login against Confluent Cloud "
+                f"environment {established_config.api_host!r}, and a single process supports only "
+                f"one OAuth identity. This connection asked for {config.api_host!r}; open it "
+                "against the established environment, or tear the login down with shutdown_all() "
+                "first."
+            )
         if organization_id is not None and organization_id != provider.organization_id:
             raise InterfaceError(
                 "This process already has an interactive OAuth login for organization "
@@ -162,7 +184,6 @@ class ProcessOAuthHolder:
                 "against the established organization, or omit organization_id to inherit it."
             )
 
-        # All clear.
         return provider
 
     def _obtain(
@@ -201,38 +222,64 @@ class ProcessOAuthHolder:
         provider_factory: ProviderFactory,
         flight: Future[OAuthProvider],
     ) -> OAuthProvider:
-        """Run the one browser login and publish its outcome into `flight` for the joiners."""
+        """Run the one browser login and publish its outcome into `flight` for the joiners.
+
+        Whatever goes wrong -- the factory raising, `login()` failing, a teardown racing the
+        login, even cleanup itself throwing -- `flight` is always settled and `_inflight` always
+        cleared before this returns or raises. A joiner blocked on `flight.result()`, and any
+        later caller that would join the same slot, must never be stranded on an abandoned Future.
+        """
         logger.info("Starting the process-wide Confluent Cloud OAuth login")
-        provider = provider_factory(config)
+        provider: OAuthProvider | None = None
         try:
+            # Both inside the try: a `provider_factory` that raises would otherwise leave `flight`
+            # unsettled and `_inflight` populated, wedging every joiner and later caller forever.
+            provider = provider_factory(config)
             provider.login(organization_id, timeout=timeout)
         except BaseException as e:
             # Discard the half-built provider and clear the slot so the *next* acquire() gets a
             # fresh browser rather than inheriting this failure. Joiners waiting on the flight
             # receive this same exception re-raised on their own threads.
-            provider.close()
-            self._clear_flight(flight)
-            flight.set_exception(e)
+            self._fail_flight(flight, e, close=provider)
             raise
 
         with self._lock:
             superseded = self._inflight is not flight
             if not superseded:
                 self._provider = provider
+                self._config = config
                 self._inflight = None
 
         if superseded:
             # shutdown() cleared the slot while we were still logging in. Discard rather than
             # install into a torn-down holder; the caller and any joiners get a clear error.
-            provider.close()
             torn_down = OperationalError(
                 "The process OAuth holder was shut down while its login was still in progress."
             )
-            flight.set_exception(torn_down)
+            self._fail_flight(flight, torn_down, close=provider)
             raise torn_down
 
         flight.set_result(provider)
         return provider
+
+    def _fail_flight(
+        self, flight: Future[OAuthProvider], exc: BaseException, *, close: OAuthProvider | None
+    ) -> None:
+        """Settle `flight` with `exc`, clear the slot, then best-effort close `close`.
+
+        The flight is settled and unslotted *before* the close, so a cleanup that itself throws
+        cannot leave a joiner or a later caller blocked on an abandoned Future -- the permanent
+        wedge a failed refresh/login would otherwise cause. Closing is best-effort: its own error
+        is logged, never allowed to mask `exc` or skip the settling above.
+        """
+        self._clear_flight(flight)
+        if not flight.done():
+            flight.set_exception(exc)
+        if close is not None:
+            try:
+                close.close()
+            except Exception:
+                logger.exception("Error while closing the discarded OAuth provider")
 
     def _clear_flight(self, flight: Future[OAuthProvider]) -> None:
         """Drop `flight` from the in-flight slot if it is still the current one."""
@@ -248,6 +295,7 @@ class ProcessOAuthHolder:
         """
         with self._lock:
             provider, self._provider = self._provider, None
+            self._config = None
             self._inflight = None
         if provider is not None:
             provider.close()

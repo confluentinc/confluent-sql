@@ -92,9 +92,13 @@ Two guarantees fall out. The obvious one is UX — dbt in multi-threaded mode op
 per worker and the user sees the browser once. The less obvious one is that the fixed callback port
 never becomes a failure mode: only the winner ever calls `CallbackServer.start()`.
 
-There is also a **one-identity guard**: one browser session means one `(user, org)`. A later OAuth
-`connect()` naming a *different* `organization_id` raises `InterfaceError` rather than borrowing the
-wrong-org token; one that omits it inherits whatever the first login established.
+There is also a **one-identity guard**: one browser session means one `(environment, user, org)`. A
+later OAuth `connect()` naming a *different* environment (`config`) or a *different*
+`organization_id` raises `InterfaceError` rather than borrowing a token minted for the wrong
+Confluent Cloud or the wrong org; one that omits the org inherits whatever the first login
+established. The environment axis matters because a differing `config` means a different issuer, API
+host, and client — silently returning the established provider would hand the connection
+wrong-environment credentials.
 
 ## Layer 3 — the provider's two locks (#153, built)
 
@@ -235,11 +239,11 @@ is the single-flight property stated as a fact about construction.
    its slot cleared and discards the provider it built rather than installing it into a torn-down
    holder.*
 5. ✅ `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
-6. ✅ A second `connect()` supplying a different `organization_id` raises `InterfaceError`.
-   *`test_a_second_organization_is_refused` for the sequential case;
-   `test_a_joiner_wanting_a_different_org_is_refused_while_the_winner_succeeds` for the race — the
-   guard runs per-caller after obtaining the shared provider, so a joiner who wanted a different org
-   than the winner settled on is refused without disturbing the shared login.*
+6. ✅ A second `connect()` naming a different environment (`config`) or `organization_id` raises
+   `InterfaceError`. *`test_a_second_environment_is_refused` and `test_a_second_organization_is_refused`
+   for the sequential cases; `test_a_joiner_wanting_a_different_org_is_refused_while_the_winner_succeeds`
+   for the race — the guard runs per-caller after obtaining the shared provider, so a joiner who
+   disagreed on environment or org is refused without disturbing the shared login.*
 7. ✅ Tests reset the module holder between cases — a leaked provider (and, later, daemon) across
    cases is the failure this guards. *The autouse `_reset_holder` fixture calls `shutdown_all()`
    around every case.*
