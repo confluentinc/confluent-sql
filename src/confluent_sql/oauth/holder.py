@@ -27,9 +27,10 @@ identity per process" are the same statement. The holder does three things:
   Cloud as the user's default). The refusal fails only that caller -- the shared login is
   untouched.
 
-- **Teardown.** `shutdown_all()` closes the provider and resets the holder to pristine. It is an
-  escape hatch for test isolation and tidy long-lived hosts, not a mechanism the request path
-  relies on.
+- **Teardown.** `shutdown_all()` retires the established provider and resets the holder. It leaves
+  a login that is *in flight* alone -- with a fixed callback port only one login may run at a time,
+  so it is left to settle rather than aborted mid-browser while a competitor starts. An escape
+  hatch for test isolation and tidy long-lived hosts, not a mechanism the request path relies on.
 
 **The module lock is never held across `login()`.** It guards only the slot and the in-flight
 `Future` -- microseconds each -- so a waiter, a teardown, or a second `acquire()` never queues
@@ -51,12 +52,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TypeAlias
 
-from ..exceptions import (
-    InterfaceError,
-    OAuthLoginError,
-    OAuthLoginFailure,
-    OperationalError,
-)
+from ..exceptions import InterfaceError, OAuthLoginError, OAuthLoginFailure
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS
 from .config import CCloudOAuthConfig
 from .provider import CCloudOAuth, OAuthProvider
@@ -165,7 +161,6 @@ class ProcessOAuthHolder:
                 or `organization_id` than the process's established login.
             OAuthLoginError: this caller's `timeout` elapsed while it waited on another's
                 in-progress login (`reason=TIMED_OUT`).
-            OperationalError: the holder was shut down while this call's login was in flight.
             Exception: whatever `login()` raised, re-raised on every waiter of a failed login.
         """
         provider = self._obtain(config, organization_id, timeout, provider_factory)
@@ -246,10 +241,10 @@ class ProcessOAuthHolder:
     ) -> OAuthProvider:
         """Run the one browser login and publish its outcome into `flight` for the joiners.
 
-        Whatever goes wrong -- the factory raising, `login()` failing, a teardown racing the
-        login, even cleanup itself throwing -- `flight` is always settled and `_inflight` always
-        cleared before this returns or raises. A joiner blocked on `flight.result()`, and any
-        later caller that would join the same slot, must never be stranded on an abandoned Future.
+        Whatever goes wrong -- the factory raising, `login()` failing, even cleanup itself throwing
+        -- `flight` is always settled and `_inflight` always cleared before this returns or raises.
+        A joiner blocked on `flight.result()`, and any later caller that would join the same slot,
+        must never be stranded on an abandoned Future.
         """
         logger.info("Starting the process-wide Confluent Cloud OAuth login")
         provider: OAuthProvider | None = None
@@ -265,22 +260,13 @@ class ProcessOAuthHolder:
             self._fail_flight(flight, e, close=provider)
             raise
 
+        # No teardown race to check for: `shutdown()` deliberately leaves an in-flight `_inflight`
+        # alone (a login holds the fixed callback port, so a second must never start alongside it),
+        # so this flight is still current and installs normally.
         with self._lock:
-            superseded = self._inflight is not flight
-            if not superseded:
-                self._provider = provider
-                self._config = config
-                self._inflight = None
-
-        if superseded:
-            # shutdown() cleared the slot while we were still logging in. Discard rather than
-            # install into a torn-down holder; the caller and any joiners get a clear error.
-            torn_down = OperationalError(
-                "The process OAuth holder was shut down while its login was still in progress."
-            )
-            self._fail_flight(flight, torn_down, close=provider)
-            raise torn_down
-
+            self._provider = provider
+            self._config = config
+            self._inflight = None
         flight.set_result(provider)
         return provider
 
@@ -310,14 +296,18 @@ class ProcessOAuthHolder:
                 self._inflight = None
 
     def shutdown(self) -> None:
-        """Close the shared provider and reset the holder to pristine. Idempotent.
+        """Retire the established shared provider and reset the holder toward pristine. Idempotent.
 
-        A login in flight when this runs is left to finish and then discard its provider (it finds
-        the slot cleared); this is intended for a quiescent teardown, not to abort an active login.
+        Deliberately does **not** clear a login that is *in flight*. With a fixed callback port
+        only one login can run at a time, so freeing the slot would let a concurrent `acquire()`
+        start a second, colliding login -- a `PORT_IN_USE`, or a stray second browser. An in-flight
+        login is instead left to settle and install normally, and concurrent acquires join it;
+        `shutdown()` retires an already-established provider, it does not abort an in-progress
+        login. Intended for test isolation and tidy teardown, not a mechanism the request path
+        relies on.
         """
         with self._lock:
             provider, self._provider = self._provider, None
             self._config = None
-            self._inflight = None
         if provider is not None:
             provider.close()
