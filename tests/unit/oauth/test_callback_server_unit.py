@@ -18,6 +18,7 @@ import contextlib
 import logging
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -278,6 +279,41 @@ class TestWaitingAfterStop:
         with pytest.raises(ProgrammingError):
             server.wait_for_code(timeout=BRIEF_TIMEOUT)
 
+    def test_a_stop_while_already_waiting_wakes_the_wait_promptly(self):
+        """The race a reviewer flagged: the up-front "stopped without settling" check only ran
+        once, before the wait started, so a `stop()` landing after a wait was already blocked in
+        `_settled.wait()` had no way to wake it -- the wait rode out its entire `timeout` before
+        reaching the same verdict. `stop()` now sets `_settled` itself, so this must resolve almost
+        immediately rather than after `timeout` elapses."""
+        server = CallbackServer(_config(), EXPECTED_STATE)
+        server.start()
+        outcome: list[BaseException | None] = []
+        entered_the_wait = threading.Barrier(2)
+
+        def wait() -> None:
+            entered_the_wait.wait(timeout=BRIEF_TIMEOUT)
+            try:
+                server.wait_for_code(timeout=BRIEF_TIMEOUT)
+            except BaseException as e:  # noqa: BLE001 -- reported to the test, not swallowed
+                outcome.append(e)
+
+        thread = threading.Thread(target=wait, daemon=True)
+        thread.start()
+        entered_the_wait.wait(timeout=BRIEF_TIMEOUT)
+        time.sleep(PENDING_TIMEOUT)  # give `wait()` a moment to actually reach `_settled.wait()`
+
+        started_stop_at = time.monotonic()
+        server.stop()
+        thread.join(timeout=BRIEF_TIMEOUT)
+        stop_and_join_elapsed = time.monotonic() - started_stop_at
+
+        assert not thread.is_alive()
+        assert stop_and_join_elapsed < BRIEF_TIMEOUT / 2, (
+            "wait_for_code rode out its own timeout instead of waking when stop() ran"
+        )
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], ProgrammingError)
+
     def test_waiting_after_stop_still_returns_an_already_captured_code(self):
         """The fail-fast must not shadow a completed login: `stop()` normally runs right after the
         code arrives, and the code stays readable afterward."""
@@ -401,6 +437,13 @@ class TestConcurrentWaiters:
         # Distinct instances: sharing one would mean each raise mutating the traceback the other
         # waiters are holding.
         assert len({id(error) for error in errors}) == self.WAITER_COUNT
+
+    def test_every_blocked_waiter_gets_a_programming_error_when_stopped_without_settling(self):
+        with _running_server() as server, _blocked_waiters(server, self.WAITER_COUNT) as outcomes:
+            server.stop()
+
+        assert [code for code, _ in outcomes] == [None] * self.WAITER_COUNT
+        assert all(isinstance(error, ProgrammingError) for _, error in outcomes)
 
 
 def _read_failure(server: CallbackServer) -> OAuthLoginError:

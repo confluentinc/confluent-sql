@@ -81,7 +81,9 @@ class CallbackServer:
         # The outcome slot, written by a request-handling thread and read by the thread waiting in
         # wait_for_code. `_lock` makes the write first-wins (a reloaded success page must not
         # replace the code its PKCE verifier was minted alongside); `_settled` is what the waiter
-        # actually blocks on, set only once an outcome is recorded.
+        # actually blocks on, set once an outcome is recorded -- or by `stop()` with neither slot
+        # filled, which is how a waiter blocked mid-wait learns "stopped without settling" instead
+        # of riding out its full timeout to find out.
         self._lock = threading.Lock()
         self._settled = threading.Event()
         self._code: str | None = None
@@ -187,19 +189,14 @@ class CallbackServer:
         `SERVER_ERROR` if the listener died. Repeated calls return the same code (or re-raise the
         same failure), including after `stop()`.
 
-        Raises `ProgrammingError` if called before `start()`, or after `stop()` on a login that
-        never produced an outcome -- in both states no redirect can arrive, so waiting out the
-        timeout would only defer a verdict already known.
+        Raises `ProgrammingError` if called before `start()`, or if `stop()` runs -- whether
+        before this call starts waiting or while it is already blocked below -- without an
+        authorization code or failure ever having been recorded: in that state no redirect can
+        arrive to satisfy the wait, so waiting out the timeout would only defer a verdict already
+        known. `stop()` wakes an in-progress wait immediately for exactly this reason, rather than
+        leaving it to discover the same thing only after `timeout` elapses.
         """
         self._require_started()
-        # Checked against the already-settled case, not instead of it: `stop()` normally runs the
-        # moment the code lands, and the captured outcome stays readable afterward.
-        if not self._settled.is_set() and self._stopped:
-            raise ProgrammingError(
-                "This CallbackServer was stopped before it captured an authorization code, so no "
-                "redirect can arrive to satisfy wait_for_code(). Wait for the code before "
-                "stopping the server -- the context manager sequences this correctly."
-            )
         if not self._settled.wait(timeout):
             raise OAuthLoginError(
                 f"Timed out after {timeout} seconds waiting for the browser to complete the "
@@ -208,6 +205,15 @@ class CallbackServer:
             )
         with self._lock:
             failure, code = self._failure, self._code
+        if failure is None and code is None:
+            # `_settled` is set with neither slot filled only by `stop()` -- this call never saw a
+            # redirect, whether stop() ran before this wait started or raced in while it was
+            # blocked above.
+            raise ProgrammingError(
+                "This CallbackServer was stopped before it captured an authorization code, so no "
+                "redirect can arrive to satisfy wait_for_code(). Wait for the code before "
+                "stopping the server -- the context manager sequences this correctly."
+            )
         if failure is not None:
             # Built fresh per call rather than stored and re-raised: `raise` appends the raising
             # frames to the exception's own `__traceback__`, so one shared instance would grow a
@@ -215,7 +221,7 @@ class CallbackServer:
             # else's wait.
             message, reason = failure
             raise OAuthLoginError(message, reason)
-        # _settled is only ever set alongside one of the two slots, so this is a code.
+        # A recorded outcome with no failure is a code, by construction of the writers below.
         assert code is not None
         return code
 
@@ -228,6 +234,16 @@ class CallbackServer:
             return
 
         self._stopped = True
+        with self._lock:
+            # Wakes a thread already blocked in wait_for_code() immediately, instead of leaving it
+            # to ride out its full timeout only to reach the same "stopped, no outcome" verdict.
+            # A no-op if an outcome is already recorded -- `Event.set()` on an already-set Event
+            # does nothing, and _record_code/_record_failure hold this same lock while writing
+            # their slot, so this can only race a write that is still in flight, never one that
+            # already finished. If it does race an in-flight write, the outcome is whichever side
+            # reaches `_settled.set()` first: a redirect landing at the exact moment something
+            # else stops the server is not a state either behavior needs to make sense of cleanly.
+            self._settled.set()
         # Unconditional, and deliberately *not* guarded by `thread.is_alive()`. `shutdown()` waits
         # -- with no timeout -- on an event that `serve_forever` sets from a `finally`, so that
         # event is set whether the loop ended normally or by exception, and `shutdown()` therefore
