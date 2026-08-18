@@ -151,7 +151,6 @@ class CCloudOAuth:
         self._open_browser = open_browser
         """How to send the user to the authorization URL."""
 
-
         self._login_lock = threading.Lock()
         """Guards the potentially multi-minute browser round-trip in `login()` and its I/O"""
         self._refresh_lock = threading.Lock()
@@ -191,7 +190,6 @@ class CCloudOAuth:
         """The `organization.resource_id` this login settled on -- whichever was supplied to
         `login()`, or the default Confluent Cloud resolved for the user. None before `login()`.
         Only read under _token_lock."""
-
 
         self._control_plane_auth = _PlaneAuth(self, _Plane.CONTROL)
         """The view stamping the control-plane token -- Tableflow, Connect, CMK, org lookups."""
