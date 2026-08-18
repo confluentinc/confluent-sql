@@ -19,7 +19,7 @@ everything about those describes intent, not observed behavior.
 | --- | --- | --- |
 | `CallbackServer` (`oauth/callback_server.py`) | one login attempt's redirect capture | **built** (#152) |
 | `CCloudOAuth` provider (`oauth/provider.py`) | the shared `TokenSet`, refresh single-flight | **built** (#153) |
-| Module-level holder | one login + one provider per process | designed, #154 |
+| `ProcessOAuthHolder` (`oauth/holder.py`) | one login + one provider per process | **built** (#154) |
 | Refresh daemon, refcount/park | latency optimization | designed, #157 |
 
 ## Why it works that way
@@ -70,7 +70,7 @@ own `state` and hands it to its own `CallbackServer`. A stale browser tab replay
 attempt's redirect against a freshly-bound listener mismatches, gets a 400, and the pending login
 keeps waiting.
 
-## Layer 2 — the holder's login single-flight (#154, designed)
+## Layer 2 — the holder's login single-flight (#154, built)
 
 N threads calling `connect(auth="oauth")` at t=0 must produce **one** browser bounce and **one**
 port bind. The design:
@@ -92,9 +92,13 @@ Two guarantees fall out. The obvious one is UX — dbt in multi-threaded mode op
 per worker and the user sees the browser once. The less obvious one is that the fixed callback port
 never becomes a failure mode: only the winner ever calls `CallbackServer.start()`.
 
-There is also a **one-identity guard**: one browser session means one `(user, org)`. A later OAuth
-`connect()` naming a *different* `organization_id` raises `InterfaceError` rather than borrowing the
-wrong-org token; one that omits it inherits whatever the first login established.
+There is also a **one-identity guard**: one browser session means one `(environment, user, org)`. A
+later OAuth `connect()` naming a *different* environment (`config`) or a *different*
+`organization_id` raises `InterfaceError` rather than borrowing a token minted for the wrong
+Confluent Cloud or the wrong org; one that omits the org inherits whatever the first login
+established. The environment axis matters because a differing `config` means a different issuer, API
+host, and client — silently returning the established provider would hand the connection
+wrong-environment credentials.
 
 ## Layer 3 — the provider's two locks (#153, built)
 
@@ -202,11 +206,22 @@ too, rather than each running a chain of their own.
 
 ## Invariants worth pinning in #153 / #154 tests
 
-Items 3 and 5 are #153's and are covered by `tests/unit/oauth/test_provider_unit.py`; the rest are
-#154's, still to come.
+Items 3 and 5 are #153's, covered by `tests/unit/oauth/test_provider_unit.py`; items 1, 2, 4, 6,
+and 7 are #154's, covered by `tests/unit/oauth/test_holder_unit.py`. That suite drives the holder
+against a lightweight `FakeProvider` injected through `acquire()`'s `provider_factory` seam, whose
+`login()` a test can gate open, block, or fail — so the coordination is exercised without a real
+browser or socket. Only the single-flight *winner* ever builds a provider, so "one built provider"
+is the single-flight property stated as a fact about construction.
 
-1. N concurrent OAuth `connect()`s → login mock fires **once**; all N share one provider.
-2. Login failure clears the holder slot; a later `connect()` retries with a fresh browser.
+1. ✅ N concurrent OAuth `connect()`s → login fires **once**; all N share one provider.
+   *Pinned by `test_concurrent_acquires_log_in_once_and_share_one_provider`: the winner is parked
+   inside a gated `login()` so the rest must join its `Future` (the join path), not each read a
+   stored provider after the winner already finished — the same "make the winner measurably slow"
+   trap as the #153 refresh tests.*
+2. ✅ Login failure clears the holder slot; a later `connect()` retries with a fresh browser.
+   *`test_login_failure_clears_the_slot_so_a_later_acquire_retries`, plus
+   `test_concurrent_waiters_share_one_failed_login` for the fan-out: one attempt, every waiter
+   handed the winner's actual exception object.*
 3. ✅ Two threads hitting a stale token concurrently → refresh chain runs **once** (assert the mock
    was hit once), and the refresh token is spent once. A *failed* chain likewise costs one attempt
    shared by every waiter, not one apiece.
@@ -217,12 +232,21 @@ Items 3 and 5 are #153's and are covered by `tests/unit/oauth/test_provider_unit
    version of the test survived deleting the gate's short-circuit entirely); and make the chain
    take measurable time, since `MockTransport` answers instantly and the winner would otherwise
    finish before any other thread arrives, leaving nothing concurrent to observe.*
-4. The module lock is not held across `login()` — a waiter can be observed blocking on the future
-   while the winner is still inside the browser round-trip.
+4. ✅ The module lock is not held across `login()`.
+   *`test_the_module_lock_is_free_while_a_login_is_in_flight` observes it behaviorally: with the
+   winner parked inside a gated `login()`, a `shutdown()` on another thread — which needs that same
+   lock — completes promptly rather than blocking until the browser returns. The winner then finds
+   its slot cleared and discards the provider it built rather than installing it into a torn-down
+   holder.*
 5. ✅ `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
-6. A second `connect()` supplying a different `organization_id` raises `InterfaceError`.
-7. Tests reset the module holder between cases — a leaked provider (and, later, daemon) across
-   cases is the failure this guards.
+6. ✅ A second `connect()` naming a different environment (`config`) or `organization_id` raises
+   `InterfaceError`. *`test_a_second_environment_is_refused` and `test_a_second_organization_is_refused`
+   for the sequential cases; `test_a_joiner_wanting_a_different_org_is_refused_while_the_winner_succeeds`
+   for the race — the guard runs per-caller after obtaining the shared provider, so a joiner who
+   disagreed on environment or org is refused without disturbing the shared login.*
+7. ✅ Tests reset the module holder between cases — a leaked provider (and, later, daemon) across
+   cases is the failure this guards. *The autouse `_reset_holder` fixture calls `shutdown_all()`
+   around every case.*
 
 #153 additionally pins, beyond the list above: the rotated refresh token is persisted **before**
 the CP/DP legs (and survives a mid-chain failure, so a crash there is one lost request rather than
