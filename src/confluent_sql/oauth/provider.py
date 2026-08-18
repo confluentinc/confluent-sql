@@ -64,6 +64,7 @@ from collections.abc import Callable, Generator
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from enum import Enum
+from typing import TYPE_CHECKING, Protocol
 
 import httpx
 
@@ -113,6 +114,26 @@ class _Plane(Enum):
         return snapshot.dp_token_valid(now)
 
 
+class OAuthProvider(Protocol):
+    """The surface a logged-in provider presents to its consumers -- what a `Connection` needs.
+
+    `CCloudOAuth` is the one implementation outside of the test suite.
+    """
+
+    @property
+    def organization_id(self) -> str | None: ...
+
+    @property
+    def control_plane_auth(self) -> httpx.Auth: ...
+
+    @property
+    def data_plane_auth(self) -> httpx.Auth: ...
+
+    def login(self, org_resource_id: str | None = ..., *, timeout: float = ...) -> None: ...
+
+    def close(self) -> None: ...
+
+
 class CCloudOAuth:
     """Owns one Confluent Cloud interactive login and the tokens it mints.
 
@@ -123,6 +144,8 @@ class CCloudOAuth:
     fixed for the provider's life. Sharing a single provider process-wide -- so that N
     `Connection`s trigger one browser bounce rather than N -- is #154's holder; this class knows
     nothing about that and is usable standalone.
+
+    Satisfies `OAuthProvider` structurally (see `_CCLOUDOAUTH_CONFORMS`).
     """
 
     def __init__(
@@ -524,6 +547,11 @@ class CCloudOAuth:
         with self._token_lock:
             self._failure = (message, reason)
         return ReauthenticationRequired(message, reason)
+
+
+if TYPE_CHECKING:
+    _CCLOUDOAUTH_CONFORMS: type[OAuthProvider] = CCloudOAuth
+    """Static assertion that `CCloudOAuth` satisfies `OAuthProvider`."""
 
 
 class _PlaneAuth(httpx.Auth):
