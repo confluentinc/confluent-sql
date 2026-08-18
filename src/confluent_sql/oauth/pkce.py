@@ -1,4 +1,4 @@
-"""PKCE (RFC 7636) parameter generation for the interactive-OAuth login's Auth0 authorization-code
+"""PKCE (RFC 7636) parameter generation for the interactive-OAuth login's authorization-code
 hop.
 
 Pure functions only -- no I/O, no config, no state. `generate_verifier`/`challenge_for` implement
@@ -32,7 +32,7 @@ def challenge_for(verifier: str) -> str:
 
 
 def generate_state() -> str:
-    """A random `state` value for CSRF protection on the Auth0 authorization-code flow. Same
-    shape as generate_verifier() (32 random bytes, base64url) but a distinct value -- state and
-    verifier must never be the same string."""
+    """A random `state` value for CSRF protection on the auth service's authorization-code flow.
+    Same shape as generate_verifier() (32 random bytes, base64url) but a distinct value -- state
+    and verifier must never be the same string."""
     return _random_base64url_token(32)

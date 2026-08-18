@@ -1,10 +1,10 @@
 """Per-environment configuration for the interactive-OAuth login.
 
-Auth0 domain, API host, and client_id vary per Confluent Cloud environment (prod/stag/devel);
-callback host/port/path are properties of the registered Auth0 client, not the environment, so
-they stay constant across the three rows below.
+The auth service's domain, API host, and client_id vary per Confluent Cloud environment
+(prod/stag/devel); callback host/port/path are properties of the registered client, not the
+environment, so they stay constant across the three rows below.
 
-`PROD`'s client_id/port/path are **borrowed** from mcp-confluent's already-registered Auth0
+`PROD`'s client_id/port/path are **borrowed** from mcp-confluent's already-registered
 public client (`oauth/auth0-config.ts`), pending this driver getting its own dedicated
 registration (see oauth-research-and-plan.md decision 1). Swapping to our own client, once
 registered, is a one-constant change here -- nothing downstream depends on whose client_id it is.
@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class CCloudOAuthConfig:
-    """Everything the token chain needs to talk to one Confluent Cloud environment's Auth0
-    tenant and API host."""
+    """Everything the token chain needs to talk to one Confluent Cloud environment's auth
+    service and API host."""
 
-    auth0_domain: str
+    auth_service_domain: str
     api_host: str
     client_id: str
     callback_host: str
@@ -30,11 +30,11 @@ class CCloudOAuthConfig:
 
     @property
     def authorize_url(self) -> str:
-        return f"https://{self.auth0_domain}/authorize"
+        return f"https://{self.auth_service_domain}/authorize"
 
     @property
     def token_url(self) -> str:
-        return f"https://{self.auth0_domain}/oauth/token"
+        return f"https://{self.auth_service_domain}/oauth/token"
 
     @property
     def redirect_uri(self) -> str:
@@ -43,16 +43,16 @@ class CCloudOAuthConfig:
 
 _CALLBACK_HOST = "127.0.0.1"
 
-# This port, the callback path, and the per-env client_id are all baked into the Auth0 public client
-# registration and are temporarily borrowed from mcp-confluent. Before this package ships, it will
-# get its own dedicated Auth0 client registration, and then this port/path/client_id will be
-# updated to match (issue #177).
+# This port, the callback path, and the per-env client_id are all baked into the auth service's
+# public client registration and are temporarily borrowed from mcp-confluent. Before this package
+# ships, it will get its own dedicated client registration, and then this port/path/client_id will
+# be updated to match (issue #177).
 _CALLBACK_PORT = 26640
 _CALLBACK_PATH = "/gateway/v1/callback-local-mcp-docs"
 
 _ENVIRONMENTS: dict[str, CCloudOAuthConfig] = {
     "prod": CCloudOAuthConfig(
-        auth0_domain="login.confluent.io",
+        auth_service_domain="login.confluent.io",
         api_host="https://confluent.cloud",
         client_id="cZ0wejEDJLNocYDJ54mAmGK21klrv21h",
         callback_host=_CALLBACK_HOST,
@@ -60,7 +60,7 @@ _ENVIRONMENTS: dict[str, CCloudOAuthConfig] = {
         callback_path=_CALLBACK_PATH,
     ),
     "stag": CCloudOAuthConfig(
-        auth0_domain="login-stag.confluent-dev.io",
+        auth_service_domain="login-stag.confluent-dev.io",
         api_host="https://stag.cpdev.cloud",
         client_id="adtjckxmHbjddhNK36PvcXIDDbrJUMDH",
         callback_host=_CALLBACK_HOST,
@@ -68,7 +68,7 @@ _ENVIRONMENTS: dict[str, CCloudOAuthConfig] = {
         callback_path=_CALLBACK_PATH,
     ),
     "devel": CCloudOAuthConfig(
-        auth0_domain="login.confluent-dev.io",
+        auth_service_domain="login.confluent-dev.io",
         api_host="https://devel.cpdev.cloud",
         client_id="D8DV9ee7XrKX4ncAc6vJtBFgIzTMNgoY",
         callback_host=_CALLBACK_HOST,
