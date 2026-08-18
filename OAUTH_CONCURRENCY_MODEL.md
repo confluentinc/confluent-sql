@@ -235,9 +235,11 @@ is the single-flight property stated as a fact about construction.
 4. ✅ The module lock is not held across `login()`.
    *`test_the_module_lock_is_free_while_a_login_is_in_flight` observes it behaviorally: with the
    winner parked inside a gated `login()`, a `shutdown()` on another thread — which needs that same
-   lock — completes promptly rather than blocking until the browser returns. The winner then finds
-   its slot cleared and discards the provider it built rather than installing it into a torn-down
-   holder.*
+   lock — completes promptly rather than blocking until the browser returns. `shutdown()` cannot
+   abort an in-flight login (the fixed callback port means only one login may run at a time), so
+   the winner's login is left to settle and installs normally rather than being discarded;
+   `test_shutdown_during_a_login_does_not_let_a_new_acquire_start_a_second_login` pins that a
+   concurrent `acquire()` joins that same in-flight login instead of starting a competing one.*
 5. ✅ `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
 6. ✅ A second `connect()` naming a different environment (`config`) or `organization_id` raises
    `InterfaceError`. *`test_a_second_environment_is_refused` and `test_a_second_organization_is_refused`
