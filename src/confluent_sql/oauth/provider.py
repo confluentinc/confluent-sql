@@ -315,6 +315,14 @@ class CCloudOAuth:
 
         Does not invalidate the tokens -- there is nothing process-local to tear down beyond the
         client, and #157's daemon is what will give this method more to do.
+
+        **Not safe to call while another thread may still be using this provider.** `login()` and
+        `_run_refresh_chain()` run their HTTP calls over `_client` with no lock held across that
+        I/O, by design; closing `_client` out from under one of them surfaces as a confusing
+        transport error on that thread rather than a clean one. Nothing here coordinates with
+        in-flight use -- #157's refcount + park-don't-evict lifecycle is what will make `close()`
+        safe to call from a live holder. Until then, callers must ensure the provider has no other
+        active users first.
         """
         if not self._client.is_closed:
             self._client.close()
@@ -472,6 +480,7 @@ class CCloudOAuth:
             # re-stamp the very bearer just rejected, spend its one retry, and surface a second
             # 401 with a usable refresh token sitting right here.
             self._interim_snapshot = rotated
+            organization_id = self._organization_id
 
         control_plane = exchange_id_token_for_cp_token(
             self._client,
@@ -479,7 +488,7 @@ class CCloudOAuth:
             id_token=exchanged.id_token,
             # The org this login settled on, never a re-resolved default: re-resolving would
             # silently move a multi-org user to a different organization mid-session.
-            org_resource_id=self._organization_id,
+            org_resource_id=organization_id,
         )
         data_plane = exchange_cp_for_dp_token(
             self._client, self._config, cp_token=control_plane.token
