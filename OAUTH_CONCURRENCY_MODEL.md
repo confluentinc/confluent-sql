@@ -12,13 +12,13 @@ server is torn down and all N resolve to the same outcome. Failure clears the sl
 
 ## Status of each layer
 
-Only the bottom layer is code today. The two above it are designed (epic #150) but unbuilt, so
-everything about them here describes intent, not observed behavior.
+The bottom two layers are code today. The two above them are designed (epic #150) but unbuilt, so
+everything about those describes intent, not observed behavior.
 
 | Layer | Owns | State |
 | --- | --- | --- |
 | `CallbackServer` (`oauth/callback_server.py`) | one login attempt's redirect capture | **built** (#152) |
-| `CCloudOAuth` provider | the shared `TokenSet`, refresh single-flight | designed, #153 |
+| `CCloudOAuth` provider (`oauth/provider.py`) | the shared `TokenSet`, refresh single-flight | **built** (#153) |
 | Module-level holder | one login + one provider per process | designed, #154 |
 | Refresh daemon, refcount/park | latency optimization | designed, #157 |
 
@@ -96,7 +96,7 @@ There is also a **one-identity guard**: one browser session means one `(user, or
 `connect()` naming a *different* `organization_id` raises `InterfaceError` rather than borrowing the
 wrong-org token; one that omits it inherits whatever the first login established.
 
-## Layer 3 — the provider's two locks (#153, designed)
+## Layer 3 — the provider's two locks (#153, built)
 
 Past login, every request stamps a header from the shared `TokenSet`. `httpx.Auth.sync_auth_flow`
 does no locking of its own — it just defers to `auth_flow` — so our `auth_flow` runs **concurrently
@@ -107,16 +107,49 @@ across threads with zero serialization**. Hence two locks with sharply different
   one. Never held across network I/O. Because a `TokenSet` is an immutable snapshot, a reader that
   has copied the reference can read its fields lock-free, and no torn read is possible — refresh
   builds a new snapshot rather than mutating one.
-- **`_refresh_lock` — held across the ~4-call chain.** The single-flight gate. A *separate* lock
-  because a refresh is four sequential HTTP round-trips; holding `_token_lock` across them would
-  block every reader. `_refresh()` acquires it, **double-checks** whether another thread already
-  swapped in a newer snapshot while we waited (if so, bail and use theirs), runs the chain, then
-  briefly takes `_token_lock` to swap.
+- **`_refresh_lock` — held for microseconds, guarding the in-flight `Future` slot.** The
+  single-flight gate is the **`Future`**, not the lock: one caller wins and runs the chain outside
+  every lock, and everyone arriving meanwhile joins that same `Future`, receiving the winner's
+  snapshot or having the winner's exception re-raised on their own thread. Before starting a
+  flight, a caller whose snapshot was already superseded by a **completed** refresh gets that
+  result handed straight back.
+- **`_login_lock`** — the only lock held across I/O, and only by `login()`, whose browser
+  round-trip can take minutes. Deliberately not the refresh gate, so the request path never queues
+  behind a human.
 
-The double-check is a correctness requirement, not an optimization: **the auth service's refresh tokens are
-single-use and rotating**, so two threads both spending the same one means a hard lockout. Both the
-on-request refresh and (later) the daemon's scheduled refresh funnel through the one `_refresh()`,
-so they coordinate instead of dueling.
+**The auth service's refresh tokens are single-use and rotating**, so two threads both spending the
+same one means a hard lockout. What prevents that is that the chain reads the token it will spend
+out of the slot *at the moment it runs*, never out of the snapshot its caller arrived holding. A
+waiter therefore spends the current token or none, whatever it queued with.
+
+### Why a `Future` and not a lock
+
+#153 first built this gate as a lock held across the chain, with waiters double-checking the slot
+on wake-up. Two defects in a row came from that shape, and both trace to the same root: **a lock
+only says "you may proceed", so a waking thread has to reconstruct the outcome by re-reading shared
+mutable state.**
+
+1. A waiter could misread the mid-chain checkpoint — persist-before-exchange publishes the rotated
+   refresh token alongside the *old* CP/DP tokens — as somebody's finished refresh, and be handed
+   back the very tokens it came to replace (caught reviewing #182).
+2. A *failed* attempt taught the waiters nothing, so each ran its own chain. Measured: eight
+   waiters against one outage produced **eight** rotations and eight `/api/sessions` attempts.
+   Against the service's ~50-refresh cap that is a path to the very lockout the gate exists to
+   prevent.
+
+A `Future` carries in-flight-ness, success, *and* failure in one object, so waiters learn all
+three instead of re-deriving them. Same scenario after the change: **one** rotation, one attempt,
+and all eight waiters raising the winner's own exception object. It is also the idiom #154 already
+mandates for the login single-flight — worth keeping the two consistent.
+
+`_interim_snapshot` survives the change, for the narrower job of the pre-flight fast path: a caller
+whose snapshot was superseded skips starting a chain, and that check must recognise a *completed*
+refresh rather than a checkpoint left behind by a failed one.
+
+The failure flag is checked in **two** places, and both are load-bearing: in the request path's
+microsecond critical section (the fast path — a session already known dead never starts a flight),
+and again when entering a flight. The second covers the race where a thread reads a healthy
+snapshot, finds its token stale, and reaches the gate just as another thread latches the failure.
 
 The upshot for a shared `Connection`: the driver declares `threadsafety = 1` and OAuth doesn't
 change that — the weak link is the `Connection`'s own per-statement/cursor state. But **auth is not
@@ -148,8 +181,9 @@ sequenceDiagram
 
 Workers 2–8 never touch the port, never open a browser, and never run the token chain. Roughly
 five minutes later, when the ~5-minute CP token lapses and several workers issue requests at once,
-they all enter `_refresh()`, one wins the gate, the rest double-check and reuse its snapshot — one
-chain run, one refresh-token spend.
+they all enter `_refresh()`, one wins the flight, the rest join its `Future` and take its result —
+one chain run, one refresh-token spend. Had it failed instead, they would share that one failure
+too, rather than each running a chain of their own.
 
 ## Where the fixed port still bites
 
@@ -168,13 +202,30 @@ chain run, one refresh-token spend.
 
 ## Invariants worth pinning in #153 / #154 tests
 
+Items 3 and 5 are #153's and are covered by `tests/unit/oauth/test_provider_unit.py`; the rest are
+#154's, still to come.
+
 1. N concurrent OAuth `connect()`s → login mock fires **once**; all N share one provider.
 2. Login failure clears the holder slot; a later `connect()` retries with a fresh browser.
-3. Two threads hitting a stale token concurrently → refresh chain runs **once** (assert the mock
-   was hit once), and the refresh token is spent once.
+3. ✅ Two threads hitting a stale token concurrently → refresh chain runs **once** (assert the mock
+   was hit once), and the refresh token is spent once. A *failed* chain likewise costs one attempt
+   shared by every waiter, not one apiece.
+   *Pinned by `test_concurrent_refreshes_of_one_stale_snapshot_run_the_chain_once` and
+   `test_concurrent_waiters_share_one_failed_attempt`. Two traps, both learned the hard way:
+   drive these at `_refresh()` rather than through the request path, since routed through httpx
+   the losers re-read the slot and find a fresh token before ever reaching the gate (the first
+   version of the test survived deleting the gate's short-circuit entirely); and make the chain
+   take measurable time, since `MockTransport` answers instantly and the winner would otherwise
+   finish before any other thread arrives, leaving nothing concurrent to observe.*
 4. The module lock is not held across `login()` — a waiter can be observed blocking on the future
    while the winner is still inside the browser round-trip.
-5. `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
+5. ✅ `data_plane_auth` and `control_plane_auth` stamp **different** tokens from the same snapshot.
 6. A second `connect()` supplying a different `organization_id` raises `InterfaceError`.
 7. Tests reset the module holder between cases — a leaked provider (and, later, daemon) across
    cases is the failure this guards.
+
+#153 additionally pins, beyond the list above: the rotated refresh token is persisted **before**
+the CP/DP legs (and survives a mid-chain failure, so a crash there is one lost request rather than
+a lockout); a refresh does **not** move the 8h absolute wall; a `403 invalid_grant` latches
+`ReauthenticationRequired` while a `503` leaves the session recoverable; a `401` forces exactly one
+refresh and one retry; and the callback port is released after a successful login.

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from confluent_sql.exceptions import OperationalError
+from confluent_sql.exceptions import OAuthTokenEndpointError, OperationalError
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.token_chain import (
     FALLBACK_CP_LIFETIME,
@@ -174,6 +174,40 @@ class TestExchangeRefreshToken:
             pytest.raises(OperationalError, match=error_description),
         ):
             exchange_refresh_token(client, CONFIG, refresh_token="dead-refresh-tok")
+
+    def test_rejection_carries_the_machine_readable_error_code(self):
+        """A refused refresh must be distinguishable from a transient blip *structurally*.
+
+        `invalid_grant` is how the token endpoint reports a refresh token that is expired,
+        revoked, or already spent -- the one condition no retry can fix. The provider decides
+        between "give up and demand a fresh login" and "retry on the next request" off this
+        attribute, so it has to survive as data rather than dissolve into the message text.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                403, json={"error": "invalid_grant", "error_description": "Unknown or expired"}
+            )
+
+        with _client(handler) as client, pytest.raises(OAuthTokenEndpointError) as caught:
+            exchange_refresh_token(client, CONFIG, refresh_token="dead-refresh-tok")
+
+        assert caught.value.error_code == "invalid_grant"
+        assert caught.value.http_status_code == 403
+
+    def test_rejection_without_an_error_field_carries_no_error_code(self):
+        """An HTML error page from an intermediary, or any body without an `error` field, still
+        raises -- with error_code None rather than a fabricated one. The provider treats an
+        unknown code as retryable, so inventing a value here would be the harmful direction."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(502, text="<html>Bad Gateway</html>")
+
+        with _client(handler) as client, pytest.raises(OAuthTokenEndpointError) as caught:
+            exchange_refresh_token(client, CONFIG, refresh_token="some-refresh-tok")
+
+        assert caught.value.error_code is None
+        assert caught.value.http_status_code == 502
 
 
 class TestExchangeIdTokenForCpToken:
