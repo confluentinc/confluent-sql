@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 ABSOLUTE_LIFETIME = timedelta(hours=8)
-"""Auth0 application policy: a refresh token is unusable after 8h absolute lifetime, regardless
-of activity. The caller minting a TokenSet computes refresh_token_expires_at as
+"""Auth service application policy: a refresh token is unusable after 8h absolute lifetime,
+regardless of activity. The caller minting a TokenSet computes refresh_token_expires_at as
 `mint_time + ABSOLUTE_LIFETIME`."""
 
 EXPIRY_SKEW = timedelta(seconds=30)

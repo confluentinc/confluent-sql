@@ -8,10 +8,10 @@ pytestmark = pytest.mark.unit
 
 
 def test_prod_config_values():
-    """PROD borrows mcp-confluent's registered Auth0 client (see the module docstring) --
+    """PROD borrows mcp-confluent's registered auth service client (see the module docstring) --
     pinning the exact values here makes any accidental drift a loud test failure rather than a
-    silent redirect_uri mismatch discovered against a live Auth0 tenant."""
-    assert PROD.auth0_domain == "login.confluent.io"
+    silent redirect_uri mismatch discovered against a live auth service tenant."""
+    assert PROD.auth_service_domain == "login.confluent.io"
     assert PROD.api_host == "https://confluent.cloud"
     assert PROD.client_id == "cZ0wejEDJLNocYDJ54mAmGK21klrv21h"
     assert PROD.callback_host == "127.0.0.1"
@@ -39,7 +39,7 @@ def test_config_is_frozen():
 
 def test_custom_config_renders_its_own_urls():
     config = CCloudOAuthConfig(
-        auth0_domain="login-stag.confluent-dev.io",
+        auth_service_domain="login-stag.confluent-dev.io",
         api_host="https://stag.cpdev.cloud",
         client_id="test-client",
         callback_host="127.0.0.1",
