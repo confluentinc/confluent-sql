@@ -7,7 +7,7 @@ on. It is deliberately **not** itself an `httpx.Auth` -- that split is what lets
 two clients carrying two *different* tokens (`control_plane_auth` for Tableflow / Connect / CMK,
 `data_plane_auth` for Flink) instead of forcing a provider per surface.
 
-**Refresh here is synchronous and on-request, and that is the whole story.** There is no
+**Refresh here is synchronous and on-request.** There is no
 background thread in this child (#157 adds one purely to keep the ~4-round-trip refresh latency
 off the hot path). Correctness deliberately does not depend on that thread ever existing: every
 request checks its token's validity, and a stale one is refreshed through the single-flight gate
@@ -31,8 +31,9 @@ Two locks remain, both short, always acquired in this order and never the revers
 
 - **`_refresh_lock`, held for microseconds.** Guards the in-flight `Future` slot -- who wins, who
   joins -- and nothing else. Explicitly *not* held across the chain.
-- **`_token_lock`, held for microseconds.** Guards the snapshot reference, the interim marker, and
-  the failure flag. Nothing but read-the-reference and rebind-the-reference happens under it.
+- **`_token_lock`, held for microseconds.** Guards the snapshot reference, the interim marker, the
+  failure flag, and the resolved organization id. Nothing but read-the-reference and
+  rebind-the-reference happens under it.
   Because a `TokenSet` is immutable, a reader that has copied the reference can then read its
   fields with no lock at all and no risk of a torn read.
 
@@ -144,23 +145,58 @@ class CCloudOAuth:
                 the user can paste it, and the login waits as normal.
         """
         self._config = config
+        """What Confluent Cloud environment to authenticate against, and the callback host/port/path
+           to listen on."""
         self._client = http_client if http_client is not None else httpx.Client()
         self._open_browser = open_browser
+        """How to send the user to the authorization URL."""
 
-        # Lock ordering, everywhere in this class: _login_lock, then _refresh_lock, then
-        # _token_lock -- never the reverse. Only _login_lock is ever held across I/O.
+
         self._login_lock = threading.Lock()
+        """Guards the potentially multi-minute browser round-trip in `login()` and its I/O"""
         self._refresh_lock = threading.Lock()
+        """Guards _inflight_refresh: the slot holding the `Future` for a refresh chain -- the
+           four-hop token exchange -- currently running, or None when none is. Held for
+           microseconds; never held across the chain itself."""
         self._token_lock = threading.Lock()
+        """Guards _token_set, _interim_snapshot, _failure, and _organization_id.
+           Held for microseconds."""
+
+        # _login_lock and _refresh_lock are never held at once -- not an ordering, a straight
+        # mutual exclusion enforced by the data invariant above (login only runs with no token
+        # set, refresh only with one). _token_lock is the one that nests inside either: under
+        # _login_lock in login(), and jointly with _refresh_lock in _enter_flight(). Only
+        # _login_lock is ever held across I/O.
 
         self._inflight_refresh: Future[TokenSet] | None = None
+        """The single-flight `Future` slot. One thread wins the right to run the refresh chain and
+        publishes its outcome into this `Future`; any other that arrives while it is in flight
+        joins the same `Future` and receives the winner's result."""
+
         self._token_set: TokenSet | None = None
+        """The current immutable Token snapshot, or None before `login()`. Only read
+        under _token_lock."""
+
         self._interim_snapshot: TokenSet | None = None
+        """A mid-chain checkpoint, published before the CP/DP legs. Only read under _token_lock.
+        Distinguishes a refresh in progress from a finished one, so a waiter can tell the
+        difference between a snapshot that is already superseded by a completed refresh and one
+        that is still in flight."""
+
         self._failure: tuple[str, ReauthenticationReason] | None = None
+        """Set when refresh has permanently failed and re-authentication is required -- latched
+        by `_latch_failure`, never by `login()` itself, which only clears it on success."""
+
         self._organization_id: str | None = None
+        """The `organization.resource_id` this login settled on -- whichever was supplied to
+        `login()`, or the default Confluent Cloud resolved for the user. None before `login()`.
+        Only read under _token_lock."""
+
 
         self._control_plane_auth = _PlaneAuth(self, _Plane.CONTROL)
+        """The view stamping the control-plane token -- Tableflow, Connect, CMK, org lookups."""
         self._data_plane_auth = _PlaneAuth(self, _Plane.DATA)
+        """The view stamping the data-plane token -- the Flink SQL gateway."""
 
     @property
     def token_set(self) -> TokenSet | None:
