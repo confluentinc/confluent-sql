@@ -839,9 +839,10 @@ class TestStreamingChangelogCursor:
             assert statement.is_append_only is False
             assert statement.phase is Phase.RUNNING
 
-            # Verify NO upsert columns (global aggregation)
+            # Verify NO upsert columns (global aggregation): the server reports these as None
+            # or as an empty list, both of which select NoUpsertColumnsCompressor.
             assert statement.traits is not None
-            assert statement.traits.upsert_columns is None
+            assert not statement.traits.upsert_columns
 
             # Create changelog compressor
             compressor = cursor.changelog_compressor()
