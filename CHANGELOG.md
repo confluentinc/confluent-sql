@@ -4,6 +4,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+## 0.5.1-pre
+
 ### Fixed
 
 - The changelog compressor for streaming non-append-only queries **without** upsert columns
