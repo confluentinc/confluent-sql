@@ -495,19 +495,31 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
 
     Uses list-based storage with linear scan for row matching.
 
-    Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
-    Only one pending update is tracked at a time.
+    Without an upsert key, a row can only be identified by its full-row spelling, and the
+    changelog reaches this client via a multi-partition keyless sink that partitions by
+    whole-row hash. An updated row's +U/-D spelling therefore hashes to a potentially
+    different partition than its original +I/-U spelling, and since Kafka only guarantees
+    order within a partition, events can be observed in a surprising order *across* spellings
+    (e.g. a +U before its logical -U, or a -D before a later +I). See issue #184.
+
+    To stay correct under that skew this compressor makes no ordering assumptions and holds
+    no pending-update state. It collapses the four ops to two: the additive ops (+I, +U;
+    Op.treat_as_insert) append a row spelling, and the retracting ops (-U, -D;
+    Op.treat_as_delete) remove one occurrence of a row spelling. The result set is eventually
+    consistent -- intermediate snapshots may transiently show extra rows, but once every
+    event has arrived the set converges to the correct contents.
+
+    A retraction for a spelling never arrives before the matching insert for that same
+    spelling: identical whole-row values always hash to the same partition, which preserves
+    their relative order. `_find_row_position` therefore always finds its match on a
+    well-formed stream; its raise is retained only to surface a genuine protocol violation.
 
     Rows can be either tuples or dicts (as determined by cursor.as_dict). Row matching
     is performed by equality comparison, which works identically for both tuple and dict.
     """
 
     _rows: list[ResultTupleOrDict]
-    """List of rows maintaining insertion order. Scanned linearly for matching."""
-
-    _pending_update_position: int | None
-    """Position of the row marked by the most recent UPDATE_BEFORE, awaiting UPDATE_AFTER.
-    None when no UPDATE_BEFORE is pending."""
+    """List of row spellings maintaining insertion order. Scanned linearly for matching."""
 
     def __init__(self, cursor: Cursor, statement: Statement):
         """Initialize the compressor.
@@ -518,23 +530,17 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
         """
         super().__init__(cursor, statement)
         self._rows = []
-        self._pending_update_position = None
 
     def _has_pending_update(self) -> bool:
-        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
-
-        Returns:
-            True if a pending update is in progress, False otherwise.
-        """
-        return self._pending_update_position is not None
+        """This compressor tracks no pending-update state; there is never a pending update."""
+        return False
 
     def _clear_storage(self) -> None:
         """Clear internal row storage."""
         self._rows.clear()
 
     def _clear_pending_update(self) -> None:
-        """Clear pending update tracking state."""
-        self._pending_update_position = None
+        """No pending-update state to clear."""
 
     def _find_row_position(self, row: ResultTupleOrDict, operation: Op) -> int:
         """Find the position of a matching row by scanning backwards.
@@ -562,37 +568,17 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
     def _apply_operation(self, op: Op, row: ResultTupleOrDict) -> None:
         """Apply a changelog operation to the internal state.
 
+        Additive ops (+I, +U) append the row; retracting ops (-U, -D) remove the most recent
+        occurrence of a matching row. No ordering between the ops is assumed.
+
         Args:
             op: The changelog operation.
             row: The row data.
         """
-        self._validate_no_pending_update(op, row)
-
-        if op == Op.INSERT:
+        if op.treat_as_insert:
             self._rows.append(row)
-
-        elif op == Op.UPDATE_BEFORE:
-            # Find row position (raises InterfaceError if not found)
-            pos = self._find_row_position(row, Op.UPDATE_BEFORE)
-            # Record position for pending update (expecting matching UPDATE_AFTER next)
-            self._pending_update_position = pos
-
-        elif op == Op.UPDATE_AFTER:
-            # MUST have gotten a preceding UPDATE_BEFORE.
-            # (Without upsert columns, we can't identify the row to update from the
-            #  UPDATE_AFTER row alone, since the row content has changed.)
-            if self._pending_update_position is None:
-                raise InterfaceError(
-                    f"Received UPDATE_AFTER without a preceding UPDATE_BEFORE: {row}"
-                )
-
-            self._rows[self._pending_update_position] = row
-            self._pending_update_position = None
-
-        elif op == Op.DELETE:
-            # Find row position (raises InterfaceError if not found)
-            pos = self._find_row_position(row, Op.DELETE)
-            del self._rows[pos]
+        else:  # op.treat_as_delete
+            del self._rows[self._find_row_position(row, op)]
 
     def _copy_accumulated_rows(self) -> list[ResultTupleOrDict]:
         """Return deep copy of rows from list storage.

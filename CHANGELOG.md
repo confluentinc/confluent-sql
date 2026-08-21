@@ -2,6 +2,23 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- The changelog compressor for streaming non-append-only queries **without** upsert columns
+  (`cursor.changelog_compressor()` on a keyless result, e.g. a global aggregation) no longer raises
+  `InterfaceError` on legitimately out-of-order changelog events. When such a changelog is sinked to
+  a multi-partition keyless topic, partitions are assigned by whole-row hash, so an updated row's
+  `+U`/`-D` spelling can land on a different partition than its original `+I`/`-U` spelling; since
+  Kafka only guarantees ordering within a partition, the events can be observed in a surprising order
+  across spellings (a `+U` before its logical `-U`, or a `-D` before a later `+I`). The compressor
+  previously assumed each `UPDATE_BEFORE` was immediately followed by its `UPDATE_AFTER` and failed
+  on those sequences. It now treats the two additive ops (`+I`, `+U`) as inserts and the two
+  retracting ops (`-U`, `-D`) as deletions, makes no ordering assumptions, and converges to the
+  correct result set (intermediate snapshots may transiently show an extra row). Adds
+  `Op.treat_as_insert` / `Op.treat_as_delete` helper properties. (#184)
+
 ## 0.5.0, 2026-08-07
 
 ### Added
