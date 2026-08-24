@@ -75,6 +75,25 @@ class Op(Enum):
     String representation: -D
     """
 
+    @property
+    def treat_as_insert(self) -> bool:
+        """True for the two additive changelog ops: INSERT (+I) and UPDATE_AFTER (+U).
+
+        Both add a row spelling to the result set. Consumers that only care whether an event
+        grows or shrinks the result set (e.g. a keyless compressor that cannot pair
+        UPDATE_BEFORE with UPDATE_AFTER) can collapse the four ops to this insert/delete
+        dichotomy. Every Op is exactly one of treat_as_insert or treat_as_delete.
+        """
+        return self in (Op.INSERT, Op.UPDATE_AFTER)
+
+    @property
+    def treat_as_delete(self) -> bool:
+        """True for the two retracting changelog ops: UPDATE_BEFORE (-U) and DELETE (-D).
+
+        Both remove a row spelling from the result set. See treat_as_insert for the rationale.
+        """
+        return self in (Op.UPDATE_BEFORE, Op.DELETE)
+
     def __str__(self):
         if self is self.INSERT:
             return "+I"
