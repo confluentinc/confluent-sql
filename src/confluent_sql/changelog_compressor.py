@@ -191,8 +191,7 @@ class ChangelogCompressor(abc.ABC):
 
         **Self-Consistency**: A snapshot is considered self-consistent when all currently
         available changelog events have been consumed and applied. This means the snapshot
-        reflects a coherent state with no pending UPDATE_BEFORE operations awaiting their
-        matching UPDATE_AFTER.
+        reflects every event fetched so far; nothing is retained awaiting a match.
 
         **No Guarantee of Logical Changes**: There is NO guarantee that consecutive snapshots
         will differ. If no new changelog events arrived since the prior yield, the snapshot
@@ -270,8 +269,8 @@ class ChangelogCompressor(abc.ABC):
         - Is non-blocking - returns immediately after consuming available events
 
         **Self-Consistency**: The returned snapshot is self-consistent, meaning all currently
-        available changelog events have been consumed and applied. No pending UPDATE_BEFORE
-        operations remain without their matching UPDATE_AFTER.
+        available changelog events have been consumed and applied. It reflects every event
+        fetched so far; nothing is retained awaiting a match.
 
         **Deep Copy**: The returned snapshot is a deep copy. Mutations will not affect the
         compressor's internal state.
