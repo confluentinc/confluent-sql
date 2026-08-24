@@ -23,6 +23,20 @@ class TestOp:
     def test_str(self, op: Op, expected_str: str):
         assert str(op) == expected_str
 
+    @pytest.mark.parametrize(
+        "op,is_insert,is_delete",
+        [
+            (Op.INSERT, True, False),
+            (Op.UPDATE_AFTER, True, False),
+            (Op.UPDATE_BEFORE, False, True),
+            (Op.DELETE, False, True),
+        ],
+    )
+    def test_treat_as_insert_delete(self, op: Op, is_insert: bool, is_delete: bool):
+        """The two '+' ops (+I, +U) are additive; the two '-' ops (-U, -D) are retracting."""
+        assert op.treat_as_insert is is_insert
+        assert op.treat_as_delete is is_delete
+
 
 @pytest.mark.unit
 class TestPhaseIsTerminal:
