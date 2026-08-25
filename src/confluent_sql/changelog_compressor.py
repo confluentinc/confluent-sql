@@ -508,7 +508,9 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
         """Apply a changelog operation to the internal state.
 
         Additive ops (+I, +U) append the row; retracting ops (-U, -D) remove the most recent
-        occurrence of a matching row. No ordering between the ops is assumed.
+        occurrence of a matching row. No ordering is assumed across *different* rows' ops --
+        but a row's own retracting op is assumed to arrive after its own matching additive op
+        (see class docstring); `_find_row_position` raises otherwise.
 
         Args:
             op: The changelog operation.
