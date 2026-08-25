@@ -376,7 +376,7 @@ A **snapshot of results** is a self-consistent, complete result set showing the 
 
 - **Current State of All Rows**: Built from all INSERT/UPDATE/DELETE operations processed so far
 - **Point-in-Time View**: Represents state after consuming all available changelog events at that moment
-- **Self-Consistent**: No pending operations awaiting completion (all UPDATE_BEFORE/UPDATE_AFTER pairs have been applied)
+- **Self-Consistent**: Reflects every changelog event fetched so far -- there's nothing still in flight waiting on a match
 - **Complete Result Set, Not Incremental**: Each snapshot is the full accumulated result set at this moment in time, not just the changes since the last snapshot
 
 Don't think of snapshots of results as collections of individual changelog events. Instead, think of them as complete result sets:
