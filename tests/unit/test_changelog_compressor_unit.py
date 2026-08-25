@@ -275,9 +275,10 @@ class TestNoUpsertColumnsCompressor:
 
         snapshot = next(compressor.snapshots())
 
+        # Keyless snapshot order is not meaningful, so assert converged contents by membership.
         assert len(snapshot) == 2
-        assert snapshot[0] == (1, "a", 15)  # Updated
-        assert snapshot[1] == (2, "b", 20)  # Unchanged
+        assert (1, "a", 15) in snapshot  # Updated
+        assert (2, "b", 20) in snapshot  # Unchanged
 
     def test_scan_based_delete(self, mock_cursor):
         """Test scan-based DELETE operations."""
@@ -298,29 +299,28 @@ class TestNoUpsertColumnsCompressor:
         assert len(snapshot) == 1  # One remains
         assert snapshot[0] == (1, "a", 10)
 
-    def test_position_adjustment_after_delete(self, mock_cursor):
-        """Test that UPDATE_BEFORE must be immediately followed by UPDATE_AFTER."""
+    def test_delete_interleaved_with_retraction(self, mock_cursor):
+        """A DELETE interleaved between a -U and an unrelated +U is legal (no pending state).
+
+        Under cross-partition skew there is no "UPDATE_BEFORE must be immediately followed by
+        UPDATE_AFTER" rule: -U/-D just retract their spelling, +I/+U just add one.
+        """
         compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        # Mock fetchmany with DELETE between UPDATE_BEFORE and UPDATE_AFTER
         mock_cursor.fetchmany.side_effect = [
             [
                 ChangeloggedRow(Op.INSERT, (1, "a", 10)),
                 ChangeloggedRow(Op.INSERT, (2, "b", 20)),
                 ChangeloggedRow(Op.INSERT, (3, "c", 30)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (3, "c", 30)),
-                # ERROR: Can't have DELETE while UPDATE_BEFORE is pending
-                ChangeloggedRow(Op.DELETE, (2, "b", 20)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (3, "c", 30)),  # retract (3, c, 30)
+                ChangeloggedRow(Op.DELETE, (2, "b", 20)),  # delete an unrelated row
             ],
             [],
         ]
 
-        # Should raise error because UPDATE_BEFORE must be followed by UPDATE_AFTER
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received DELETE while an UPDATE_BEFORE is pending",
-        ):
-            next(compressor.snapshots())
+        snapshot = next(compressor.snapshots())
+
+        assert snapshot == [(1, "a", 10)]
 
     def test_dict_without_keys(self, mock_cursor):
         """Test dict compressor without upsert columns."""
@@ -341,6 +341,80 @@ class TestNoUpsertColumnsCompressor:
 
         assert len(snapshot) == 1
         assert snapshot[0] == {"id": 1, "value": "b"}
+
+
+@pytest.mark.unit
+class TestNoUpsertColumnsCompressorIssue184:
+    """The three changelog sequences from issue #184.
+
+    A multi-partition keyless sink assigns partitions by whole-row hash, so an updated row's
+    +U/-D spelling can land on a different partition than its original +I/-U spelling. Kafka
+    only guarantees order within a partition, so the foreground sink can surface events in a
+    surprising cross-spelling order. The compressor must still converge to the correct final
+    result set by treating +I/+U as inserts and -U/-D as deletions.
+
+    Snapshot row order is not meaningful for a keyless table, so these assert converged
+    contents order-independently.
+    """
+
+    def test_global_aggregation_single_row(self, mock_cursor):
+        """Issue #184 example A: a single-row global aggregation converges to one row."""
+        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1,)),  # +I (1)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1,)),  # -U (1)
+                ChangeloggedRow(Op.UPDATE_AFTER, (2,)),  # +U (2)
+                ChangeloggedRow(Op.UPDATE_AFTER, (3,)),  # +U (3)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (2,)),  # -U (2)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (3,)),  # -U (3)
+                ChangeloggedRow(Op.UPDATE_AFTER, (4,)),  # +U (4)
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert snapshot == [(4,)]
+
+    def test_multi_row_aggregation(self, mock_cursor):
+        """Issue #184 example B: +U arriving before both its +I and -U converges to two rows."""
+        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.UPDATE_AFTER, ("c2", 2)),  # +U ('c2', 2)
+                ChangeloggedRow(Op.INSERT, ("c1", 1)),  # +I ('c1', 1)
+                ChangeloggedRow(Op.INSERT, ("c2", 1)),  # +I ('c2', 1)
+                ChangeloggedRow(Op.UPDATE_BEFORE, ("c2", 1)),  # -U ('c2', 1)
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert len(snapshot) == 2
+        assert ("c2", 2) in snapshot
+        assert ("c1", 1) in snapshot
+
+    def test_delete_and_after_update_before_insert(self, mock_cursor):
+        """Issue #184 example C: delete + reordered update/insert converges to the empty set."""
+        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.UPDATE_AFTER, ("b", 2)),  # +U ('b', 2)
+                ChangeloggedRow(Op.DELETE, ("b", 2)),  # -D ('b', 2)
+                ChangeloggedRow(Op.INSERT, ("b", 1)),  # +I ('b', 1)
+                ChangeloggedRow(Op.UPDATE_BEFORE, ("b", 1)),  # -U ('b', 1)
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert snapshot == []
 
 
 @pytest.mark.unit
@@ -593,16 +667,14 @@ class TestCloseMethod:
         ]
         next(compressor.snapshots())
 
-        # Verify data exists
-        assert len(compressor._rows) == 2
-        assert compressor._pending_update_position == 0
+        # Verify data exists (the -U retracts the first row, leaving one)
+        assert len(compressor._rows) == 1
 
         # Close the compressor
         compressor.close()
 
         # Verify internal state is cleared
         assert len(compressor._rows) == 0
-        assert compressor._pending_update_position is None
 
     def test_close_with_dict_compressor(self, mock_cursor):
         """Test that close() works with dict compressor."""
@@ -663,27 +735,6 @@ class TestEdgeCases:
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 10)
 
-    def test_update_after_without_before(self, mock_cursor):
-        """Test bare UPDATE_AFTER requires UPDATE_BEFORE in NoUpsertColumnsCompressor."""
-        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with bare UPDATE_AFTER
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                # Bare UPDATE_AFTER - no UPDATE_BEFORE
-                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
-            ],
-            [],
-        ]
-
-        # Should raise error because UPDATE_BEFORE is required
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
-        ):
-            next(compressor.snapshots())
-
     def test_multiple_batches(self, mock_cursor):
         """Test fetching across multiple batches."""
         mock_cursor._statement.traits.upsert_columns = [0]
@@ -715,199 +766,15 @@ class TestEdgeCases:
 
         assert snapshot == []
 
-    def test_overwriting_pending_update(self, mock_cursor):
-        """Test that UPDATE_BEFORE must be followed by UPDATE_AFTER immediately."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with two UPDATE_BEFOREs in a row (invalid)
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-                # ERROR: Can't have another UPDATE_BEFORE
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-            ],
-            [],
-        ]
-
-        # Should raise error because UPDATE_BEFORE must be followed by UPDATE_AFTER
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_BEFORE while an UPDATE_BEFORE is pending",
-        ):
-            next(compressor.snapshots())
-
 
 @pytest.mark.unit
 class TestUpsertColumnsCompressorErrorCases:
-    """Tests for error cases in UpsertColumnsCompressor when keys are not found."""
+    """Tests for error cases in UpsertColumnsCompressor when keys are not found.
 
-    def test_update_before_with_nonexistent_key_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_BEFORE for a non-existent key raises InterfaceError."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_BEFORE for a key that doesn't exist
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (999, "z", 99)),  # Key doesn't exist
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
-            r"\(999,\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_after_with_nonexistent_key_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_AFTER for a non-existent key raises InterfaceError."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_AFTER for a key that doesn't exist
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_AFTER, (999, "z", 99)),  # Key doesn't exist
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(999,\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_before_after_delete_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_BEFORE after DELETE raises InterfaceError."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with DELETE followed by UPDATE_BEFORE for the same key
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.DELETE, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),  # Key no longer exists
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: \(1,\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_after_without_prior_insert_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_AFTER without any prior INSERT raises InterfaceError."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_AFTER as the first operation
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 10)),  # No prior INSERT
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(1,\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_before_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_BEFORE with compound key not found raises InterfaceError."""
-        mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_BEFORE for a compound key that doesn't exist
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "z", 99)),  # Different second key component
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
-            r"\(1, 'z'\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_after_with_compound_key_not_found_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_AFTER with compound key not found raises InterfaceError."""
-        mock_cursor._statement.traits.upsert_columns = [0, 1]  # Compound key
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_AFTER for a compound key that doesn't exist
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_AFTER, (2, "a", 20)),  # Different first key component
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER for a key that does not exist in current state: "
-            r"\(2, 'a'\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_before_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_BEFORE for dict rows with non-existent key raises InterfaceError."""
-        mock_cursor.as_dict = True
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_BEFORE for a key that doesn't exist
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
-                ChangeloggedRow(Op.UPDATE_BEFORE, {"id": 999, "value": "z", "count": 99}),
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_BEFORE for a key that does not exist in current state: "
-            r"\(999,\)",
-        ):
-            next(compressor.snapshots())
-
-    def test_update_after_with_dict_rows_nonexistent_key_raises_interface_error(self, mock_cursor):
-        """Test that UPDATE_AFTER for dict rows with non-existent key raises InterfaceError."""
-        mock_cursor.as_dict = True
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_AFTER for a key that doesn't exist
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
-                ChangeloggedRow(Op.UPDATE_AFTER, {"id": 999, "value": "z", "count": 99}),
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER for a key that does not exist in current state: \(999,\)",
-        ):
-            next(compressor.snapshots())
+    Only DELETE still validates key existence. Since #185, UPDATE_BEFORE is an unconditional
+    no-op and UPDATE_AFTER is handled exactly like INSERT (an upsert), so neither can raise on a
+    missing/mismatched key anymore -- see TestUpsertColumnsCompressorIssue185 for that coverage.
+    """
 
     def test_delete_with_nonexistent_key_raises_interface_error(self, mock_cursor):
         """Test that DELETE for a non-existent key raises InterfaceError."""
@@ -1055,26 +922,6 @@ class TestNoUpsertColumnsCompressorErrorCases:
         ):
             next(compressor.snapshots())
 
-    def test_update_after_without_update_before_raises_interface_error(self, mock_cursor):
-        """Test that bare UPDATE_AFTER without UPDATE_BEFORE raises InterfaceError."""
-        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_AFTER without UPDATE_BEFORE
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                # Bare UPDATE_AFTER - no UPDATE_BEFORE
-                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 15)),
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
-        ):
-            next(compressor.snapshots())
-
     def test_update_before_after_delete_raises_interface_error(self, mock_cursor):
         """Test that UPDATE_BEFORE after DELETE raises InterfaceError."""
         compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
@@ -1214,27 +1061,6 @@ class TestNoUpsertColumnsCompressorErrorCases:
         ):
             next(compressor.snapshots())
 
-    def test_update_after_without_before_dict_rows_raises_interface_error(self, mock_cursor):
-        """Test that bare UPDATE_AFTER for dict rows raises InterfaceError."""
-        mock_cursor.as_dict = True
-        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        # Mock fetchmany with UPDATE_AFTER without UPDATE_BEFORE
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, {"id": 1, "value": "a", "count": 10}),
-                # Bare UPDATE_AFTER - no UPDATE_BEFORE
-                ChangeloggedRow(Op.UPDATE_AFTER, {"id": 1, "value": "b", "count": 20}),
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
-        ):
-            next(compressor.snapshots())
-
     def test_delete_with_dict_rows_nonexistent_raises_interface_error(self, mock_cursor):
         """Test that DELETE for dict rows with non-existent row raises InterfaceError."""
         mock_cursor.as_dict = True
@@ -1280,7 +1106,13 @@ class TestNoUpsertColumnsCompressorErrorCases:
 
 @pytest.mark.unit
 class TestUpsertColumnsCompressorUpdateSequencing:
-    """Tests for UPDATE_BEFORE/UPDATE_AFTER sequencing in UpsertColumnsCompressor."""
+    """Tests for UPDATE_BEFORE/UPDATE_AFTER handling in UpsertColumnsCompressor.
+
+    Since #185, UPDATE_BEFORE and UPDATE_AFTER need not be paired or adjacent: UPDATE_BEFORE is
+    an unconditional no-op and UPDATE_AFTER is handled exactly like INSERT (last write for the key
+    wins). See TestUpsertColumnsCompressorIssue185 for tests of the previously-rejected
+    interleavings this was meant to allow.
+    """
 
     def test_bare_update_after_with_existing_key_succeeds(self, mock_cursor):
         """Test that bare UPDATE_AFTER works when key exists."""
@@ -1300,46 +1132,6 @@ class TestUpsertColumnsCompressorUpdateSequencing:
 
         assert len(snapshot) == 1
         assert snapshot[0] == (1, "a", 20)
-
-    def test_insert_after_update_before_raises_error(self, mock_cursor):
-        """Test that INSERT after UPDATE_BEFORE raises error."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-                ChangeloggedRow(Op.INSERT, (2, "b", 20)),  # ERROR
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received INSERT while an UPDATE_BEFORE is pending",
-        ):
-            next(compressor.snapshots())
-
-    def test_delete_after_update_before_raises_error(self, mock_cursor):
-        """Test that DELETE after UPDATE_BEFORE raises error."""
-        mock_cursor._statement.traits.upsert_columns = [0]
-        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
-
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # ERROR
-            ],
-            [],
-        ]
-
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received DELETE while an UPDATE_BEFORE is pending",
-        ):
-            next(compressor.snapshots())
 
     def test_paired_update_before_after_succeeds(self, mock_cursor):
         """Test that UPDATE_BEFORE immediately followed by UPDATE_AFTER works."""
@@ -1362,69 +1154,154 @@ class TestUpsertColumnsCompressorUpdateSequencing:
 
 
 @pytest.mark.unit
-class TestNoUpsertColumnsCompressorUpdateSequencing:
-    """Tests for UPDATE_BEFORE/UPDATE_AFTER sequencing in NoUpsertColumnsCompressor."""
+class TestUpsertColumnsCompressorIssue185:
+    """Regression tests for UpsertColumnsCompressor's -U/+U handling (issue #185).
 
-    def test_bare_update_after_requires_update_before(self, mock_cursor):
-        """Test that bare UPDATE_AFTER requires UPDATE_BEFORE."""
-        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+    A consumer reading a keyed upsert topic drains multiple partitions per poll. Same-key events
+    stay ordered (a key always hashes to the same partition), but a single fetchmany() batch can
+    still interleave *different* keys' events -- so key A's UPDATE_BEFORE can be immediately
+    followed by key B's INSERT/DELETE/UPDATE_BEFORE before key A's own UPDATE_AFTER shows up. The
+    compressor previously modeled UPDATE_BEFORE/UPDATE_AFTER as a single-slot pending-update pair
+    that had to be adjacent, and raised InterfaceError on exactly this kind of interleaving.
+
+    Since #185, UPDATE_BEFORE carries no information under key-based upsert semantics and is a
+    pure no-op; UPDATE_AFTER is handled exactly like INSERT (last write for the key wins). DELETE
+    is the only op that still validates key existence (see TestUpsertColumnsCompressorErrorCases).
+    """
+
+    def test_unrelated_key_between_update_before_and_after_does_not_raise(self, mock_cursor):
+        """An unrelated key's INSERT arriving between key A's -U and its own +U used to raise
+        InterfaceError; both keys must now converge to their correct final rows."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),  # key 1 initial state
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),  # -U(key 1)
+                ChangeloggedRow(Op.INSERT, (2, "b", 20)),  # unrelated key 2, arrives in between
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 15)),  # +U(key 1), completes the update
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert len(snapshot) == 2
+        assert (1, "a", 15) in snapshot
+        assert (2, "b", 20) in snapshot
+
+    def test_two_keys_own_update_cycles_interleave_with_each_other(self, mock_cursor):
+        """Two different keys' own -U/+U update cycles interleave with each other: both keys'
+        retractions arrive before either key's completing update. This is the definite-interleaving
+        case #185 is about -- both keys must still converge to their correct, independent final
+        rows."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, 10)),  # +I(key 1, 10)
+                ChangeloggedRow(Op.INSERT, (2, 20)),  # +I(key 2, 20)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, 10)),  # -U(key 1), key 1's own retraction
+                # -U(key 2), interleaves before key 1's +U
+                ChangeloggedRow(Op.UPDATE_BEFORE, (2, 20)),
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, 11)),  # +U(key 1), completes key 1 only
+                ChangeloggedRow(Op.UPDATE_AFTER, (2, 21)),  # +U(key 2), completes key 2
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert len(snapshot) == 2
+        assert (1, 11) in snapshot
+        assert (2, 21) in snapshot
+
+    def test_update_before_for_untracked_key_is_silently_ignored(self, mock_cursor):
+        """A stray/duplicate UPDATE_BEFORE for a key not currently held is a no-op: it doesn't
+        raise and doesn't disturb any other row."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
         mock_cursor.fetchmany.side_effect = [
             [
                 ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                # Bare UPDATE_AFTER - no UPDATE_BEFORE (should fail)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (999, "z", 99)),  # key 999 never existed
+                ChangeloggedRow(Op.DELETE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),  # key 1, now deleted
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert snapshot == []
+
+    def test_update_after_with_no_prior_insert_inserts_the_row(self, mock_cursor):
+        """UPDATE_AFTER for a key never previously seen is handled exactly like INSERT."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 10))],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert snapshot == [(1, "a", 10)]
+
+    def test_repeated_update_before_for_same_key_are_all_noops(self, mock_cursor):
+        """Multiple consecutive UPDATE_BEFOREs for the same key (previously "two pending updates
+        in a row", an error) are each individually ignored."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
                 ChangeloggedRow(Op.UPDATE_AFTER, (1, "a", 20)),
             ],
             [],
         ]
 
-        # Should raise error because UPDATE_BEFORE is required
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received UPDATE_AFTER without a preceding UPDATE_BEFORE",
-        ):
-            next(compressor.snapshots())
+        snapshot = next(compressor.snapshots())
 
-    def test_insert_after_update_before_raises_error(self, mock_cursor):
-        """Test that INSERT after UPDATE_BEFORE raises error."""
-        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+        assert snapshot == [(1, "a", 20)]
+
+    def test_delete_for_genuinely_missing_key_still_raises(self, mock_cursor):
+        """The simplification only relaxes UPDATE_BEFORE/UPDATE_AFTER: DELETE for a key the
+        compressor never held is still a real protocol violation and must still raise."""
+        mock_cursor._statement.traits.upsert_columns = [0]
+        compressor = UpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
         mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-                ChangeloggedRow(Op.INSERT, (2, "b", 20)),  # ERROR
-            ],
+            [ChangeloggedRow(Op.DELETE, (999, "z", 99))],
             [],
         ]
 
         with pytest.raises(
             InterfaceError,
-            match=r"Received INSERT while an UPDATE_BEFORE is pending",
+            match=r"Received DELETE for a key that does not exist in current state: \(999,\)",
         ):
             next(compressor.snapshots())
 
-    def test_delete_after_update_before_raises_error(self, mock_cursor):
-        """Test that DELETE after UPDATE_BEFORE raises error."""
-        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
-        mock_cursor.fetchmany.side_effect = [
-            [
-                ChangeloggedRow(Op.INSERT, (1, "a", 10)),
-                ChangeloggedRow(Op.UPDATE_BEFORE, (1, "a", 10)),
-                ChangeloggedRow(Op.DELETE, (1, "a", 10)),  # ERROR
-            ],
-            [],
-        ]
+@pytest.mark.unit
+class TestNoUpsertColumnsCompressorUpdateSequencing:
+    """Tests for UPDATE_BEFORE/UPDATE_AFTER handling in NoUpsertColumnsCompressor.
 
-        with pytest.raises(
-            InterfaceError,
-            match=r"Received DELETE while an UPDATE_BEFORE is pending",
-        ):
-            next(compressor.snapshots())
+    This compressor makes no ordering assumptions between the ops (see issue #184): a -U just
+    retracts its spelling and a +U just adds one, so update events need not be paired or
+    adjacent. The one remaining sequencing test confirms the ordinary in-order -U/+U pair
+    still updates a row in place.
+    """
 
     def test_paired_update_before_after_succeeds(self, mock_cursor):
-        """Test that UPDATE_BEFORE immediately followed by UPDATE_AFTER works."""
+        """Test that an in-order UPDATE_BEFORE followed by UPDATE_AFTER updates the row."""
         compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
         mock_cursor.fetchmany.side_effect = [
@@ -1966,3 +1843,131 @@ class TestGetCurrentSnapshot:
             InterfaceError, match=f"fetch_batchsize must be an int, got {expected_type_name}"
         ):
             compressor.get_current_snapshot(fetch_batchsize=invalid_type_value)
+
+
+@pytest.mark.unit
+class TestNoUpsertColumnsCompressorCrossPartitionSkew:
+    """Regression tests for NoUpsertColumnsCompressor under cross-partition delivery skew.
+
+    These three tests are the Python-side counterparts of three tests in frontend-vault (the
+    Confluent Cloud UI monorepo) at packages/workbench/src/utils/__tests__/changelog.test.ts,
+    covering the SAME three real changelog sequences against `FlinkTable`, the analogous
+    keyless-changelog data structure used by the SQL Workbench UI.
+
+    These were originally written to fail: this compressor used to take a "fail loudly"
+    approach (a single pending-update slot, raising on any out-of-order retraction). Issue
+    #184 resolved that in favor of the "guess and heal" model -- treat +I/+U as inserts and
+    -U/-D as deletions, make no ordering assumptions, and trust the stream to be eventually
+    consistent (see NoUpsertColumnsCompressor). All three now converge to the correct final
+    snapshot. Each feeds a full changelog sequence through `_apply_operation` (via
+    `snapshots()`/`fetchmany`) and asserts on the converged snapshot.
+    """
+
+    def test_same_row_states_arriving_out_of_order_eventually_converge(self, mock_cursor):
+        """Python equivalent of the frontend-vault FlinkTable test:
+        "should not get stuck at two rows once every out-of-order update has arrived".
+
+        A keyless retract row (e.g. a global COUNT(*), no PRIMARY KEY) has its successive
+        states written to DIFFERENT Kafka partitions -- a consumer polling multiple
+        partitions can legitimately see state 3's +U arrive before state 2's own -U. Once
+        both delayed -U's eventually arrive and the stream keeps going, a correct client
+        should converge back down to ONE row holding the LATEST value -- not get stuck, and
+        not just be right about cardinality while holding a stale value.
+
+        Converges to: [(1, 4)].
+        """
+        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, 1)),  # +I(1)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, 1)),  # -U(1)
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, 2)),  # +U(2)
+                # +U(3), out of order -- two states "in flight" for the same row, correctly, for now
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, 3)),
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, 2)),  # -U(2), catches up
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, 3)),  # -U(3), also eventually arrives
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, 4)),  # +U(4), the stream continues normally
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert snapshot == [(1, 4)]
+
+    def test_concurrent_unrelated_rows_retracting_at_the_same_time(self, mock_cursor):
+        """Python equivalent of the frontend-vault FlinkTable test:
+        "should not lose an unrelated row when a different row's retraction resolves
+        concurrently" -- named after Jared Breeden's `customer_category_counts` example in
+        the Slack thread (a retract-mode table with MULTIPLE logical rows, not a single
+        global aggregate, none of which have a PRIMARY KEY).
+
+        Cross-partition delivery skew can interleave two completely UNRELATED rows' own
+        -U/+U cycles -- e.g. group 1's own -U, then group 2's own -U, both pending before
+        either's +U shows up. Unlike the test above, there is NO ambiguity here about which
+        row each +U continues -- they're two different, still-live rows with distinguishable
+        content -- so this should not be treated as an error at all.
+
+        Converges to: exactly 2 rows, (1, 11) and (2, 21).
+        """
+        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                ChangeloggedRow(Op.INSERT, (1, 10)),  # +I(group 1, count 10)
+                ChangeloggedRow(Op.INSERT, (2, 20)),  # +I(group 2, count 20)
+                ChangeloggedRow(Op.UPDATE_BEFORE, (1, 10)),  # -U(group 1), group 1's own retraction
+                ChangeloggedRow(Op.UPDATE_BEFORE, (2, 20)),  # -U(group 2), unrelated, arrives early
+                ChangeloggedRow(Op.UPDATE_AFTER, (1, 11)),  # +U(group 1), continues group 1 only
+                ChangeloggedRow(Op.UPDATE_AFTER, (2, 21)),  # +U(group 2), stream continues normally
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert len(snapshot) == 2
+        assert (1, 11) in snapshot
+        assert (2, 21) in snapshot
+
+    def test_update_after_arrives_before_its_own_row_was_ever_inserted(self, mock_cursor):
+        """Python equivalent of the frontend-vault FlinkTable test:
+        "should not fabricate a phantom row when a row's own +U hits a different partition
+        before its +I/-U" -- and ALSO the literal, original real-world bug report that
+        started this entire investigation:
+        https://confluent.slack.com/archives/C074F7KCTV2/p1787246887406259
+        (captured live from `customer_category_counts` before a PRIMARY KEY was added to
+        it).
+
+        The true history for c2/food is +I(c2, food, 1), then later, as its count changes
+        from 1 to 2, -U(c2, food, 1)/+U(c2, food, 2). That later -U/+U pair hashed to a
+        DIFFERENT Kafka partition than the original +I, and the consumer happened to drain
+        that other partition first. So the raw observed order is +U, +I, +I, -U -- the
+        update for c2/food arrives before the row (and its own retraction) has even been
+        inserted.
+
+        Converges to: exactly 2 rows -- ('c1', 'food', 1) and ('c2', 'food', 2). No phantom
+        third row holding c2/food's stale count-1 state: the early +U(c2, food, 2) just adds
+        its spelling, and the later +I/-U(c2, food, 1) pair cancel each other out.
+        """
+        compressor = NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
+
+        mock_cursor.fetchmany.side_effect = [
+            [
+                # +U(c2/food), count 1 -> 2, arrives first (different partition)
+                ChangeloggedRow(Op.UPDATE_AFTER, ("c2", "food", 2)),
+                ChangeloggedRow(Op.INSERT, ("c1", "food", 1)),  # +I(c1/food, count 1)
+                # +I(c2/food, count 1) -- its own insert, arriving late
+                ChangeloggedRow(Op.INSERT, ("c2", "food", 1)),
+                # -U(c2/food, count 1), retracting the insert above
+                ChangeloggedRow(Op.UPDATE_BEFORE, ("c2", "food", 1)),
+            ],
+            [],
+        ]
+
+        snapshot = next(compressor.snapshots())
+
+        assert len(snapshot) == 2
+        assert ("c1", "food", 1) in snapshot
+        assert ("c2", "food", 2) in snapshot
