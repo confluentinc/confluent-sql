@@ -98,13 +98,23 @@ def _oauth_connect(**overrides) -> Connection:
     return connect(**params)
 
 
+def _provider(conn: Connection) -> FakeOAuthProvider:
+    """Type-narrowing helper: every oauth-mode Connection in this file is built with
+    oauth_provider_factory=FakeOAuthProvider (directly, or via the holder's reuse/join path for
+    a second Connection), so conn._oauth_provider is always a FakeOAuthProvider here -- this just
+    gives assertions a concrete type instead of the `OAuthProvider | None` Connection declares."""
+    provider = conn._oauth_provider
+    assert isinstance(provider, FakeOAuthProvider)
+    return provider
+
+
 class TestOauthValidation:
     """connect()/Connection validation of auth="oauth" mode selection and its exclusivity."""
 
     def test_invalid_auth_value_raises(self):
         with pytest.raises(InterfaceError, match="auth must be 'api_key' or 'oauth'"):
             connect(
-                auth="bogus",
+                auth="bogus",  # type: ignore[arg-type]
                 environment_id="env-1",
                 organization_id="org-1",
                 cloud_provider="aws",
@@ -191,17 +201,17 @@ class TestOauthAuthWiring:
 
     def test_oauth_flink_auth_is_providers_data_plane_auth(self):
         conn = _oauth_connect()
-        assert conn._flink_auth is conn._oauth_provider.data_plane_auth
+        assert conn._flink_auth is _provider(conn).data_plane_auth
 
     def test_oauth_controlplane_auth_is_providers_control_plane_auth(self):
         conn = _oauth_connect()
-        assert conn._controlplane_auth is conn._oauth_provider.control_plane_auth
+        assert conn._controlplane_auth is _provider(conn).control_plane_auth
 
     def test_oauth_connect_auth_is_providers_control_plane_auth(self):
         """One control-plane token reaches Tableflow, Connect, and CMK alike -- both control-plane
         slots share the very same object."""
         conn = _oauth_connect()
-        assert conn._connect_auth is conn._oauth_provider.control_plane_auth
+        assert conn._connect_auth is _provider(conn).control_plane_auth
         assert conn._connect_auth is conn._controlplane_auth
 
     def test_oauth_global_credentials_is_none(self):
@@ -265,8 +275,8 @@ class TestOauthCmkCapabilityGain:
             connect_client = conn._get_connect_controlplane_client()
         finally:
             conn.close()
-        assert controlplane_client.auth is conn._oauth_provider.control_plane_auth
-        assert connect_client.auth is conn._oauth_provider.control_plane_auth
+        assert controlplane_client.auth is _provider(conn).control_plane_auth
+        assert connect_client.auth is _provider(conn).control_plane_auth
 
 
 class TestOauthOrganizationId:
@@ -276,7 +286,7 @@ class TestOauthOrganizationId:
     def test_organization_id_supplied_scopes_the_session(self):
         conn = _oauth_connect(organization_id="org-X")
         assert conn.organization_id == "org-X"
-        assert conn._oauth_provider.organization_id == "org-X"
+        assert _provider(conn).organization_id == "org-X"
 
     def test_organization_id_omitted_resolved_from_session(self):
         conn = _oauth_connect(organization_id="")
@@ -302,7 +312,7 @@ class TestOauthClose:
 
     def test_close_calls_holder_release_not_provider_close(self, monkeypatch):
         conn = _oauth_connect()
-        provider = conn._oauth_provider
+        provider = _provider(conn)
         release_mock = Mock()
         monkeypatch.setattr("confluent_sql.connection.release", release_mock)
 
