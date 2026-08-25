@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 from datetime import datetime, timedelta
@@ -15,6 +16,8 @@ from confluent_sql import (
 )
 from confluent_sql.exceptions import NotSupportedError
 from confluent_sql.statement import Op, Phase, Statement
+
+logger = logging.getLogger(__name__)
 
 """A one column very fast to complete query."""
 SINGLE_COLUMN_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES`"
@@ -570,6 +573,40 @@ class TestStreamingChangelogCursor:
         """Common utility ..."""
         return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
 
+    @staticmethod
+    def _insert_person(connection: Connection, people_table: str, name: str, age: int) -> None:
+        """Insert one (name, age) fact row as a bounded statement (completes immediately)."""
+        with connection.closing_cursor() as cur:
+            cur.execute(f"INSERT INTO {people_table} VALUES (%s, %s)", (name, age))
+
+    @staticmethod
+    def _insert_categorized_person(
+        connection: Connection, people_table: str, name: str, category: str, age: int
+    ) -> None:
+        """Insert one (name, category, age) fact row as a bounded statement."""
+        with connection.closing_cursor() as cur:
+            cur.execute(f"INSERT INTO {people_table} VALUES (%s, %s, %s)", (name, category, age))
+
+    @staticmethod
+    def _wait_for_snapshot(cursor, compressor, predicate, *, max_iterations=30, sleep_secs=1.0):
+        """Poll get_current_snapshot() until predicate(snapshot) holds, returning that snapshot.
+
+        Fails the test if the predicate is never satisfied (or the statement stops) within
+        max_iterations.
+        """
+        last_snapshot = None
+        for _ in range(max_iterations):
+            if not cursor.may_have_results:
+                break
+            last_snapshot = compressor.get_current_snapshot()
+            if predicate(last_snapshot):
+                return last_snapshot
+            time.sleep(sleep_secs)
+        pytest.fail(
+            f"Snapshot predicate not satisfied within {max_iterations} iterations; "
+            f"last snapshot was {last_snapshot!r}"
+        )
+
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
     def test_changelog_compressor_snapshots_generator_with_upsert_columns(
@@ -802,9 +839,10 @@ class TestStreamingChangelogCursor:
             assert statement.is_append_only is False
             assert statement.phase is Phase.RUNNING
 
-            # Verify NO upsert columns (global aggregation)
+            # Verify NO upsert columns (global aggregation): the server reports these as None
+            # or as an empty list, both of which select NoUpsertColumnsCompressor.
             assert statement.traits is not None
-            assert statement.traits.upsert_columns is None
+            assert not statement.traits.upsert_columns
 
             # Create changelog compressor
             compressor = cursor.changelog_compressor()
@@ -814,9 +852,11 @@ class TestStreamingChangelogCursor:
 
             # Iterate over snapshots until we see the expected final state
             for iteration, snapshot in enumerate(compressor.snapshots()):
-                # Expect to have 0 or 1 row in the snapshot (global aggregation = single row)
-                assert len(snapshot) in (0, 1), (
-                    f"Expected snapshot to have 0 or 1 row, got {len(snapshot)}"
+                # A global aggregation converges to a single row, but under cross-partition
+                # delivery skew an intermediate snapshot may transiently show 2 rows (issue
+                # #184), so allow 0, 1, or 2 until it settles.
+                assert len(snapshot) in (0, 1, 2), (
+                    f"Expected snapshot to have 0, 1, or 2 rows, got {len(snapshot)}"
                 )
 
                 if len(snapshot) == 1:
@@ -844,6 +884,323 @@ class TestStreamingChangelogCursor:
             # table out from under it, and close the cursor to release the client-side reader.
             cursor.delete_statement()
             cursor.close()
+
+    @pytest.mark.slow
+    def test_changelog_compressor_keyless_sink_global_aggregation(
+        self,
+        connection: Connection,
+        filtered_username: str,
+    ):
+        """Issue #184: read a non-append-only global aggregation back out of a *keyless* sink.
+
+        This is the real-world shape behind #184 (unlike the other compressor tests, which run
+        the aggregation in the foreground SELECT itself). A background INSERT INTO job publishes
+        a global SUM to a keyless (no PRIMARY KEY), multi-partition sink table; reading that sink
+        back yields a changelog whose +I / -U / +U events can be delivered out of order across
+        Kafka partitions. NoUpsertColumnsCompressor must still converge to the single correct row.
+
+        Shape::
+
+            people(name PK-not-enforced, age)   -- facts
+            sum_ages_table(sum_ages)            -- keyless sink
+            INSERT INTO sum_ages_table SELECT sum(age) FROM people   -- background streaming job
+
+        Inserting two people drives the sink changelog +I(30) -> (-U(30), +U(42)), which the
+        compressor must compress back down to a single row holding the total.
+        """
+        run_id = uuid4().hex[:8]
+        people_table = f"pytest_people_{filtered_username}_{run_id}"
+        sink_table = f"pytest_sum_ages_{filtered_username}_{run_id}"
+        # Label every statement this test starts, so a hard crash still leaves them findable.
+        label = f"pytest-issue184-{run_id}"
+
+        read_cursor: Cursor | None = None
+        insert_job: Statement | None = None
+        try:
+            # --- setup: two tables + the background aggregation pipeline ---
+            connection.execute_snapshot_ddl(
+                f"CREATE TABLE {people_table} "
+                f"(name STRING NOT NULL PRIMARY KEY NOT ENFORCED, age INT NOT NULL)"
+            )
+            # A keyless sink can only accept the aggregation's update/delete changelog if it is
+            # declared retract mode; DISTRIBUTED INTO N BUCKETS makes it the genuinely
+            # multi-partition keyless topic whose cross-partition delivery skew #184 is about.
+            connection.execute_snapshot_ddl(
+                f"CREATE TABLE {sink_table} (sum_ages BIGINT NOT NULL) "
+                f"DISTRIBUTED INTO 4 BUCKETS WITH ('changelog.mode' = 'retract')"
+            )
+            # execute_streaming_ddl blocks until the job is RUNNING, so the people rows inserted
+            # below are guaranteed to be consumed regardless of the source's scan.startup.mode.
+            insert_job = connection.execute_streaming_ddl(
+                f"INSERT INTO {sink_table} (sum_ages) SELECT sum(age) FROM {people_table}",
+                statement_labels=[label],
+            )
+
+            # --- read the keyless sink back as a changelog ---
+            read_cursor = connection.streaming_cursor()
+            read_cursor.execute(f"SELECT * FROM {sink_table}", statement_labels=[label])
+
+            statement = read_cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            # A keyless sink has no upsert columns (reported as None or []) ->
+            # NoUpsertColumnsCompressor, matching create_changelog_compressor()'s own check.
+            assert statement.traits is not None
+            assert not statement.traits.upsert_columns
+
+            compressor = read_cursor.changelog_compressor()
+
+            # 1) people is empty, so the sink starts empty: the compressor reports 0 rows.
+            assert (
+                self._wait_for_snapshot(read_cursor, compressor, lambda snap: len(snap) == 0) == []
+            )
+
+            # 2) Insert two people. The global SUM emits +I(30) then a retraction/update
+            #    (-U(30), +U(42)) to the keyless sink as the aggregate changes.
+            self._insert_person(connection, people_table, "alice", 30)
+            self._insert_person(connection, people_table, "bob", 12)
+
+            # 3) The compressor must converge to a single row holding the total (30 + 12).
+            final = self._wait_for_snapshot(
+                read_cursor, compressor, lambda snap: len(snap) == 1 and snap[0] == (42,)
+            )
+            assert final == [(42,)]
+        finally:
+            # Stop both streaming statements this test started (the reader and the pipeline)
+            # before dropping the tables they touch -- a table can't be dropped while a job is
+            # still writing to it. Each step is best-effort so one failure can't mask the rest.
+            if read_cursor is not None:
+                try:
+                    read_cursor.delete_statement()
+                except Exception as e:
+                    logger.warning(f"Failed to delete read statement: {e}")
+                read_cursor.close()
+            if insert_job is not None:
+                try:
+                    connection.delete_statement(insert_job)
+                except Exception as e:
+                    logger.warning(f"Failed to delete pipeline statement {insert_job.name}: {e}")
+            connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {sink_table}")
+            connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
+
+    @pytest.mark.slow
+    def test_changelog_compressor_keyless_sink_grouped_aggregation(
+        self,
+        connection: Connection,
+        filtered_username: str,
+    ):
+        """Issue #184, multi-row variant: a keyless GROUP BY sink with several live rows at once.
+
+        This is the `customer_category_counts` shape from the original bug report: a per-group
+        aggregation (still with NO PRIMARY KEY on the sink) published to a keyless, multi-partition
+        retract topic. Different groups' rows -- and one group's own +I / -U / +U update cycle --
+        can be delivered out of order across partitions, but NoUpsertColumnsCompressor must still
+        converge to exactly one row per group holding that group's current sum.
+
+        Shape::
+
+            people(name PK-not-enforced, category, age)   -- facts
+            category_sums(category, sum_ages)             -- keyless sink
+            INSERT INTO category_sums SELECT category, sum(age) FROM people GROUP BY category
+
+        Inserting into two categories -- with a second insert into one of them -- drives that
+        group's +I -> (-U, +U) update while the other group stays put, converging to two rows.
+        """
+        run_id = uuid4().hex[:8]
+        people_table = f"pytest_people_cat_{filtered_username}_{run_id}"
+        sink_table = f"pytest_cat_sums_{filtered_username}_{run_id}"
+        # Label every statement this test starts, so a hard crash still leaves them findable.
+        label = f"pytest-issue184-grouped-{run_id}"
+
+        read_cursor: Cursor | None = None
+        insert_job: Statement | None = None
+        try:
+            # --- setup: two tables + the background per-group aggregation pipeline ---
+            connection.execute_snapshot_ddl(
+                f"CREATE TABLE {people_table} "
+                f"(name STRING NOT NULL PRIMARY KEY NOT ENFORCED, "
+                f"category STRING NOT NULL, age INT NOT NULL)"
+            )
+            # Keyless retract sink (no PRIMARY KEY even though the query groups by category);
+            # DISTRIBUTED INTO N BUCKETS makes it the multi-partition topic #184 is about.
+            connection.execute_snapshot_ddl(
+                f"CREATE TABLE {sink_table} (category STRING NOT NULL, sum_ages BIGINT NOT NULL) "
+                f"DISTRIBUTED INTO 4 BUCKETS WITH ('changelog.mode' = 'retract')"
+            )
+            # Blocks until RUNNING, so the people rows inserted below are guaranteed to be consumed.
+            insert_job = connection.execute_streaming_ddl(
+                f"INSERT INTO {sink_table} (category, sum_ages) "
+                f"SELECT category, sum(age) FROM {people_table} GROUP BY category",
+                statement_labels=[label],
+            )
+
+            # --- read the keyless sink back as a changelog ---
+            read_cursor = connection.streaming_cursor()
+            read_cursor.execute(f"SELECT * FROM {sink_table}", statement_labels=[label])
+
+            statement = read_cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            # A keyless sink has no upsert columns (reported as None or []) even with a GROUP BY,
+            # so this still exercises NoUpsertColumnsCompressor.
+            assert statement.traits is not None
+            assert not statement.traits.upsert_columns
+
+            compressor = read_cursor.changelog_compressor()
+
+            # 1) people is empty, so the sink starts empty: the compressor reports 0 rows.
+            assert (
+                self._wait_for_snapshot(read_cursor, compressor, lambda snap: len(snap) == 0) == []
+            )
+
+            # 2) Insert into two categories, then a second row into 'a'. Group 'a' emits
+            #    +I('a', 30) then (-U('a', 30), +U('a', 42)); group 'b' stays a lone +I('b', 10).
+            self._insert_categorized_person(connection, people_table, "alice", "a", 30)
+            self._insert_categorized_person(connection, people_table, "bob", "b", 10)
+            self._insert_categorized_person(connection, people_table, "carol", "a", 12)
+
+            # 3) The compressor must converge to exactly one row per group: ('a', 42), ('b', 10).
+            #    Keyless snapshot order is not meaningful, so assert by membership.
+            final = self._wait_for_snapshot(
+                read_cursor,
+                compressor,
+                lambda snap: len(snap) == 2 and ("a", 42) in snap and ("b", 10) in snap,
+            )
+            assert len(final) == 2
+            assert ("a", 42) in final
+            assert ("b", 10) in final
+        finally:
+            # Stop both streaming statements before dropping the tables they touch; best-effort.
+            if read_cursor is not None:
+                try:
+                    read_cursor.delete_statement()
+                except Exception as e:
+                    logger.warning(f"Failed to delete read statement: {e}")
+                read_cursor.close()
+            if insert_job is not None:
+                try:
+                    connection.delete_statement(insert_job)
+                except Exception as e:
+                    logger.warning(f"Failed to delete pipeline statement {insert_job.name}: {e}")
+            connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {sink_table}")
+            connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
+
+    @pytest.mark.slow
+    def test_changelog_compressor_keyed_sink_grouped_aggregation(
+        self,
+        connection: Connection,
+        filtered_username: str,
+    ):
+        """Issue #185: read a non-append-only grouped aggregation back out of a *keyed* sink.
+
+        The keyed sibling of test_changelog_compressor_keyless_sink_grouped_aggregation (#184): a
+        background INSERT INTO job publishes a per-category SUM to a sink table WITH a PRIMARY
+        KEY, so the read-back changelog has upsert columns and is compressed by
+        UpsertColumnsCompressor rather than NoUpsertColumnsCompressor.
+
+        Unlike the keyless case, a key's own events stay ordered here (a key always hashes to the
+        same partition), so this test can only *invite*, not force, the failure #185 fixes: two
+        different categories' events (e.g. 'a's UPDATE_BEFORE and 'b's INSERT) landing in the same
+        poll batch depends on real Kafka consumer/partition timing this test doesn't control, so
+        it may or may not actually occur on any given run. This is a real-infrastructure sanity
+        check that the ordinary keyed-aggregation path still works end to end, not a repro for the
+        interleaving itself -- that's deterministically covered by
+        TestUpsertColumnsCompressorIssue185 in the unit tests, which controls the exact event
+        sequence.
+
+        Shape::
+
+            people(name PK-not-enforced, category, age)                    -- facts
+            category_sums(category PRIMARY KEY NOT ENFORCED, sum_ages)      -- keyed sink
+            INSERT INTO category_sums SELECT category, sum(age) FROM people GROUP BY category
+        """
+        run_id = uuid4().hex[:8]
+        people_table = f"pytest_people_keyed_{filtered_username}_{run_id}"
+        sink_table = f"pytest_cat_sums_keyed_{filtered_username}_{run_id}"
+        # Label every statement this test starts, so a hard crash still leaves them findable.
+        label = f"pytest-issue185-{run_id}"
+
+        read_cursor: Cursor | None = None
+        insert_job: Statement | None = None
+        try:
+            # --- setup: two tables + the background per-group aggregation pipeline ---
+            connection.execute_snapshot_ddl(
+                f"CREATE TABLE {people_table} "
+                f"(name STRING NOT NULL PRIMARY KEY NOT ENFORCED, "
+                f"category STRING NOT NULL, age INT NOT NULL)"
+            )
+            # A PRIMARY KEY on category makes this a keyed (upsert) sink -- unlike #184's keyless
+            # sink -- while DISTRIBUTED INTO N BUCKETS still makes it genuinely multi-partition,
+            # so different categories' changelog events *may* land in the same poll batch
+            # (though, unlike the keyless case, this can't be forced -- see the docstring above).
+            connection.execute_snapshot_ddl(
+                f"CREATE TABLE {sink_table} "
+                f"(category STRING NOT NULL PRIMARY KEY NOT ENFORCED, sum_ages BIGINT NOT NULL) "
+                f"DISTRIBUTED INTO 4 BUCKETS"
+            )
+            # Blocks until RUNNING, so the people rows inserted below are guaranteed to be consumed.
+            insert_job = connection.execute_streaming_ddl(
+                f"INSERT INTO {sink_table} (category, sum_ages) "
+                f"SELECT category, sum(age) FROM {people_table} GROUP BY category",
+                statement_labels=[label],
+            )
+
+            # --- read the keyed sink back as a changelog ---
+            read_cursor = connection.streaming_cursor()
+            read_cursor.execute(f"SELECT * FROM {sink_table}", statement_labels=[label])
+
+            statement = read_cursor.statement
+            assert statement is not None
+            assert statement.is_bounded is False
+            assert statement.is_append_only is False
+            # A keyed sink reports its PRIMARY KEY as upsert columns -> UpsertColumnsCompressor,
+            # matching create_changelog_compressor()'s own check.
+            assert statement.traits is not None
+            assert statement.traits.upsert_columns == [0]
+
+            compressor = read_cursor.changelog_compressor()
+
+            # 1) people is empty, so the sink starts empty: the compressor reports 0 rows.
+            assert (
+                self._wait_for_snapshot(read_cursor, compressor, lambda snap: len(snap) == 0) == []
+            )
+
+            # 2) Insert into two categories, then a second row into 'a'. Category 'a' emits
+            #    +I('a', 30) then (-U('a', 30), +U('a', 42)); category 'b' stays a lone +I('b', 10).
+            self._insert_categorized_person(connection, people_table, "alice", "a", 30)
+            self._insert_categorized_person(connection, people_table, "bob", "b", 10)
+            self._insert_categorized_person(connection, people_table, "carol", "a", 12)
+
+            # 3) The compressor must converge to exactly one row per category: ('a', 42), ('b', 10).
+            #    Keyed snapshot order is not meaningful here, so assert by membership. A larger
+            #    iteration budget gives the third insert's aggregate update room to propagate
+            #    through a cold-started Cloud Flink job without flaking.
+            final = self._wait_for_snapshot(
+                read_cursor,
+                compressor,
+                lambda snap: len(snap) == 2 and ("a", 42) in snap and ("b", 10) in snap,
+                max_iterations=60,
+            )
+            assert len(final) == 2
+            assert ("a", 42) in final
+            assert ("b", 10) in final
+        finally:
+            # Stop both streaming statements before dropping the tables they touch; best-effort.
+            if read_cursor is not None:
+                try:
+                    read_cursor.delete_statement()
+                except Exception as e:
+                    logger.warning(f"Failed to delete read statement: {e}")
+                read_cursor.close()
+            if insert_job is not None:
+                try:
+                    connection.delete_statement(insert_job)
+                except Exception as e:
+                    logger.warning(f"Failed to delete pipeline statement {insert_job.name}: {e}")
+            connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {sink_table}")
+            connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
 
     @pytest.mark.slow
     def test_changelog_compressor_raises_on_external_deletion(
