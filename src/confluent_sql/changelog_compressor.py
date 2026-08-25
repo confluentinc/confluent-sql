@@ -448,8 +448,9 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
     order within a partition, events can be observed in a surprising order *across* spellings
     (e.g. a +U before its logical -U, or a -D before a later +I). See issue #184.
 
-    To stay correct under that skew this compressor makes no ordering assumptions and holds
-    no pending-update state. It collapses the four ops to two: the additive ops (+I, +U;
+    To stay correct under that skew this compressor makes no ordering assumptions *across
+    different spellings* and holds no pending-update state (see below for the one ordering
+    guarantee it does rely on). It collapses the four ops to two: the additive ops (+I, +U;
     Op.treat_as_insert) append a row spelling, and the retracting ops (-U, -D;
     Op.treat_as_delete) remove one occurrence of a row spelling. The result set is eventually
     consistent -- intermediate points in time may transiently show extra rows, but once every
@@ -465,7 +466,9 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
     """
 
     _rows: list[ResultTupleOrDict]
-    """List of row spellings maintaining insertion order. Scanned linearly for matching."""
+    """List of row spellings, ordered by when each op was applied. Scanned linearly for
+    matching. Not a stable per-row order: an update's new spelling is appended anew, not
+    repositioned at its old spelling's spot."""
 
     def __init__(self, cursor: Cursor, statement: Statement):
         """Initialize the compressor.
