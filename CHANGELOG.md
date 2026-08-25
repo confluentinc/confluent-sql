@@ -4,6 +4,11 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`), so it could gain a default of `""` without a `SyntaxError` from the still-defaultless parameters ahead of it. `connect()` itself was already fully keyword-only and unaffected by this reordering; `Connection()` construction should always use keyword arguments (as every call site in this codebase already does) rather than relying on positional order.
+- `organization_id` is now genuinely optional on both `connect()` and `Connection()` -- it can be omitted from the call entirely rather than requiring an explicit `organization_id=""` -- whenever it's already self-discoverable: with a `global_api_key`/`global_api_secret` pair (inferred lazily via `GET /org/v2/organizations`, per #132) or with `auth="oauth"` (discovered from the interactive login's session). A Flink-only key or a dedicated Tableflow/Connect key still has no such reach and continues to require it explicitly.
+
 ## 0.5.1, 2026-08-25
 
 ### Fixed
