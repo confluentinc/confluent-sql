@@ -145,37 +145,9 @@ class ChangelogCompressor(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def _has_pending_update(self) -> bool:
-        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
-
-        Returns:
-            True if a pending update is in progress, False otherwise.
-        """
-        ...
-
-    @abc.abstractmethod
     def _clear_storage(self) -> None:
         """Clear internal row storage."""
         ...
-
-    @abc.abstractmethod
-    def _clear_pending_update(self) -> None:
-        """Clear pending update tracking state."""
-        ...
-
-    def _validate_no_pending_update(self, op: Op, row: ResultTupleOrDict) -> None:
-        """Raise if we have a pending update and aren't processing UPDATE_AFTER.
-
-        Args:
-            op: The changelog operation being processed.
-            row: The row data.
-
-        Raises:
-            InterfaceError: If a pending UPDATE_BEFORE exists while processing a
-                           non-UPDATE_AFTER operation.
-        """
-        if op != Op.UPDATE_AFTER and self._has_pending_update():
-            raise InterfaceError(f"Received {op.name} while an UPDATE_BEFORE is pending: {row}")
 
     def _resolve_batchsize(self, fetch_batchsize: int | None) -> int:
         """Resolve and validate the batch size to use for fetching.
@@ -219,8 +191,7 @@ class ChangelogCompressor(abc.ABC):
 
         **Self-Consistency**: A snapshot is considered self-consistent when all currently
         available changelog events have been consumed and applied. This means the snapshot
-        reflects a coherent state with no pending UPDATE_BEFORE operations awaiting their
-        matching UPDATE_AFTER.
+        reflects every event fetched so far; nothing is retained awaiting a match.
 
         **No Guarantee of Logical Changes**: There is NO guarantee that consecutive snapshots
         will differ. If no new changelog events arrived since the prior yield, the snapshot
@@ -298,8 +269,8 @@ class ChangelogCompressor(abc.ABC):
         - Is non-blocking - returns immediately after consuming available events
 
         **Self-Consistency**: The returned snapshot is self-consistent, meaning all currently
-        available changelog events have been consumed and applied. No pending UPDATE_BEFORE
-        operations remain without their matching UPDATE_AFTER.
+        available changelog events have been consumed and applied. It reflects every event
+        fetched so far; nothing is retained awaiting a match.
 
         **Deep Copy**: The returned snapshot is a deep copy. Mutations will not affect the
         compressor's internal state.
@@ -348,7 +319,6 @@ class ChangelogCompressor(abc.ABC):
         After calling close(), the compressor should not be used anymore.
         """
         self._clear_storage()
-        self._clear_pending_update()
         self._cursor.close()
 
 
@@ -357,8 +327,19 @@ class UpsertColumnsCompressor(ChangelogCompressor):
 
     Uses dict-based storage for fast O(1) key-based lookups.
 
-    Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
-    Only one pending update is tracked at a time.
+    The Confluent-cloud-side Kafka consumer reading a keyed upsert topic may be draining multiple
+    partitions per poll. Same-key events stay ordered (a key always hashes to the same partition),
+    but a single fetchmany() batch can still interleave *different* keys' events, so a key's
+    UPDATE_BEFORE need not be immediately followed by that same key's UPDATE_AFTER -- an unrelated
+    key's event can land in between. See issue #185.
+
+    To stay correct under that interleaving, this compressor tracks no pending-update state:
+    UPDATE_BEFORE (-U) is treated as a pure no-op, since under key-based upsert semantics it
+    carries no information the matching INSERT/UPDATE_AFTER doesn't already supply. UPDATE_AFTER
+    (+U) is handled exactly like INSERT -- both simply upsert the row for its key, last write
+    wins. DELETE is unaffected by this and still validates that the key exists: same-key ops stay
+    ordered relative to each other, so a DELETE for an untracked key remains a genuine protocol
+    violation worth surfacing.
 
     Rows can be either tuples or dicts (as determined by cursor.as_dict). The row format
     decision is made by the result reader layer, and this compressor works transparently
@@ -373,9 +354,6 @@ class UpsertColumnsCompressor(ChangelogCompressor):
 
     _rows_by_key: dict[tuple, ResultTupleOrDict]
     """Dictionary mapping key tuples to row data. Dict maintains insertion order in Python 3.7+."""
-
-    _expecting_update_after: bool
-    """True when UPDATE_BEFORE has been received and UPDATE_AFTER is expected next."""
 
     def __init__(self, cursor: Cursor, statement: Statement):
         """Initialize the compressor with upsert column indices.
@@ -400,7 +378,6 @@ class UpsertColumnsCompressor(ChangelogCompressor):
         ]
 
         self._rows_by_key = {}
-        self._expecting_update_after = False
 
     def _extract_key(self, row: ResultTupleOrDict) -> tuple:
         """Extract the key tuple from a row based on upsert columns.
@@ -421,21 +398,9 @@ class UpsertColumnsCompressor(ChangelogCompressor):
             # Tuple case: use direct index access
             return tuple(row[i] for i in self._upsert_column_indices)
 
-    def _has_pending_update(self) -> bool:
-        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
-
-        Returns:
-            True if a pending update is in progress, False otherwise.
-        """
-        return self._expecting_update_after
-
     def _clear_storage(self) -> None:
         """Clear internal row storage."""
         self._rows_by_key.clear()
-
-    def _clear_pending_update(self) -> None:
-        """Clear pending update tracking state."""
-        self._expecting_update_after = False
 
     def _apply_operation(self, op: Op, row: ResultTupleOrDict) -> None:
         """Apply a changelog operation to the internal state.
@@ -444,42 +409,23 @@ class UpsertColumnsCompressor(ChangelogCompressor):
             op: The changelog operation.
             row: The row data.
         """
-        self._validate_no_pending_update(op, row)
+        if op == Op.UPDATE_BEFORE:
+            # No-op: under key-based upsert semantics a retraction carries no information the
+            # matching INSERT/UPDATE_AFTER doesn't already supply. See issue #185.
+            return
 
         key = self._extract_key(row)
 
-        if op == Op.INSERT:
-            # When iterating _rows_by_keys in get_snapshot(), this newly inserted key will be
-            # at the end of the dict, so insertion order will be maintained.
+        if op.treat_as_insert:  # INSERT or UPDATE_AFTER: last write for this key wins
+            # When iterating _rows_by_key in get_snapshot(), an upsert for a brand-new key will
+            # be at the end of the dict, so insertion order is maintained.
             self._rows_by_key[key] = row
 
-        elif op == Op.UPDATE_BEFORE:
-            # Raise if we receive an UPDATE_BEFORE for a key that doesn't exist in current state
-            if key not in self._rows_by_key:
-                raise InterfaceError(
-                    f"Received UPDATE_BEFORE for a key that does not exist in current state: {key}"
-                )
-            # Mark that we're expecting UPDATE_AFTER next
-            self._expecting_update_after = True
-
-        elif op == Op.UPDATE_AFTER:
-            # May or may not have gotten a preceding UPDATE_BEFORE.
-            # In either case, verify the key exists in current state
-            if key not in self._rows_by_key:
-                raise InterfaceError(
-                    f"Received UPDATE_AFTER for a key that does not exist in current state: {key}"
-                )
-
-            # Update the row
-            self._rows_by_key[key] = row
-            self._expecting_update_after = False
-
-        elif op == Op.DELETE:
-            if key not in self._rows_by_key:
-                raise InterfaceError(
-                    f"Received DELETE for a key that does not exist in current state: {key}"
-                )
-            del self._rows_by_key[key]
+        elif self._rows_by_key.pop(key, None) is None:  # DELETE
+            # Wacky, the delete is for a key that doesn't exist in current state!
+            raise InterfaceError(
+                f"Received DELETE for a key that does not exist in current state: {key}"
+            )
 
     def _copy_accumulated_rows(self) -> list[ResultTupleOrDict]:
         """Return deep copy of rows from dict storage in insertion order.
@@ -495,19 +441,34 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
 
     Uses list-based storage with linear scan for row matching.
 
-    Expects UPDATE_BEFORE to be immediately followed by its matching UPDATE_AFTER event.
-    Only one pending update is tracked at a time.
+    Without an upsert key, a row can only be identified by its full-row spelling, and the
+    changelog reaches this client via a multi-partition keyless sink that partitions by
+    whole-row hash. An updated row's +U/-D spelling therefore hashes to a potentially
+    different partition than its original +I/-U spelling, and since Kafka only guarantees
+    order within a partition, events can be observed in a surprising order *across* spellings
+    (e.g. a +U before its logical -U, or a -D before a later +I). See issue #184.
+
+    To stay correct under that skew this compressor makes no ordering assumptions *across
+    different spellings* and holds no pending-update state (see below for the one ordering
+    guarantee it does rely on). It collapses the four ops to two: the additive ops (+I, +U;
+    Op.treat_as_insert) append a row spelling, and the retracting ops (-U, -D;
+    Op.treat_as_delete) remove one occurrence of a row spelling. The result set is eventually
+    consistent -- intermediate points in time may transiently show extra rows, but once every
+    event has arrived the set converges to the correct contents.
+
+    A retraction for a spelling never arrives before the matching insert for that same
+    spelling: identical whole-row values always hash to the same partition, which preserves
+    their relative order. `_find_row_position` therefore always finds its match on a
+    well-formed stream; its raise is retained only to surface a genuine protocol violation.
 
     Rows can be either tuples or dicts (as determined by cursor.as_dict). Row matching
     is performed by equality comparison, which works identically for both tuple and dict.
     """
 
     _rows: list[ResultTupleOrDict]
-    """List of rows maintaining insertion order. Scanned linearly for matching."""
-
-    _pending_update_position: int | None
-    """Position of the row marked by the most recent UPDATE_BEFORE, awaiting UPDATE_AFTER.
-    None when no UPDATE_BEFORE is pending."""
+    """List of row spellings, ordered by when each op was applied. Scanned linearly for
+    matching. Not a stable per-row order: an update's new spelling is appended anew, not
+    repositioned at its old spelling's spot."""
 
     def __init__(self, cursor: Cursor, statement: Statement):
         """Initialize the compressor.
@@ -518,23 +479,10 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
         """
         super().__init__(cursor, statement)
         self._rows = []
-        self._pending_update_position = None
-
-    def _has_pending_update(self) -> bool:
-        """Check if there's a pending UPDATE_BEFORE awaiting UPDATE_AFTER.
-
-        Returns:
-            True if a pending update is in progress, False otherwise.
-        """
-        return self._pending_update_position is not None
 
     def _clear_storage(self) -> None:
         """Clear internal row storage."""
         self._rows.clear()
-
-    def _clear_pending_update(self) -> None:
-        """Clear pending update tracking state."""
-        self._pending_update_position = None
 
     def _find_row_position(self, row: ResultTupleOrDict, operation: Op) -> int:
         """Find the position of a matching row by scanning backwards.
@@ -562,37 +510,19 @@ class NoUpsertColumnsCompressor(ChangelogCompressor):
     def _apply_operation(self, op: Op, row: ResultTupleOrDict) -> None:
         """Apply a changelog operation to the internal state.
 
+        Additive ops (+I, +U) append the row; retracting ops (-U, -D) remove the most recent
+        occurrence of a matching row. No ordering is assumed across *different* rows' ops --
+        but a row's own retracting op is assumed to arrive after its own matching additive op
+        (see class docstring); `_find_row_position` raises otherwise.
+
         Args:
             op: The changelog operation.
             row: The row data.
         """
-        self._validate_no_pending_update(op, row)
-
-        if op == Op.INSERT:
+        if op.treat_as_insert:
             self._rows.append(row)
-
-        elif op == Op.UPDATE_BEFORE:
-            # Find row position (raises InterfaceError if not found)
-            pos = self._find_row_position(row, Op.UPDATE_BEFORE)
-            # Record position for pending update (expecting matching UPDATE_AFTER next)
-            self._pending_update_position = pos
-
-        elif op == Op.UPDATE_AFTER:
-            # MUST have gotten a preceding UPDATE_BEFORE.
-            # (Without upsert columns, we can't identify the row to update from the
-            #  UPDATE_AFTER row alone, since the row content has changed.)
-            if self._pending_update_position is None:
-                raise InterfaceError(
-                    f"Received UPDATE_AFTER without a preceding UPDATE_BEFORE: {row}"
-                )
-
-            self._rows[self._pending_update_position] = row
-            self._pending_update_position = None
-
-        elif op == Op.DELETE:
-            # Find row position (raises InterfaceError if not found)
-            pos = self._find_row_position(row, Op.DELETE)
-            del self._rows[pos]
+        else:  # op.treat_as_delete
+            del self._rows[self._find_row_position(row, op)]
 
     def _copy_accumulated_rows(self) -> list[ResultTupleOrDict]:
         """Return deep copy of rows from list storage.
