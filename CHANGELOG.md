@@ -8,18 +8,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Fixed
 
-- The changelog compressor for streaming non-append-only queries **without** upsert columns
-  (`cursor.changelog_compressor()` on a keyless result, e.g. a global aggregation) no longer raises
-  `InterfaceError` on legitimately out-of-order changelog events. When such a changelog is sinked to
-  a multi-partition keyless topic, partitions are assigned by whole-row hash, so an updated row's
-  `+U`/`-D` spelling can land on a different partition than its original `+I`/`-U` spelling; since
-  Kafka only guarantees ordering within a partition, the events can be observed in a surprising order
-  across spellings (a `+U` before its logical `-U`, or a `-D` before a later `+I`). The compressor
-  previously assumed each `UPDATE_BEFORE` was immediately followed by its `UPDATE_AFTER` and failed
-  on those sequences. It now treats the two additive ops (`+I`, `+U`) as inserts and the two
-  retracting ops (`-U`, `-D`) as deletions, makes no ordering assumptions, and converges to the
-  correct result set (intermediate snapshots may transiently show an extra row). Adds
-  `Op.treat_as_insert` / `Op.treat_as_delete` helper properties. (#184)
+- The changelog compressor for streaming non-append-only queries **without** upsert columns (`cursor.changelog_compressor()` on a keyless result, e.g. a global aggregation) no longer raises `InterfaceError` on legitimately out-of-order changelog events. When such a changelog is sinked to a multi-partition keyless topic, partitions are assigned by whole-row hash, so an updated row's `+U`/`-D` spelling can land on a different partition than its original `+I`/`-U` spelling; since Kafka only guarantees ordering within a partition, the events can be observed in a surprising order across spellings (a `+U` before its logical `-U`, or a `-D` before a later `+I`). The compressor previously assumed each `UPDATE_BEFORE` was immediately followed by its `UPDATE_AFTER` and failed on those sequences. It now treats the two additive ops (`+I`, `+U`) as inserts and the two retracting ops (`-U`, `-D`) as deletions, makes no ordering assumptions across different rows' spellings, and converges to the correct result set (intermediate snapshots may transiently show an extra row). Adds `Op.treat_as_insert` / `Op.treat_as_delete` helper properties. (#184)
+- The changelog compressor for streaming non-append-only queries **with** upsert columns (`cursor.changelog_compressor()` on a keyed result, e.g. a `GROUP BY`) no longer raises `InterfaceError` when an unrelated key's changelog event arrives between one key's `UPDATE_BEFORE` and its own `UPDATE_AFTER`. A consumer reading a keyed upsert topic drains multiple partitions per poll; same-key events stay ordered (a key always hashes to the same partition), but a single fetch batch can still interleave *different* keys' events. The compressor previously modeled `UPDATE_BEFORE`/`UPDATE_AFTER` as a single-slot pending pair that had to be adjacent, and failed on that interleaving even though nothing was actually wrong. `UPDATE_BEFORE` is now treated as an unconditional no-op (it carries no information the matching insert/update doesn't already supply under key-based upsert semantics), and `UPDATE_AFTER` is handled exactly like `INSERT` (last write for the key wins); `DELETE` is unaffected and still validates that the key exists. As part of the same cleanup, the now-unused pending-update tracking hooks are removed from the shared compressor base class. (#185)
 
 ## 0.5.0, 2026-08-07
 
