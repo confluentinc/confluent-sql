@@ -21,7 +21,7 @@ conn = confluent_sql.connect(
     auth="oauth",
     environment_id=os.environ["CONFLUENT_ENV_ID"],
     cloud_provider=os.environ["CONFLUENT_CLOUD_PROVIDER"],
-    cloud_region=os.environ["CONFLUENT_CLOUD_REGION"]
+    cloud_region=os.environ["CONFLUENT_CLOUD_REGION"],
 )
 print(f"Signed in to Confluent Cloud for organization {conn.organization_id!r}")
 
