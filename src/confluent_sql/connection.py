@@ -239,69 +239,6 @@ def _resolve_flink_auth(  # noqa: PLR0913
     return httpx.BasicAuth(username=auth_key, password=auth_secret), False
 
 
-def _resolve_oauth_config(  # noqa: PLR0913
-    auth: str,
-    oauth_config: CCloudOAuthConfig | None,
-    external_access_token: str | None,
-    identity_pool_id: str | None,
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    flink_api_key: str | None,
-    flink_api_secret: str | None,
-    tableflow_api_key: str | None,
-    tableflow_api_secret: str | None,
-    connect_api_key: str | None,
-    connect_api_secret: str | None,
-) -> CCloudOAuthConfig | None:
-    """Validate the `auth=` mode selection and return the environment to log in against.
-
-    Pure and network-free, mirroring `_resolve_flink_auth`'s role for the older two modes --
-    called before any network or browser activity so a bad parameter combination fails fast,
-    never after a browser has already been popped for the login.
-
-    Returns:
-        The `CCloudOAuthConfig` to log in against (`oauth_config` if supplied, else `PROD`) when
-        `auth == "oauth"`; `None` for `auth == "api_key"` (BYOIDC/API-key mode, resolved
-        separately by `_resolve_flink_auth`).
-
-    Raises:
-        InterfaceError: If `auth` names neither mode; if `oauth_config` is supplied while
-            `auth != "oauth"`; or if `auth == "oauth"` is combined with the BYOIDC pair or any
-            API-key parameter -- interactive OAuth supplies its own credentials for every surface.
-    """
-    if auth not in ("api_key", "oauth"):
-        raise InterfaceError(f"auth must be 'api_key' or 'oauth', got {auth!r}")
-
-    if auth != "oauth":
-        if oauth_config is not None:
-            raise InterfaceError("oauth_config may only be supplied when auth='oauth'")
-        return None
-
-    if external_access_token or identity_pool_id:
-        raise InterfaceError(
-            "auth='oauth' cannot be combined with external_access_token/identity_pool_id; "
-            "interactive OAuth and BYOIDC bearer-token auth are mutually exclusive."
-        )
-    if any(
-        (
-            global_api_key,
-            global_api_secret,
-            flink_api_key,
-            flink_api_secret,
-            tableflow_api_key,
-            tableflow_api_secret,
-            connect_api_key,
-            connect_api_secret,
-        )
-    ):
-        raise InterfaceError(
-            "auth='oauth' cannot be combined with API key credentials "
-            "(global/flink/tableflow/connect); interactive OAuth and API-key auth are mutually "
-            "exclusive."
-        )
-    return oauth_config if oauth_config is not None else PROD
-
-
 def connect(  # noqa: PLR0913
     *,
     global_api_key: str | None = None,
@@ -410,9 +347,9 @@ def connect(  # noqa: PLR0913
             table/view/udf names (optional)
         database_kafka_cluster_id: The `lkc-…` id of the Kafka cluster backing `database`
             (optional). Supplying it lets the Tableflow and connector methods skip the CMK
-            name→id lookup (which needs a global/cloud key), so they work with only their
-            dedicated key pair. Omitted, the id is resolved lazily from `database` via CMK on
-            first such use, which requires a global key.
+            name→id lookup (which needs a global key or `auth="oauth"`), so they work with only
+            their dedicated key pair. Omitted, the id is resolved lazily from `database` via CMK
+            on first such use, which requires a global key or an interactive OAuth connection.
         local_time_zone: Seeds the read/write `Connection.local_time_zone` property (optional).
             When set, every statement submitted on this connection carries `sql.local-time-zone`
             unless the call's own `properties=`/`StatementProperties` already sets it, which takes
@@ -457,6 +394,28 @@ def connect(  # noqa: PLR0913
         InterfaceError: If connection parameters are invalid
         OperationalError: If connection cannot be established
     """
+
+    # Validated first, ahead of every other gate below: the org-required gate immediately after
+    # this one inspects `auth` itself (`auth != "oauth"`), so an invalid `auth` value or a
+    # misplaced `oauth_config` would otherwise be masked by "Organization ID is required" or
+    # similar -- a confusing error pointing at the wrong parameter entirely. Also called again
+    # from Connection.__init__ (which validates independently of connect(), the same way
+    # cloud_provider/cloud_region/endpoint's requirements are checked in both places) since
+    # Connection is directly constructible without going through connect().
+    _resolve_oauth_config(
+        auth,
+        oauth_config,
+        external_access_token,
+        identity_pool_id,
+        global_api_key,
+        global_api_secret,
+        flink_api_key,
+        flink_api_secret,
+        tableflow_api_key,
+        tableflow_api_secret,
+        connect_api_key,
+        connect_api_secret,
+    )
 
     if not environment_id:
         raise InterfaceError("Environment ID is required")
@@ -710,7 +669,7 @@ class Connection:
             database_kafka_cluster_id: The `lkc-…` id of the Kafka cluster backing `database`
                 (optional). Pre-seeds the Tableflow cluster-id cache so the CMK lookup never
                 fires; otherwise the id is resolved lazily from `database` via CMK (needs a
-                global key).
+                global key or an interactive OAuth connection).
             local_time_zone: Seeds the read/write `local_time_zone` property (optional). See the
                 property's docstring for the precedence rules and mutation semantics.
             controlplane_endpoint: Base URL for the control plane (Tableflow, Connect, CMK).
@@ -2318,7 +2277,7 @@ class Connection:
         Raises:
             InterfaceError: If tableflow_formats is empty or names an unknown format.
             ProgrammingError: If no control-plane credential is available, or the cluster id
-                can't be resolved without a global key.
+                can't be resolved without a global key or an interactive OAuth connection.
             TableflowTopicAlreadyExistsError: If Tableflow is already enabled (HTTP 409).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
@@ -2369,7 +2328,7 @@ class Connection:
         Raises:
             ProgrammingError: If the Kafka cluster id can't be resolved -- no
                 database_kafka_cluster_id was supplied and CMK resolution is unavailable
-                (no global key).
+                (no global key and no interactive OAuth connection).
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
@@ -2413,7 +2372,7 @@ class Connection:
         Raises:
             ProgrammingError: If the Kafka cluster id can't be resolved -- no
                 database_kafka_cluster_id was supplied and CMK resolution is unavailable
-                (no global key).
+                (no global key and no interactive OAuth connection).
             TableflowTopicNotFoundError: If Tableflow was not enabled for the topic (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
@@ -2509,8 +2468,9 @@ class Connection:
 
         Raises:
             ProgrammingError: If no id was seeded and CMK resolution isn't possible -- under BYOIDC
-                (CMK accepts only API keys), with no global key and no oauth login (auth="oauth"
-                lifts the global-key requirement), or with no database name.
+                (the CMK route doesn't accept a BYOIDC bearer token), with no global key and no
+                oauth login (auth="oauth" lifts the global-key requirement), or with no database
+                name.
             OperationalError: If no cluster, or more than one cluster, matches the database name.
         """
         if self._resolved_kafka_cluster_id is not None:
@@ -2519,7 +2479,7 @@ class Connection:
         if self._byoidc:
             raise ProgrammingError(
                 "Resolving the Kafka cluster id from the database name is not reachable with a "
-                "BYOIDC bearer token: the CMK route accepts only API keys. Pass "
+                "BYOIDC bearer token: the CMK route doesn't accept one. Pass "
                 "database_kafka_cluster_id to connect() to skip the lookup."
             )
         if not self._oauth and self._global_credentials is None:
@@ -2615,6 +2575,69 @@ class Connection:
         # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
         # `next_page_token is not None`, so an empty string would spin it forever.
         return page_token or None
+
+
+def _resolve_oauth_config(  # noqa: PLR0913
+    auth: str,
+    oauth_config: CCloudOAuthConfig | None,
+    external_access_token: str | None,
+    identity_pool_id: str | None,
+    global_api_key: str | None,
+    global_api_secret: str | None,
+    flink_api_key: str | None,
+    flink_api_secret: str | None,
+    tableflow_api_key: str | None,
+    tableflow_api_secret: str | None,
+    connect_api_key: str | None,
+    connect_api_secret: str | None,
+) -> CCloudOAuthConfig | None:
+    """Validate the `auth=` mode selection and return the environment to log in against.
+
+    Pure and network-free, mirroring `_resolve_flink_auth`'s role for the older two modes --
+    called before any network or browser activity so a bad parameter combination fails fast,
+    never after a browser has already been popped for the login.
+
+    Returns:
+        The `CCloudOAuthConfig` to log in against (`oauth_config` if supplied, else `PROD`) when
+        `auth == "oauth"`; `None` for `auth == "api_key"` (BYOIDC/API-key mode, resolved
+        separately by `_resolve_flink_auth`).
+
+    Raises:
+        InterfaceError: If `auth` names neither mode; if `oauth_config` is supplied while
+            `auth != "oauth"`; or if `auth == "oauth"` is combined with the BYOIDC pair or any
+            API-key parameter -- interactive OAuth supplies its own credentials for every surface.
+    """
+    if auth not in ("api_key", "oauth"):
+        raise InterfaceError(f"auth must be 'api_key' or 'oauth', got {auth!r}")
+
+    if auth != "oauth":
+        if oauth_config is not None:
+            raise InterfaceError("oauth_config may only be supplied when auth='oauth'")
+        return None
+
+    if external_access_token or identity_pool_id:
+        raise InterfaceError(
+            "auth='oauth' cannot be combined with external_access_token/identity_pool_id; "
+            "interactive OAuth and BYOIDC bearer-token auth are mutually exclusive."
+        )
+    if any(
+        (
+            global_api_key,
+            global_api_secret,
+            flink_api_key,
+            flink_api_secret,
+            tableflow_api_key,
+            tableflow_api_secret,
+            connect_api_key,
+            connect_api_secret,
+        )
+    ):
+        raise InterfaceError(
+            "auth='oauth' cannot be combined with API key credentials "
+            "(global/flink/tableflow/connect); interactive OAuth and API-key auth are mutually "
+            "exclusive."
+        )
+    return oauth_config if oauth_config is not None else PROD
 
 
 class RowTypeRegistry:

@@ -121,6 +121,32 @@ class TestOauthValidation:
                 cloud_region="us-east-1",
             )
 
+    def test_invalid_auth_value_raises_even_with_organization_id_omitted(self):
+        """Regression guard: the org-required gate inspects `auth` itself (`auth != "oauth"`), so
+        an invalid `auth` value must be validated *before* that gate -- otherwise a caller who
+        also omitted organization_id (no global key either) would see the misleading "Organization
+        ID is required" instead of the actual mistake."""
+        with pytest.raises(InterfaceError, match="auth must be 'api_key' or 'oauth'"):
+            connect(
+                auth="bogus",  # type: ignore[arg-type]
+                environment_id="env-1",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+            )
+
+    def test_oauth_config_without_auth_raises_even_with_organization_id_omitted(self):
+        """Same masking hazard as test_invalid_auth_value_raises_even_with_organization_id_omitted,
+        for the oauth_config-without-auth="oauth" mistake specifically."""
+        with pytest.raises(
+            InterfaceError, match="oauth_config may only be supplied when auth='oauth'"
+        ):
+            connect(
+                oauth_config=CONFIG,
+                environment_id="env-1",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+            )
+
     @pytest.mark.parametrize("auth_kwargs", [{}, {"auth": "api_key"}])
     def test_oauth_config_without_auth_oauth_raises(self, auth_kwargs):
         with pytest.raises(
