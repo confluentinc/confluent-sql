@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 import pytest
 
-from confluent_sql import Connection, SqlNone, YearMonthInterval
+from confluent_sql import Connection, OperationalError, SqlNone, YearMonthInterval
 from confluent_sql.execution_mode import ExecutionMode
 
 
@@ -677,6 +677,133 @@ class TestExecuteDDL:
         assert statement.has_schema() is False, "CTAS produces no result schema"
         assert statement.schema is None, "CTAS schema should be None"
         assert statement.is_deleted, "Snapshot DDL statement should be auto-deleted"
+
+    def test_execute_streaming_ddl_create_materialized_table_completes(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Prove that CREATE MATERIALIZED TABLE, submitted via execute_streaming_ddl(), waits
+        for the statement to reach COMPLETED rather than returning as soon as it's RUNNING --
+        unlike CTAS, whose backing job runs forever, a materialized table's own CREATE statement
+        settles once its background refresh job is started (see statement.py's is_pure_ddl)."""
+        try:
+            statement_text = f"""
+                CREATE MATERIALIZED TABLE `{auto_dropped_table_name}`
+                AS SELECT * FROM `sample_data_stock_trades` WHERE quantity > 100
+            """
+
+            statement = connection.execute_streaming_ddl(statement_text)
+
+            # execute_streaming_ddl's closing_cursor auto-deletes a terminal statement on exit,
+            # which flips Statement.phase to DELETED (it overrides the underlying phase once
+            # deleted -- see Statement.phase) -- so we can't read back "COMPLETED" directly here.
+            # is_deleted only follows from a *deletable* terminal phase (COMPLETED/FAILED/
+            # STOPPED); FAILED would have raised OperationalError out of execute_streaming_ddl
+            # instead of returning, and nothing here ever requested a STOPPED, so reaching this
+            # line with is_deleted true and no exception raised is exactly the proof that the
+            # statement settled to COMPLETED.
+            assert not statement.is_running
+            assert statement.is_deleted
+
+            # The table should be immediately queryable.
+            with connection.closing_cursor(as_dict=True) as cursor:
+                cursor.execute(f"SELECT COUNT(*) AS row_count FROM `{auto_dropped_table_name}`")
+                results = cursor.fetchone()
+                assert results is not None
+        finally:
+            with suppress(Exception):
+                connection.execute_snapshot_ddl(
+                    f"DROP MATERIALIZED TABLE IF EXISTS `{auto_dropped_table_name}`"
+                )
+
+    def test_execute_streaming_ddl_create_or_alter_materialized_table_completes(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Prove that CREATE OR ALTER MATERIALIZED TABLE, and a bare (query-evolving) ALTER
+        MATERIALIZED TABLE, both also wait for COMPLETED, same as a first-time CREATE
+        MATERIALIZED TABLE. Each step respells the filter predicate (>100, then >=100, then >50)
+        to exercise a genuine redefinition of an already-existing materialized table."""
+
+        def show_create_ddl_text(table_name: str) -> str:
+            # SHOW CREATE MATERIALIZED TABLE is a plain bounded single-row query, so a default
+            # (snapshot mode) cursor is all it needs.
+            with connection.closing_cursor(as_dict=True) as cursor:
+                cursor.execute(f"SHOW CREATE MATERIALIZED TABLE `{table_name}`")
+                row = cursor.fetchone()
+                assert row is not None
+                return row["SHOW CREATE MATERIALIZED TABLE"]  # type: ignore[index]
+
+        try:
+            create_statement_text = f"""
+                CREATE MATERIALIZED TABLE `{auto_dropped_table_name}`
+                AS SELECT * FROM `sample_data_stock_trades` WHERE quantity > 100
+            """
+            created = connection.execute_streaming_ddl(create_statement_text)
+            assert not created.is_running
+            assert created.is_deleted  # see the sibling CREATE test for why this implies COMPLETED
+
+            create_or_alter_statement_text = f"""
+                CREATE OR ALTER MATERIALIZED TABLE `{auto_dropped_table_name}`
+                AS SELECT * FROM `sample_data_stock_trades` WHERE quantity >= 100
+            """
+            create_or_altered = connection.execute_streaming_ddl(create_or_alter_statement_text)
+
+            assert not create_or_altered.is_running
+            assert create_or_altered.is_deleted
+
+            # Prove the redefinition actually took effect.
+            assert ">= 100" in show_create_ddl_text(auto_dropped_table_name)
+
+            # A bare ALTER (no CREATE OR prefix) with a new AS SELECT is query evolution too --
+            # same completion semantics, since ALTER_MATERIALIZED_TABLE is also pure DDL.
+            bare_alter_statement_text = f"""
+                ALTER MATERIALIZED TABLE `{auto_dropped_table_name}`
+                AS SELECT * FROM `sample_data_stock_trades` WHERE quantity > 50
+            """
+            bare_altered = connection.execute_streaming_ddl(bare_alter_statement_text)
+
+            assert not bare_altered.is_running
+            assert bare_altered.is_deleted
+
+            assert "> 50" in show_create_ddl_text(auto_dropped_table_name)
+        finally:
+            with suppress(Exception):
+                connection.execute_snapshot_ddl(
+                    f"DROP MATERIALIZED TABLE IF EXISTS `{auto_dropped_table_name}`"
+                )
+
+    def test_execute_snapshot_ddl_drop_materialized_table_completes(
+        self, connection: Connection, auto_dropped_table_name: str
+    ):
+        """Prove that DROP MATERIALIZED TABLE, submitted via execute_snapshot_ddl(), completes
+        (it's pure DDL, like the other DROP_* kinds -- see statement.py's _PURE_DDL_KINDS)."""
+        try:
+            create_statement_text = f"""
+                CREATE MATERIALIZED TABLE `{auto_dropped_table_name}`
+                AS SELECT * FROM `sample_data_stock_trades` WHERE quantity > 100
+            """
+            connection.execute_streaming_ddl(create_statement_text)
+
+            drop_statement = connection.execute_snapshot_ddl(
+                f"DROP MATERIALIZED TABLE `{auto_dropped_table_name}`"
+            )
+
+            # is_deleted implies COMPLETED here, not just some other deletable terminal phase --
+            # see the CREATE test above for why.
+            assert not drop_statement.is_running
+            assert drop_statement.is_deleted
+
+            # The table should be gone: selecting from it should now fail with the backend's
+            # missing-object diagnostic, not just some unrelated failure.
+            with (
+                pytest.raises(OperationalError, match="does not exist"),
+                connection.closing_cursor() as cursor,
+            ):
+                cursor.execute(f"SELECT * FROM `{auto_dropped_table_name}`")
+        finally:
+            with suppress(Exception):
+                connection.execute_snapshot_ddl(
+                    f"DROP MATERIALIZED TABLE IF EXISTS `{auto_dropped_table_name}`"
+                )
 
 
 @pytest.mark.integration
