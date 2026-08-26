@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 import pytest
 
-from confluent_sql import Connection, SqlNone, YearMonthInterval
+from confluent_sql import Connection, OperationalError, SqlNone, YearMonthInterval
 from confluent_sql.execution_mode import ExecutionMode
 
 
@@ -774,8 +774,12 @@ class TestExecuteDDL:
             assert not drop_statement.is_running
             assert drop_statement.is_deleted
 
-            # The table should be gone: selecting from it should now fail.
-            with pytest.raises(Exception), connection.closing_cursor() as cursor:  # noqa: B017, PT011
+            # The table should be gone: selecting from it should now fail with the backend's
+            # missing-object diagnostic, not just some unrelated failure.
+            with (
+                pytest.raises(OperationalError, match="does not exist"),
+                connection.closing_cursor() as cursor,
+            ):
                 cursor.execute(f"SELECT * FROM `{auto_dropped_table_name}`")
         finally:
             with suppress(Exception):
