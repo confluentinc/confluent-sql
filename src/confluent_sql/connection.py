@@ -274,11 +274,14 @@ def connect(  # noqa: PLR0913
 
     Args:
         global_api_key: A "Global" Confluent Cloud API key, usable against every route this
-            driver touches. Preferred over flink_api_key when both are supplied. Either this
-            pair or the flink_api_key pair must be provided.
+            driver touches. Preferred over flink_api_key when both are supplied. Under the default
+            `auth="api_key"` mode, either this pair or the flink_api_key pair must be provided;
+            under `auth="oauth"` no API key is supplied (see `auth`).
         global_api_secret: Secret paired with global_api_key. Must be supplied together with it.
         flink_api_key: Flink region API key, usable only against Flink routes. Used when no
-            global key is supplied. Either this pair or the global_api_key pair must be provided.
+            global key is supplied. Under the default `auth="api_key"` mode, either this pair or
+            the global_api_key pair must be provided; under `auth="oauth"` no API key is supplied
+            (see `auth`).
         flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
         tableflow_api_key: API key for the Tableflow control-plane routes (enable/get/disable
             Tableflow). Only consulted when no global key is supplied; a global key already
@@ -617,12 +620,14 @@ class Connection:
 
         Args:
             global_api_key: A "Global" Confluent Cloud API key, usable against every route this
-                driver touches. Preferred over flink_api_key when both are supplied. Either this
-                pair or the flink_api_key pair must be provided.
+                driver touches. Preferred over flink_api_key when both are supplied. Under the
+                default `auth="api_key"` mode, either this pair or the flink_api_key pair must be
+                provided; under `auth="oauth"` no API key is supplied (see `auth`).
             global_api_secret: Secret paired with global_api_key. Must be supplied together with it.
             flink_api_key: Flink region API key, usable only against Flink routes. Used when no
-                global key is supplied. Either this pair or the global_api_key pair must be
-                provided.
+                global key is supplied. Under the default `auth="api_key"` mode, either this pair
+                or the global_api_key pair must be provided; under `auth="oauth"` no API key is
+                supplied (see `auth`).
             flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
             tableflow_api_key: API key for the Tableflow control-plane routes. Only consulted
                 when no global key is supplied. Must be supplied together with tableflow_api_secret.
