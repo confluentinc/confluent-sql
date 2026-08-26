@@ -179,13 +179,14 @@ class Statement:
             "CREATE_VIEW",
             "DROP_VIEW",
             "ALTER_TABLE",
-            # The four MATERIALIZED_TABLE kinds stretch "pure" a little: unlike the other
-            # members, CREATE_MATERIALIZED_TABLE, CREATE_OR_ALTER_MATERIALIZED_TABLE, and
-            # ALTER_MATERIALIZED_TABLE (a query-evolving ALTER, not just a metadata-only one)
+            # Three of the four MATERIALIZED_TABLE kinds below stretch "pure" a little: unlike
+            # the other members, CREATE_MATERIALIZED_TABLE, CREATE_OR_ALTER_MATERIALIZED_TABLE,
+            # and ALTER_MATERIALIZED_TABLE (a query-evolving ALTER, not just a metadata-only one)
             # also kick off (or redeploy) a persistent background refresh job that keeps running
             # long after this statement settles. But they still will reliably reach terminal
             # COMPLETED (or FAILED) phase independent of the background job, which is the one
-            # thing this property actually gates.
+            # thing this property actually gates. DROP_MATERIALIZED_TABLE needs no such stretch
+            # -- like the other DROP_* kinds, it's a one-shot action with no background job.
             "CREATE_MATERIALIZED_TABLE",
             "CREATE_OR_ALTER_MATERIALIZED_TABLE",
             "ALTER_MATERIALIZED_TABLE",
