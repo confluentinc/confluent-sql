@@ -170,12 +170,28 @@ class Statement:
     """Represents a Confluent SQL statement, including its metadata, spec, status,
     and parsed traits such as schema, sql kind, etc."""
 
-    # SQL kinds that represent pure DDL statements (create/modify schema objects)
+    # SQL kinds that represent pure DDL statements (create/modify schema objects) which should
+    # be waiting for a terminal state before the created/modified objects are usable.
     _PURE_DDL_KINDS = frozenset(
-        {"CREATE_TABLE", "DROP_TABLE", "CREATE_VIEW", "DROP_VIEW", "ALTER_TABLE"}
+        {
+            "CREATE_TABLE",
+            "DROP_TABLE",
+            "CREATE_VIEW",
+            "DROP_VIEW",
+            "ALTER_TABLE",
+            # The three MATERIALIZED_TABLE kinds stretch "pure" a little: unlike the other members,
+            # CREATE_MATERIALIZED_TABLE and CREATE_OR_ALTER_MATERIALIZED_TABLE also kick off a
+            # persistent background refresh job that keeps running long after this statement
+            # settles. But they still will reliably reach terminal COMPLETED (or FAILED) phase
+            # independent of the background job, which is the one thing this property actually
+            # gates.
+            "CREATE_MATERIALIZED_TABLE",
+            "CREATE_OR_ALTER_MATERIALIZED_TABLE",
+            "DROP_MATERIALIZED_TABLE",
+        }
     )
 
-    # SQL kinds that represent impure DDL (produce no result set but may stream)
+    # SQL kinds that represent impure DDL (produce no result set but will remain in RUNNING phase)
     _IMPURE_DDL_KINDS = frozenset({"CREATE_TABLE_AS"})
 
     # From the cursor that created this statement ...
@@ -336,9 +352,20 @@ class Statement:
         Pure DDL statements need to complete fully before the created/modified objects
         are ready for use, unlike streaming queries or CTAS which are ready when RUNNING.
 
+        "Pure" is stretched a little to also cover CREATE_MATERIALIZED_TABLE and
+        CREATE_OR_ALTER_MATERIALIZED_TABLE: their completion additionally kicks off (or
+        redeploys) a persistent background refresh job that keeps running long after the
+        statement settles, which isn't true of the other members. They earn the label anyway
+        because they satisfy the one thing this property actually gates: the statement's own
+        phase reliably reaches a terminal phase before the created/altered object is usable,
+        rather than lingering in RUNNING the way CTAS does (see _PURE_DDL_KINDS for the
+        confirming detail). DROP_MATERIALIZED_TABLE needs no such stretch -- like the other
+        DROP_* kinds, it's a one-shot action with no background job of its own.
+
         Returns:
             True if the statement is one of: CREATE_TABLE, DROP_TABLE, CREATE_VIEW,
-            DROP_VIEW, ALTER_TABLE. False otherwise.
+            DROP_VIEW, ALTER_TABLE, CREATE_MATERIALIZED_TABLE,
+            CREATE_OR_ALTER_MATERIALIZED_TABLE, DROP_MATERIALIZED_TABLE. False otherwise.
         """
         return self.sql_kind in self._PURE_DDL_KINDS
 
