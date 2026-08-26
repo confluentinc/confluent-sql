@@ -440,6 +440,9 @@ class TestStatementProperties:
             ("CREATE_VIEW", True),
             ("DROP_VIEW", True),
             ("ALTER_TABLE", True),
+            ("CREATE_MATERIALIZED_TABLE", True),
+            ("CREATE_OR_ALTER_MATERIALIZED_TABLE", True),
+            ("DROP_MATERIALIZED_TABLE", True),
             ("SELECT", False),
             ("INSERT", False),
             ("UPDATE", False),
@@ -980,32 +983,60 @@ class TestStatementCanFetchResults:
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
 
+    @pytest.mark.parametrize(
+        "sql_kind",
+        [
+            "CREATE_TABLE",
+            "CREATE_MATERIALIZED_TABLE",
+            "CREATE_OR_ALTER_MATERIALIZED_TABLE",
+            "DROP_MATERIALIZED_TABLE",
+        ],
+    )
     @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
     def test_streaming_ddl_pure_ddl_not_ready(
         self,
         mock_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         phase: str,
+        sql_kind: str,
     ):
-        """In streaming DDL mode, pure DDL must wait for terminal state."""
+        """In streaming DDL mode, pure DDL must wait for terminal state.
+
+        CREATE_MATERIALIZED_TABLE is included alongside CREATE_TABLE here: even though its
+        completion kicks off a persistent background refresh job, the statement's own phase
+        reliably reaches a terminal phase once the initial population starts (confirmed against
+        a real environment -- unlike CTAS, which the Flink API traits currently mis-report as
+        perpetually RUNNING, see is_bounded's Jan 2026 bug note), so it belongs in the same
+        "must wait for terminal" bucket as the other pure DDL kinds.
+        """
         statement_json = statement_response_factory(
             phase=phase,
-            sql_kind="CREATE_TABLE",
+            sql_kind=sql_kind,
         )
         statement = Statement.from_response(mock_connection, statement_json)
         assert not statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
 
+    @pytest.mark.parametrize(
+        "sql_kind",
+        [
+            "CREATE_TABLE",
+            "CREATE_MATERIALIZED_TABLE",
+            "CREATE_OR_ALTER_MATERIALIZED_TABLE",
+            "DROP_MATERIALIZED_TABLE",
+        ],
+    )
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
     def test_streaming_ddl_pure_ddl_ready(
         self,
         mock_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         phase: str,
+        sql_kind: str,
     ):
         """In streaming DDL mode, pure DDL is ready in terminal states."""
         statement_json = statement_response_factory(
             phase=phase,
-            sql_kind="CREATE_TABLE",
+            sql_kind=sql_kind,
         )
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
