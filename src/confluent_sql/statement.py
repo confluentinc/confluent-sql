@@ -179,9 +179,8 @@ class Statement:
             "CREATE_VIEW",
             "DROP_VIEW",
             "ALTER_TABLE",
-
             # The three MATERIALIZED_TABLE kinds stretch "pure" a little: unlike the other members,
-            # CREATE_MATERIALIZED_TABLE and CREATE_OR_ALTER_MATERIALIZED_TABLE also kick off a 
+            # CREATE_MATERIALIZED_TABLE and CREATE_OR_ALTER_MATERIALIZED_TABLE also kick off a
             # persistent background refresh job that keeps running long after this statement
             # settles. But they still will reliabliy reach terminal COMPLETED (or FAILED) phase
             # independent of the background job, which is the one thing this property actually
