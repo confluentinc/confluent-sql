@@ -442,6 +442,7 @@ class TestStatementProperties:
             ("ALTER_TABLE", True),
             ("CREATE_MATERIALIZED_TABLE", True),
             ("CREATE_OR_ALTER_MATERIALIZED_TABLE", True),
+            ("ALTER_MATERIALIZED_TABLE", True),
             ("DROP_MATERIALIZED_TABLE", True),
             ("SELECT", False),
             ("INSERT", False),
@@ -989,6 +990,7 @@ class TestStatementCanFetchResults:
             "CREATE_TABLE",
             "CREATE_MATERIALIZED_TABLE",
             "CREATE_OR_ALTER_MATERIALIZED_TABLE",
+            "ALTER_MATERIALIZED_TABLE",
             "DROP_MATERIALIZED_TABLE",
         ],
     )
@@ -1002,12 +1004,13 @@ class TestStatementCanFetchResults:
     ):
         """In streaming DDL mode, pure DDL must wait for terminal state.
 
-        CREATE_MATERIALIZED_TABLE is included alongside CREATE_TABLE here: even though its
-        completion kicks off a persistent background refresh job, the statement's own phase
-        reliably reaches a terminal phase once the initial population starts (confirmed against
-        a real environment -- unlike CTAS, which the Flink API traits currently mis-report as
-        perpetually RUNNING, see is_bounded's Jan 2026 bug note), so it belongs in the same
-        "must wait for terminal" bucket as the other pure DDL kinds.
+        The three MATERIALIZED_TABLE kinds are included alongside CREATE_TABLE here: even though
+        CREATE_MATERIALIZED_TABLE, CREATE_OR_ALTER_MATERIALIZED_TABLE, and
+        ALTER_MATERIALIZED_TABLE all kick off (or redeploy) a persistent background refresh job
+        on completion, each statement's own phase reliably reaches a terminal phase once that job
+        is started (confirmed against a real environment -- unlike CTAS, which the Flink API
+        traits currently mis-report as perpetually RUNNING, see is_bounded's Jan 2026 bug note),
+        so they belong in the same "must wait for terminal" bucket as the other pure DDL kinds.
         """
         statement_json = statement_response_factory(
             phase=phase,
@@ -1022,6 +1025,7 @@ class TestStatementCanFetchResults:
             "CREATE_TABLE",
             "CREATE_MATERIALIZED_TABLE",
             "CREATE_OR_ALTER_MATERIALIZED_TABLE",
+            "ALTER_MATERIALIZED_TABLE",
             "DROP_MATERIALIZED_TABLE",
         ],
     )

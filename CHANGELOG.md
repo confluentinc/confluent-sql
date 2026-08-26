@@ -6,7 +6,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Fixed
 
-- `Statement.is_pure_ddl` / `_PURE_DDL_KINDS` now include `CREATE_MATERIALIZED_TABLE`, `CREATE_OR_ALTER_MATERIALIZED_TABLE`, and `DROP_MATERIALIZED_TABLE`.
+- `Statement.is_pure_ddl` / `_PURE_DDL_KINDS` now include `CREATE_MATERIALIZED_TABLE`, `CREATE_OR_ALTER_MATERIALIZED_TABLE`, `ALTER_MATERIALIZED_TABLE` (the bare, query-evolving form), and `DROP_MATERIALIZED_TABLE`.
   - Previously these kinds weren't classified as pure or impure DDL, so in **streaming** execution mode, `Statement.can_fetch_results` fell through to the "ready when RUNNING" branch used for CTAS -- meaning a streaming-mode `Cursor.execute()` (and therefore `Connection.execute_streaming_ddl()`) on one of these statements could in principle return control as soon as the statement was RUNNING rather than waiting for it to reach a terminal phase, the same way `execute_streaming_ddl()` correctly waits out a genuinely perpetual CTAS job's RUNNING phase. Snapshot execution mode (the default, and what `execute_snapshot_ddl()` always uses) was unaffected -- it already waits for a terminal phase regardless of `is_pure_ddl`.
 
 ## 0.5.1, 2026-08-25

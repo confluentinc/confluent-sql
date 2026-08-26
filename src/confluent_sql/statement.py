@@ -179,14 +179,16 @@ class Statement:
             "CREATE_VIEW",
             "DROP_VIEW",
             "ALTER_TABLE",
-            # The three MATERIALIZED_TABLE kinds stretch "pure" a little: unlike the other members,
-            # CREATE_MATERIALIZED_TABLE and CREATE_OR_ALTER_MATERIALIZED_TABLE also kick off a
-            # persistent background refresh job that keeps running long after this statement
-            # settles. But they still will reliably reach terminal COMPLETED (or FAILED) phase
-            # independent of the background job, which is the one thing this property actually
-            # gates.
+            # The four MATERIALIZED_TABLE kinds stretch "pure" a little: unlike the other
+            # members, CREATE_MATERIALIZED_TABLE, CREATE_OR_ALTER_MATERIALIZED_TABLE, and
+            # ALTER_MATERIALIZED_TABLE (a query-evolving ALTER, not just a metadata-only one)
+            # also kick off (or redeploy) a persistent background refresh job that keeps running
+            # long after this statement settles. But they still will reliably reach terminal
+            # COMPLETED (or FAILED) phase independent of the background job, which is the one
+            # thing this property actually gates.
             "CREATE_MATERIALIZED_TABLE",
             "CREATE_OR_ALTER_MATERIALIZED_TABLE",
+            "ALTER_MATERIALIZED_TABLE",
             "DROP_MATERIALIZED_TABLE",
         }
     )
@@ -352,9 +354,10 @@ class Statement:
         Pure DDL statements need to complete fully before the created/modified objects
         are ready for use, unlike streaming queries or CTAS which are ready when RUNNING.
 
-        "Pure" is stretched a little to also cover CREATE_MATERIALIZED_TABLE and
-        CREATE_OR_ALTER_MATERIALIZED_TABLE: their completion additionally kicks off (or
-        redeploys) a persistent background refresh job that keeps running long after the
+        "Pure" is stretched a little to also cover CREATE_MATERIALIZED_TABLE,
+        CREATE_OR_ALTER_MATERIALIZED_TABLE, and ALTER_MATERIALIZED_TABLE (the query-evolving
+        form -- see CREATE_OR_ALTER_MATERIALIZED_TABLE): their completion additionally kicks off
+        (or redeploys) a persistent background refresh job that keeps running long after the
         statement settles, which isn't true of the other members. They earn the label anyway
         because they satisfy the one thing this property actually gates: the statement's own
         phase reliably reaches a terminal phase before the created/altered object is usable,
@@ -365,7 +368,8 @@ class Statement:
         Returns:
             True if the statement is one of: CREATE_TABLE, DROP_TABLE, CREATE_VIEW,
             DROP_VIEW, ALTER_TABLE, CREATE_MATERIALIZED_TABLE,
-            CREATE_OR_ALTER_MATERIALIZED_TABLE, DROP_MATERIALIZED_TABLE. False otherwise.
+            CREATE_OR_ALTER_MATERIALIZED_TABLE, ALTER_MATERIALIZED_TABLE,
+            DROP_MATERIALIZED_TABLE. False otherwise.
         """
         return self.sql_kind in self._PURE_DDL_KINDS
 

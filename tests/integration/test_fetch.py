@@ -718,9 +718,20 @@ class TestExecuteDDL:
     def test_execute_streaming_ddl_create_or_alter_materialized_table_completes(
         self, connection: Connection, auto_dropped_table_name: str
     ):
-        """Prove that CREATE OR ALTER MATERIALIZED TABLE also waits for COMPLETED, same as a
-        first-time CREATE MATERIALIZED TABLE. Respells the filter predicate (>100 to >=100) to
-        exercise a genuine redefinition of an already-existing materialized table."""
+        """Prove that CREATE OR ALTER MATERIALIZED TABLE, and a bare (query-evolving) ALTER
+        MATERIALIZED TABLE, both also wait for COMPLETED, same as a first-time CREATE
+        MATERIALIZED TABLE. Each step respells the filter predicate (>100, then >=100, then >50)
+        to exercise a genuine redefinition of an already-existing materialized table."""
+
+        def show_create_ddl_text(table_name: str) -> str:
+            # SHOW CREATE MATERIALIZED TABLE is a plain bounded single-row query, so a default
+            # (snapshot mode) cursor is all it needs.
+            with connection.closing_cursor(as_dict=True) as cursor:
+                cursor.execute(f"SHOW CREATE MATERIALIZED TABLE `{table_name}`")
+                row = cursor.fetchone()
+                assert row is not None
+                return row["SHOW CREATE MATERIALIZED TABLE"]  # type: ignore[index]
+
         try:
             create_statement_text = f"""
                 CREATE MATERIALIZED TABLE `{auto_dropped_table_name}`
@@ -730,23 +741,30 @@ class TestExecuteDDL:
             assert not created.is_running
             assert created.is_deleted  # see the sibling CREATE test for why this implies COMPLETED
 
-            alter_statement_text = f"""
+            create_or_alter_statement_text = f"""
                 CREATE OR ALTER MATERIALIZED TABLE `{auto_dropped_table_name}`
                 AS SELECT * FROM `sample_data_stock_trades` WHERE quantity >= 100
             """
-            altered = connection.execute_streaming_ddl(alter_statement_text)
+            create_or_altered = connection.execute_streaming_ddl(create_or_alter_statement_text)
 
-            assert not altered.is_running
-            assert altered.is_deleted
+            assert not create_or_altered.is_running
+            assert create_or_altered.is_deleted
 
-            # Prove the redefinition actually took effect: SHOW CREATE MATERIALIZED TABLE is a
-            # plain bounded single-row query, so a default (snapshot mode) cursor is all it needs.
-            with connection.closing_cursor(as_dict=True) as cursor:
-                cursor.execute(f"SHOW CREATE MATERIALIZED TABLE `{auto_dropped_table_name}`")
-                row = cursor.fetchone()
-                assert row is not None
-                ddl_text = row["SHOW CREATE MATERIALIZED TABLE"]  # type: ignore[index]
-                assert ">= 100" in ddl_text
+            # Prove the redefinition actually took effect.
+            assert ">= 100" in show_create_ddl_text(auto_dropped_table_name)
+
+            # A bare ALTER (no CREATE OR prefix) with a new AS SELECT is query evolution too --
+            # same completion semantics, since ALTER_MATERIALIZED_TABLE is also pure DDL.
+            bare_alter_statement_text = f"""
+                ALTER MATERIALIZED TABLE `{auto_dropped_table_name}`
+                AS SELECT * FROM `sample_data_stock_trades` WHERE quantity > 50
+            """
+            bare_altered = connection.execute_streaming_ddl(bare_alter_statement_text)
+
+            assert not bare_altered.is_running
+            assert bare_altered.is_deleted
+
+            assert "> 50" in show_create_ddl_text(auto_dropped_table_name)
         finally:
             with suppress(Exception):
                 connection.execute_snapshot_ddl(
