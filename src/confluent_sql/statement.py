@@ -244,6 +244,12 @@ class Statement:
         if self.phase.is_terminal:
             return True
 
+        # Traits aren't sent on the initial PENDING response (see #194) -- without them, the
+        # trait-dependent checks below (is_pure_ddl, is_bounded, is_append_only) can't run yet,
+        # and a non-terminal statement with no traits can't be ready to fetch results anyway.
+        if self.traits is None:
+            return False
+
         if execution_mode.is_streaming:
             # In streaming mode, readiness depends on statement type.
             if self.is_pure_ddl:
@@ -514,8 +520,9 @@ class Statement:
                 else None
             )
 
-            # Defensive check: non-failed statements should have traits
-            if traits is None and phase != Phase.FAILED:
+            # Defensive check: non-failed, non-pending statements should have traits. FAILED
+            # statements never get traits, and PENDING may or may not have traits. (see #194).
+            if traits is None and phase not in (Phase.FAILED, Phase.PENDING):
                 raise OperationalError(
                     f"Received statement '{name}' in phase {phase} without traits. "
                     "This is unexpected and likely indicates a server API change or bug."
