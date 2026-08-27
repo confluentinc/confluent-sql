@@ -94,6 +94,33 @@ class TestExecute:
         # non-append-only statements.
         assert isinstance(mock_connection_cursor._result_reader, ChangelogEventReader)
 
+    def test_execute_raises_with_actual_statement_name_on_immediate_submission_failure(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Prove that when the *submission* response (not a later poll) already reports FAILED,
+        the raised OperationalError names the statement per the parsed response -- not the
+        caller's statement_name argument, which is None on the common path where the caller lets
+        the server generate a name. Regression test for the bug Copilot's review of #195 caught:
+        interpolating the (usually None) statement_name parameter instead of
+        self._statement.name."""
+        failed_submission = statement_response_factory(
+            phase="FAILED",
+            status_detail="Invalid SQL syntax",
+            name="dbapi-server-generated-name",
+        )
+        mock_connection_cursor._connection._execute_statement.return_value = (  # type: ignore
+            failed_submission
+        )
+
+        with pytest.raises(
+            OperationalError,
+            match=r"Statement 'dbapi-server-generated-name' submission failed: Invalid SQL syntax",
+        ):
+            # statement_name intentionally omitted, as most callers do -- the server assigns one.
+            mock_connection_cursor.execute("SELECT 1 AS col")
+
     def test_execute_calls_raise_if_statement_is_broken_for_failed_statement(
         self,
         mock_connection_cursor: Cursor,
