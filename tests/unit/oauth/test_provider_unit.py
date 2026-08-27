@@ -451,8 +451,9 @@ class TestLogin:
         assert "/authorize?" in caplog.text
 
     def test_second_login_on_a_logged_in_provider_is_refused(self):
-        """Re-login is #156's `reauthenticate()`, routed through the same gate. Until then a
-        second `login()` would silently strand the live session's tokens."""
+        """Re-login is `reauthenticate()` (#156), routed through the refresh gate instead --
+        see TestReauthenticate. A second `login()` remains refused unconditionally: it would
+        silently strand the live session's tokens."""
         fake = FakeCCloud()
         with _logged_in(fake) as provider, pytest.raises(ProgrammingError, match="already"):
             provider.login(None, timeout=BRIEF_TIMEOUT)
@@ -957,6 +958,188 @@ class TestReauthenticationWall:
                 pytest.raises(ReauthenticationRequired),
             ):
                 client.get(RESOURCE_URL)
+
+
+def _latch_a_dead_session(fake: FakeCCloud, provider: CCloudOAuth) -> None:
+    """Drive the provider into the same dead-session state `TestReauthenticationWall` reaches,
+    so a `TestReauthenticate` case can start from "the wall has already been hit"."""
+    _doctor_token_set(provider, dp_token_expires_at=_past())
+    fake.fail_token_endpoint_with = (403, "invalid_grant")
+
+    resource = FakeResource()
+    with (
+        _resource_client(provider.data_plane_auth, resource) as client,
+        pytest.raises(ReauthenticationRequired),
+    ):
+        client.get(RESOURCE_URL)
+
+    fake.fail_token_endpoint_with = None  # clear the way for reauthenticate()'s fresh login
+
+
+class TestReauthenticate:
+    """#156: recovering a dead session in place via a fresh interactive login, without opening a
+    new `Connection`/provider."""
+
+    def test_before_any_login_raises_programming_error(self):
+        fake = FakeCCloud()
+        with (
+            _provider(fake) as provider,
+            pytest.raises(ProgrammingError, match="must log in"),
+        ):
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+    def test_clears_the_failure_and_resets_the_absolute_wall(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            dead = _tokens(provider)
+
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            fresh = _tokens(provider)
+            assert fresh.refresh_token != dead.refresh_token
+            assert fresh.dp_token != dead.dp_token
+            assert fresh.cp_token != dead.cp_token
+            # A fresh login, not a refresh -- the wall is reset from *now*, not carried forward.
+            assert fresh.refresh_token_expires_at > datetime.now(timezone.utc)
+            # code_grants: the original login's, plus this reauthentication's.
+            assert len(fake.code_grants) == 2
+
+            # The failure is cleared -- a request succeeds without raising again.
+            resource = FakeResource()
+            with _resource_client(provider.data_plane_auth, resource) as client:
+                client.get(RESOURCE_URL)
+            assert resource.bearer_tokens() == [fresh.dp_token]
+
+    def test_preserves_the_established_organization_even_when_login_omitted_it(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:  # org omitted; resolves to ORG_RESOURCE_ID
+            assert "org_resource_id" not in fake.sessions_requests[0]
+
+            _latch_a_dead_session(fake, provider)
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            # Unlike the original omitted-org login, reauthenticate() always pins the
+            # established org explicitly -- it must never let a fresh login silently re-resolve
+            # a (possibly different) default for a multi-org user.
+            assert fake.sessions_requests[1]["org_resource_id"] == ORG_RESOURCE_ID
+            assert provider.organization_id == ORG_RESOURCE_ID
+
+    def test_concurrent_reauthenticates_collapse_to_one_login(self):
+        """N callers hitting the wall together must cost exactly one browser bounce, sharing the
+        `_refresh()` single-flight gate rather than each running their own login."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+
+            sessions_entered = threading.Event()
+            release_sessions = threading.Event()
+            answer_sessions = fake._sessions  # noqa: SLF001
+
+            def slow_sessions(request: httpx.Request) -> httpx.Response:
+                sessions_entered.set()
+                release_sessions.wait(timeout=BRIEF_TIMEOUT)
+                return answer_sessions(request)
+
+            fake._sessions = slow_sessions  # noqa: SLF001
+
+            thread_count = 8
+            errors: list[BaseException] = []
+            errors_lock = threading.Lock()
+
+            def reauth() -> None:
+                try:
+                    provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+                except BaseException as e:  # noqa: BLE001
+                    with errors_lock:
+                        errors.append(e)
+
+            threads = [threading.Thread(target=reauth) for _ in range(thread_count)]
+            threads[0].start()
+            assert sessions_entered.wait(timeout=BRIEF_TIMEOUT)
+            for thread in threads[1:]:
+                thread.start()
+            release_sessions.set()
+            for thread in threads:
+                thread.join(timeout=BRIEF_TIMEOUT * 2)
+
+            assert not errors
+            assert not any(thread.is_alive() for thread in threads)
+            # Exactly one fresh login ran: the original login's code grant, plus this one.
+            assert len(fake.code_grants) == 2
+
+    def test_a_joiner_receives_the_winners_reauthentication_failure(self):
+        """A failed reauthentication must cost one attempt, shared by every waiter -- not one
+        doomed login per thread."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+
+            # The reauthentication attempt itself will also fail, this time with a plain server
+            # error rather than invalid_grant, so it surfaces as OperationalError instead of
+            # re-latching ReauthenticationRequired.
+            fake.fail_token_endpoint_with = (500, None)
+
+            entered = threading.Event()
+            release = threading.Event()
+            answer_token_endpoint = fake._token_endpoint  # noqa: SLF001
+
+            def slow_token_endpoint(request: httpx.Request) -> httpx.Response:
+                entered.set()
+                release.wait(timeout=BRIEF_TIMEOUT)
+                return answer_token_endpoint(request)
+
+            fake._token_endpoint = slow_token_endpoint  # noqa: SLF001
+
+            thread_count = 8
+            raised: list[BaseException] = []
+            raised_lock = threading.Lock()
+
+            def reauth() -> None:
+                try:
+                    provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+                except BaseException as e:  # noqa: BLE001
+                    with raised_lock:
+                        raised.append(e)
+
+            threads = [threading.Thread(target=reauth) for _ in range(thread_count)]
+            threads[0].start()
+            assert entered.wait(timeout=BRIEF_TIMEOUT)
+            for thread in threads[1:]:
+                thread.start()
+            release.set()
+            for thread in threads:
+                thread.join(timeout=BRIEF_TIMEOUT * 2)
+
+            assert not any(thread.is_alive() for thread in threads)
+            assert len(raised) == thread_count
+            assert all(isinstance(e, OperationalError) for e in raised)
+            # Every waiter saw the winner's actual failure, not one it re-derived itself.
+            assert len({id(e) for e in raised}) == 1
+            # Exactly one fresh login attempted: the original login's code grant, plus this one.
+            assert len(fake.code_grants) == 2
+
+    def test_a_failed_reauthentication_clears_the_slot_so_a_later_attempt_retries(self):
+        """A failed reauthenticate() must not leave a permanently-rejected `Future` sitting in
+        `_inflight_refresh` -- that slot is shared with `_refresh()` (see the module docstring),
+        so a stranded rejected flight would wedge every later `reauthenticate()` *and* every
+        later plain refresh behind the first attempt's stale exception, forever, with no way to
+        ever recover the session."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+
+            fake.fail_token_endpoint_with = (500, None)
+            with pytest.raises(OperationalError):
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            # Nothing about the service has changed except this -- if the slot weren't cleared,
+            # this second attempt would just re-raise the first attempt's exception without ever
+            # trying the (now fixable) login again.
+            fake.fail_token_endpoint_with = None
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert provider.token_set is not None
 
 
 class TestClose:

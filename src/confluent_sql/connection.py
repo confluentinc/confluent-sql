@@ -26,6 +26,7 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
+    ReauthenticationRequired,
     StatementDeletedError,
     StatementNotFoundError,
     TableflowTopicAlreadyExistsError,
@@ -33,6 +34,7 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .oauth import PROD, CCloudOAuth, CCloudOAuthConfig, OAuthProvider, acquire, release
+from .oauth import reauthenticate as oauth_reauthenticate
 from .polling import sleep_with_backoff
 from .retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
@@ -253,6 +255,7 @@ def connect(  # noqa: PLR0913
     auth: Literal["api_key", "oauth"] = "api_key",
     oauth_config: CCloudOAuthConfig | None = None,
     oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
+    reauth: Literal["auto", "raise"] = "auto",
     environment_id: str,
     organization_id: str = "",
     compute_pool_id: str | None = None,
@@ -323,6 +326,18 @@ def connect(  # noqa: PLR0913
             `auth="oauth"`.
         oauth_provider_factory: Internal testing hook for `auth="oauth"`; production callers
             should never need to pass this. Forwarded to `confluent_sql.oauth.acquire()`.
+        reauth: How to recover once an `auth="oauth"` session can no longer be refreshed (the
+            ~8h absolute session lifetime, or the token endpoint rejecting the refresh token as
+            idle-expired/revoked/already-spent). `"auto"` (default) catches that condition
+            transparently, blocks on `confluent_sql.oauth.reauthenticate()` -- another browser
+            round-trip -- and retries the request; `auth="oauth"` is inherently a human-present
+            mode (login itself requires a browser), so popping one again hours later to keep
+            going is unsurprising for the common case. `"raise"` opts back out to surfacing
+            `ReauthenticationRequired` instead, for a session that *started* under a human but may
+            be unattended by the time it crosses the wall (a long dbt run kicked off and left
+            running, a notebook kernel idle overnight) -- there, `"auto"` fails no faster than
+            `"raise"` would have (both eventually give up with no one at the browser), it just
+            spends the login timeout finding that out. Only valid with `auth="oauth"`.
         environment_id: Environment ID
         organization_id: Organization ID. Defaults to "" (omitted). May be omitted -- left as ""
             or simply not passed -- when a global_api_key/global_api_secret pair is supplied (in
@@ -405,6 +420,7 @@ def connect(  # noqa: PLR0913
     _resolve_oauth_config(
         auth,
         oauth_config,
+        reauth,
         external_access_token,
         identity_pool_id,
         global_api_key,
@@ -461,6 +477,7 @@ def connect(  # noqa: PLR0913
         auth=auth,
         oauth_config=oauth_config,
         oauth_provider_factory=oauth_provider_factory,
+        reauth=reauth,
         compute_pool_id=compute_pool_id,
         database=database,
         database_kafka_cluster_id=database_kafka_cluster_id,
@@ -538,6 +555,10 @@ class Connection:
     _oauth_provider: OAuthProvider | None
     """The process-wide shared provider acquired via oauth.acquire() when _oauth is True; None
     otherwise. Never closed directly by this Connection -- see close()."""
+    _reauth_policy: Literal["auto", "raise"]
+    """How to respond when a request raises ReauthenticationRequired (#156) -- see connect()'s
+    `reauth` docstring. Consulted by _send_with_reauth_policy regardless of _oauth, though it is
+    only ever meaningful under auth="oauth", the only mode that can raise that exception."""
     _flink_client: httpx.Client | None
     """Lazily created on first Flink request (see _get_flink_client()); None until then. Deferred so
     that construction never blocks on the network call organization_id inference may need."""
@@ -591,6 +612,7 @@ class Connection:
         auth: Literal["api_key", "oauth"] = "api_key",
         oauth_config: CCloudOAuthConfig | None = None,
         oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
+        reauth: Literal["auto", "raise"] = "auto",
         compute_pool_id: str | None = None,
         database: str | None = None,
         database_kafka_cluster_id: str | None = None,
@@ -633,6 +655,8 @@ class Connection:
                 with the BYOIDC pair.
             oauth_config: Advanced/internal; only valid with `auth="oauth"`. See `connect()`.
             oauth_provider_factory: Internal testing hook for `auth="oauth"`. See `connect()`.
+            reauth: How to recover an `auth="oauth"` session that can no longer be refreshed.
+                See `connect()`.
             environment_id: Environment ID
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
@@ -680,6 +704,7 @@ class Connection:
         oauth_cfg = _resolve_oauth_config(
             auth,
             oauth_config,
+            reauth,
             external_access_token,
             identity_pool_id,
             global_api_key,
@@ -691,6 +716,7 @@ class Connection:
             connect_api_key,
             connect_api_secret,
         )
+        self._reauth_policy = reauth
 
         self.environment_id = environment_id
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
@@ -2037,7 +2063,9 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        response = self._get_flink_client().request(method, url, **kwargs)
+        response = self._send_with_reauth_policy(
+            lambda: self._get_flink_client().request(method, url, **kwargs)
+        )
         logger.debug("Response: %s", response.content)
         if raise_for_status:
             self._raise_for_status_as_operational_error(response)
@@ -2054,13 +2082,35 @@ class Connection:
         docstring for the one place that still needs it.
         """
         try:
-            response = client.request(method, url, **kwargs)
+            response = self._send_with_reauth_policy(lambda: client.request(method, url, **kwargs))
             logger.debug("Response: %s", response.content)
             if raise_for_status:
                 self._raise_for_status_as_operational_error(response)
             return response
         except httpx.RequestError as e:
             self._wrap_request_error(e)
+
+    def _send_with_reauth_policy(self, do_request: Callable[[], httpx.Response]) -> httpx.Response:
+        """Run one HTTP call, applying `self._reauth_policy` if it raises `ReauthenticationRequired`
+        (#156) -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
+        of stamping a request, once its session's refresh token can no longer be used.
+
+        `"raise"` lets it propagate untouched. `"auto"` (the default) instead blocks on
+        `oauth.reauthenticate()` -- itself single-flighted process-wide, so concurrent callers
+        hitting the wall together still cost one browser bounce -- and retries `do_request` exactly
+        once; a `reauthenticate()` failure (a denied/timed-out login, a failed token exchange)
+        propagates as-is, and is not retried further.
+
+        The sole chokepoint for this: every HTTP call this `Connection` makes, Flink or
+        control-plane, funnels through here via `_request_raw` or `_send_request`.
+        """
+        try:
+            return do_request()
+        except ReauthenticationRequired:
+            if self._reauth_policy == "raise":
+                raise
+            oauth_reauthenticate()
+            return do_request()
 
     def _make_controlplane_client(self, auth: httpx.Auth) -> httpx.Client:
         """Build a control-plane httpx client authenticated with the given auth.
@@ -2571,6 +2621,7 @@ class Connection:
 def _resolve_oauth_config(  # noqa: PLR0913
     auth: str,
     oauth_config: CCloudOAuthConfig | None,
+    reauth: str,
     external_access_token: str | None,
     identity_pool_id: str | None,
     global_api_key: str | None,
@@ -2582,7 +2633,7 @@ def _resolve_oauth_config(  # noqa: PLR0913
     connect_api_key: str | None,
     connect_api_secret: str | None,
 ) -> CCloudOAuthConfig | None:
-    """Validate the `auth=` mode selection and return the environment to log in against.
+    """Validate the `auth=`/`reauth=` mode selection and return the environment to log in against.
 
     Pure and network-free, mirroring `_resolve_flink_auth`'s role for the older two modes --
     called before any network or browser activity so a bad parameter combination fails fast,
@@ -2595,15 +2646,22 @@ def _resolve_oauth_config(  # noqa: PLR0913
 
     Raises:
         InterfaceError: If `auth` names neither mode; if `oauth_config` is supplied while
-            `auth != "oauth"`; or if `auth == "oauth"` is combined with the BYOIDC pair or any
-            API-key parameter -- interactive OAuth supplies its own credentials for every surface.
+            `auth != "oauth"`; if `auth == "oauth"` is combined with the BYOIDC pair or any
+            API-key parameter -- interactive OAuth supplies its own credentials for every surface;
+            if `reauth` names neither `"auto"` nor `"raise"`; or if a non-default `reauth` is
+            supplied while `auth != "oauth"` (there is no wall to hit outside interactive OAuth).
     """
+    if reauth not in ("auto", "raise"):
+        raise InterfaceError(f"reauth must be 'auto' or 'raise', got {reauth!r}")
+
     if auth not in ("api_key", "oauth"):
         raise InterfaceError(f"auth must be 'api_key' or 'oauth', got {auth!r}")
 
     if auth != "oauth":
         if oauth_config is not None:
             raise InterfaceError("oauth_config may only be supplied when auth='oauth'")
+        if reauth != "auto":
+            raise InterfaceError("reauth may only be supplied when auth='oauth'")
         return None
 
     if external_access_token or identity_pool_id:
