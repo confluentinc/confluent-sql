@@ -93,6 +93,17 @@ def shutdown_all() -> None:
     ProcessOAuthHolder.instance().shutdown()
 
 
+def release() -> None:
+    """The `Connection.close()` counterpart to `acquire()` (#155). No-op today.
+
+    Deferred to #157: the refcount-driven park lifecycle. Until that lands, the holder keeps the
+    shared provider alive regardless of how many Connections have released it -- see the module
+    docstring. Exists now so #155's `Connection.close()` has a stable call target that won't need
+    to change shape when #157 adds real teeth to it.
+    """
+    ProcessOAuthHolder.instance().release()
+
+
 class ProcessOAuthHolder:
     """The process-wide owner of one `CCloudOAuth` login.
 
@@ -294,6 +305,15 @@ class ProcessOAuthHolder:
         with self._lock:
             if self._inflight is flight:
                 self._inflight = None
+
+    def release(self) -> None:
+        """No-op -- see the module docstring's "Deferred to #157" note and `release()` above.
+
+        Not `shutdown()`: this must never tear down the shared provider, since other Connections
+        in the process may still be using it. #157 turns this into the real refcount decrement /
+        park hook.
+        """
+        return None
 
     def shutdown(self) -> None:
         """Retire the established shared provider and reset the holder toward pristine. Idempotent.

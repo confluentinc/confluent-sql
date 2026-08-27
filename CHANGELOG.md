@@ -4,6 +4,11 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`), so it could gain a default of `""` without a `SyntaxError` from the still-defaultless parameters ahead of it. `connect()` itself was already fully keyword-only and unaffected by this reordering; `Connection()` construction should always use keyword arguments (as every call site in this codebase already does) rather than relying on positional order.
+- `organization_id` is now genuinely optional on both `connect()` and `Connection()` when it can be self-discovered (configured to use either oauth or a global API key).
+
 ### Removed
 
 - The `dbname` parameter of `connect()`, deprecated in favor of `database` since 0.2.0, has been removed. Passing `dbname=` now raises `TypeError` for an unexpected keyword argument instead of emitting a `DeprecationWarning`. Use `database=` instead.
