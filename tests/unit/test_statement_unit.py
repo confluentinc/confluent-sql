@@ -617,6 +617,35 @@ class TestStatementFromResponse:
         ):
             Statement.from_response(mock_connection, response)
 
+    @pytest.mark.parametrize(
+        "make_traits_absent",
+        [
+            pytest.param(lambda status: status.update(traits=None), id="traits_null"),
+            pytest.param(lambda status: status.pop("traits"), id="traits_key_missing"),
+            pytest.param(lambda status: status.update(traits={}), id="traits_empty_dict"),
+        ],
+    )
+    def test_allows_pending_statement_without_traits(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        make_traits_absent: Callable[[dict[str, Any]], None],
+    ):
+        """Test that from_response accepts a PENDING statement without traits.
+
+        Confluent Cloud's documented initial response to a statement submission is a PENDING
+        phase with no status.traits at all -- see #194. Traits only become available once the
+        statement has been polled at least once. Cover the shapes the server might use to
+        signal "no traits yet": an explicit `null`, the key being absent entirely, and an
+        empty object (no fields parseable as traits).
+        """
+        response = statement_response_factory(phase="PENDING")
+        make_traits_absent(response["status"])
+
+        statement = Statement.from_response(mock_connection, response)
+        assert statement.traits is None
+        assert statement.phase == Phase.PENDING
+
     def test_parses_row_result_schema(
         self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
     ):
@@ -1112,3 +1141,22 @@ class TestStatementCanFetchResults:
         )
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize(
+        "execution_mode",
+        [ExecutionMode.SNAPSHOT, ExecutionMode.STREAMING_QUERY, ExecutionMode.STREAMING_DDL],
+    )
+    def test_pending_without_traits_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        execution_mode: ExecutionMode,
+    ):
+        """A freshly-submitted PENDING statement has no traits yet (see #194) -- it must be
+        reported as not-yet-ready rather than raising while probing trait-dependent properties
+        like is_pure_ddl."""
+        response = statement_response_factory(phase="PENDING")
+        response["status"]["traits"] = None
+
+        statement = Statement.from_response(mock_connection, response)
+        assert not statement.can_fetch_results(execution_mode)

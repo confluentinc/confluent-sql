@@ -259,8 +259,9 @@ class Cursor:
 
         if self._statement.is_failed:
             raise OperationalError(
-                f"Statement submission failed: {self._statement.status.get('detail', '')}"
-            )  # pragma: no cover
+                f"Statement '{self._statement.name}' submission failed:"
+                f" {self._statement.status.get('detail', '')}"
+            )
 
         # ... and wait for it to be "ready" (either in a terminal state or running) based on
         # execution mode and statement type.
