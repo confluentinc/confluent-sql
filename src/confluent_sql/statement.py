@@ -513,10 +513,10 @@ class Statement:
                 ) from err
 
             # Parse traits, which includes the statement schema. Won't be present
-            # if the statement failed.
+            # if the statement failed, and may be `null`, absent, or `{}` while PENDING.
             traits = (
                 Traits.from_response(status["traits"])
-                if "traits" in status and status["traits"] is not None
+                if "traits" in status and status["traits"]
                 else None
             )
 

@@ -617,17 +617,30 @@ class TestStatementFromResponse:
         ):
             Statement.from_response(mock_connection, response)
 
+    @pytest.mark.parametrize(
+        "make_traits_absent",
+        [
+            pytest.param(lambda status: status.update(traits=None), id="traits_null"),
+            pytest.param(lambda status: status.pop("traits"), id="traits_key_missing"),
+            pytest.param(lambda status: status.update(traits={}), id="traits_empty_dict"),
+        ],
+    )
     def test_allows_pending_statement_without_traits(
-        self, mock_connection: Connection, statement_response_factory: StatementResponseFactory
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        make_traits_absent: Callable[[dict[str, Any]], None],
     ):
         """Test that from_response accepts a PENDING statement without traits.
 
         Confluent Cloud's documented initial response to a statement submission is a PENDING
         phase with no status.traits at all -- see #194. Traits only become available once the
-        statement has been polled at least once.
+        statement has been polled at least once. Cover the shapes the server might use to
+        signal "no traits yet": an explicit `null`, the key being absent entirely, and an
+        empty object (no fields parseable as traits).
         """
         response = statement_response_factory(phase="PENDING")
-        response["status"]["traits"] = None
+        make_traits_absent(response["status"])
 
         statement = Statement.from_response(mock_connection, response)
         assert statement.traits is None
