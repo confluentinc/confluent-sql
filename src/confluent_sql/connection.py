@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-import warnings
 from collections import namedtuple
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
@@ -264,7 +263,6 @@ def connect(  # noqa: PLR0913
     local_time_zone: str | None = None,
     endpoint: str | None = None,
     controlplane_endpoint: str | None = None,
-    dbname: str | None = None,  # deprecated, use database parameter
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
     http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
@@ -372,7 +370,6 @@ def connect(  # noqa: PLR0913
         controlplane_endpoint: Base URL for the Confluent Cloud control plane (Tableflow, Connect,
             and CMK routes), distinct from the Flink gateway `endpoint`. Defaults to
             "https://api.confluent.cloud". A trailing slash is stripped if provided.
-        dbname: Deprecated alias for database parameter (optional)
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
             to the statement results API when consuming results for a statement, especially when
@@ -445,18 +442,6 @@ def connect(  # noqa: PLR0913
         if not cloud_region:
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
-    if dbname is not None:
-        warnings.warn(
-            "The 'dbname' parameter is deprecated and will be removed in a future release. "
-            "Please use the 'database' parameter instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if database is not None:
-            raise InterfaceError(
-                "Cannot specify both 'database' and deprecated 'dbname' parameters"
-            )
-
     return Connection(
         environment_id,
         cloud_provider,
@@ -477,7 +462,7 @@ def connect(  # noqa: PLR0913
         oauth_config=oauth_config,
         oauth_provider_factory=oauth_provider_factory,
         compute_pool_id=compute_pool_id,
-        database=database or dbname,  # dbname is deprecated.
+        database=database,
         database_kafka_cluster_id=database_kafka_cluster_id,
         local_time_zone=local_time_zone,
         controlplane_endpoint=controlplane_endpoint,
