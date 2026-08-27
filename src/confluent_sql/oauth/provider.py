@@ -62,6 +62,7 @@ import urllib.parse
 import webbrowser
 from collections.abc import Callable, Generator
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
@@ -69,6 +70,8 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from ..exceptions import (
+    OAuthLoginError,
+    OAuthLoginFailure,
     OAuthTokenEndpointError,
     OperationalError,
     ProgrammingError,
@@ -131,6 +134,8 @@ class OAuthProvider(Protocol):
 
     def login(self, org_resource_id: str | None = ..., *, timeout: float = ...) -> None: ...
 
+    def reauthenticate(self, *, timeout: float = ...) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -178,20 +183,23 @@ class CCloudOAuth:
         """Guards the potentially multi-minute browser round-trip in `login()` and its I/O"""
         self._refresh_lock = threading.Lock()
         """Guards _inflight_refresh: the slot holding the `Future` for a refresh chain -- the
-           four-hop token exchange -- currently running, or None when none is. Held for
-           microseconds; never held across the chain itself."""
+           four-hop token exchange -- or a reauthenticate() login, currently running, or None
+           when none is. Held for microseconds; never held across the chain/login itself."""
         self._token_lock = threading.Lock()
         """Guards _token_set, _interim_snapshot, _failure, and _organization_id.
            Held for microseconds."""
 
         # _login_lock and _refresh_lock are never held at once -- not an ordering, a straight
         # mutual exclusion enforced by the data invariant above (login only runs with no token
-        # set, refresh only with one). _token_lock is the one that nests inside either: under
-        # _login_lock in login(), and jointly with _refresh_lock in _enter_flight(). Only
-        # _login_lock is ever held across I/O.
+        # set; refresh and reauthenticate() only with one, and share _inflight_refresh so they
+        # can never race each other to install _token_set -- see reauthenticate()'s docstring).
+        # _token_lock is the one that nests inside either: under _login_lock in login(), and
+        # jointly with _refresh_lock in _enter_flight()/_enter_reauth_flight(). Only _login_lock
+        # is ever held across I/O.
 
         self._inflight_refresh: Future[TokenSet] | None = None
-        """The single-flight `Future` slot. One thread wins the right to run the refresh chain and
+        """The single-flight `Future` slot, shared by `_refresh()` and `reauthenticate()`. One
+        thread wins the right to run the refresh chain (or the reauthenticate() login) and
         publishes its outcome into this `Future`; any other that arrives while it is in flight
         joins the same `Future` and receives the winner's result."""
 
@@ -274,7 +282,10 @@ class CCloudOAuth:
         # A dedicated lock, deliberately not the refresh gate: this one is held across a
         # multi-minute human round-trip, and the request path must never queue behind that. The
         # two cannot overlap anyway -- login runs only when there is no token set, refresh only
-        # when there is. #156's re-auth breaks that invariant and will need to reconcile them.
+        # when there is. #156's reauthenticate() is what runs a second login-shaped flow *with* a
+        # token set already present -- it routes through the refresh gate instead (see
+        # reauthenticate()), never through this lock, so the invariant above still holds for this
+        # method specifically.
         with self._login_lock:
             if self._token_set is not None:
                 raise ProgrammingError(
@@ -282,56 +293,140 @@ class CCloudOAuth:
                     "identity for its whole life; use a new provider for a different one."
                 )
 
-            verifier = generate_verifier()
-            state = generate_state()
-            with CallbackServer(self._config, state) as server:
-                authorize_url = self._authorize_url(challenge_for(verifier), state)
-                if not self._open_browser(authorize_url):
-                    logger.info(
-                        "Could not open a browser automatically. To finish signing in to "
-                        f"Confluent Cloud, open this URL yourself: {authorize_url}"
-                    )
-                code = server.wait_for_code(timeout=timeout)
-
-            # Anchored before the exchanges rather than after: the absolute wall is a policy on
-            # the *session*, and dating it from after a slow chain would overstate its remaining
-            # life by however long the chain took.
-            minted_at = datetime.now(timezone.utc)
-            exchanged = exchange_code_for_tokens(
-                self._client, self._config, code=code, verifier=verifier
-            )
-            control_plane = exchange_id_token_for_cp_token(
-                self._client,
-                self._config,
-                id_token=exchanged.id_token,
-                org_resource_id=org_resource_id,
-            )
-            if control_plane.organization_resource_id is None:
-                raise OperationalError(
-                    "Confluent Cloud did not report an organization for this login, so there is "
-                    "no organization to scope this connection to."
-                )
-            data_plane = exchange_cp_for_dp_token(
-                self._client, self._config, cp_token=control_plane.token
-            )
+            token_set, organization_id = self._run_login_flow(org_resource_id, timeout)
 
             with self._token_lock:
-                self._token_set = TokenSet(
-                    refresh_token=exchanged.refresh_token,
-                    refresh_token_expires_at=minted_at + ABSOLUTE_LIFETIME,
-                    cp_token=control_plane.token,
-                    cp_token_expires_at=control_plane.expires_at,
-                    dp_token=data_plane.token,
-                    dp_token_expires_at=data_plane.expires_at,
-                )
-                self._organization_id = control_plane.organization_resource_id
+                self._token_set = token_set
+                self._organization_id = organization_id
                 self._interim_snapshot = None
                 self._failure = None
 
-        logger.info(
-            "Signed in to Confluent Cloud for organization "
-            f"{control_plane.organization_resource_id}"
+        logger.info(f"Signed in to Confluent Cloud for organization {organization_id}")
+
+    def reauthenticate(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
+        """Recover a session that can no longer be refreshed by running a fresh interactive login.
+
+        For use once a request has raised `ReauthenticationRequired` (the refresh token is
+        idle-expired, revoked, already spent, or past its ~8h absolute lifetime): this re-runs the
+        full browser login -- a new authorization code, a new three-hop token exchange -- against
+        the organization this provider originally settled on, and installs the result as the
+        current snapshot, clearing the latched failure and resetting the 8h wall.
+
+        Routed through the *same* single-flight gate `_refresh()` uses (`_inflight_refresh` /
+        `_refresh_lock`), not an independent one: see the module docstring and
+        `_enter_reauth_flight` for why sharing it is what keeps a concurrent plain refresh from
+        racing a reauthentication to install `_token_set`. N callers hitting the wall together
+        collapse into one browser bounce -- the first becomes the flight winner and runs the
+        login; the rest join its `Future` and share the outcome, or have its exception (a denied
+        login, a timed-out browser round-trip, a failed token exchange) re-raised on their own
+        thread.
+
+        Args:
+            timeout: seconds to wait for the browser round-trip (the winner), or for the winner's
+                login to finish (a joiner) -- its own timeout either way, so a brief-timeout
+                caller is never bound to another's longer deadline.
+
+        Raises `ProgrammingError` if this provider has never logged in, `OAuthLoginError` if the
+        browser leg fails or a joiner's own timeout elapses first, and `OperationalError` if a
+        token exchange fails.
+        """
+        flight, is_winner = self._enter_reauth_flight()
+        if not is_winner:
+            try:
+                flight.result(timeout=timeout)
+            except FuturesTimeoutError as e:
+                raise OAuthLoginError(
+                    "Timed out waiting for this process's in-progress Confluent Cloud "
+                    "re-authentication to complete. Retry, or allow a longer timeout.",
+                    OAuthLoginFailure.TIMED_OUT,
+                ) from e
+            return
+
+        try:
+            token_set, organization_id = self._run_login_flow(self._organization_id, timeout)
+        except BaseException as e:
+            flight.set_exception(e)
+            raise
+        with self._token_lock:
+            self._token_set = token_set
+            self._organization_id = organization_id
+            self._interim_snapshot = None
+            self._failure = None
+        flight.set_result(token_set)
+        with self._refresh_lock:
+            self._inflight_refresh = None
+
+        logger.info(f"Re-authenticated to Confluent Cloud for organization {organization_id}")
+
+    def _enter_reauth_flight(self) -> tuple[Future[TokenSet], bool]:
+        """Decide whether this caller runs the fresh login or joins one already running.
+
+        Shares `_refresh()`'s `_inflight_refresh` slot under `_refresh_lock`, but -- unlike
+        `_enter_flight` -- neither raises on a latched `self._failure` (clearing it is the whole
+        point of `reauthenticate()`) nor double-checks for an already-superseded snapshot (there
+        is no `stale` reference to compare against; a caller that explicitly asked to
+        reauthenticate gets a reauthentication, or joins one already in flight).
+        """
+        with self._refresh_lock:
+            if self._token_set is None:
+                raise ProgrammingError(
+                    "This CCloudOAuth provider has no tokens yet -- it must log in before it can "
+                    "be re-authenticated."
+                )
+            if self._inflight_refresh is not None:
+                return self._inflight_refresh, False
+            self._inflight_refresh = Future()
+            return self._inflight_refresh, True
+
+    def _run_login_flow(self, org_resource_id: str | None, timeout: float) -> tuple[TokenSet, str]:
+        """The browser round-trip and the three token hops, shared by `login()` and
+        `reauthenticate()`. Touches no shared state -- the caller installs the result under
+        `_token_lock` itself, since the two callers install it differently (`login()` also clears
+        `_interim_snapshot`/`_failure` under `_login_lock`; `reauthenticate()` under the refresh
+        gate).
+        """
+        verifier = generate_verifier()
+        state = generate_state()
+        with CallbackServer(self._config, state) as server:
+            authorize_url = self._authorize_url(challenge_for(verifier), state)
+            if not self._open_browser(authorize_url):
+                logger.info(
+                    "Could not open a browser automatically. To finish signing in to "
+                    f"Confluent Cloud, open this URL yourself: {authorize_url}"
+                )
+            code = server.wait_for_code(timeout=timeout)
+
+        # Anchored before the exchanges rather than after: the absolute wall is a policy on
+        # the *session*, and dating it from after a slow chain would overstate its remaining
+        # life by however long the chain took.
+        minted_at = datetime.now(timezone.utc)
+        exchanged = exchange_code_for_tokens(
+            self._client, self._config, code=code, verifier=verifier
         )
+        control_plane = exchange_id_token_for_cp_token(
+            self._client,
+            self._config,
+            id_token=exchanged.id_token,
+            org_resource_id=org_resource_id,
+        )
+        if control_plane.organization_resource_id is None:
+            raise OperationalError(
+                "Confluent Cloud did not report an organization for this login, so there is "
+                "no organization to scope this connection to."
+            )
+        data_plane = exchange_cp_for_dp_token(
+            self._client, self._config, cp_token=control_plane.token
+        )
+
+        token_set = TokenSet(
+            refresh_token=exchanged.refresh_token,
+            refresh_token_expires_at=minted_at + ABSOLUTE_LIFETIME,
+            cp_token=control_plane.token,
+            cp_token_expires_at=control_plane.expires_at,
+            dp_token=data_plane.token,
+            dp_token_expires_at=data_plane.expires_at,
+        )
+        return token_set, control_plane.organization_resource_id
 
     def close(self) -> None:
         """Release the private HTTP client. Idempotent.
