@@ -347,16 +347,20 @@ class CCloudOAuth:
         except BaseException as e:
             flight.set_exception(e)
             raise
-        with self._token_lock:
-            self._token_set = token_set
-            self._organization_id = organization_id
-            self._interim_snapshot = None
-            self._failure = None
-        flight.set_result(token_set)
-        with self._refresh_lock:
-            self._inflight_refresh = None
-
-        logger.info(f"Re-authenticated to Confluent Cloud for organization {organization_id}")
+        else:
+            with self._token_lock:
+                self._token_set = token_set
+                self._organization_id = organization_id
+                self._interim_snapshot = None
+                self._failure = None
+            flight.set_result(token_set)
+            logger.info(f"Re-authenticated to Confluent Cloud for organization {organization_id}")
+        finally:
+            # Cleared unconditionally, so a *rejected* flight is never left in the slot for a
+            # later reauthenticate() -- or a later plain refresh, since this slot is shared with
+            # _refresh() -- to inherit forever. Mirrors _refresh()'s own finally below.
+            with self._refresh_lock:
+                self._inflight_refresh = None
 
     def _enter_reauth_flight(self) -> tuple[Future[TokenSet], bool]:
         """Decide whether this caller runs the fresh login or joins one already running.

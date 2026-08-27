@@ -1119,6 +1119,28 @@ class TestReauthenticate:
             # Exactly one fresh login attempted: the original login's code grant, plus this one.
             assert len(fake.code_grants) == 2
 
+    def test_a_failed_reauthentication_clears_the_slot_so_a_later_attempt_retries(self):
+        """A failed reauthenticate() must not leave a permanently-rejected `Future` sitting in
+        `_inflight_refresh` -- that slot is shared with `_refresh()` (see the module docstring),
+        so a stranded rejected flight would wedge every later `reauthenticate()` *and* every
+        later plain refresh behind the first attempt's stale exception, forever, with no way to
+        ever recover the session."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+
+            fake.fail_token_endpoint_with = (500, None)
+            with pytest.raises(OperationalError):
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            # Nothing about the service has changed except this -- if the slot weren't cleared,
+            # this second attempt would just re-raise the first attempt's exception without ever
+            # trying the (now fixable) login again.
+            fake.fail_token_endpoint_with = None
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert provider.token_set is not None
+
 
 class TestClose:
     def test_close_is_idempotent(self):
