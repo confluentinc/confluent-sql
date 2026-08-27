@@ -13,6 +13,12 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - The `dbname` parameter of `connect()`, deprecated in favor of `database` since 0.2.0, has been removed. Passing `dbname=` now raises `TypeError` for an unexpected keyword argument instead of emitting a `DeprecationWarning`. Use `database=` instead.
 
+## 0.5.3, 2026-08-27
+
+### Fixed
+
+- `Statement.from_response()` no longer raises `OperationalError` for a `PENDING` statement with no `status.traits`, which can possibly happen. (#194)
+
 ## 0.5.2, 2026-08-26
 
 ### Fixed
