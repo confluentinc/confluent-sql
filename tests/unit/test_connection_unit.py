@@ -572,6 +572,25 @@ class TestConnectChecks:
         )
         assert connection.compute_pool_id is None
 
+    def test_connection_constructible_with_organization_id_omitted(self):
+        """Connection() is directly constructible with organization_id omitted entirely -- not
+        just passed as "" -- given a global key (#132/#155 regression guard).
+
+        organization_id was reordered to sit just before Connection.__init__'s keyword-only
+        boundary specifically so it could gain a default without disturbing the (all keyword-
+        called, but positional-or-keyword-declared) environment_id/cloud_provider/cloud_region/
+        endpoint parameters ahead of it.
+        """
+        connection = Connection(
+            global_api_key="valid-key",
+            global_api_secret="valid-secret",
+            environment_id="env-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            endpoint=None,
+        )
+        assert connection._organization_id_value is None
+
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """A Flink-only key still requires organization_id (#132 regression guard): the
         relaxation for a global key must not leak into this path. global_api_key/secret are
@@ -1008,10 +1027,14 @@ class TestConnectAuthWiring:
         return basic_auth_spy
 
     def test_global_only_authenticates_with_global_creds(self):
+        # A global key also authenticates the (lazily-*built*, but eagerly *auth-wrapped*, #155)
+        # control-plane and Connect clients, so BasicAuth is constructed three times here -- once
+        # per surface -- all with this same global pair; assert_any_call, not
+        # assert_called_once_with.
         spy = self._connect_spying_on_basic_auth(
             global_api_key="global-key", global_api_secret="global-secret"
         )
-        spy.assert_called_once_with(username="global-key", password="global-secret")
+        spy.assert_any_call(username="global-key", password="global-secret")
 
     def test_flink_only_authenticates_with_flink_creds(self):
         spy = self._connect_spying_on_basic_auth(
@@ -1020,13 +1043,15 @@ class TestConnectAuthWiring:
         spy.assert_called_once_with(username="flink-key", password="flink-secret")
 
     def test_both_pairs_authenticate_with_global_creds(self):
+        # See test_global_only_authenticates_with_global_creds: a global key wraps three
+        # BasicAuths (Flink, control-plane, Connect), all with the global pair.
         spy = self._connect_spying_on_basic_auth(
             global_api_key="global-key",
             global_api_secret="global-secret",
             flink_api_key="flink-key",
             flink_api_secret="flink-secret",
         )
-        spy.assert_called_once_with(username="global-key", password="global-secret")
+        spy.assert_any_call(username="global-key", password="global-secret")
 
 
 @pytest.mark.unit
