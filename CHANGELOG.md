@@ -2,6 +2,12 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
+## 0.5.3, 2026-08-27
+
+### Fixed
+
+- `Statement.from_response()` no longer raises `OperationalError` for a `PENDING` statement with no `status.traits`, which can possibly happen. (#194)
+
 ## 0.5.2, 2026-08-26
 
 ### Fixed
