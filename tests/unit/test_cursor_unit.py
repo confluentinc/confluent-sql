@@ -13,7 +13,7 @@ from confluent_sql.exceptions import (
 )
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
-from confluent_sql.statement import ChangelogRow, Op, Statement
+from confluent_sql.statement import ChangelogRow, Op, Phase, Statement
 from tests.unit.conftest import (
     CursorWithStatementFactory,
     MockConnectionFactory,
@@ -252,6 +252,53 @@ class TestExecute:
             mock_connection_cursor.execute("SELECT 1 AS col", timeout=30)
 
         backoff.assert_called_once_with(30, started_at=0.0)
+
+    def test_becomes_ready_after_pending_without_traits_then_running_with_traits(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """End-to-end lifecycle for #194: a statement is submitted PENDING with no traits (the
+        documented shape of Confluent Cloud's initial response), stays PENDING with no traits for
+        two more polls, then transitions to RUNNING with traits -- at which point execute() must
+        return instead of raising or timing out."""
+        pending_no_traits = statement_response_factory(phase="PENDING")
+        pending_no_traits["status"]["traits"] = None
+
+        running_with_traits = statement_response_factory(
+            sql_statement="SELECT * FROM source_table",
+            sql_kind="SELECT",
+            phase="RUNNING",
+            is_bounded=True,
+            is_append_only=True,
+        )
+
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_QUERY
+
+        # The initial submission (POST) response.
+        mock_connection_cursor._connection._execute_statement.return_value = (  # type: ignore
+            pending_no_traits
+        )
+        # Subsequent polls (GET): two more PENDING-without-traits observations, then RUNNING
+        # with traits on the third.
+        mock_connection_cursor._connection._get_statement.side_effect = (  # type: ignore
+            [pending_no_traits, pending_no_traits, running_with_traits]
+        )
+
+        mocker.patch("time.sleep", return_value=None)
+        start_time = 1000000.0
+        time_mock = mocker.patch(
+            "time.monotonic", side_effect=lambda: start_time + time_mock.call_count
+        )
+
+        mock_connection_cursor.execute("SELECT * FROM source_table")
+
+        assert mock_connection_cursor._connection._get_statement.call_count == 3  # type: ignore
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase is Phase.RUNNING
+        assert mock_connection_cursor._statement.traits is not None
+        assert mock_connection_cursor._statement.can_fetch_results(ExecutionMode.STREAMING_QUERY)
 
     @pytest.mark.parametrize(
         "streaming_mode",
