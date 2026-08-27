@@ -2090,9 +2090,7 @@ class Connection:
         except httpx.RequestError as e:
             self._wrap_request_error(e)
 
-    def _send_with_reauth_policy(
-        self, do_request: Callable[[], httpx.Response]
-    ) -> httpx.Response:
+    def _send_with_reauth_policy(self, do_request: Callable[[], httpx.Response]) -> httpx.Response:
         """Run one HTTP call, applying `self._reauth_policy` if it raises `ReauthenticationRequired`
         (#156) -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
         of stamping a request, once its session's refresh token can no longer be used.

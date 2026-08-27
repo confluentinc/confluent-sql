@@ -378,9 +378,7 @@ class CCloudOAuth:
             self._inflight_refresh = Future()
             return self._inflight_refresh, True
 
-    def _run_login_flow(
-        self, org_resource_id: str | None, timeout: float
-    ) -> tuple[TokenSet, str]:
+    def _run_login_flow(self, org_resource_id: str | None, timeout: float) -> tuple[TokenSet, str]:
         """The browser round-trip and the three token hops, shared by `login()` and
         `reauthenticate()`. Touches no shared state -- the caller installs the result under
         `_token_lock` itself, since the two callers install it differently (`login()` also clears

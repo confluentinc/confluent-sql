@@ -440,9 +440,7 @@ class TestReauthPolicy:
             )
 
     def test_validation_rejects_a_non_default_value_combined_with_api_key_mode(self):
-        with pytest.raises(
-            InterfaceError, match="reauth may only be supplied when auth='oauth'"
-        ):
+        with pytest.raises(InterfaceError, match="reauth may only be supplied when auth='oauth'"):
             connect(
                 reauth="raise",
                 global_api_key="gk",
