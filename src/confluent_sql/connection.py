@@ -689,6 +689,24 @@ class Connection:
             http_timeout_secs: Timeout in seconds applied to the underlying httpx client.
                            Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS.
         """
+
+        # Validate api key vs oauth first, so that we can raise errors about auth misconfiguration
+        # as simply and early as possible before we might complain about lesser issues.
+        oauth_cfg = _resolve_oauth_config(
+            auth,
+            oauth_config,
+            external_access_token,
+            identity_pool_id,
+            global_api_key,
+            global_api_secret,
+            flink_api_key,
+            flink_api_secret,
+            tableflow_api_key,
+            tableflow_api_secret,
+            connect_api_key,
+            connect_api_secret,
+        )
+
         self.environment_id = environment_id
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
@@ -743,23 +761,6 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        # _resolve_oauth_config validates auth="oauth"'s mutual exclusion with every API-key and
-        # BYOIDC parameter, and is pure/network-free -- it runs before anything below that could
-        # ever touch the network or a browser, so a bad parameter combination always fails fast.
-        oauth_cfg = _resolve_oauth_config(
-            auth,
-            oauth_config,
-            external_access_token,
-            identity_pool_id,
-            global_api_key,
-            global_api_secret,
-            flink_api_key,
-            flink_api_secret,
-            tableflow_api_key,
-            tableflow_api_secret,
-            connect_api_key,
-            connect_api_secret,
-        )
         self._oauth = oauth_cfg is not None
         self._controlplane_endpoint = (
             controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
