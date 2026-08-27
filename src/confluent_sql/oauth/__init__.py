@@ -7,15 +7,15 @@ per-environment config. #152 added the loopback CallbackServer that catches the 
 redirect. #153 added `CCloudOAuth`, the provider that drives a login end to end, keeps the tokens
 current by synchronous on-request refresh, and vends two `httpx.Auth` views over the one shared
 snapshot. #154 added `ProcessOAuthHolder`, the module-level holder that makes that login singular
-across a whole process -- one browser bounce shared by every `Connection`. Nothing here is wired
-into `connect()` yet; that arrives at #155.
+across a whole process -- one browser bounce shared by every `Connection`. #155 wired `acquire()`
+and `release()` into `connect()`/`Connection`, exposing `auth="oauth"`.
 """
 
 from __future__ import annotations
 
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import PROD, CCloudOAuthConfig
-from .holder import ProcessOAuthHolder, acquire, shutdown_all
+from .holder import ProcessOAuthHolder, acquire, release, shutdown_all
 from .pkce import challenge_for, generate_state, generate_verifier
 from .provider import CCloudOAuth, OAuthProvider
 from .token_chain import (
@@ -49,5 +49,6 @@ __all__ = [
     "exchange_refresh_token",
     "generate_state",
     "generate_verifier",
+    "release",
     "shutdown_all",
 ]
