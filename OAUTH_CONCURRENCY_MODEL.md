@@ -12,14 +12,14 @@ server is torn down and all N resolve to the same outcome. Failure clears the sl
 
 ## Status of each layer
 
-The bottom two layers are code today. The two above them are designed (epic #150) but unbuilt, so
-everything about those describes intent, not observed behavior.
+Every layer below is code today except the last, which is designed (epic #150) but unbuilt --
+everything about it describes intent, not observed behavior.
 
 | Layer | Owns | State |
 | --- | --- | --- |
 | `CallbackServer` (`oauth/callback_server.py`) | one login attempt's redirect capture | **built** (#152) |
-| `CCloudOAuth` provider (`oauth/provider.py`) | the shared `TokenSet`, refresh single-flight | **built** (#153) |
-| `ProcessOAuthHolder` (`oauth/holder.py`) | one login + one provider per process | **built** (#154) |
+| `CCloudOAuth` provider (`oauth/provider.py`) | the shared `TokenSet`, refresh single-flight, `reauthenticate()` | **built** (#153, #156) |
+| `ProcessOAuthHolder` (`oauth/holder.py`) | one login + one provider per process, `reauthenticate()` delegation | **built** (#154, #156) |
 | Refresh daemon, refcount/park | latency optimization | designed, #157 |
 
 ## Why it works that way
@@ -100,7 +100,7 @@ established. The environment axis matters because a differing `config` means a d
 host, and client — silently returning the established provider would hand the connection
 wrong-environment credentials.
 
-## Layer 3 — the provider's two locks (#153, built)
+## Layer 3 — the provider's two locks (#153, built; reauthenticate() joins the same gate, #156)
 
 Past login, every request stamps a header from the shared `TokenSet`. `httpx.Auth.sync_auth_flow`
 does no locking of its own — it just defers to `auth_flow` — so our `auth_flow` runs **concurrently
@@ -125,6 +125,17 @@ across threads with zero serialization**. Hence two locks with sharply different
 same one means a hard lockout. What prevents that is that the chain reads the token it will spend
 out of the slot *at the moment it runs*, never out of the snapshot its caller arrived holding. A
 waiter therefore spends the current token or none, whatever it queued with.
+
+**`reauthenticate()` (#156) is a second producer into the same `_inflight_refresh` slot**, not a
+gate of its own. Once a caller reaches it, `self._failure` is already latched (a plain `_refresh()`
+never even reaches the slot once that's set -- the check happens first), so the slot is always
+free for `reauthenticate()`'s winner to claim; the winner runs a fresh interactive login instead of
+the refresh chain and installs its `TokenSet` under the very same `_token_lock` critical section.
+Sharing the slot rather than adding an independent one is what rules out a late-finishing plain
+refresh racing a reauthentication to install `_token_set` -- the refresh's rotated-but-derived-from
+-a-stale-refresh-token result overwriting a just-completed fresh login. Everything above about the
+`Future`, the double-check, and the two-locations failure check applies unchanged; `reauthenticate()`
+only changes *which chain* the winner runs.
 
 ### Why a `Future` and not a lock
 
@@ -200,11 +211,13 @@ too, rather than each running a chain of their own.
 - **An abandoned login holds the port for up to `DEFAULT_LOGIN_TIMEOUT_SECS` (120s).** The user who
   closes the browser tab without completing consent leaves the listener bound until the timeout
   expires and `stop()` runs. `PORT_IN_USE` names this as the likely cause.
-- **Re-auth at the 8h wall reuses the same port** (#156), so it must route through the same
-  single-flight gate — N threads hitting the wall together collapse to one browser bounce. Without
-  that, the wall would turn into a burst of `PORT_IN_USE` failures.
+- **Re-auth at the 8h wall reuses the same port.** `CCloudOAuth.reauthenticate()` (#156) routes
+  through `_refresh()`'s own `_inflight_refresh` / `_refresh_lock` gate rather than a gate of its
+  own — see "Layer 3", below — so N threads hitting the wall together still collapse to one
+  browser bounce rather than a burst of `PORT_IN_USE` failures. `ProcessOAuthHolder.reauthenticate()`
+  is a thin delegation on top: the provider's gate is what actually does the collapsing.
 
-## Invariants worth pinning in #153 / #154 tests
+## Invariants worth pinning in #153 / #154 / #156 tests
 
 Items 3 and 5 are #153's, covered by `tests/unit/oauth/test_provider_unit.py`; items 1, 2, 4, 6,
 and 7 are #154's, covered by `tests/unit/oauth/test_holder_unit.py`. That suite drives the holder
@@ -249,6 +262,15 @@ is the single-flight property stated as a fact about construction.
 7. ✅ Tests reset the module holder between cases — a leaked provider (and, later, daemon) across
    cases is the failure this guards. *The autouse `_reset_holder` fixture calls `shutdown_all()`
    around every case.*
+8. ✅ N concurrent `reauthenticate()` calls at the wall → one fresh login, shared by every caller
+   (success or failure alike), and the absolute wall is reset from the fresh login's own mint time
+   rather than carried forward. *Pinned in `test_provider_unit.py::TestReauthenticate`:
+   `test_concurrent_reauthenticates_collapse_to_one_login` (the join path, same "make the winner
+   measurably slow" trap as items 1 and 3) and
+   `test_a_joiner_receives_the_winners_reauthentication_failure` (the shared-failure fan-out, same
+   trap as item 2/#153's failed-refresh case). `holder.reauthenticate()`'s own module-lock-not-held
+   property is pinned separately in `test_holder_unit.py::TestReauthenticate::
+   test_the_module_lock_is_free_while_reauthenticate_is_in_flight`, mirroring item 4.*
 
 #153 additionally pins, beyond the list above: the rotated refresh token is persisted **before**
 the CP/DP legs (and survives a mid-chain failure, so a crash there is one lost request rather than
