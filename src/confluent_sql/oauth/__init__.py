@@ -10,7 +10,10 @@ snapshot. #154 added `ProcessOAuthHolder`, the module-level holder that makes th
 across a whole process -- one browser bounce shared by every `Connection`. #155 wired `acquire()`
 and `release()` into `connect()`/`Connection`, exposing `auth="oauth"`. #156 added
 `reauthenticate()`, recovering a session in place once its refresh token can no longer be used
-(the ~8h absolute wall, idle expiry, or revocation) without opening a new `Connection`.
+(the ~8h absolute wall, idle expiry, or revocation) without opening a new `Connection`. #198
+folded #156's flat `reauth` scalar into the frozen `OAuthPolicy` struct (`oauth_policy=` on
+`connect()`), so a later child (#157) can add its background-refresh toggle as a field on this
+struct rather than another look-alike `oauth_*` parameter.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import PROD, CCloudOAuthConfig
 from .holder import ProcessOAuthHolder, acquire, reauthenticate, release, shutdown_all
 from .pkce import challenge_for, generate_state, generate_verifier
+from .policy import OAUTH_INTERACTIVE, OAUTH_UNATTENDED, OAuthPolicy
 from .provider import CCloudOAuth, OAuthProvider
 from .token_chain import (
     CodeExchangeResult,
@@ -33,6 +37,8 @@ from .token_set import TokenSet
 
 __all__ = [
     "DEFAULT_LOGIN_TIMEOUT_SECS",
+    "OAUTH_INTERACTIVE",
+    "OAUTH_UNATTENDED",
     "PROD",
     "CCloudOAuth",
     "CCloudOAuthConfig",
@@ -40,6 +46,7 @@ __all__ = [
     "CodeExchangeResult",
     "ControlPlaneTokenResult",
     "DataPlaneTokenResult",
+    "OAuthPolicy",
     "OAuthProvider",
     "ProcessOAuthHolder",
     "TokenSet",

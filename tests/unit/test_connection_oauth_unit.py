@@ -28,6 +28,7 @@ from confluent_sql import (
 )
 from confluent_sql.connection import Connection
 from confluent_sql.oauth.config import CCloudOAuthConfig
+from confluent_sql.oauth.policy import OAUTH_UNATTENDED
 
 pytestmark = pytest.mark.unit
 
@@ -405,7 +406,7 @@ def _connection_with_flaky_flink_auth(
     `_FlakyReauthAuth`, so `_send_with_reauth_policy` (#156) can be exercised directly without a
     real oauth-mode login. `reauth` is poked onto the private attribute rather than threaded
     through connect()'s validation, since that validation (tested separately below) only allows
-    a non-default `reauth` together with `auth="oauth"`.
+    a non-default `oauth_policy` together with `auth="oauth"` (#198).
     """
     conn = connect(
         global_api_key="gk",
@@ -426,23 +427,16 @@ def _connection_with_flaky_flink_auth(
 
 
 class TestReauthPolicy:
-    """The `reauth=` policy knob (#156) and `_send_with_reauth_policy`, the chokepoint that
-    applies it whenever a request raises `ReauthenticationRequired`."""
-
-    def test_validation_rejects_an_invalid_value(self):
-        with pytest.raises(InterfaceError, match="reauth must be 'auto' or 'raise'"):
-            connect(
-                reauth="bogus",  # type: ignore[arg-type]
-                environment_id="env-1",
-                organization_id="org-1",
-                cloud_provider="aws",
-                cloud_region="us-east-1",
-            )
+    """The `oauth_policy=` knob's `on_reauthentication_required` field (#198, replacing #156's
+    flat `reauth=` scalar) and `_send_with_reauth_policy`, the chokepoint that applies it whenever
+    a request raises `ReauthenticationRequired`."""
 
     def test_validation_rejects_a_non_default_value_combined_with_api_key_mode(self):
-        with pytest.raises(InterfaceError, match="reauth may only be supplied when auth='oauth'"):
+        with pytest.raises(
+            InterfaceError, match="oauth_policy may only be supplied when auth='oauth'"
+        ):
             connect(
-                reauth="raise",
+                oauth_policy=OAUTH_UNATTENDED,
                 global_api_key="gk",
                 global_api_secret="gs",
                 environment_id="env-1",
@@ -456,7 +450,7 @@ class TestReauthPolicy:
         assert conn._reauth_policy == "auto"  # noqa: SLF001
 
     def test_oauth_connection_honors_an_explicit_reauth(self):
-        conn = _oauth_connect(reauth="raise")
+        conn = _oauth_connect(oauth_policy=OAUTH_UNATTENDED)
         assert conn._reauth_policy == "raise"  # noqa: SLF001
 
     def test_auto_policy_reauthenticates_and_retries_transparently(self, monkeypatch):
