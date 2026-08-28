@@ -36,9 +36,11 @@ class OAuthPolicy:
     """How to respond when a request raises `ReauthenticationRequired` -- the session's refresh
     token can no longer be exchanged (the ~8h absolute wall, idle expiry, or revocation), so only
     a fresh interactive login (another browser round-trip) can recover it. This is distinct from
-    the routine, always-succeeds-until-the-wall control-plane/data-plane token refresh that keeps
-    requests authenticated minute to minute (#157 adds a field governing *that*) -- this field
-    only ever matters once routine refresh has definitively stopped working.
+    the routine control-plane/data-plane token refresh that keeps requests authenticated minute to
+    minute (#157 adds a field governing *that*) -- this field only ever matters once that refresh
+    has failed *terminally* in the way just described, not on an ordinary transient failure (a
+    429/5xx blip from the token endpoint), which propagates as an unrelated error and leaves the
+    session retryable on the next request.
 
     `"auto"` (default): catch the exception transparently, block on
     `confluent_sql.oauth.reauthenticate()` (another browser round-trip), and retry the request
