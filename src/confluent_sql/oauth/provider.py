@@ -98,6 +98,7 @@ _INVALID_GRANT = "invalid_grant"
 already spent (RFC 6749 section 5.2). The one refresh failure no retry can fix, and the reason
 `OAuthTokenEndpointError` carries the code as data rather than folding it into the message."""
 
+
 class OAuthProvider(Protocol):
     """The surface a logged-in provider presents to its consumers -- what a `Connection` needs.
 
@@ -121,6 +122,7 @@ class OAuthProvider(Protocol):
     def reauthenticate(self, *, timeout: float = ...) -> None: ...
 
     def close(self) -> None: ...
+
 
 class CCloudOAuth:
     """Owns one Confluent Cloud interactive login and the tokens it mints.
@@ -698,6 +700,7 @@ if TYPE_CHECKING:
     _CCLOUDOAUTH_CONFORMS: type[OAuthProvider] = CCloudOAuth
     """Static assertion that `CCloudOAuth` satisfies `OAuthProvider`."""
 
+
 class _Plane(Enum):
     """Which of the snapshot's two Confluent tokens a given auth view reads.
 
@@ -716,6 +719,7 @@ class _Plane(Enum):
         if self is _Plane.CONTROL:
             return snapshot.cp_token_valid(now)
         return snapshot.dp_token_valid(now)
+
 
 class _PlaneAuth(httpx.Auth):
     """One of the provider's two `httpx.Auth` views, stamping its plane's token.
