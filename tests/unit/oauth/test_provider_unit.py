@@ -31,6 +31,7 @@ import json
 import logging
 import socket
 import threading
+import time
 import urllib.parse
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
@@ -328,6 +329,34 @@ def _doctor_token_set(provider: CCloudOAuth, **changes: datetime) -> None:
 
 def _past() -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=1)
+
+
+SLOW_HOP_SECS = 0.05
+"""How long `_slow_down_hops` delays each of `FakeCCloud`'s three handlers -- `MockTransport`
+answers instantly otherwise, which would leave every metrics timing field indistinguishable
+from zero."""
+
+
+def _slow_down_hops(fake: FakeCCloud) -> None:
+    """Make each of the token chain's three network hops take a measurable, nonzero amount of
+    time, so a metrics test can assert `*_secs` actually accumulated rather than merely that the
+    corresponding count did."""
+    token_endpoint, sessions, access_tokens = (
+        fake._token_endpoint,  # noqa: SLF001
+        fake._sessions,  # noqa: SLF001
+        fake._access_tokens,  # noqa: SLF001
+    )
+
+    def slow(handler: Callable[[httpx.Request], httpx.Response]):
+        def wrapped(request: httpx.Request) -> httpx.Response:
+            time.sleep(SLOW_HOP_SECS)
+            return handler(request)
+
+        return wrapped
+
+    fake._token_endpoint = slow(token_endpoint)  # noqa: SLF001
+    fake._sessions = slow(sessions)  # noqa: SLF001
+    fake._access_tokens = slow(access_tokens)  # noqa: SLF001
 
 
 class TestLogin:
@@ -800,6 +829,125 @@ class TestRefresh:
             with _resource_client(provider.data_plane_auth, resource) as client:
                 client.get(RESOURCE_URL)
             assert resource.bearer_tokens()[-1] == _tokens(provider).dp_token
+
+
+class TestMetrics:
+    """`provider.metrics` covers only the in-loop refresh chain, never the interactive `login()`
+    that `_logged_in` performs to set each test up -- so every assertion here checks counts/secs
+    starting from a fresh `OAuthMetrics()`, not from whatever the login itself did."""
+
+    def test_login_alone_leaves_metrics_at_zero(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            metrics = provider.metrics
+        assert metrics.refresh_chain_count == 0
+        assert metrics.refresh_leg_count == 0
+        assert metrics.cp_exchange_count == 0
+        assert metrics.dp_exchange_count == 0
+        assert metrics.failed_refresh_chain_count == 0
+
+    def test_successful_refresh_updates_every_hop_and_the_chain_rollup(self):
+        fake = FakeCCloud()
+        fake.dp_lifetime = BORN_STALE_LIFETIME
+        with _logged_in(fake) as provider:
+            fake.dp_lifetime = LONG_LIFETIME
+            _slow_down_hops(fake)
+            resource = FakeResource()
+            with _resource_client(provider.data_plane_auth, resource) as client:
+                client.get(RESOURCE_URL)
+
+            metrics = provider.metrics
+            assert metrics.refresh_chain_count == 1
+            assert metrics.refresh_leg_count == 1
+            assert metrics.cp_exchange_count == 1
+            assert metrics.dp_exchange_count == 1
+            assert metrics.failed_refresh_chain_count == 0
+            # Each hop was slowed independently, so the chain must be at least the sum of all
+            # three -- not just the slowest one -- and each leg at least its own delay.
+            assert metrics.refresh_leg_secs >= SLOW_HOP_SECS
+            assert metrics.cp_exchange_secs >= SLOW_HOP_SECS
+            assert metrics.dp_exchange_secs >= SLOW_HOP_SECS
+            assert metrics.refresh_chain_secs >= SLOW_HOP_SECS * 3
+            assert metrics.avg_refresh_chain_secs == metrics.refresh_chain_secs
+            assert metrics.avg_cp_exchange_secs == metrics.cp_exchange_secs
+            assert metrics.avg_dp_exchange_secs == metrics.dp_exchange_secs
+
+    def test_concurrent_refreshes_of_one_stale_snapshot_count_as_one_chain(self):
+        """Mirrors `TestRefresh.test_concurrent_refreshes_of_one_stale_snapshot_run_the_chain_once`
+        -- the single-flight gate's winner is the only caller that ever reaches
+        `_run_refresh_chain`, so N threads meeting one stale token must still count as one."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _doctor_token_set(provider, cp_token_expires_at=_past(), dp_token_expires_at=_past())
+            stale = _tokens(provider)
+
+            thread_count = 8
+            barrier = threading.Barrier(thread_count)
+            errors: list[BaseException] = []
+            errors_lock = threading.Lock()
+
+            def refresh() -> None:
+                try:
+                    barrier.wait(timeout=BRIEF_TIMEOUT)
+                    provider._refresh(stale)  # noqa: SLF001
+                except BaseException as e:  # noqa: BLE001
+                    with errors_lock:
+                        errors.append(e)
+
+            threads = [threading.Thread(target=refresh) for _ in range(thread_count)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=BRIEF_TIMEOUT * 2)
+
+            assert not errors
+            assert not any(thread.is_alive() for thread in threads)
+            assert provider.metrics.refresh_chain_count == 1
+            assert provider.metrics.cp_exchange_count == 1
+            assert provider.metrics.dp_exchange_count == 1
+
+    def test_failed_refresh_counts_as_a_failure_not_a_success(self):
+        fake = FakeCCloud()
+        fake.dp_lifetime = BORN_STALE_LIFETIME
+        with _logged_in(fake) as provider:
+            fake.dp_lifetime = LONG_LIFETIME
+            fake.fail_token_endpoint_with = (503, None)
+
+            resource = FakeResource()
+            with (
+                _resource_client(provider.data_plane_auth, resource) as client,
+                pytest.raises(OperationalError),
+            ):
+                client.get(RESOURCE_URL)
+
+            metrics = provider.metrics
+            assert metrics.failed_refresh_chain_count == 1
+            assert metrics.refresh_chain_count == 0
+            assert metrics.refresh_leg_count == 0
+            assert metrics.cp_exchange_count == 0
+            assert metrics.dp_exchange_count == 0
+
+    def test_metrics_returns_an_independent_snapshot(self):
+        """A caller's copy must not update behind its back when a later refresh runs -- unlike
+        `CCloudOAuth.token_set`, `metrics` is read from a genuinely concurrent caller (a script
+        polling for observability while requests keep running), so returning the live mutable
+        object would let a torn read land in that caller's hands."""
+        fake = FakeCCloud()
+        fake.dp_lifetime = BORN_STALE_LIFETIME
+        with _logged_in(fake) as provider:
+            fake.dp_lifetime = LONG_LIFETIME
+            resource = FakeResource()
+            with _resource_client(provider.data_plane_auth, resource) as client:
+                client.get(RESOURCE_URL)
+            first = provider.metrics
+            assert first.refresh_chain_count == 1
+
+            _doctor_token_set(provider, dp_token_expires_at=_past())
+            with _resource_client(provider.data_plane_auth, resource) as client:
+                client.get(RESOURCE_URL)
+
+            assert first.refresh_chain_count == 1
+            assert provider.metrics.refresh_chain_count == 2
 
 
 class TestAuthAdapters:

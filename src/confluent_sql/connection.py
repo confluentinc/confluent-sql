@@ -33,7 +33,15 @@ from .exceptions import (
     TableflowTopicNotFoundError,
 )
 from .execution_mode import ExecutionMode
-from .oauth import PROD, CCloudOAuth, CCloudOAuthConfig, OAuthProvider, acquire, release
+from .oauth import (
+    PROD,
+    CCloudOAuth,
+    CCloudOAuthConfig,
+    OAuthMetrics,
+    OAuthProvider,
+    acquire,
+    release,
+)
 from .oauth import reauthenticate as oauth_reauthenticate
 from .polling import sleep_with_backoff
 from .retry import (
@@ -1544,6 +1552,17 @@ class Connection:
                     self._resolve_organization_id() if self._global_credentials is not None else ""
                 )
         return self._organization_id_value
+
+    @property
+    def oauth_metrics(self) -> OAuthMetrics | None:
+        """Timing/counts for this connection's shared OAuth provider's in-loop token refreshes
+        (auth="oauth"), or None under every other auth mode.
+
+        Covers only refreshes triggered *during* the connection's life, never the interactive
+        login `connect()` performed to establish it -- see `OAuthMetrics`. The supported
+        replacement for reading `_oauth_provider` directly.
+        """
+        return self._oauth_provider.metrics if self._oauth_provider is not None else None
 
     @property
     def local_time_zone(self) -> str | None:
