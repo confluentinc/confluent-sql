@@ -98,27 +98,6 @@ _INVALID_GRANT = "invalid_grant"
 already spent (RFC 6749 section 5.2). The one refresh failure no retry can fix, and the reason
 `OAuthTokenEndpointError` carries the code as data rather than folding it into the message."""
 
-
-class _Plane(Enum):
-    """Which of the snapshot's two Confluent tokens a given auth view reads.
-
-    One parameterized adapter rather than two near-identical classes: the planes differ only in
-    which field they read and which validity helper they call, and every line of the refresh /
-    401-retry logic around that is identical.
-    """
-
-    CONTROL = "control-plane"
-    DATA = "data-plane"
-
-    def token(self, snapshot: TokenSet) -> str:
-        return snapshot.cp_token if self is _Plane.CONTROL else snapshot.dp_token
-
-    def token_valid(self, snapshot: TokenSet, now: datetime) -> bool:
-        if self is _Plane.CONTROL:
-            return snapshot.cp_token_valid(now)
-        return snapshot.dp_token_valid(now)
-
-
 class OAuthProvider(Protocol):
     """The surface a logged-in provider presents to its consumers -- what a `Connection` needs.
 
@@ -142,137 +121,6 @@ class OAuthProvider(Protocol):
     def reauthenticate(self, *, timeout: float = ...) -> None: ...
 
     def close(self) -> None: ...
-
-
-@dataclasses.dataclass
-class OAuthMetrics:
-    """Timing/counts for the in-loop refresh chain's network hops.
-
-    Deliberately excludes the one-time interactive login (`login()`/`_run_login_flow()`) -- this
-    covers only the recurring "keep a long-lived connection's tokens current" cost, the thing that
-    repeats for as long as a client stays connected. Modeled on `FetchMetrics`
-    (`result_readers.py`): a plain mutable dataclass a caller reads via a snapshot property, not an
-    object it mutates itself.
-
-    Only the refresh single-flight's *winner* ever runs `_run_refresh_chain`, so these counts
-    already reflect that: N callers meeting one stale token and colliding on the gate still count
-    as one chain, not N -- see `CCloudOAuth._refresh`.
-
-    The three per-hop fields below are credited together, only once the whole chain succeeds --
-    a chain that fails partway (e.g. the CP exchange lands but the DP one then fails) contributes
-    to `failed_refresh_chain_count` alone, not a partial credit to whichever hop(s) it completed.
-    """
-
-    refresh_chain_count: int = 0
-    """Number of completed (successful) refresh chains -- all three hops below succeeded."""
-
-    refresh_chain_secs: float = 0.0
-    """Total wall time spent in successful refresh chains, start to finish."""
-
-    failed_refresh_chain_count: int = 0
-    """Number of refresh chains that raised instead of completing -- a transient error (e.g. a
-    5xx from any of the three hops), an `invalid_grant` rejection, or the locally-known absolute
-    session wall having already passed. Carries no `_secs` field of its own: a failure can happen
-    at any point in the chain, so its elapsed time is not comparable across failures the way a
-    completed hop's is."""
-
-    refresh_leg_count: int = 0
-    refresh_leg_secs: float = 0.0
-    """`exchange_refresh_token` -- the auth service's token endpoint, trading the refresh token
-    for a fresh id_token (and a rotated refresh token)."""
-
-    cp_exchange_count: int = 0
-    cp_exchange_secs: float = 0.0
-    """`exchange_id_token_for_cp_token` -- POST {api_host}/api/sessions."""
-
-    dp_exchange_count: int = 0
-    dp_exchange_secs: float = 0.0
-    """`exchange_cp_for_dp_token` -- POST {api_host}/api/access_tokens."""
-
-    def record_success(self, timing: _RefreshChainTiming) -> None:
-        """Call once a refresh chain completes, from the `_RefreshChainTiming` that timed it --
-        all three hops plus the chain-level rollup, committed together (see class docstring: a
-        chain that fails partway credits none of its hops individually, so there is no separate
-        per-hop mutator)."""
-        self.refresh_leg_count += 1
-        self.refresh_leg_secs += timing.leg_secs
-        self.cp_exchange_count += 1
-        self.cp_exchange_secs += timing.cp_secs
-        self.dp_exchange_count += 1
-        self.dp_exchange_secs += timing.dp_secs
-        self.refresh_chain_count += 1
-        self.refresh_chain_secs += timing.chain_secs
-
-    def record_failure(self) -> None:
-        """Call when a refresh chain raises instead of completing, for any reason -- see class
-        docstring and `failed_refresh_chain_count`."""
-        self.failed_refresh_chain_count += 1
-
-    @property
-    def avg_refresh_chain_secs(self) -> float:
-        return self._avg(self.refresh_chain_secs, self.refresh_chain_count)
-
-    @property
-    def avg_refresh_leg_secs(self) -> float:
-        return self._avg(self.refresh_leg_secs, self.refresh_leg_count)
-
-    @property
-    def avg_cp_exchange_secs(self) -> float:
-        return self._avg(self.cp_exchange_secs, self.cp_exchange_count)
-
-    @property
-    def avg_dp_exchange_secs(self) -> float:
-        return self._avg(self.dp_exchange_secs, self.dp_exchange_count)
-
-    @staticmethod
-    def _avg(total_secs: float, count: int) -> float:
-        return total_secs / count if count else 0.0
-
-
-class _RefreshChainTiming:
-    """Timing bookkeeping for one `_run_refresh_chain` attempt, collected on one object instead
-    of loose `time.monotonic()` locals -- so the chain's lock-sensitive control flow (already
-    dense with commentary about single-flight/persist-before-exchange ordering) isn't also
-    interleaved with start/stop timing arithmetic for each of its three hops.
-
-    `with timing.leg():` (and `.cp()`/`.dp()`) times one hop; `chain_secs` reads elapsed time for
-    the whole attempt so far. Feed the finished object straight to `OAuthMetrics.record_success`.
-    """
-
-    def __init__(self) -> None:
-        self._chain_start = time.monotonic()
-        self.leg_secs = 0.0
-        self.cp_secs = 0.0
-        self.dp_secs = 0.0
-
-    @property
-    def chain_secs(self) -> float:
-        return time.monotonic() - self._chain_start
-
-    @contextmanager
-    def leg(self) -> Iterator[None]:
-        start = time.monotonic()
-        try:
-            yield
-        finally:
-            self.leg_secs = time.monotonic() - start
-
-    @contextmanager
-    def cp(self) -> Iterator[None]:
-        start = time.monotonic()
-        try:
-            yield
-        finally:
-            self.cp_secs = time.monotonic() - start
-
-    @contextmanager
-    def dp(self) -> Iterator[None]:
-        start = time.monotonic()
-        try:
-            yield
-        finally:
-            self.dp_secs = time.monotonic() - start
-
 
 class CCloudOAuth:
     """Owns one Confluent Cloud interactive login and the tokens it mints.
@@ -850,6 +698,24 @@ if TYPE_CHECKING:
     _CCLOUDOAUTH_CONFORMS: type[OAuthProvider] = CCloudOAuth
     """Static assertion that `CCloudOAuth` satisfies `OAuthProvider`."""
 
+class _Plane(Enum):
+    """Which of the snapshot's two Confluent tokens a given auth view reads.
+
+    One parameterized adapter rather than two near-identical classes: the planes differ only in
+    which field they read and which validity helper they call, and every line of the refresh /
+    401-retry logic around that is identical.
+    """
+
+    CONTROL = "control-plane"
+    DATA = "data-plane"
+
+    def token(self, snapshot: TokenSet) -> str:
+        return snapshot.cp_token if self is _Plane.CONTROL else snapshot.dp_token
+
+    def token_valid(self, snapshot: TokenSet, now: datetime) -> bool:
+        if self is _Plane.CONTROL:
+            return snapshot.cp_token_valid(now)
+        return snapshot.dp_token_valid(now)
 
 class _PlaneAuth(httpx.Auth):
     """One of the provider's two `httpx.Auth` views, stamping its plane's token.
@@ -884,3 +750,133 @@ class _PlaneAuth(httpx.Auth):
 
     def _stamp(self, request: httpx.Request, snapshot: TokenSet) -> None:
         request.headers["Authorization"] = f"Bearer {self._plane.token(snapshot)}"
+
+
+@dataclasses.dataclass
+class OAuthMetrics:
+    """Timing/counts for the in-loop refresh chain's network hops.
+
+    Deliberately excludes the one-time interactive login (`login()`/`_run_login_flow()`) -- this
+    covers only the recurring "keep a long-lived connection's tokens current" cost, the thing that
+    repeats for as long as a client stays connected. Modeled on `FetchMetrics`
+    (`result_readers.py`): a plain mutable dataclass a caller reads via a snapshot property, not an
+    object it mutates itself.
+
+    Only the refresh single-flight's *winner* ever runs `_run_refresh_chain`, so these counts
+    already reflect that: N callers meeting one stale token and colliding on the gate still count
+    as one chain, not N -- see `CCloudOAuth._refresh`.
+
+    The three per-hop fields below are credited together, only once the whole chain succeeds --
+    a chain that fails partway (e.g. the CP exchange lands but the DP one then fails) contributes
+    to `failed_refresh_chain_count` alone, not a partial credit to whichever hop(s) it completed.
+    """
+
+    refresh_chain_count: int = 0
+    """Number of completed (successful) refresh chains -- all three hops below succeeded."""
+
+    refresh_chain_secs: float = 0.0
+    """Total wall time spent in successful refresh chains, start to finish."""
+
+    failed_refresh_chain_count: int = 0
+    """Number of refresh chains that raised instead of completing -- a transient error (e.g. a
+    5xx from any of the three hops), an `invalid_grant` rejection, or the locally-known absolute
+    session wall having already passed. Carries no `_secs` field of its own: a failure can happen
+    at any point in the chain, so its elapsed time is not comparable across failures the way a
+    completed hop's is."""
+
+    refresh_leg_count: int = 0
+    refresh_leg_secs: float = 0.0
+    """`exchange_refresh_token` -- the auth service's token endpoint, trading the refresh token
+    for a fresh id_token (and a rotated refresh token)."""
+
+    cp_exchange_count: int = 0
+    cp_exchange_secs: float = 0.0
+    """`exchange_id_token_for_cp_token` -- POST {api_host}/api/sessions."""
+
+    dp_exchange_count: int = 0
+    dp_exchange_secs: float = 0.0
+    """`exchange_cp_for_dp_token` -- POST {api_host}/api/access_tokens."""
+
+    def record_success(self, timing: _RefreshChainTiming) -> None:
+        """Call once a refresh chain completes, from the `_RefreshChainTiming` that timed it --
+        all three hops plus the chain-level rollup, committed together (see class docstring: a
+        chain that fails partway credits none of its hops individually, so there is no separate
+        per-hop mutator)."""
+        self.refresh_leg_count += 1
+        self.refresh_leg_secs += timing.leg_secs
+        self.cp_exchange_count += 1
+        self.cp_exchange_secs += timing.cp_secs
+        self.dp_exchange_count += 1
+        self.dp_exchange_secs += timing.dp_secs
+        self.refresh_chain_count += 1
+        self.refresh_chain_secs += timing.chain_secs
+
+    def record_failure(self) -> None:
+        """Call when a refresh chain raises instead of completing, for any reason -- see class
+        docstring and `failed_refresh_chain_count`."""
+        self.failed_refresh_chain_count += 1
+
+    @property
+    def avg_refresh_chain_secs(self) -> float:
+        return self._avg(self.refresh_chain_secs, self.refresh_chain_count)
+
+    @property
+    def avg_refresh_leg_secs(self) -> float:
+        return self._avg(self.refresh_leg_secs, self.refresh_leg_count)
+
+    @property
+    def avg_cp_exchange_secs(self) -> float:
+        return self._avg(self.cp_exchange_secs, self.cp_exchange_count)
+
+    @property
+    def avg_dp_exchange_secs(self) -> float:
+        return self._avg(self.dp_exchange_secs, self.dp_exchange_count)
+
+    @staticmethod
+    def _avg(total_secs: float, count: int) -> float:
+        return total_secs / count if count else 0.0
+
+
+class _RefreshChainTiming:
+    """Timing bookkeeping for one `_run_refresh_chain` attempt, collected on one object instead
+    of loose `time.monotonic()` locals -- so the chain's lock-sensitive control flow (already
+    dense with commentary about single-flight/persist-before-exchange ordering) isn't also
+    interleaved with start/stop timing arithmetic for each of its three hops.
+
+    `with timing.leg():` (and `.cp()`/`.dp()`) times one hop; `chain_secs` reads elapsed time for
+    the whole attempt so far. Feed the finished object straight to `OAuthMetrics.record_success`.
+    """
+
+    def __init__(self) -> None:
+        self._chain_start = time.monotonic()
+        self.leg_secs = 0.0
+        self.cp_secs = 0.0
+        self.dp_secs = 0.0
+
+    @property
+    def chain_secs(self) -> float:
+        return time.monotonic() - self._chain_start
+
+    @contextmanager
+    def leg(self) -> Iterator[None]:
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            self.leg_secs = time.monotonic() - start
+
+    @contextmanager
+    def cp(self) -> Iterator[None]:
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            self.cp_secs = time.monotonic() - start
+
+    @contextmanager
+    def dp(self) -> Iterator[None]:
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            self.dp_secs = time.monotonic() - start
