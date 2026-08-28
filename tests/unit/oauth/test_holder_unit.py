@@ -29,10 +29,15 @@ from concurrent.futures import Future
 import httpx
 import pytest
 
-from confluent_sql.exceptions import InterfaceError, OAuthLoginError, OAuthLoginFailure
+from confluent_sql.exceptions import (
+    InterfaceError,
+    OAuthLoginError,
+    OAuthLoginFailure,
+    ProgrammingError,
+)
 from confluent_sql.oauth import holder as holder_module
 from confluent_sql.oauth.config import CCloudOAuthConfig
-from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, shutdown_all
+from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, reauthenticate, shutdown_all
 from confluent_sql.oauth.provider import OAuthProvider
 
 pytestmark = pytest.mark.unit
@@ -82,11 +87,19 @@ class FakeProvider:
     (`close()`) is recorded so a test can assert on it.
     """
 
-    def __init__(self, config: CCloudOAuthConfig, *, gate: Callable[[], None] | None = None):
+    def __init__(
+        self,
+        config: CCloudOAuthConfig,
+        *,
+        gate: Callable[[], None] | None = None,
+        reauth_gate: Callable[[], None] | None = None,
+    ):
         self.config = config
         self._gate = gate
+        self._reauth_gate = reauth_gate
         self._organization_id: str | None = None
         self.login_calls = 0
+        self.reauthenticate_calls = 0
         self.closed = False
 
     def login(self, org_resource_id: str | None = None, *, timeout: float = 0.0) -> None:
@@ -94,6 +107,11 @@ class FakeProvider:
         if self._gate is not None:
             self._gate()
         self._organization_id = org_resource_id if org_resource_id is not None else DEFAULT_ORG
+
+    def reauthenticate(self, *, timeout: float = 0.0) -> None:
+        self.reauthenticate_calls += 1
+        if self._reauth_gate is not None:
+            self._reauth_gate()
 
     @property
     def organization_id(self) -> str | None:
@@ -121,13 +139,19 @@ class RecordingFactory:
     a fact about construction.
     """
 
-    def __init__(self, gate: Callable[[], None] | None = None):
+    def __init__(
+        self,
+        gate: Callable[[], None] | None = None,
+        *,
+        reauth_gate: Callable[[], None] | None = None,
+    ):
         self._gate = gate
+        self._reauth_gate = reauth_gate
         self.providers: list[FakeProvider] = []
         self._lock = threading.Lock()
 
     def __call__(self, config: CCloudOAuthConfig) -> FakeProvider:
-        provider = FakeProvider(config, gate=self._gate)
+        provider = FakeProvider(config, gate=self._gate, reauth_gate=self._reauth_gate)
         with self._lock:
             self.providers.append(provider)
         return provider
@@ -598,6 +622,58 @@ class TestLockNotHeldAcrossLogin:
         assert joined == [factory.providers[0]]
 
 
+class TestReauthenticate:
+    """#156: `holder.reauthenticate()` delegates to the established provider -- the provider's
+    own single-flight gate (pinned in `test_provider_unit.py`) is what collapses concurrent
+    callers, so the holder itself needs no single-flight of its own, just the same "never hold
+    the module lock across a login-shaped call" discipline `acquire()` already has."""
+
+    def test_delegates_to_the_established_provider(self):
+        factory = RecordingFactory()
+        holder = ProcessOAuthHolder.instance()
+        holder.acquire(CONFIG, provider_factory=factory)
+
+        holder.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+        assert factory.providers[0].reauthenticate_calls == 1
+
+    def test_without_an_established_provider_raises_programming_error(self):
+        holder = ProcessOAuthHolder.instance()
+        with pytest.raises(ProgrammingError, match="no established"):
+            holder.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+    def test_the_module_lock_is_free_while_reauthenticate_is_in_flight(self):
+        """Mirrors `TestLockNotHeldAcrossLogin`'s login case: the module lock must be released
+        before `provider.reauthenticate()` runs, since that can itself block for the duration of
+        a browser round-trip."""
+        release = threading.Event()
+        entered = threading.Event()
+
+        def reauth_gate() -> None:
+            entered.set()
+            assert release.wait(timeout=BRIEF_TIMEOUT)
+
+        factory = RecordingFactory(reauth_gate=reauth_gate)
+        holder = ProcessOAuthHolder.instance()
+        holder.acquire(CONFIG, provider_factory=factory)
+
+        reauth_thread = threading.Thread(
+            target=lambda: holder.reauthenticate(timeout=BRIEF_TIMEOUT)
+        )
+        reauth_thread.start()
+        assert entered.wait(timeout=BRIEF_TIMEOUT)
+
+        # If the module lock were held across reauthenticate(), this would block until `release`.
+        shutdown_thread = threading.Thread(target=holder.shutdown)
+        shutdown_thread.start()
+        shutdown_thread.join(timeout=BRIEF_TIMEOUT)
+        assert not shutdown_thread.is_alive()
+
+        release.set()
+        reauth_thread.join(timeout=BRIEF_TIMEOUT)
+        assert not reauth_thread.is_alive()
+
+
 class TestShutdown:
     def test_shutdown_all_closes_the_provider_and_resets_to_pristine(self):
         first_factory = RecordingFactory()
@@ -644,6 +720,14 @@ class TestModuleLevelFunctions:
         acquire(CONFIG, provider_factory=factory)
         shutdown_all()
         assert factory.providers[0].closed
+
+    def test_module_reauthenticate_delegates_to_the_singleton(self):
+        factory = RecordingFactory()
+        acquire(CONFIG, provider_factory=factory)
+
+        reauthenticate(timeout=BRIEF_TIMEOUT)
+
+        assert factory.providers[0].reauthenticate_calls == 1
 
 
 def _raising(exc: BaseException) -> Callable[[], None]:
