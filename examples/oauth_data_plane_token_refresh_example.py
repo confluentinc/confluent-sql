@@ -225,6 +225,10 @@ table_created = False
 region as everything else now, so a failure there must not attempt to drop a table that was
 never (or only partially) created."""
 
+streaming_statement_name: str | None = None
+"""Retained so cleanup can stop the streaming statement even after the Ctrl+C path has already
+closed the cursor that ran it -- see the `finally` block below."""
+
 try:
     with conn.closing_cursor() as cursor:
         print(f"{_now()} Creating table {table_name} ...")
@@ -253,6 +257,7 @@ try:
     print(f"{_now()} Starting streaming query against {table_name} ...")
     with conn.closing_streaming_cursor() as cursor:
         cursor.execute(f"SELECT id, name FROM {table_name}")
+        streaming_statement_name = cursor.statement.name
         assert cursor.statement.is_append_only, "expected an append-only streaming statement"
 
         print(f"{_now()} Draining initial results ...")
@@ -299,10 +304,21 @@ finally:
     # connection/provider.
     try:
         _print_overhead_summary(conn, flink_hits, time.monotonic() - run_start)
+        if streaming_statement_name is not None:
+            # On the (expected) Ctrl+C path, this statement is still RUNNING server-side --
+            # `closing_streaming_cursor()`'s exit only calls `Cursor.close()`, which explicitly
+            # does not stop an active statement (see Cursor.close()'s docstring). Left running,
+            # it would still be reading from `table_name` when the DROP below runs, failing the
+            # drop and leaving the statement itself orphaned server-side. stop_statement() blocks
+            # until it's genuinely terminal (a no-op if it already is, e.g. the loop ended on its
+            # own); delete_statement() then clears the now-stopped statement's server-side
+            # resources.
+            print(f"{_now()} Stopping streaming statement {streaming_statement_name} ...")
+            conn.stop_statement(streaming_statement_name)
+            conn.delete_statement(streaming_statement_name)
         if table_created:
             with conn.closing_cursor() as cursor:
                 print(f"{_now()} Dropping table {table_name} ...")
                 cursor.execute(f"DROP TABLE {table_name}")
     finally:
         conn.close()
-    conn.close()
