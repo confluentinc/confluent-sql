@@ -14,12 +14,18 @@ down.
 
 from __future__ import annotations
 
+from typing import Literal
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
-from confluent_sql import InterfaceError, connect
+from confluent_sql import (
+    InterfaceError,
+    ReauthenticationReason,
+    ReauthenticationRequired,
+    connect,
+)
 from confluent_sql.connection import Connection
 from confluent_sql.oauth.config import CCloudOAuthConfig
 
@@ -69,6 +75,12 @@ class FakeOAuthProvider:
 
     def login(self, org_resource_id: str | None = None, *, timeout: float = 0.0) -> None:
         self._organization_id = org_resource_id if org_resource_id is not None else DEFAULT_ORG
+
+    def reauthenticate(self, *, timeout: float = 0.0) -> None:
+        # Never exercised here -- #156's reauthenticate() tests live in
+        # tests/unit/oauth/test_provider_unit.py and test_holder_unit.py; this fake only needs
+        # the method to exist to satisfy the OAuthProvider protocol structurally.
+        raise NotImplementedError
 
     @property
     def organization_id(self) -> str | None:
@@ -368,3 +380,107 @@ class TestOauthClose:
         conn.close()
 
         release_mock.assert_not_called()
+
+
+class _FlakyReauthAuth(httpx.Auth):
+    """Raises `ReauthenticationRequired` on its first use, then stamps a bearer normally --
+    the shape a real oauth-mode auth view takes once a request hits the wall and someone (the
+    driver's "auto" policy, or the app itself under "raise") recovers the session."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def auth_flow(self, request: httpx.Request):
+        self.calls += 1
+        if self.calls == 1:
+            raise ReauthenticationRequired("session dead", ReauthenticationReason.ABSOLUTE_EXPIRY)
+        request.headers["Authorization"] = "Bearer fresh-token"
+        yield request
+
+
+def _connection_with_flaky_flink_auth(
+    reauth: Literal["auto", "raise"],
+) -> tuple[Connection, _FlakyReauthAuth]:
+    """A plain api_key-mode Connection whose Flink client is swapped for one backed by
+    `_FlakyReauthAuth`, so `_send_with_reauth_policy` (#156) can be exercised directly without a
+    real oauth-mode login. `reauth` is poked onto the private attribute rather than threaded
+    through connect()'s validation, since that validation (tested separately below) only allows
+    a non-default `reauth` together with `auth="oauth"`.
+    """
+    conn = connect(
+        global_api_key="gk",
+        global_api_secret="gs",
+        environment_id="env-1",
+        organization_id="org-1",
+        cloud_provider="aws",
+        cloud_region="us-east-1",
+    )
+    conn._reauth_policy = reauth  # noqa: SLF001
+    auth = _FlakyReauthAuth()
+    conn._flink_client = httpx.Client(  # noqa: SLF001
+        auth=auth,
+        base_url="https://flink.example.confluent.cloud",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+    )
+    return conn, auth
+
+
+class TestReauthPolicy:
+    """The `reauth=` policy knob (#156) and `_send_with_reauth_policy`, the chokepoint that
+    applies it whenever a request raises `ReauthenticationRequired`."""
+
+    def test_validation_rejects_an_invalid_value(self):
+        with pytest.raises(InterfaceError, match="reauth must be 'auto' or 'raise'"):
+            connect(
+                reauth="bogus",  # type: ignore[arg-type]
+                environment_id="env-1",
+                organization_id="org-1",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+            )
+
+    def test_validation_rejects_a_non_default_value_combined_with_api_key_mode(self):
+        with pytest.raises(InterfaceError, match="reauth may only be supplied when auth='oauth'"):
+            connect(
+                reauth="raise",
+                global_api_key="gk",
+                global_api_secret="gs",
+                environment_id="env-1",
+                organization_id="org-1",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+            )
+
+    def test_oauth_connection_defaults_reauth_to_auto(self):
+        conn = _oauth_connect()
+        assert conn._reauth_policy == "auto"  # noqa: SLF001
+
+    def test_oauth_connection_honors_an_explicit_reauth(self):
+        conn = _oauth_connect(reauth="raise")
+        assert conn._reauth_policy == "raise"  # noqa: SLF001
+
+    def test_auto_policy_reauthenticates_and_retries_transparently(self, monkeypatch):
+        conn, auth = _connection_with_flaky_flink_auth("auto")
+        reauth_mock = Mock()
+        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        try:
+            response = conn._request("/some/path")
+        finally:
+            conn.close()
+
+        assert response.status_code == 200
+        reauth_mock.assert_called_once_with()
+        assert auth.calls == 2
+
+    def test_raise_policy_leaves_the_exception_unhandled_and_unretried(self, monkeypatch):
+        conn, auth = _connection_with_flaky_flink_auth("raise")
+        reauth_mock = Mock()
+        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        try:
+            with pytest.raises(ReauthenticationRequired):
+                conn._request("/some/path")
+        finally:
+            conn.close()
+
+        reauth_mock.assert_not_called()
+        assert auth.calls == 1

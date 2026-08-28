@@ -52,7 +52,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TypeAlias
 
-from ..exceptions import InterfaceError, OAuthLoginError, OAuthLoginFailure
+from ..exceptions import InterfaceError, OAuthLoginError, OAuthLoginFailure, ProgrammingError
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS
 from .config import CCloudOAuthConfig
 from .provider import CCloudOAuth, OAuthProvider
@@ -102,6 +102,17 @@ def release() -> None:
     to change shape when #157 adds real teeth to it.
     """
     ProcessOAuthHolder.instance().release()
+
+
+def reauthenticate(*, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
+    """Re-authenticate the process's established OAuth login (#156).
+
+    Module-level convenience over `ProcessOAuthHolder.instance().reauthenticate(...)`, the peer of
+    `acquire()` for recovering a session once its refresh token can no longer be used (the ~8h
+    absolute wall, or the token endpoint rejecting it as idle-expired/revoked/already-spent). See
+    `ProcessOAuthHolder.reauthenticate` for the full contract.
+    """
+    ProcessOAuthHolder.instance().reauthenticate(timeout=timeout)
 
 
 class ProcessOAuthHolder:
@@ -314,6 +325,30 @@ class ProcessOAuthHolder:
         park hook.
         """
         return None
+
+    def reauthenticate(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
+        """Re-authenticate the established provider (#156), re-arming every `Connection` sharing
+        this process's holder in one call.
+
+        Thin delegation, not its own single-flight: the provider's `reauthenticate()` already
+        collapses concurrent callers into one browser bounce (see its docstring), so N
+        `Connection`s hitting the wall together and each calling this still cost exactly one
+        login. The module lock is never held across the call -- released before `reauthenticate()`
+        runs, same as `acquire()` never holds it across `login()`.
+
+        Raises:
+            ProgrammingError: no OAuth login has been established yet (no `acquire()` has
+                succeeded in this process).
+            OAuthLoginError, OperationalError: whatever the provider's `reauthenticate()` raises.
+        """
+        with self._lock:
+            provider = self._provider
+        if provider is None:
+            raise ProgrammingError(
+                "This process has no established Confluent Cloud OAuth login to "
+                "re-authenticate -- acquire() must succeed at least once first."
+            )
+        provider.reauthenticate(timeout=timeout)
 
     def shutdown(self) -> None:
         """Retire the established shared provider and reset the holder toward pristine. Idempotent.
