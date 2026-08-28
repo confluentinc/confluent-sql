@@ -38,7 +38,7 @@ from confluent_sql.exceptions import (
 from confluent_sql.oauth import holder as holder_module
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, reauthenticate, shutdown_all
-from confluent_sql.oauth.provider import OAuthProvider
+from confluent_sql.oauth.provider import OAuthMetrics, OAuthProvider
 
 pytestmark = pytest.mark.unit
 
@@ -125,6 +125,12 @@ class FakeProvider:
 
     @property
     def data_plane_auth(self) -> httpx.Auth:
+        raise NotImplementedError
+
+    @property
+    def metrics(self) -> OAuthMetrics:
+        # Part of the OAuthProvider surface but never exercised here -- the holder never reads
+        # refresh-chain metrics, only the connect() wiring (#155) does.
         raise NotImplementedError
 
     def close(self) -> None:

@@ -28,6 +28,7 @@ from confluent_sql import (
 )
 from confluent_sql.connection import Connection
 from confluent_sql.oauth.config import CCloudOAuthConfig
+from confluent_sql.oauth.provider import OAuthMetrics
 
 pytestmark = pytest.mark.unit
 
@@ -72,6 +73,10 @@ class FakeOAuthProvider:
         self.data_plane_auth = _MarkerAuth("dp")
         self.control_plane_auth = _MarkerAuth("cp")
         self.closed = False
+        self.metrics_value = OAuthMetrics()
+        """Settable by a test, so `Connection.oauth_metrics` can be asserted to delegate to
+        whatever this fake's `metrics` property currently returns, rather than to some fixed
+        value baked into the fake."""
 
     def login(self, org_resource_id: str | None = None, *, timeout: float = 0.0) -> None:
         self._organization_id = org_resource_id if org_resource_id is not None else DEFAULT_ORG
@@ -85,6 +90,10 @@ class FakeOAuthProvider:
     @property
     def organization_id(self) -> str | None:
         return self._organization_id
+
+    @property
+    def metrics(self) -> OAuthMetrics:
+        return self.metrics_value
 
     def close(self) -> None:
         self.closed = True
@@ -273,6 +282,28 @@ class TestOauthAuthWiring:
         )
         assert isinstance(conn._controlplane_auth, httpx.BasicAuth)
         assert isinstance(conn._connect_auth, httpx.BasicAuth)
+
+
+class TestOauthMetrics:
+    """`Connection.oauth_metrics` -- the supported replacement for peeking at
+    `_oauth_provider.metrics` directly."""
+
+    def test_none_outside_oauth_mode(self):
+        conn = connect(
+            global_api_key="gk",
+            global_api_secret="gs",
+            environment_id="env-1",
+            organization_id="org-1",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+        )
+        assert conn.oauth_metrics is None
+
+    def test_delegates_to_the_providers_metrics(self):
+        conn = _oauth_connect()
+        provider = _provider(conn)
+        provider.metrics_value = OAuthMetrics(refresh_chain_count=3, refresh_chain_secs=1.5)
+        assert conn.oauth_metrics == provider.metrics_value
 
 
 class TestOauthCmkCapabilityGain:
