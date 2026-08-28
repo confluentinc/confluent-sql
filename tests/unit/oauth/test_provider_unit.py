@@ -33,6 +33,7 @@ import socket
 import threading
 import urllib.parse
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -1118,6 +1119,93 @@ class TestReauthenticate:
             assert len({id(e) for e in raised}) == 1
             # Exactly one fresh login attempted: the original login's code grant, plus this one.
             assert len(fake.code_grants) == 2
+
+    def test_joining_a_plain_refresh_that_dies_still_reauthenticates(self, monkeypatch):
+        """The flight sitting in `_inflight_refresh` when `reauthenticate()` is called is not
+        always another reauthentication -- it can be an ordinary background refresh that then
+        discovers the refresh token itself is dead. A joiner must not be fobbed off with that
+        refresh's `ReauthenticationRequired`: it explicitly asked to reauthenticate, so it must
+        retry and actually run a fresh login rather than just re-raise the problem it came to
+        fix (jbreeden's #197 review comment)."""
+        fake = FakeCCloud()
+        fake.dp_lifetime = BORN_STALE_LIFETIME
+        with _logged_in(fake) as provider:
+            entered = threading.Event()
+            release = threading.Event()
+            answer_token_endpoint = fake._token_endpoint  # noqa: SLF001
+
+            def slow_then_invalid_grant(request: httpx.Request) -> httpx.Response:
+                # Only the refresh grant dies here -- the authorization_code exchange this
+                # test's retried reauthenticate() must still make has to succeed normally, so
+                # this must not touch `fake.fail_token_endpoint_with` (which `_token_endpoint`
+                # applies to every grant type, not just this one).
+                form = dict(urllib.parse.parse_qsl(request.content.decode()))
+                if form["grant_type"] != "refresh_token":
+                    return answer_token_endpoint(request)
+                entered.set()
+                release.wait(timeout=BRIEF_TIMEOUT)
+                return httpx.Response(
+                    403, json={"error": "invalid_grant", "error_description": "died mid-flight"}
+                )
+
+            fake._token_endpoint = slow_then_invalid_grant  # noqa: SLF001
+
+            resource = FakeResource()
+            refresh_errors: list[BaseException] = []
+
+            def run_refresh() -> None:
+                try:
+                    with _resource_client(provider.data_plane_auth, resource) as client:
+                        client.get(RESOURCE_URL)
+                except BaseException as e:  # noqa: BLE001
+                    refresh_errors.append(e)
+
+            refresh_thread = threading.Thread(target=run_refresh)
+            refresh_thread.start()
+            # The refresh is now the flight winner, blocked inside the token endpoint --
+            # `_inflight_refresh` holds *its* Future, not a reauthentication's.
+            assert entered.wait(timeout=BRIEF_TIMEOUT)
+
+            joined = threading.Event()
+            real_enter_reauth_flight = provider._enter_reauth_flight  # noqa: SLF001
+
+            def enter_reauth_flight_and_signal() -> tuple[Future, bool]:
+                result = real_enter_reauth_flight()
+                joined.set()
+                return result
+
+            monkeypatch.setattr(provider, "_enter_reauth_flight", enter_reauth_flight_and_signal)
+
+            reauth_errors: list[BaseException] = []
+
+            def run_reauth() -> None:
+                try:
+                    provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+                except BaseException as e:  # noqa: BLE001
+                    reauth_errors.append(e)
+
+            reauth_thread = threading.Thread(target=run_reauth)
+            reauth_thread.start()
+            # Confirms reauthenticate() has joined the refresh's Future before it dies, not
+            # started fresh against an already-cleared slot.
+            assert joined.wait(timeout=BRIEF_TIMEOUT)
+
+            release.set()  # let the refresh proceed to its invalid_grant death
+            refresh_thread.join(timeout=BRIEF_TIMEOUT * 2)
+            reauth_thread.join(timeout=BRIEF_TIMEOUT * 2)
+
+            assert not refresh_thread.is_alive()
+            assert not reauth_thread.is_alive()
+            assert len(refresh_errors) == 1
+            assert isinstance(refresh_errors[0], ReauthenticationRequired)
+
+            # reauthenticate() must have actually run a fresh login -- not merely re-raised the
+            # refresh's failure it joined. A code grant only ever comes from `_run_login_flow`
+            # (never from a refresh), so this is the proof: the original login's, plus this
+            # reauthentication's.
+            assert not reauth_errors
+            assert len(fake.code_grants) == 2
+            assert provider.token_set is not None
 
     def test_a_failed_reauthentication_clears_the_slot_so_a_later_attempt_retries(self):
         """A failed reauthenticate() must not leave a permanently-rejected `Future` sitting in

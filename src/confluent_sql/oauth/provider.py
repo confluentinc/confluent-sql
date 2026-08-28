@@ -321,26 +321,48 @@ class CCloudOAuth:
         login, a timed-out browser round-trip, a failed token exchange) re-raised on their own
         thread.
 
+        Because the slot is shared, a joiner here can land on a plain refresh's `Future` rather
+        than another reauthentication's -- one that was already in flight when this call arrived,
+        and that then discovers the refresh token itself is dead and latches failure instead of
+        running a login. Re-raising that `ReauthenticationRequired` verbatim would hand this
+        caller back exactly the failure it called `reauthenticate()` to fix, so that one case is
+        retried instead. The retry may briefly re-join the very same dead `Future` -- the winner
+        sets its exception slightly before its `finally` frees the slot -- but that resolves
+        itself within another loop iteration or two once the `finally` runs; either way the retry
+        eventually either wins the freed slot and runs the login itself, or joins an actual
+        reauthentication that got there first.
+
         Args:
             timeout: seconds to wait for the browser round-trip (the winner), or for the winner's
                 login to finish (a joiner) -- its own timeout either way, so a brief-timeout
-                caller is never bound to another's longer deadline.
+                caller is never bound to another's longer deadline. A retry after joining a dead
+                refresh (see above) restarts this budget rather than inheriting what is left of
+                it, since the retry is functionally a new attempt.
 
         Raises `ProgrammingError` if this provider has never logged in, `OAuthLoginError` if the
         browser leg fails or a joiner's own timeout elapses first, and `OperationalError` if a
         token exchange fails.
         """
-        flight, is_winner = self._enter_reauth_flight()
-        if not is_winner:
+        while True:
+            flight, is_winner = self._enter_reauth_flight()
+            if is_winner:
+                break
             try:
                 flight.result(timeout=timeout)
+                return
             except FuturesTimeoutError as e:
                 raise OAuthLoginError(
                     "Timed out waiting for this process's in-progress Confluent Cloud "
                     "re-authentication to complete. Retry, or allow a longer timeout.",
                     OAuthLoginFailure.TIMED_OUT,
                 ) from e
-            return
+            except ReauthenticationRequired:
+                # Joined a plain refresh, not a reauthentication -- see the docstring above.
+                # Retry rather than propagate: the slot this failed flight occupied is freed by
+                # its own `finally` (mirrored below) shortly after its exception becomes
+                # observable here, so looping converges quickly even if this particular iteration
+                # re-joins the same dead `Future` before that `finally` has run yet.
+                continue
 
         try:
             token_set, organization_id = self._run_login_flow(self._organization_id, timeout)
