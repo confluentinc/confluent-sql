@@ -19,7 +19,7 @@ from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import PROD, CCloudOAuthConfig
 from .holder import ProcessOAuthHolder, acquire, reauthenticate, release, shutdown_all
 from .pkce import challenge_for, generate_state, generate_verifier
-from .provider import CCloudOAuth, OAuthProvider
+from .provider import CCloudOAuth, OAuthMetrics, OAuthProvider
 from .token_chain import (
     CodeExchangeResult,
     ControlPlaneTokenResult,
@@ -40,6 +40,7 @@ __all__ = [
     "CodeExchangeResult",
     "ControlPlaneTokenResult",
     "DataPlaneTokenResult",
+    "OAuthMetrics",
     "OAuthProvider",
     "ProcessOAuthHolder",
     "TokenSet",
