@@ -37,7 +37,6 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import TypeAlias
 
 import httpx
 import pytest
@@ -348,9 +347,7 @@ def _slow_down_hops(fake: FakeCCloud) -> None:
         fake._access_tokens,  # noqa: SLF001
     )
 
-    Handler: TypeAlias = Callable[[httpx.Request], httpx.Response]
-
-    def slow(handler: Handler) -> Handler:
+    def slow(handler: Callable[[httpx.Request], httpx.Response]):
         def wrapped(request: httpx.Request) -> httpx.Response:
             time.sleep(SLOW_HOP_SECS)
             return handler(request)
