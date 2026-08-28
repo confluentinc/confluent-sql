@@ -1555,10 +1555,18 @@ class Connection:
 
     @property
     def oauth_metrics(self) -> OAuthMetrics | None:
-        """Timing/counts for this connection's shared OAuth provider's in-loop token refreshes
+        """Timing/counts for the in-loop token refreshes of this connection's OAuth provider
         (auth="oauth"), or None under every other auth mode.
 
-        Covers only refreshes triggered *during* the connection's life, never the interactive
+        **Not per-connection telemetry.** `oauth.acquire()` hands out one process-wide shared
+        provider (`ProcessOAuthHolder`, #154) -- every `Connection` in the process that logs in
+        under the same identity gets the *same* provider, and `Connection.close()`'s
+        `oauth.release()` is currently a no-op (#157 is what gives it real teeth), so the shared
+        provider and its accumulated metrics outlive any one connection. A newly opened
+        `Connection` reusing that provider can observe a nonzero `refresh_chain_count` from
+        refreshes triggered by another connection's requests, or from before this one existed.
+
+        Covers only refreshes triggered *during* the shared provider's life, never the interactive
         login `connect()` performed to establish it -- see `OAuthMetrics`. The supported
         replacement for reading `_oauth_provider` directly.
         """

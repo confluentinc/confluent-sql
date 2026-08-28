@@ -120,6 +120,13 @@ class _FlinkHitMetrics:
         request.extensions["_hit_metrics_start"] = time.monotonic()
 
     def _on_response(self, response: httpx.Response) -> None:
+        # httpx calls "response" hooks as soon as headers arrive, before the body is read --
+        # stopping the clock here would time only the round-trip to headers, while the OAuth
+        # exchange functions this is compared against (`post_json` -> `response.json()`) also
+        # include body-read/parse time. Force the read now so both sides measure the same thing:
+        # request sent to response fully consumed. Harmless if the driver reads it again later --
+        # httpx caches the body on first read.
+        response.read()
         self.count += 1
         start = response.request.extensions.get("_hit_metrics_start")
         if start is not None:
@@ -148,11 +155,11 @@ def _print_metrics(conn: confluent_sql.Connection, flink_hits: _FlinkHitMetrics)
     hit_pct = (oauth_hits / total_hits * 100) if total_hits else 0.0
     secs_pct = (oauth_secs / total_secs * 100) if total_secs else 0.0
     print(
-        f"{_now()} oauth_metrics: {metrics.refresh_chain_count} refresh(es) "
-        f"({metrics.failed_refresh_chain_count} failed) -- "
-        f"{oauth_hits} token-exchange hit(s)/{oauth_secs:.3f}s vs. "
+        f"{_now()} oauth_metrics: {metrics.refresh_chain_count} refresh(es) succeeded, "
+        f"{metrics.failed_refresh_chain_count} failed ({metrics.failed_refresh_chain_secs:.3f}s) "
+        f"-- {oauth_hits} token-exchange hit(s)/{oauth_secs:.3f}s vs. "
         f"{flink_hits.count} Flink hit(s)/{flink_hits.total_secs:.3f}s "
-        f"({hit_pct:.1f}% of hits, {secs_pct:.1f}% of time on token exchanges)"
+        f"({hit_pct:.1f}% of hits, {secs_pct:.1f}% of time on successful token exchanges)"
     )
 
 
@@ -168,19 +175,25 @@ def _print_overhead_summary(
     oauth_hits, oauth_secs = _oauth_hit_count_and_secs(metrics)
     total_hits = oauth_hits + flink_hits.count
     total_secs = oauth_secs + flink_hits.total_secs
-    wall_pct = (metrics.refresh_chain_secs / run_secs * 100) if run_secs > 0 else 0.0
+    # Includes failed-chain time -- a chain that blocked until an HTTP timeout before failing
+    # cost real wall-clock time and must count toward "how much did OAuth cost us", even though
+    # (unlike a successful chain's hops) it isn't attributed to a specific hop below.
+    oauth_wall_secs = metrics.refresh_chain_secs + metrics.failed_refresh_chain_secs
+    wall_pct = (oauth_wall_secs / run_secs * 100) if run_secs > 0 else 0.0
     hit_pct = (oauth_hits / total_hits * 100) if total_hits else 0.0
     secs_pct = (oauth_secs / total_secs * 100) if total_secs else 0.0
     print(
-        f"{_now()} Ran for {run_secs:.1f}s; spent {metrics.refresh_chain_secs:.3f}s "
-        f"({wall_pct:.3f}% of wall clock) across {metrics.refresh_chain_count} in-loop token "
-        f"refresh(es) ({metrics.failed_refresh_chain_count} failed)."
+        f"{_now()} Ran for {run_secs:.1f}s; spent {oauth_wall_secs:.3f}s ({wall_pct:.3f}% of "
+        f"wall clock) on OAuth refresh chains -- {metrics.refresh_chain_count} succeeded "
+        f"({metrics.refresh_chain_secs:.3f}s), {metrics.failed_refresh_chain_count} failed "
+        f"({metrics.failed_refresh_chain_secs:.3f}s)."
     )
     print(
         f"{_now()} Of {total_hits} total hits to Confluent Cloud ({total_secs:.3f}s), "
-        f"{oauth_hits} ({hit_pct:.1f}%) / {oauth_secs:.3f}s ({secs_pct:.1f}%) were token "
-        f"exchanges; the remaining {flink_hits.count} / {flink_hits.total_secs:.3f}s were actual "
-        "Flink gateway requests."
+        f"{oauth_hits} ({hit_pct:.1f}%) / {oauth_secs:.3f}s ({secs_pct:.1f}%) were successful "
+        f"token exchanges; the remaining {flink_hits.count} / {flink_hits.total_secs:.3f}s were "
+        "actual Flink gateway requests. (Failed refresh attempts add to the wall-clock total "
+        "above but aren't broken out by hop here.)"
     )
 
 
@@ -207,32 +220,37 @@ flink_hits.install(conn._get_flink_client())  # noqa: SLF001 -- see this file's 
 connection makes to the Flink gateway for the rest of the run is counted."""
 
 table_name = f"oauth_refresh_demo_{uuid.uuid4().hex[:8]}"
+table_created = False
+"""Guards the DROP TABLE in the final `finally` -- CREATE TABLE below is inside the same guarded
+region as everything else now, so a failure there must not attempt to drop a table that was
+never (or only partially) created."""
 
-with conn.closing_cursor() as cursor:
-    print(f"{_now()} Creating table {table_name} ...")
-    cursor.execute(
-        f"""
-        CREATE TABLE {table_name} (
-            id INT,
-            name STRING
-        )
-        """
-    )
-    print(f"{_now()} Inserting initial sample rows into {table_name} ...")
-    cursor.execute(
-        f"""
-        INSERT INTO {table_name} (id, name) VALUES
-        (1, 'Alice'),
-        (2, 'Bob'),
-        (3, 'Charlie')
-        """
-    )
-
-last_dp_expiry = _dp_token_expiry(conn)
-print(f"{_now()} Initial data-plane token expires at {last_dp_expiry}")
-
-print(f"{_now()} Starting streaming query against {table_name} ...")
 try:
+    with conn.closing_cursor() as cursor:
+        print(f"{_now()} Creating table {table_name} ...")
+        cursor.execute(
+            f"""
+            CREATE TABLE {table_name} (
+                id INT,
+                name STRING
+            )
+            """
+        )
+        table_created = True
+        print(f"{_now()} Inserting initial sample rows into {table_name} ...")
+        cursor.execute(
+            f"""
+            INSERT INTO {table_name} (id, name) VALUES
+            (1, 'Alice'),
+            (2, 'Bob'),
+            (3, 'Charlie')
+            """
+        )
+
+    last_dp_expiry = _dp_token_expiry(conn)
+    print(f"{_now()} Initial data-plane token expires at {last_dp_expiry}")
+
+    print(f"{_now()} Starting streaming query against {table_name} ...")
     with conn.closing_streaming_cursor() as cursor:
         cursor.execute(f"SELECT id, name FROM {table_name}")
         assert cursor.statement.is_append_only, "expected an append-only streaming statement"
@@ -276,8 +294,15 @@ try:
 except KeyboardInterrupt:
     print(f"\n{_now()} Interrupted; cleaning up ...")
 finally:
-    _print_overhead_summary(conn, flink_hits, time.monotonic() - run_start)
-    with conn.closing_cursor() as cursor:
-        print(f"{_now()} Dropping table {table_name} ...")
-        cursor.execute(f"DROP TABLE {table_name}")
+    # conn.close() must run no matter what -- nested in its own finally so a failure in either
+    # cleanup step above it (the metrics summary, or the DROP TABLE) can't skip releasing the
+    # connection/provider.
+    try:
+        _print_overhead_summary(conn, flink_hits, time.monotonic() - run_start)
+        if table_created:
+            with conn.closing_cursor() as cursor:
+                print(f"{_now()} Dropping table {table_name} ...")
+                cursor.execute(f"DROP TABLE {table_name}")
+    finally:
+        conn.close()
     conn.close()

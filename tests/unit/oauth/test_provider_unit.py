@@ -912,6 +912,7 @@ class TestMetrics:
         with _logged_in(fake) as provider:
             fake.dp_lifetime = LONG_LIFETIME
             fake.fail_token_endpoint_with = (503, None)
+            _slow_down_hops(fake)
 
             resource = FakeResource()
             with (
@@ -922,7 +923,13 @@ class TestMetrics:
 
             metrics = provider.metrics
             assert metrics.failed_refresh_chain_count == 1
+            # The failed attempt still cost real wall-clock time (it blocked on the token
+            # endpoint's slowed-down response before the 503 surfaced) -- that must not be
+            # reported as free, or overhead accounting would understate exactly the failures
+            # that cost the most (e.g. blocking until an HTTP timeout).
+            assert metrics.failed_refresh_chain_secs >= SLOW_HOP_SECS
             assert metrics.refresh_chain_count == 0
+            assert metrics.refresh_chain_secs == 0.0
             assert metrics.refresh_leg_count == 0
             assert metrics.cp_exchange_count == 0
             assert metrics.dp_exchange_count == 0

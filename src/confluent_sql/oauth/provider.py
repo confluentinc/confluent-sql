@@ -580,16 +580,20 @@ class CCloudOAuth:
 
         Every exit but the final `return` -- the absolute-wall check, an unclassified token-
         endpoint error, an `invalid_grant` rejection, a failed CP/DP leg -- is a failure, and all
-        of them are counted alike in `OAuthMetrics.failed_refresh_chain_count` via the outer
-        `except`: a caller measuring overhead cares that a chain cost time and didn't land a
-        token, not which of several ways it fell short. Per-hop counts/secs are committed in one
-        batch at the very end, alongside `_token_set`/`_interim_snapshot` -- not once per hop --
-        since only the flight winner is ever in here (no writer-vs-writer race to guard against);
-        the lock exists solely so `metrics` never hands a concurrent reader a torn snapshot, and
-        that only has to hold at the one point these fields actually change. A hop that
-        succeeded before a *later* hop in the same attempt failed is folded into
-        `failed_refresh_chain_count` rather than separately credited -- simpler, and the failure
-        path already treats every kind of failure alike for the same reason.
+        of them are counted (and timed) alike in `OAuthMetrics.failed_refresh_chain_count`/
+        `failed_refresh_chain_secs` via the outer `except`: a caller measuring overhead cares that
+        a chain cost time and didn't land a token, not which of several ways it fell short or how
+        long each individual hop ran before that -- `timing.chain_secs` still reads the elapsed
+        time since this attempt started even though no hop timing was ever committed, so a chain
+        that blocks until an HTTP timeout before failing is not reported as free. Per-hop
+        counts/secs on success are committed in one batch at the very end, alongside
+        `_token_set`/`_interim_snapshot` -- not once per hop -- since only the flight winner is
+        ever in here (no writer-vs-writer race to guard against); the lock exists solely so
+        `metrics` never hands a concurrent reader a torn snapshot, and that only has to hold at
+        the one point these fields actually change. A hop that succeeded before a *later* hop in
+        the same attempt failed is folded into `failed_refresh_chain_count`/`_secs` rather than
+        separately credited -- simpler, and the failure path already treats every kind of failure
+        alike for the same reason.
         """
         timing = _RefreshChainTiming()
         try:
@@ -677,7 +681,7 @@ class CCloudOAuth:
             return refreshed
         except BaseException:
             with self._token_lock:
-                self._metrics.record_failure()
+                self._metrics.record_failure(timing.chain_secs)
             raise
 
     def _latch_failure(
@@ -772,7 +776,8 @@ class OAuthMetrics:
 
     The three per-hop fields below are credited together, only once the whole chain succeeds --
     a chain that fails partway (e.g. the CP exchange lands but the DP one then fails) contributes
-    to `failed_refresh_chain_count` alone, not a partial credit to whichever hop(s) it completed.
+    to `failed_refresh_chain_count`/`failed_refresh_chain_secs` alone, not a partial credit to
+    whichever hop(s) it completed.
     """
 
     refresh_chain_count: int = 0
@@ -784,9 +789,14 @@ class OAuthMetrics:
     failed_refresh_chain_count: int = 0
     """Number of refresh chains that raised instead of completing -- a transient error (e.g. a
     5xx from any of the three hops), an `invalid_grant` rejection, or the locally-known absolute
-    session wall having already passed. Carries no `_secs` field of its own: a failure can happen
-    at any point in the chain, so its elapsed time is not comparable across failures the way a
-    completed hop's is."""
+    session wall having already passed."""
+
+    failed_refresh_chain_secs: float = 0.0
+    """Total wall time spent in chains that failed, from the same `chain_start` anchor as
+    `refresh_chain_secs` to the moment the exception is caught -- regardless of which hop it
+    failed at, or how far in. Without this, a chain that blocks until an HTTP client timeout
+    before failing would otherwise report zero cost for that attempt, silently understating the
+    overhead this metric exists to measure."""
 
     refresh_leg_count: int = 0
     refresh_leg_secs: float = 0.0
@@ -815,14 +825,19 @@ class OAuthMetrics:
         self.refresh_chain_count += 1
         self.refresh_chain_secs += timing.chain_secs
 
-    def record_failure(self) -> None:
+    def record_failure(self, chain_secs: float) -> None:
         """Call when a refresh chain raises instead of completing, for any reason -- see class
-        docstring and `failed_refresh_chain_count`."""
+        docstring and `failed_refresh_chain_count`/`failed_refresh_chain_secs`."""
         self.failed_refresh_chain_count += 1
+        self.failed_refresh_chain_secs += chain_secs
 
     @property
     def avg_refresh_chain_secs(self) -> float:
         return self._avg(self.refresh_chain_secs, self.refresh_chain_count)
+
+    @property
+    def avg_failed_refresh_chain_secs(self) -> float:
+        return self._avg(self.failed_refresh_chain_secs, self.failed_refresh_chain_count)
 
     @property
     def avg_refresh_leg_secs(self) -> float:
