@@ -33,7 +33,16 @@ from .exceptions import (
     TableflowTopicNotFoundError,
 )
 from .execution_mode import ExecutionMode
-from .oauth import PROD, CCloudOAuth, CCloudOAuthConfig, OAuthProvider, acquire, release
+from .oauth import (
+    OAUTH_INTERACTIVE,
+    PROD,
+    CCloudOAuth,
+    CCloudOAuthConfig,
+    OAuthPolicy,
+    OAuthProvider,
+    acquire,
+    release,
+)
 from .oauth import reauthenticate as oauth_reauthenticate
 from .polling import sleep_with_backoff
 from .retry import (
@@ -255,7 +264,7 @@ def connect(  # noqa: PLR0913
     auth: Literal["api_key", "oauth"] = "api_key",
     oauth_config: CCloudOAuthConfig | None = None,
     oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
-    reauth: Literal["auto", "raise"] = "auto",
+    oauth_policy: OAuthPolicy | None = None,
     environment_id: str,
     organization_id: str = "",
     compute_pool_id: str | None = None,
@@ -326,17 +335,19 @@ def connect(  # noqa: PLR0913
             `auth="oauth"`.
         oauth_provider_factory: Internal testing hook for `auth="oauth"`; production callers
             should never need to pass this. Forwarded to `confluent_sql.oauth.acquire()`.
-        reauth: How to recover once an `auth="oauth"` session can no longer be refreshed (the
-            ~8h absolute session lifetime, or the token endpoint rejecting the refresh token as
-            idle-expired/revoked/already-spent). `"auto"` (default) catches that condition
-            transparently, blocks on `confluent_sql.oauth.reauthenticate()` -- another browser
-            round-trip -- and retries the request; `auth="oauth"` is inherently a human-present
-            mode (login itself requires a browser), so popping one again hours later to keep
-            going is unsurprising for the common case. `"raise"` opts back out to surfacing
-            `ReauthenticationRequired` instead, for a session that *started* under a human but may
-            be unattended by the time it crosses the wall (a long dbt run kicked off and left
-            running, a notebook kernel idle overnight) -- there, `"auto"` fails no faster than
-            `"raise"` would have (both eventually give up with no one at the browser), it just
+        oauth_policy: Governs how an `auth="oauth"` session behaves over its lifetime -- see
+            `confluent_sql.oauth.OAuthPolicy`. Defaults to `None`, meaning
+            `confluent_sql.oauth.OAUTH_INTERACTIVE` (equivalent to
+            `OAuthPolicy(on_reauthentication_required="auto")`): once the session can no longer be
+            refreshed (the ~8h absolute session lifetime, or the token endpoint rejecting the
+            refresh token as idle-expired/revoked/already-spent), transparently block on
+            `confluent_sql.oauth.reauthenticate()` -- another browser round-trip -- and retry the
+            request. Pass `confluent_sql.oauth.OAUTH_UNATTENDED`
+            (`OAuthPolicy(on_reauthentication_required="raise")`) to instead surface
+            `ReauthenticationRequired` at that point, for a session that *started* under a human
+            but may be unattended by the time it crosses the wall (a long dbt run kicked off and
+            left running, a notebook kernel idle overnight) -- there, the default fails no faster
+            than raising would have (both eventually give up with no one at the browser), it just
             spends the login timeout finding that out. Only valid with `auth="oauth"`.
         environment_id: Environment ID
         organization_id: Organization ID. Defaults to "" (omitted). May be omitted -- left as ""
@@ -420,7 +431,7 @@ def connect(  # noqa: PLR0913
     _resolve_oauth_config(
         auth,
         oauth_config,
-        reauth,
+        oauth_policy,
         external_access_token,
         identity_pool_id,
         global_api_key,
@@ -477,7 +488,7 @@ def connect(  # noqa: PLR0913
         auth=auth,
         oauth_config=oauth_config,
         oauth_provider_factory=oauth_provider_factory,
-        reauth=reauth,
+        oauth_policy=oauth_policy,
         compute_pool_id=compute_pool_id,
         database=database,
         database_kafka_cluster_id=database_kafka_cluster_id,
@@ -556,9 +567,10 @@ class Connection:
     """The process-wide shared provider acquired via oauth.acquire() when _oauth is True; None
     otherwise. Never closed directly by this Connection -- see close()."""
     _reauth_policy: Literal["auto", "raise"]
-    """How to respond when a request raises ReauthenticationRequired (#156) -- see connect()'s
-    `reauth` docstring. Consulted by _send_with_reauth_policy regardless of _oauth, though it is
-    only ever meaningful under auth="oauth", the only mode that can raise that exception."""
+    """How to respond when a request raises ReauthenticationRequired (#156) -- read from
+    `oauth_policy.on_reauthentication_required` (#198); see connect()'s `oauth_policy` docstring.
+    Consulted by _send_with_reauth_policy regardless of _oauth, though it is only ever meaningful
+    under auth="oauth", the only mode that can raise that exception."""
     _flink_client: httpx.Client | None
     """Lazily created on first Flink request (see _get_flink_client()); None until then. Deferred so
     that construction never blocks on the network call organization_id inference may need."""
@@ -612,7 +624,7 @@ class Connection:
         auth: Literal["api_key", "oauth"] = "api_key",
         oauth_config: CCloudOAuthConfig | None = None,
         oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
-        reauth: Literal["auto", "raise"] = "auto",
+        oauth_policy: OAuthPolicy | None = None,
         compute_pool_id: str | None = None,
         database: str | None = None,
         database_kafka_cluster_id: str | None = None,
@@ -655,7 +667,7 @@ class Connection:
                 with the BYOIDC pair.
             oauth_config: Advanced/internal; only valid with `auth="oauth"`. See `connect()`.
             oauth_provider_factory: Internal testing hook for `auth="oauth"`. See `connect()`.
-            reauth: How to recover an `auth="oauth"` session that can no longer be refreshed.
+            oauth_policy: Governs how an `auth="oauth"` session behaves over its lifetime.
                 See `connect()`.
             environment_id: Environment ID
             cloud_provider: Cloud provider (required if endpoint is not provided)
@@ -704,7 +716,7 @@ class Connection:
         oauth_cfg = _resolve_oauth_config(
             auth,
             oauth_config,
-            reauth,
+            oauth_policy,
             external_access_token,
             identity_pool_id,
             global_api_key,
@@ -716,7 +728,7 @@ class Connection:
             connect_api_key,
             connect_api_secret,
         )
-        self._reauth_policy = reauth
+        self._reauth_policy = (oauth_policy or OAUTH_INTERACTIVE).on_reauthentication_required
 
         self.environment_id = environment_id
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
@@ -2621,7 +2633,7 @@ class Connection:
 def _resolve_oauth_config(  # noqa: PLR0913
     auth: str,
     oauth_config: CCloudOAuthConfig | None,
-    reauth: str,
+    oauth_policy: OAuthPolicy | None,
     external_access_token: str | None,
     identity_pool_id: str | None,
     global_api_key: str | None,
@@ -2633,7 +2645,8 @@ def _resolve_oauth_config(  # noqa: PLR0913
     connect_api_key: str | None,
     connect_api_secret: str | None,
 ) -> CCloudOAuthConfig | None:
-    """Validate the `auth=`/`reauth=` mode selection and return the environment to log in against.
+    """Validate the `auth=`/`oauth_policy=` mode selection and return the environment to log in
+    against.
 
     Pure and network-free, mirroring `_resolve_flink_auth`'s role for the older two modes --
     called before any network or browser activity so a bad parameter combination fails fast,
@@ -2648,20 +2661,19 @@ def _resolve_oauth_config(  # noqa: PLR0913
         InterfaceError: If `auth` names neither mode; if `oauth_config` is supplied while
             `auth != "oauth"`; if `auth == "oauth"` is combined with the BYOIDC pair or any
             API-key parameter -- interactive OAuth supplies its own credentials for every surface;
-            if `reauth` names neither `"auto"` nor `"raise"`; or if a non-default `reauth` is
-            supplied while `auth != "oauth"` (there is no wall to hit outside interactive OAuth).
+            or if a non-`None` `oauth_policy` is supplied while `auth != "oauth"` (there is no
+            session lifecycle to govern outside interactive OAuth). `OAuthPolicy` validates its
+            own field values at construction time, so a bad `on_reauthentication_required` value
+            never reaches here.
     """
-    if reauth not in ("auto", "raise"):
-        raise InterfaceError(f"reauth must be 'auto' or 'raise', got {reauth!r}")
-
     if auth not in ("api_key", "oauth"):
         raise InterfaceError(f"auth must be 'api_key' or 'oauth', got {auth!r}")
 
     if auth != "oauth":
         if oauth_config is not None:
             raise InterfaceError("oauth_config may only be supplied when auth='oauth'")
-        if reauth != "auto":
-            raise InterfaceError("reauth may only be supplied when auth='oauth'")
+        if oauth_policy is not None:
+            raise InterfaceError("oauth_policy may only be supplied when auth='oauth'")
         return None
 
     if external_access_token or identity_pool_id:
