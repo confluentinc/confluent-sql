@@ -52,6 +52,7 @@ import httpx
 
 import confluent_sql
 from confluent_sql.oauth import CCloudOAuth, OAuthMetrics
+from confluent_sql.statement import Statement
 
 POLL_INTERVAL_SECS = 15
 INSERT_EVERY_N_POLLS = 4
@@ -225,9 +226,12 @@ table_created = False
 region as everything else now, so a failure there must not attempt to drop a table that was
 never (or only partially) created."""
 
-streaming_statement_name: str | None = None
+streaming_statement: Statement | None = None
 """Retained so cleanup can stop the streaming statement even after the Ctrl+C path has already
-closed the cursor that ran it -- see the `finally` block below."""
+closed the cursor that ran it -- see the `finally` block below. Kept as a `Statement` object
+(refreshed after every poll), not just its name, so `stop_statement()` can use its client-side
+terminal-phase short-circuit instead of blindly re-issuing a stop against a statement that may
+have already failed on its own."""
 
 try:
     with conn.closing_cursor() as cursor:
@@ -256,12 +260,19 @@ try:
 
     print(f"{_now()} Starting streaming query against {table_name} ...")
     with conn.closing_streaming_cursor() as cursor:
-        cursor.execute(f"SELECT id, name FROM {table_name}")
-        streaming_statement_name = cursor.statement.name
+        try:
+            cursor.execute(f"SELECT id, name FROM {table_name}")
+        finally:
+            # execute() submits the statement server-side, then blocks waiting for it to become
+            # ready -- capture whatever got submitted even if that wait times out or raises, so
+            # cleanup below can still find and stop it. cursor._statement is set as soon as
+            # submission succeeds, before the wait begins.
+            streaming_statement = cursor._statement  # noqa: SLF001
         assert cursor.statement.is_append_only, "expected an append-only streaming statement"
 
         print(f"{_now()} Draining initial results ...")
         _drain_and_print(cursor)
+        streaming_statement = cursor.statement
 
         print(
             f"{_now()} No more results immediately available -- polling every "
@@ -281,6 +292,7 @@ try:
                 print(f"{_now()} Inserted {inserted} random row(s) into {table_name}")
 
             _drain_and_print(cursor)
+            streaming_statement = cursor.statement
 
             current_dp_expiry = _dp_token_expiry(conn)
             if current_dp_expiry != last_dp_expiry:
@@ -304,18 +316,20 @@ finally:
     # connection/provider.
     try:
         _print_overhead_summary(conn, flink_hits, time.monotonic() - run_start)
-        if streaming_statement_name is not None:
+        if streaming_statement is not None:
             # On the (expected) Ctrl+C path, this statement is still RUNNING server-side --
             # `closing_streaming_cursor()`'s exit only calls `Cursor.close()`, which explicitly
             # does not stop an active statement (see Cursor.close()'s docstring). Left running,
             # it would still be reading from `table_name` when the DROP below runs, failing the
             # drop and leaving the statement itself orphaned server-side. stop_statement() blocks
             # until it's genuinely terminal (a no-op if it already is, e.g. the loop ended on its
-            # own); delete_statement() then clears the now-stopped statement's server-side
-            # resources.
-            print(f"{_now()} Stopping streaming statement {streaming_statement_name} ...")
-            conn.stop_statement(streaming_statement_name)
-            conn.delete_statement(streaming_statement_name)
+            # own because the statement failed -- passing the `Statement` object, kept fresh above,
+            # rather than just its name, is what lets stop_statement() short-circuit that case
+            # client-side instead of re-issuing a stop against an already-terminal statement);
+            # delete_statement() then clears the now-stopped statement's server-side resources.
+            print(f"{_now()} Stopping streaming statement {streaming_statement.name} ...")
+            streaming_statement = conn.stop_statement(streaming_statement)
+            conn.delete_statement(streaming_statement)
         if table_created:
             with conn.closing_cursor() as cursor:
                 print(f"{_now()} Dropping table {table_name} ...")
