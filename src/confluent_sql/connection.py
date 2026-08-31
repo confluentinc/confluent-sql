@@ -33,7 +33,15 @@ from .exceptions import (
     TableflowTopicNotFoundError,
 )
 from .execution_mode import ExecutionMode
-from .oauth import PROD, CCloudOAuth, CCloudOAuthConfig, OAuthProvider, acquire, release
+from .oauth import (
+    PROD,
+    CCloudOAuth,
+    CCloudOAuthConfig,
+    OAuthMetrics,
+    OAuthProvider,
+    acquire,
+    release,
+)
 from .oauth import reauthenticate as oauth_reauthenticate
 from .polling import sleep_with_backoff
 from .retry import (
@@ -1544,6 +1552,25 @@ class Connection:
                     self._resolve_organization_id() if self._global_credentials is not None else ""
                 )
         return self._organization_id_value
+
+    @property
+    def oauth_metrics(self) -> OAuthMetrics | None:
+        """Timing/counts for the in-loop token refreshes of this connection's OAuth provider
+        (auth="oauth"), or None under every other auth mode.
+
+        **Not per-connection telemetry.** `oauth.acquire()` hands out one process-wide shared
+        provider (`ProcessOAuthHolder`, #154) -- every `Connection` in the process that logs in
+        under the same identity gets the *same* provider, and `Connection.close()`'s
+        `oauth.release()` is currently a no-op (#157 is what gives it real teeth), so the shared
+        provider and its accumulated metrics outlive any one connection. A newly opened
+        `Connection` reusing that provider can observe a nonzero `refresh_chain_count` from
+        refreshes triggered by another connection's requests, or from before this one existed.
+
+        Covers only refreshes triggered *during* the shared provider's life, never the interactive
+        login `connect()` performed to establish it -- see `OAuthMetrics`. The supported
+        replacement for reading `_oauth_provider` directly.
+        """
+        return self._oauth_provider.metrics if self._oauth_provider is not None else None
 
     @property
     def local_time_zone(self) -> str | None:
