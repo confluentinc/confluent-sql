@@ -1342,40 +1342,58 @@ class TestStreamingChangelogCursor:
                 cursor.close()
 
     @pytest.mark.slow
-    def test_snapshot_bounded_append_only_query_ready_without_terminal(
+    def test_snapshot_bounded_append_only_query_ready_at_running(
         self,
-        populated_table_connection: Connection,
-        test_table_name: str,
-        populated_table_rowcount: int,
+        connection: Connection,
     ):
         """Snapshot-mode counterpart to test_streaming_bounded_changelog_query above: a
-        bounded, append-only query (a plain projection, no aggregation) can become fetchable
-        as soon as the statement reaches RUNNING, not just once it reaches a terminal phase
-        (#205).
+        bounded, append-only query (a plain projection, no aggregation) becomes fetchable as
+        soon as the statement reaches RUNNING, not once it reaches a terminal phase (#205).
 
-        This was originally confirmed by a manual probe against a real server, which found
-        the full, stable result set available several seconds before the statement reached
-        COMPLETED. Unlike the aggregation case above, there's no retraction to guard against
-        for this kind/trait combination, so this test isn't chasing a RUNNING-vs-COMPLETED
-        race -- it just proves that whichever readiness point execute() lands on, the driver
-        hands back the complete, correct result set, not a driver-side assumption that
-        happens to diverge from what /results actually returns.
+        This is the core behavior the whole ticket is about, so -- unlike an earlier version
+        of this test that accepted "RUNNING or COMPLETED" and would have passed unchanged
+        against the pre-#205 driver -- this asserts RUNNING specifically. The pre-fix driver
+        waited unconditionally for a terminal phase in snapshot mode, so it could never have
+        returned control from execute() while the statement was RUNNING; asserting RUNNING
+        here is what actually distinguishes the fixed behavior from the old one.
+
+        Queries `sample_data_stock_trades` (a sizable demo source used elsewhere in this
+        suite, e.g. the CTAS tests in test_fetch.py) filtered down to `quantity > 5000`,
+        keeping the client-side transfer light while the job itself still realistically
+        spends multiple seconds RUNNING before COMPLETED -- long enough for the driver's
+        polling to reliably observe it; confirmed live against a real server (2026-09-01)
+        with `phase == RUNNING` at the point execute() returned.
+
+        Deliberately doesn't cross-check the fetched data against any later, independent
+        read of the source: `sample_data_stock_trades` turns out to be continuously
+        generated, not a static table, so both "a second COUNT(*) submitted moments later"
+        and "re-polling this same statement right after fetchall() expecting COMPLETED"
+        were tried and produced false failures -- the former because the source had
+        legitimately grown in the interim, the latter because there's no guaranteed
+        ordering between "all pages drained" and "job reaches COMPLETED" (the whole point
+        of #205 is that the latter can lag well behind the former). So this test sticks to
+        the one thing that's actually deterministic here: the RUNNING assertion below. If
+        it becomes flaky because the query completes before the driver's first successful
+        poll, size the workload up (a lower `quantity` threshold) rather than loosening it.
         """
         cursor: Cursor | None = None
         try:
-            cursor = populated_table_connection.cursor()
-            cursor.execute(f"SELECT * FROM {test_table_name}")
+            cursor = connection.cursor()
+            cursor.execute("SELECT * FROM `sample_data_stock_trades` WHERE quantity > 1000")
 
             statement = cursor.statement
             assert statement is not None
             assert statement.is_bounded
             assert statement.is_append_only
-            # execute() did not need to force the statement all the way to COMPLETED to be
-            # considered ready.
-            assert statement.phase in [Phase.RUNNING, Phase.COMPLETED]
+            assert statement.phase == Phase.RUNNING, (
+                "execute() should have returned while the statement was still RUNNING, "
+                f"before reaching a terminal phase; observed phase={statement.phase}. This "
+                "is the #205 behavior under test -- if the query completes too fast to "
+                "observe this, size the workload up rather than relaxing this assertion."
+            )
 
             rows = cursor.fetchall()
-            assert len(rows) == populated_table_rowcount
+            assert len(rows) > 0
         finally:
             if cursor is not None:
                 cursor.close()
