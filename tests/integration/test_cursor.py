@@ -32,7 +32,10 @@ class TestCursor:
 
         assert cursor._statement is not None
         assert cursor._statement.is_bounded is True
-        assert cursor._statement.phase is Phase.COMPLETED
+        # A bounded, append-only snapshot query like this one is ready as soon as RUNNING
+        # (#205) -- not pinned to COMPLETED, which the fast-completing query may or may not
+        # still be sitting in by the time execute() returns.
+        assert cursor._statement.phase in (Phase.RUNNING, Phase.COMPLETED)
         assert cursor._statement.name is not None
         assert cursor._statement.sql_kind == "SELECT"
         assert cursor._statement.is_append_only is True
@@ -180,10 +183,11 @@ class TestCursor:
             properties=StatementProperties(state_ttl=timedelta(milliseconds=100)),
         )
 
-        # Verify statement was created and completed
+        # Verify statement was created and is ready. A bounded, append-only snapshot query
+        # like this one is ready as soon as RUNNING (#205), so this isn't pinned to COMPLETED.
         statement = cursor._statement
         assert statement is not None
-        assert statement.phase is Phase.COMPLETED
+        assert statement.phase in (Phase.RUNNING, Phase.COMPLETED)
         assert statement.name is not None
 
         # Verify the property is present in the statement properties
@@ -1335,6 +1339,45 @@ class TestStreamingChangelogCursor:
             if cursor is not None:
                 # Cleanup
                 cursor.delete_statement()
+                cursor.close()
+
+    @pytest.mark.slow
+    def test_snapshot_bounded_append_only_query_ready_without_terminal(
+        self,
+        populated_table_connection: Connection,
+        test_table_name: str,
+        populated_table_rowcount: int,
+    ):
+        """Snapshot-mode counterpart to test_streaming_bounded_changelog_query above: a
+        bounded, append-only query (a plain projection, no aggregation) can become fetchable
+        as soon as the statement reaches RUNNING, not just once it reaches a terminal phase
+        (#205).
+
+        This was originally confirmed by a manual probe against a real server, which found
+        the full, stable result set available several seconds before the statement reached
+        COMPLETED. Unlike the aggregation case above, there's no retraction to guard against
+        for this kind/trait combination, so this test isn't chasing a RUNNING-vs-COMPLETED
+        race -- it just proves that whichever readiness point execute() lands on, the driver
+        hands back the complete, correct result set, not a driver-side assumption that
+        happens to diverge from what /results actually returns.
+        """
+        cursor: Cursor | None = None
+        try:
+            cursor = populated_table_connection.cursor()
+            cursor.execute(f"SELECT * FROM {test_table_name}")
+
+            statement = cursor.statement
+            assert statement is not None
+            assert statement.is_bounded
+            assert statement.is_append_only
+            # execute() did not need to force the statement all the way to COMPLETED to be
+            # considered ready.
+            assert statement.phase in [Phase.RUNNING, Phase.COMPLETED]
+
+            rows = cursor.fetchall()
+            assert len(rows) == populated_table_rowcount
+        finally:
+            if cursor is not None:
                 cursor.close()
 
     @pytest.mark.slow
