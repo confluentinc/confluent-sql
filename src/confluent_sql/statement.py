@@ -233,6 +233,20 @@ class Statement:
         This method encapsulates all the complex readiness logic that depends on both
         the statement's characteristics and the execution mode in which it was submitted.
 
+        Readiness is primarily kind/trait-based (is_pure_ddl, schema, is_bounded,
+        is_append_only) and applies identically to snapshot and streaming statements, since
+        the server itself settles bounded/append-only results the same way regardless of mode
+        (see #205). The one exception is any statement with no result schema at all -- CTAS,
+        INSERT INTO, and any other kind that produces no rows: is_bounded can't be trusted to
+        tell a finite job from a perpetual one here (FSE-1021 -- streaming CTAS is reported
+        bounded even though it's a perpetual background job; a plain INSERT is bounded and
+        finite but reports the same append-only/bounded traits a ready-at-RUNNING SELECT
+        would), so execution_mode remains the tiebreaker for schema-less statements
+        specifically -- a snapshot CTAS/INSERT is a genuinely bounded, one-shot job that must
+        reach terminal before its write/population is guaranteed to have landed, while its
+        streaming counterpart runs forever and must be reported ready once RUNNING or callers
+        would hang.
+
         Args:
             execution_mode: The execution mode (snapshot or streaming) the statement was
                 submitted in.
@@ -245,30 +259,33 @@ class Statement:
             return True
 
         # Traits aren't sent on the initial PENDING response (see #194) -- without them, the
-        # trait-dependent checks below (is_pure_ddl, is_bounded, is_append_only) can't run yet,
-        # and a non-terminal statement with no traits can't be ready to fetch results anyway.
+        # trait-dependent checks below (is_pure_ddl, schema, is_bounded, is_append_only) can't
+        # run yet, and a non-terminal statement with no traits can't be ready to fetch results
+        # anyway.
         if self.traits is None:
             return False
 
-        if execution_mode.is_streaming:
-            # In streaming mode, readiness depends on statement type.
-            if self.is_pure_ddl:
-                # Pure DDL must complete fully before the created/modified objects
-                # are ready for use. Since we already checked is_terminal above, return False.
-                return False
-            elif self.is_bounded and not self.is_append_only:
-                # Bounded non-append-only queries (e.g., aggregations without streaming input)
-                # must complete fully before results are available for fetching.
-                # Since we already checked is_terminal above, return False.
-                return False
-            else:
-                # Unbounded streaming queries and append-only bounded queries are ready
-                # when RUNNING (terminal states already handled above)
-                return self.phase == Phase.RUNNING
-        else:
-            # In snapshot mode, statements are only ready for result fetching when they
-            # reach a terminal state. Terminal states are checked above, so return False.
+        if self.is_pure_ddl:
+            # Pure DDL must complete fully before the created/modified objects
+            # are ready for use. Since we already checked is_terminal above, return False.
             return False
+
+        if self.schema is None:
+            # No result set to fetch (CTAS, INSERT INTO, or any other kind with no rows):
+            # is_bounded/is_append_only can't be trusted to distinguish a finite job from a
+            # perpetual one for these, so execution_mode is the tiebreaker instead.
+            return not execution_mode.is_snapshot and self.phase == Phase.RUNNING
+
+        if self.is_bounded and not self.is_append_only:
+            # Bounded non-append-only queries (e.g., aggregations without streaming input)
+            # must complete fully before results are available for fetching.
+            # Since we already checked is_terminal above, return False.
+            return False
+
+        # Unbounded queries and append-only bounded queries are ready when RUNNING
+        # (terminal states already handled above). This applies to both snapshot and
+        # streaming mode -- the server settles these the same way in either mode.
+        return self.phase == Phase.RUNNING
 
     @property
     def is_failed(self) -> bool:
