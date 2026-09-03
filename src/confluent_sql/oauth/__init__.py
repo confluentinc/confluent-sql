@@ -16,7 +16,7 @@ and `release()` into `connect()`/`Connection`, exposing `auth="oauth"`. #156 add
 from __future__ import annotations
 
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
-from .config import DEVEL, PROD, CCloudOAuthConfig
+from .config import DEVEL, PROD, STAG, CCloudOAuthConfig
 from .holder import ProcessOAuthHolder, acquire, reauthenticate, release, shutdown_all
 from .pkce import challenge_for, generate_state, generate_verifier
 from .provider import CCloudOAuth, OAuthMetrics, OAuthProvider
@@ -35,6 +35,7 @@ __all__ = [
     "DEFAULT_LOGIN_TIMEOUT_SECS",
     "DEVEL",
     "PROD",
+    "STAG",
     "CCloudOAuth",
     "CCloudOAuthConfig",
     "CallbackServer",
