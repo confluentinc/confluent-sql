@@ -397,7 +397,7 @@ class DecimalConverter(TypeConverter[Decimal, str]):
     PRIMARY_FLINK_TYPE_NAME = "DECIMAL"
 
     def to_python_value(self, response_value: str | None) -> Decimal | None:
-        """Expect string-encoded decimal or None from the response value, return as str
+        """Expect string-encoded decimal or None from the response value, return as Decimal
         or raise DataError."""
         if response_value is None:
             return None
@@ -927,7 +927,7 @@ class DaysIntervalConverter(TypeConverter[timedelta, str]):
 
     def to_python_value(self, response_value: str | None) -> timedelta | None:
         """Expect string-encoded interval or None from the response value,
-        return as str or raise DataError."""
+        return as timedelta or raise DataError."""
 
         # Example: '+0 04:00:00.000' for interval of 0 days, 4 hours.
 
@@ -965,7 +965,7 @@ class DaysIntervalConverter(TypeConverter[timedelta, str]):
             return td
         except Exception as e:
             raise DataError(
-                f"Invalid interval string for IntervalConverter: {response_value}"
+                f"Invalid interval string for DaysIntervalConverter: {response_value}"
             ) from e
 
     @classmethod
