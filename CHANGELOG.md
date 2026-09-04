@@ -8,6 +8,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - Type conversion methods across `types.py` now consistently raise dbapi-mandated exceptions (`DataError`, `InterfaceError`) rather than a bare builtin (`ValueError`, `decimal.InvalidOperation`) for problems with a Flink response value, a Python value that can't be represented as a Flink SQL literal, or a converter misconfigured with the wrong column type. (#204)
 
+### Changed
+
+- `Statement.can_fetch_results()`'s snapshot-mode branch is now kind/trait-based (schema presence, `is_pure_ddl`, `is_bounded`, `is_append_only`) instead of unconditionally waiting for a terminal phase -- the same logic streaming mode already used. A bounded, append-only snapshot query that actually produces a result set (e.g. a plain projection) is now reported ready as soon as the statement reaches `RUNNING`, instead of blocking `Cursor.execute()` / `Connection.execute_snapshot_ddl()` until `COMPLETED`. Bounded, non-append-only snapshot queries (aggregations that could still retract) and any statement with no result schema at all -- `INSERT INTO`, snapshot CTAS (`CREATE TABLE ... AS SELECT`), and other DML/DDL that produces no rows -- are unaffected and still wait for terminal, since a finite write or population job isn't guaranteed to have landed until then (unlike its streaming counterpart, which may run forever and is ready once RUNNING). This can make `Cursor.execute()` and iteration/`fetchall()` return sooner for snapshot-mode queries that produce a result set. (#205)
+
 ### Removed
 
 - The `dbname` parameter of `connect()`, deprecated in favor of `database` since 0.2.0, has been removed. Passing `dbname=` now raises `TypeError` for an unexpected keyword argument instead of emitting a `DeprecationWarning`. Use `database=` instead.

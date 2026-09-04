@@ -878,19 +878,20 @@ class TestStatementCanFetchResults:
     """Comprehensive tests for Statement.can_fetch_results() method.
 
     Tests combinations of:
-    - Execution modes: SNAPSHOT, STREAMING_QUERY, STREAMING_DDL
-    - Statement types: Pure DDL, Bounded append-only, Bounded non-append-only, Unbounded
+    - Execution modes: SNAPSHOT, SNAPSHOT_DDL, STREAMING_QUERY, STREAMING_DDL
+    - Statement types: Pure DDL, CTAS, Bounded append-only, Bounded non-append-only, Unbounded
     - Phases: PENDING, RUNNING, COMPLETED, FAILED, STOPPED
     """
 
     @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
-    def test_snapshot_mode_bounded_not_ready(
+    def test_snapshot_mode_bounded_non_append_only_not_ready(
         self,
         mock_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         phase: str,
     ):
-        """In snapshot mode, bounded statements are not ready until COMPLETED."""
+        """In snapshot mode, bounded non-append-only (e.g. aggregation) statements are not
+        ready until COMPLETED -- same guard as streaming mode, kind/trait-driven (#205)."""
         statement_json = statement_response_factory(
             phase=phase,
             is_bounded=True,
@@ -900,13 +901,13 @@ class TestStatementCanFetchResults:
         assert not statement.can_fetch_results(ExecutionMode.SNAPSHOT)
 
     @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
-    def test_snapshot_mode_bounded_ready(
+    def test_snapshot_mode_bounded_non_append_only_ready(
         self,
         mock_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         phase: str,
     ):
-        """In snapshot mode, bounded statements are ready in terminal states."""
+        """In snapshot mode, bounded non-append-only statements are ready in terminal states."""
         statement_json = statement_response_factory(
             phase=phase,
             is_bounded=True,
@@ -914,6 +915,158 @@ class TestStatementCanFetchResults:
         )
         statement = Statement.from_response(mock_connection, statement_json)
         assert statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["PENDING"])
+    def test_snapshot_mode_bounded_append_only_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In snapshot mode, bounded append-only queries are not ready until RUNNING."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["RUNNING", "COMPLETED", "STOPPED", "FAILED"])
+    def test_snapshot_mode_bounded_append_only_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """In snapshot mode, a bounded+append-only query (e.g. a plain projection) is ready
+        as soon as RUNNING rather than blocking until COMPLETED -- this is the #205 fix: the
+        server has stable results available well before terminal, and this readiness now
+        follows kind/trait logic identical to the streaming case."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
+    def test_snapshot_ddl_ctas_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """A snapshot-mode CTAS is a genuinely bounded, one-shot population job and must wait
+        for terminal. CTAS reports no schema (like pure DDL), so it's gated by
+        execution_mode rather than the is_bounded/is_append_only traits, which can't be
+        trusted to tell a finite job from a perpetual one here (FSE-1021)."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+            sql_kind="CREATE_TABLE_AS",
+            null_schema=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.SNAPSHOT_DDL)
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
+    def test_snapshot_ddl_ctas_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """A snapshot-mode CTAS is ready once it reaches a terminal state."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+            sql_kind="CREATE_TABLE_AS",
+            null_schema=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.SNAPSHOT_DDL)
+
+    @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
+    def test_snapshot_insert_into_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """A snapshot-mode INSERT INTO is a finite write that must wait for terminal before
+        the write is guaranteed to have landed -- it reports the same bounded/append-only
+        traits a ready-at-RUNNING SELECT would, but has no result schema (nothing to fetch),
+        so it must not take the schema-having fast path (confirmed against a real server:
+        RUNNING at t=7.34s, COMPLETED only at t=17.63s, see #205)."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+            sql_kind="INSERT_INTO",
+            null_schema=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "STOPPED", "FAILED"])
+    def test_snapshot_insert_into_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """A snapshot-mode INSERT INTO is ready once it reaches a terminal state."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+            sql_kind="INSERT_INTO",
+            null_schema=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.SNAPSHOT)
+
+    @pytest.mark.parametrize("phase", ["RUNNING", "COMPLETED", "STOPPED", "FAILED"])
+    def test_streaming_ddl_insert_into_pipeline_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """A streaming INSERT INTO ... SELECT (a background sink pipeline job, e.g. via
+        execute_streaming_ddl) may run forever, so it's ready once RUNNING rather than
+        waiting for a terminal phase that may never come -- same as streaming CTAS."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+            sql_kind="INSERT_INTO",
+            null_schema=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
+
+    @pytest.mark.parametrize("phase", ["PENDING"])
+    def test_streaming_ddl_insert_into_pipeline_not_ready(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """A streaming INSERT INTO pipeline is not ready until RUNNING."""
+        statement_json = statement_response_factory(
+            phase=phase,
+            is_bounded=True,
+            is_append_only=True,
+            sql_kind="INSERT_INTO",
+            null_schema=True,
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+        assert not statement.can_fetch_results(ExecutionMode.STREAMING_DDL)
 
     @pytest.mark.parametrize("phase", ["PENDING", "RUNNING"])
     def test_streaming_query_bounded_non_append_only_not_ready(
