@@ -1255,9 +1255,13 @@ class Connection:
         phase RUNNING.
 
         Args:
-            statement: The name of the statement to stop, or a Statement object. A Statement
-                already in a terminal phase (STOPPED/COMPLETED/FAILED/DELETED) is returned
-                unchanged without contacting the server.
+            statement: The name of the statement to stop, or a Statement object. Either form
+                converges on the same outcome for a statement already in a terminal phase
+                (STOPPED/COMPLETED/FAILED/DELETED): a `Statement` object is returned unchanged
+                without contacting the server; a name is still PATCHed (the server accepts this
+                unconditionally, even against an already-terminal statement -- there is no
+                rejection to handle), and the terminal state the PATCH response already reflects
+                is returned as success, not raised as an error.
             wait_for_stopped: If True (default), block and refresh-loop until the statement reaches
                 a terminal phase before returning -- normally STOPPED, but COMPLETED if a bounded
                 query happened to finish before the stop landed. If False, return as soon as the
@@ -1328,13 +1332,18 @@ class Connection:
         so a GET issued immediately would almost certainly report the same non-terminal phase we
         already hold; we therefore sleep *first* and only fetch once wall-clock time has passed and
         the server state can actually have advanced. Uses exponential backoff with jitter to avoid
-        hammering the server. A statement that ends in any terminal phase other than FAILED (e.g. a
-        bounded query that COMPLETED before the stop landed) is returned, since the caller's intent
-        -- the statement is no longer running -- is satisfied.
+        hammering the server. A statement that ends in any terminal phase, including one already
+        FAILED before this stop was ever requested (confirmed live, #203: the stop PATCH is
+        accepted unconditionally, echoing back whatever phase the statement already has -- there's
+        no separate "already terminal" rejection to special-case), is returned as success, since
+        the caller's intent -- the statement is no longer running -- is satisfied either way. Only
+        a transition *into* FAILED partway through the wait (observed by a poll after the initial,
+        already-terminal check above has been passed) is treated as a genuine failure to stop
+        cleanly and raises.
 
         Raises:
-            OperationalError: If the statement transitions to FAILED, or if STOPPED is not reached
-                within the timeout.
+            OperationalError: If the statement transitions to FAILED partway through waiting, or if
+                STOPPED is not reached within the timeout.
         """
 
         def raise_if_failed(candidate: Statement) -> None:
@@ -1344,8 +1353,9 @@ class Connection:
                     f"{candidate.status.get('detail', '')}"
                 )
 
-        # Evaluate the state we already hold first -- an already-terminal statement needs no fetch.
-        raise_if_failed(statement)
+        # Evaluate the state we already hold first -- any terminal phase, FAILED included, needs
+        # no fetch and is not an error here: it mirrors the Statement-object short-circuit's
+        # "already terminal, nothing to stop" success for a cached terminal statement.
         if statement.phase.is_terminal:
             return statement
 

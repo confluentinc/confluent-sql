@@ -13,7 +13,7 @@ import pytest
 
 import confluent_sql
 from confluent_sql.connection import Connection
-from confluent_sql.exceptions import StatementNotFoundError
+from confluent_sql.exceptions import OperationalError, StatementNotFoundError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Statement
 
@@ -374,7 +374,12 @@ class TestStopStatement:
         test_table_name: str,
         cleaned_up_statement_name: str,
     ):
-        """Re-stopping an already-STOPPED statement returns it and does not raise."""
+        """Re-stopping an already-STOPPED statement returns it and does not raise, whether
+        re-stopped by Statement object (cached-state short-circuit, no server call) or by bare
+        name. The server's stop PATCH is idempotent -- confirmed live -- so the bare-name path
+        was never actually broken for this particular (already-STOPPED) case; see
+        test_stopping_statement_that_already_failed_returns_without_raising below for the
+        scenario #203 actually fixes."""
         cursor, _ = _start_running_streaming_statement(
             table_connection, test_table_name, cleaned_up_statement_name
         )
@@ -387,6 +392,33 @@ class TestStopStatement:
             # Passing the already-terminal Statement back short-circuits with no error.
             again = table_connection.stop_statement(stopped)
             assert again.is_stopped
+
+            # Re-stopping by bare name is likewise a no-op, not an error.
+            again_by_name = table_connection.stop_statement(cleaned_up_statement_name)
+            assert again_by_name.is_stopped
+        finally:
+            cursor.close()
+
+    def test_stopping_statement_that_already_failed_returns_without_raising(
+        self,
+        connection: Connection,
+        cleaned_up_statement_name: str,
+    ):
+        """The actual bug behind #203: a statement that reached FAILED on its own (not via
+        stop_statement) previously raised OperationalError out of the blocking wait instead of
+        being recognized as already terminal -- see _wait_for_statement_stopped's docstring.
+
+        `SELECT 1/0` fails fast enough (confirmed live: well under a second) that execute() itself
+        raises with "submission failed" -- Cursor.execute() sets cursor.statement before that
+        raise (cursor.py:251-264), so the FAILED statement is still available to stop by name."""
+        cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        try:
+            with pytest.raises(OperationalError, match="submission failed"):
+                cursor.execute("SELECT 1/0", statement_name=cleaned_up_statement_name)
+            assert cursor.statement.is_failed
+
+            stopped = connection.stop_statement(cleaned_up_statement_name, wait_for_stopped=True)
+            assert stopped.is_failed
         finally:
             cursor.close()
 

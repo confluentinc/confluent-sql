@@ -400,6 +400,35 @@ class TestConnectionStopStatement:
             invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
         assert exc_info.value.http_status_code == 500
 
+    def test_blocking_returns_without_polling_when_patch_already_failed(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A statement that reached FAILED on its own *before* stop_statement() was ever called
+        still returns cleanly, matching the Statement-object short-circuit's "already terminal,
+        nothing to stop" success -- not an error. This is the actual #203 bug: confirmed live
+        against the real Flink Statements API, the stop PATCH is accepted unconditionally (200 OK)
+        even against an already-FAILED statement, simply echoing back its current phase; there is
+        no server-side rejection to special-case. The bug was that the blocking wait's
+        transitioned-to-FAILED check ran before its already-terminal check, so it raised for a
+        statement that was already FAILED on the very first look, not one that failed *during* the
+        wait (that case is covered separately by test_blocking_failed_raises below)."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
+        request_mock.return_value = _ok_response(
+            statement_response_factory(name="stmt-1", phase="FAILED", stopped=True)
+        )
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert result.is_failed
+        # Just the PATCH -- already terminal, so no follow-up GET poll is needed.
+        request_mock.assert_called_once()
+        assert request_mock.call_args.args[0] == "PATCH"
+
     def test_blocking_timeout_raises(
         self,
         invalid_credential_connection: Connection,
