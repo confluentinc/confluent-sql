@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from confluent_sql.connection import Connection
-from confluent_sql.exceptions import InterfaceError, TypeMismatchError
+from confluent_sql.exceptions import DataError, InterfaceError, TypeMismatchError
 from confluent_sql.statement import ColumnTypeDefinition
 from confluent_sql.types import (
     ArrayConverter,
@@ -344,14 +344,14 @@ class TestVarBinaryConverter:
 
     def test_to_python_value_invalid_format(self, converter: VarBinaryConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Expected hex-pair encoded string",
         ):
             converter.to_python_value("7f0203'")  # Missing x' prefix
 
     def test_to_python_value_invalid_hex(self, converter: VarBinaryConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Invalid hex string",
         ):
             converter.to_python_value("x'7g0203'")  # 'g' is not a valid hex digit
@@ -394,6 +394,10 @@ class TestIntegerConverter:
         with ensure_raises_typemismatch("str"):
             converter.to_python_value(123)  # type: ignore
 
+    def test_to_python_value_unparseable_int_raises_dataerror(self, converter: IntegerConverter):
+        with pytest.raises(DataError, match="not-a-number"):
+            converter.to_python_value("not-a-number")
+
     @pytest.mark.parametrize(
         "value, expected",
         [
@@ -430,6 +434,12 @@ class TestDecimalConverter:
     def test_to_python_value_invalid_type(self, converter: DecimalConverter):
         with ensure_raises_typemismatch("str"):
             converter.to_python_value(123)  # type: ignore
+
+    def test_to_python_value_unparseable_decimal_raises_dataerror(
+        self, converter: DecimalConverter
+    ):
+        with pytest.raises(DataError, match="not-a-decimal"):
+            converter.to_python_value("not-a-decimal")
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -500,6 +510,10 @@ class TestFloatConverter:
         with ensure_raises_typemismatch("str"):
             converter.to_python_value(123)  # type: ignore
 
+    def test_to_python_value_unparseable_float_raises_dataerror(self, converter: FloatConverter):
+        with pytest.raises(DataError, match="not-a-float"):
+            converter.to_python_value("not-a-float")
+
     @pytest.mark.parametrize(
         "value, expected",
         [
@@ -517,7 +531,7 @@ class TestFloatConverter:
         """Ensure that NaN and Infinity are rejected, as they are not supported
         in Flink SQL statements."""
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Cannot convert NaN or Infinity to a Flink SQL float/double literal",
         ):
             FloatConverter.to_statement_string(bad_value)
@@ -589,7 +603,7 @@ class TestDateConverter:
 
     def test_to_python_value_invalid_format(self, converter: DateConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Invalid date string",
         ):
             converter.to_python_value("15-06-2024")  # Wrong format
@@ -633,7 +647,7 @@ class TestTimeConverter:
 
     def test_to_python_value_invalid_format(self, converter: TimeConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Invalid time string",
         ):
             converter.to_python_value("12.34.56")  # Wrong format for time.fromisoformat().
@@ -687,7 +701,7 @@ class TestTimestampConverter:
         self, mock_connection: Connection, bad_name: str
     ):
         with pytest.raises(
-            ValueError,
+            InterfaceError,
             match="TimestampConverter can only be used",
         ):
             TimestampConverter(mock_connection, ColumnTypeDefinition(type=bad_name, nullable=False))
@@ -740,14 +754,14 @@ class TestTimestampConverter:
         """Ensure that if Flink serialization ever changes, we will notice, because
         other assumptions may be invalid"""
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Expected timezone-naive timestamp string from Flink but got",
         ):
             ts_converter.to_python_value("2024-06-15 12:34:56+02:00")  # Has timezone
 
     def test_to_python_value_invalid_format(self, ts_converter: TimestampConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Invalid timestamp string",
         ):
             ts_converter.to_python_value("2024/06/15 12:34:56")  # Wrong date spelling format
@@ -813,7 +827,7 @@ class TestYearMonthIntervalConverter:
 
     def test_constructor_hates_alternative_type_name(self, mock_connection: Connection):
         with pytest.raises(
-            ValueError,
+            InterfaceError,
             match="YearMonthIntervalConverter can only be used",
         ):
             YearMonthIntervalConverter(
@@ -837,7 +851,7 @@ class TestYearMonthIntervalConverter:
 
     def test_to_python_value_invalid_format(self, converter: YearMonthIntervalConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Invalid interval string",
         ):
             converter.to_python_value("2:06")  # Wrong format
@@ -929,7 +943,7 @@ class TestDaysIntervalConverter:
 
     def test_to_python_value_invalid_format(self, converter: DaysIntervalConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Invalid interval string",
         ):
             converter.to_python_value("10:12:30")  # Wrong format
@@ -1158,8 +1172,8 @@ class TestArrayConverter:
 
     def test_to_python_value_invalid_element(self, int_array_converter: ArrayConverter):
         with pytest.raises(
-            ValueError,
-            match="invalid literal for int",
+            DataError,
+            match="Invalid integer value",
         ):
             int_array_converter.to_python_value(["10", "not an int", "30"])
 
@@ -1184,7 +1198,7 @@ class TestArrayConverter:
 
     def test_to_statement_string_hates_empty_array(self, int_array_converter: ArrayConverter):
         with pytest.raises(
-            ValueError,
+            DataError,
             match="Cannot convert empty list to Flink ARRAY literal",
         ):
             int_array_converter.to_statement_string([])
@@ -1367,7 +1381,7 @@ class TestMapConverter:
     def test_to_python_value_expects_interior_pair_lists(
         self, str_int_converter: MapConverter, bad_value: list
     ):
-        with pytest.raises(ValueError, match="Expected key-value pair list of length 2"):
+        with pytest.raises(InterfaceError, match="Expected key-value pair list of length 2"):
             str_int_converter.to_python_value(bad_value)
 
     @pytest.mark.parametrize(
@@ -1491,7 +1505,7 @@ class TestMapConverter:
             MapConverter.to_statement_string("sdf")  # type: ignore
 
     def test_to_statement_string_hates_empty_dict(self):
-        with pytest.raises(ValueError, match="Cannot convert empty dict"):
+        with pytest.raises(DataError, match="Cannot convert empty dict"):
             MapConverter.to_statement_string({})  # type: ignore
 
     def test_to_statement_string_hates_inconsistent_key_types(self):
@@ -1764,7 +1778,7 @@ class TestRowConverter:
     def test_to_python_value_invalid_field_type(self, str_int_row_converter):
         with pytest.raises(
             InterfaceError,
-            match="Error converting field 'int_field'.*invalid literal for int",
+            match="Error converting field 'int_field'.*Invalid integer value",
         ):
             # Gets an error when deferring to the fieldwise converter for the integer field.
             str_int_row_converter.to_python_value(["valid string", "not an int"])  # type: ignore

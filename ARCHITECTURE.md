@@ -35,13 +35,13 @@ When you submit a statement (query, DDL, or data ingestion job), it becomes a fi
 
 Every statement progresses through these phases:
 
-| Phase         | Meaning                           | Can Fetch Results Through This Driver?               |
-| ------------- | --------------------------------- | ---------------------------------------------------- |
-| **PENDING**   | Queued on server, not yet started | No                                                   |
-| **RUNNING**   | Actively executing                | No if snapshot query/cursor, Yes if streaming cursor |
-| **COMPLETED** | Finished successfully             | Yes (for both query/cursor types)                    |
-| **FAILED**    | Error during execution            | No                                                   |
-| **STOPPED**   | Explicitly stopped through API.   | No                                                   |
+| Phase         | Meaning                           | Can Fetch Results Through This Driver?          |
+| ------------- | --------------------------------- | ------------------------------------------------ |
+| **PENDING**   | Queued on server, not yet started | No                                                |
+| **RUNNING**   | Actively executing                | Depends on statement kind and traits (see below) |
+| **COMPLETED** | Finished successfully             | Yes (for both query/cursor types)                |
+| **FAILED**    | Error during execution            | No                                                |
+| **STOPPED**   | Explicitly stopped through API.   | No                                                |
 
 ### How Phases Progress
 
@@ -51,16 +51,22 @@ Every statement progresses through these phases:
 PENDING  → RUNNING → COMPLETED
 ```
 
-When you call `cursor.execute()` for a snapshot query / default cursor, the driver:
+When you call `cursor.execute()` for a snapshot query / default cursor, the driver submits the
+statement (HTTP POST) and polls until results can be fetched. Whether that's as soon as RUNNING
+or only once COMPLETED depends on the statement's kind and traits, using the exact same logic as
+streaming mode:
 
-1. Submits the statement (HTTP POST)
-2. Polls the server until it reaches COMPLETED phase
-3. Returns from `.execute()` to let you begin to interact with the cursor / results.
+- A plain query with a finite, append-only result (e.g. a projection or filter with no `GROUP BY`)
+  is ready as soon as the statement reaches RUNNING — the server computes snapshot results as one
+  batch with nothing left to retract, so the result set is already stable by then.
+- A bounded, non-append-only query (an aggregation that could still retract rows as it settles)
+  waits for COMPLETED, since its result isn't guaranteed final until then.
+- A statement with no result set at all — `INSERT INTO`, or a `CREATE TABLE ... AS SELECT` — is a
+  genuinely finite write/population job in snapshot mode and also waits for COMPLETED, since its
+  side effect isn't guaranteed to have landed until then.
 
-This is blocking—your code pauses until the server finishes statement execution and result set calculation.
-
-_NOTE_: This behavior may change in future releases, moving to have `.execute()` return once RUNNING phase is entered,
-moving the additional blocking to the fetching results interactions.
+Either way, `.execute()` blocks until the statement is ready by that definition, then returns to
+let you begin to interact with the cursor / results.
 
 **Streaming queries:**
 
@@ -233,11 +239,14 @@ print(f"Append-only: {stmt.is_append_only}")  # True if statement results change
 
 ### Snapshot Mode
 
-Snapshot queries are **blocking**—your code pauses until the server finishes computing the result set:
+Snapshot queries are **blocking**—your code pauses until results are ready to fetch. For most
+queries (a finite, append-only result), that's as soon as the statement reaches `RUNNING`, since
+the result set is already stable by then; a bounded, non-append-only aggregation instead waits for
+`COMPLETED`, since its result could still change:
 
 ```python
 cursor = connection.cursor()
-cursor.execute("SELECT * FROM large_table")  # ← Blocks here until the statement reaches `COMPLETED` phase.
+cursor.execute("SELECT * FROM large_table")  # ← Blocks here until results can be fetched.
 rows = cursor.fetchall()
 ```
 
