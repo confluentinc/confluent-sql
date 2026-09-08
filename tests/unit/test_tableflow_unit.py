@@ -187,14 +187,18 @@ class TestTableflowTopicConfig:
         assert TableflowTopicConfig().to_spec() == {}
 
     def test_retention_only(self) -> None:
-        assert TableflowTopicConfig(retention_ms="604800000").to_spec() == {
+        # int in, str out: the API schema types retention_ms as string (int64, string-encoded
+        # to dodge JS/IEEE-754 double precision loss) on every request, even when this dataclass
+        # is constructed with a plain int for caller convenience -- confirmed against the live
+        # API, which rejects a non-string value outright.
+        assert TableflowTopicConfig(retention_ms=604800000).to_spec() == {
             "retention_ms": "604800000"
         }
 
     def test_all_fields(self) -> None:
         config = TableflowTopicConfig(
-            retention_ms="604800000",
-            data_retention_ms="2592000000",
+            retention_ms=604800000,
+            data_retention_ms=2592000000,
             error_handling=TableflowErrorHandlingLog(target="dlq"),
         )
         assert config.to_spec() == {
@@ -231,7 +235,7 @@ class TestBuildCreatePayload:
             table_name="orders",
             table_formats=["ICEBERG", "DELTA"],
             storage=ManagedStorage(),
-            config=TableflowTopicConfig(retention_ms="604800000"),
+            config=TableflowTopicConfig(retention_ms=604800000),
             environment_id="env-1",
             kafka_cluster_id="lkc-1",
         )
