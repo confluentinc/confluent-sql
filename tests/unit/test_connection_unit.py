@@ -857,17 +857,14 @@ class TestConnectChecks:
             == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
         )
 
-    def test_endpoint_raises_error_when_cloud_provider_also_provided(
-        self, connection_factory: ConnectionFactory
+    def test_endpoint_warns_when_cloud_provider_also_provided(
+        self, connection_factory: ConnectionFactory, caplog
     ):
-        """Test that providing endpoint with cloud_provider raises an error."""
-        with pytest.raises(
-            InterfaceError,
-            match=(
-                "cloud_provider and cloud_region should not be provided when endpoint is specified"
-            ),
-        ):
-            connection_factory(
+        """Providing endpoint with cloud_provider is not an error (#210) -- endpoint wins and
+        we just warn, since a provided endpoint makes cloud_provider/cloud_region moot rather
+        than actually breaking anything."""
+        with caplog.at_level("WARNING", logger=connection_module_logger.name):
+            conn = connection_factory(
                 environment_id="env-123",
                 organization_id="org-456",
                 compute_pool_id="cp-789",
@@ -876,18 +873,21 @@ class TestConnectChecks:
                 endpoint="https://custom.example.com",
                 cloud_provider="aws",
             )
+        assert "custom.example.com" in str(conn._get_flink_client().base_url)
+        assert any(
+            "No need to provide cloud_provider or cloud_region" in record.getMessage()
+            and record.levelname == "WARNING"
+            for record in caplog.records
+        )
 
-    def test_endpoint_raises_error_when_cloud_region_also_provided(
-        self, connection_factory: ConnectionFactory
+    def test_endpoint_warns_when_cloud_region_also_provided(
+        self, connection_factory: ConnectionFactory, caplog
     ):
-        """Test that providing endpoint with cloud_region raises an error."""
-        with pytest.raises(
-            InterfaceError,
-            match=(
-                "cloud_provider and cloud_region should not be provided when endpoint is specified"
-            ),
-        ):
-            connection_factory(
+        """Providing endpoint with cloud_region is not an error (#210) -- endpoint wins and
+        we just warn, since a provided endpoint makes cloud_provider/cloud_region moot rather
+        than actually breaking anything."""
+        with caplog.at_level("WARNING", logger=connection_module_logger.name):
+            conn = connection_factory(
                 environment_id="env-123",
                 organization_id="org-456",
                 compute_pool_id="cp-789",
@@ -896,6 +896,12 @@ class TestConnectChecks:
                 endpoint="https://custom.example.com",
                 cloud_region="us-east-1",
             )
+        assert "custom.example.com" in str(conn._get_flink_client().base_url)
+        assert any(
+            "No need to provide cloud_provider or cloud_region" in record.getMessage()
+            and record.levelname == "WARNING"
+            for record in caplog.records
+        )
 
 
 @pytest.mark.unit
