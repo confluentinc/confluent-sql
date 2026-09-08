@@ -386,8 +386,9 @@ def connect(  # noqa: PLR0913
 
     if endpoint:
         if cloud_provider or cloud_region:
-            raise InterfaceError(
-                "cloud_provider and cloud_region should not be provided when endpoint is specified"
+            logger.warning(
+                "No need to provide cloud_provider or cloud_region when also providing "
+                "endpoint. Only using endpoint."
             )
     else:
         if not cloud_provider:
