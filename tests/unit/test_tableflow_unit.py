@@ -187,14 +187,18 @@ class TestTableflowTopicConfig:
         assert TableflowTopicConfig().to_spec() == {}
 
     def test_retention_only(self) -> None:
-        assert TableflowTopicConfig(retention_ms="604800000").to_spec() == {
+        # int in, str out: the API schema types retention_ms as string (int64, string-encoded
+        # to dodge JS/IEEE-754 double precision loss) on every request, even when this dataclass
+        # is constructed with a plain int for caller convenience -- confirmed against the live
+        # API, which rejects a non-string value outright.
+        assert TableflowTopicConfig(retention_ms=604800000).to_spec() == {
             "retention_ms": "604800000"
         }
 
     def test_all_fields(self) -> None:
         config = TableflowTopicConfig(
-            retention_ms="604800000",
-            data_retention_ms="2592000000",
+            retention_ms=604800000,
+            data_retention_ms=2592000000,
             error_handling=TableflowErrorHandlingLog(target="dlq"),
         )
         assert config.to_spec() == {
@@ -202,6 +206,18 @@ class TestTableflowTopicConfig:
             "data_retention_ms": "2592000000",
             "error_handling": {"mode": "LOG", "target": "dlq"},
         }
+
+    def test_from_spec_parses_wire_strings_to_int(self) -> None:
+        # The inverse of the int-to-string encoding above: a real GET/create response always
+        # has these as strings on the wire, and from_spec must parse them back to int so a
+        # config round-tripped through from_spec/to_spec compares equal to one built directly.
+        config = TableflowTopicConfig.from_spec(
+            {"retention_ms": "604800000", "data_retention_ms": "2592000000"}
+        )
+        assert config == TableflowTopicConfig(retention_ms=604800000, data_retention_ms=2592000000)
+
+    def test_from_spec_empty(self) -> None:
+        assert TableflowTopicConfig.from_spec({}) == TableflowTopicConfig()
 
 
 class TestBuildCreatePayload:
@@ -231,7 +247,7 @@ class TestBuildCreatePayload:
             table_name="orders",
             table_formats=["ICEBERG", "DELTA"],
             storage=ManagedStorage(),
-            config=TableflowTopicConfig(retention_ms="604800000"),
+            config=TableflowTopicConfig(retention_ms=604800000),
             environment_id="env-1",
             kafka_cluster_id="lkc-1",
         )
@@ -293,7 +309,9 @@ class TestTableflowTopicFromResponse:
         assert topic.spec.environment_id == "env-1"
         assert topic.spec.kafka_cluster_id == "lkc-1"
         assert topic.spec.suspended is False
-        assert topic.spec.config == {"retention_ms": "604800000", "enable_compaction": True}
+        # enable_compaction is deprecated/read-only and deliberately not modeled -- dropped,
+        # not retained.
+        assert topic.spec.config == TableflowTopicConfig(retention_ms=604800000)
         assert topic.status.write_mode == "APPEND"
         assert topic.phase is TableflowPhase.RUNNING
         assert topic.status.phase is TableflowPhase.RUNNING

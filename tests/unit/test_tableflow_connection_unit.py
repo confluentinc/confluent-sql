@@ -15,6 +15,7 @@ from confluent_sql import (
     ProgrammingError,
     TableflowPhase,
     TableflowTopicAlreadyExistsError,
+    TableflowTopicConfig,
     TableflowTopicNotFoundError,
     TableFormat,
 )
@@ -523,3 +524,127 @@ class TestDisableTableflow:
         )
         with pytest.raises(OperationalError, match="was not removed within"):
             conn.disable_tableflow("orders", wait_for_removal=True, timeout=1)
+
+
+class TestUpdateTableflow:
+    """update_tableflow request shaping, the empty-update guard, 404 mapping, error-detail
+    extraction, and the wait-for-running behavior."""
+
+    def test_table_formats_only_reaches_body_without_config(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
+        conn.update_tableflow(
+            "orders",
+            table_formats={TableFormat.DELTA, TableFormat.ICEBERG},
+            wait_for_running=False,  # this test asserts request shape, not the wait loop
+        )
+        args, kwargs = conn._tableflow_request.call_args
+        assert args[0] == "/tableflow/v1/tableflow-topics/orders"
+        assert kwargs["method"] == "PATCH"
+        assert kwargs["json"]["spec"]["table_formats"] == ["ICEBERG", "DELTA"]
+        assert kwargs["json"]["spec"]["kafka_cluster"] == {"id": "lkc-1"}
+        assert "config" not in kwargs["json"]["spec"]
+
+    def test_config_only_reaches_body_without_table_formats(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
+        conn.update_tableflow(
+            "orders",
+            config=TableflowTopicConfig(retention_ms=604800000),
+            wait_for_running=False,
+        )
+        _, kwargs = conn._tableflow_request.call_args
+        assert kwargs["json"]["spec"]["config"] == {"retention_ms": "604800000"}
+        assert "table_formats" not in kwargs["json"]["spec"]
+
+    def test_neither_argument_raises_interface_error(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(side_effect=AssertionError("should not make a request"))
+        with pytest.raises(InterfaceError, match="at least one of table_formats/config"):
+            conn.update_tableflow("orders")
+
+    def test_empty_config_and_no_formats_raises_interface_error(self) -> None:
+        # A config with nothing actually set on it renders to an empty spec -- same as
+        # omitting config entirely, so this must be treated as no update at all.
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(side_effect=AssertionError("should not make a request"))
+        with pytest.raises(InterfaceError, match="at least one of table_formats/config"):
+            conn.update_tableflow("orders", config=TableflowTopicConfig())
+
+    def test_404_raises_not_found(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_error_response(404))
+        with pytest.raises(TableflowTopicNotFoundError) as exc:
+            conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
+        assert exc.value.table_name == "orders"
+
+    def test_other_error_status_extracts_detail(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        response = Mock()
+        response.status_code = 422
+
+        def _raise() -> None:
+            inner = Mock()
+            inner.status_code = 422
+            inner.json.return_value = {"errors": [{"detail": "bad retention_ms"}]}
+            raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
+
+        response.raise_for_status = _raise
+        conn._tableflow_request = Mock(return_value=response)
+        with pytest.raises(OperationalError, match="bad retention_ms") as exc:
+            conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
+        assert exc.value.http_status_code == 422
+
+    def test_other_error_status_falls_back_when_body_unparseable(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_error_response(500))
+        with pytest.raises(OperationalError, match="no more details") as exc:
+            conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
+        assert exc.value.http_status_code == 500
+
+    def test_blocks_for_running_by_default(self, mocker) -> None:
+        # No wait_for_running argument -> default (True) must poll to RUNNING, not return PENDING.
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
+        conn.get_tableflow = Mock(  # type: ignore[method-assign]
+            return_value=TableflowTopic.from_response(_topic_body(phase="RUNNING"))
+        )
+        topic = conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
+        assert topic.phase is TableflowPhase.RUNNING
+        conn.get_tableflow.assert_called()
+
+    def test_wait_for_running_raises_on_failed(self, mocker) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
+        failed = _topic_body(phase="FAILED")
+        failed["status"]["error_message"] = "schema boom"
+        failed["status"]["failing_table_formats"] = [
+            {"format": "ICEBERG", "error_message": "bad schema"}
+        ]
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
+        conn.get_tableflow = Mock(return_value=TableflowTopic.from_response(failed))  # type: ignore[method-assign]
+        with pytest.raises(OperationalError, match="schema boom"):
+            conn.update_tableflow(
+                "orders", table_formats=TableFormat.ICEBERG, wait_for_running=True
+            )
+
+    def test_wait_for_running_times_out(self, mocker) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([]))
+        with pytest.raises(OperationalError, match="did not reach RUNNING within"):
+            conn.update_tableflow(
+                "orders", table_formats=TableFormat.ICEBERG, wait_for_running=True, timeout=1
+            )
+
+    def test_wait_for_running_returns_immediately_if_already_running(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(
+            return_value=_ok_response(_topic_body(phase="RUNNING"), status_code=202)
+        )
+        conn.get_tableflow = Mock(side_effect=AssertionError("should not poll"))  # type: ignore[method-assign]
+        topic = conn.update_tableflow(
+            "orders", table_formats=TableFormat.ICEBERG, wait_for_running=True
+        )
+        assert topic.phase is TableflowPhase.RUNNING

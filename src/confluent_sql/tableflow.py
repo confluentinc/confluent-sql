@@ -19,6 +19,46 @@ from .exceptions import InterfaceError, OperationalError
 from .types import StrAnyDict
 
 
+class Fields:
+    """Wire field names for the Tableflow Topic API
+
+    Plain string class attributes, not an Enum: `StrEnum` needs Python 3.11+ (newer than this
+    package's floor, 3.10), and the older `class X(str, Enum)` mixin (used above for `TableFormat`/
+    `TableflowPhase`) returns the qualified member name from `str()`/default formatting rather
+    than the plain value unless a caller remembers `.value` -- a real risk given how pervasively
+    these get used directly as dict keys, in f-strings, and in JSON payloads. Plain strings have
+    no such gotcha.
+    """
+
+    ID = "id"
+    DISPLAY_NAME = "display_name"
+    STORAGE = "storage"
+    TABLE_FORMATS = "table_formats"
+    ENVIRONMENT = "environment"
+    KAFKA_CLUSTER = "kafka_cluster"
+    CONFIG = "config"
+    SUSPENDED = "suspended"
+
+    RETENTION_MS = "retention_ms"
+    DATA_RETENTION_MS = "data_retention_ms"
+    ERROR_HANDLING = "error_handling"
+    # Deliberately unmodeled by TableflowTopicConfig (deprecated/read-only), but still
+    # referenced by name by a caller masking them out of a diff.
+    ENABLE_COMPACTION = "enable_compaction"
+    ENABLE_PARTITIONING = "enable_partitioning"
+    RECORD_FAILURE_STRATEGY = "record_failure_strategy"
+
+    KIND = "kind"
+    BUCKET_NAME = "bucket_name"
+    PROVIDER_INTEGRATION_ID = "provider_integration_id"
+    STORAGE_ACCOUNT_NAME = "storage_account_name"
+    CONTAINER_NAME = "container_name"
+    TABLE_PATH = "table_path"
+
+    MODE = "mode"
+    TARGET = "target"
+
+
 class TableFormat(str, Enum):
     """A concrete table format a Tableflow topic materializes to.
 
@@ -104,7 +144,7 @@ class TableflowStorage:
 
     def to_spec(self) -> StrAnyDict:
         """Render the writable storage fields to the wire `spec.storage` object."""
-        return {"kind": self.kind}
+        return {Fields.KIND: self.kind}
 
 
 @dataclass(frozen=True)
@@ -125,9 +165,9 @@ class ByobAwsStorage(TableflowStorage):
 
     def to_spec(self) -> StrAnyDict:
         return {
-            "kind": self.kind,
-            "bucket_name": self.bucket_name,
-            "provider_integration_id": self.provider_integration_id,
+            Fields.KIND: self.kind,
+            Fields.BUCKET_NAME: self.bucket_name,
+            Fields.PROVIDER_INTEGRATION_ID: self.provider_integration_id,
         }
 
 
@@ -143,10 +183,10 @@ class AzureAdlsStorage(TableflowStorage):
 
     def to_spec(self) -> StrAnyDict:
         return {
-            "kind": self.kind,
-            "storage_account_name": self.storage_account_name,
-            "container_name": self.container_name,
-            "provider_integration_id": self.provider_integration_id,
+            Fields.KIND: self.kind,
+            Fields.STORAGE_ACCOUNT_NAME: self.storage_account_name,
+            Fields.CONTAINER_NAME: self.container_name,
+            Fields.PROVIDER_INTEGRATION_ID: self.provider_integration_id,
         }
 
 
@@ -156,19 +196,19 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
     Captures only the writable fields; server-assigned read-only fields (`table_path`,
     `bucket_region`, `storage_region`) remain available on the topic's raw spec dict.
     """
-    kind = data.get("kind")
+    kind = data.get(Fields.KIND)
     if kind == ManagedStorage.kind:
         return ManagedStorage()
     if kind == ByobAwsStorage.kind:
         return ByobAwsStorage(
-            bucket_name=data["bucket_name"],
-            provider_integration_id=data["provider_integration_id"],
+            bucket_name=data[Fields.BUCKET_NAME],
+            provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
     if kind == AzureAdlsStorage.kind:
         return AzureAdlsStorage(
-            storage_account_name=data["storage_account_name"],
-            container_name=data["container_name"],
-            provider_integration_id=data["provider_integration_id"],
+            storage_account_name=data[Fields.STORAGE_ACCOUNT_NAME],
+            container_name=data[Fields.CONTAINER_NAME],
+            provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
     raise OperationalError(f"Wacky -- unknown Tableflow storage kind '{kind}' in response")
 
@@ -181,7 +221,7 @@ class TableflowErrorHandling:
 
     def to_spec(self) -> StrAnyDict:
         """Render to the wire `error_handling` object."""
-        return {"mode": self.mode}
+        return {Fields.MODE: self.mode}
 
 
 @dataclass(frozen=True)
@@ -207,7 +247,23 @@ class TableflowErrorHandlingLog(TableflowErrorHandling):
     target: str = "error_log"
 
     def to_spec(self) -> StrAnyDict:
-        return {"mode": self.mode, "target": self.target}
+        return {Fields.MODE: self.mode, Fields.TARGET: self.target}
+
+
+def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
+    """Parse a response `config.error_handling` object into its typed error-handling class.
+
+    Mirrors `storage_from_spec` -- only the mode-to-class dispatch is ours, and every mode's
+    field shape already round-trips through its own dataclass.
+    """
+    mode = data.get(Fields.MODE)
+    if mode == TableflowErrorHandlingSuspend.mode:
+        return TableflowErrorHandlingSuspend()
+    if mode == TableflowErrorHandlingSkip.mode:
+        return TableflowErrorHandlingSkip()
+    if mode == TableflowErrorHandlingLog.mode:
+        return TableflowErrorHandlingLog(target=data.get(Fields.TARGET, "error_log"))
+    raise OperationalError(f"Wacky -- unknown Tableflow error-handling mode '{mode}' in response")
 
 
 @dataclass(frozen=True)
@@ -219,18 +275,40 @@ class TableflowTopicConfig:
     `enable_compaction`/`enable_partitioning` flags are deliberately omitted.
     """
 
-    retention_ms: str | int | None = None
-    data_retention_ms: str | int | None = None
+    retention_ms: int | None = None
+    data_retention_ms: int | None = None
     error_handling: TableflowErrorHandling | None = None
 
+    @classmethod
+    def from_spec(cls, data: StrAnyDict) -> TableflowTopicConfig:
+        """Parse a response `spec.config` object, dropping anything not formally modeled."""
+        error_handling_conf = data.get(Fields.ERROR_HANDLING)
+        return cls(
+            retention_ms=optional_int_from_str(data.get(Fields.RETENTION_MS)),
+            data_retention_ms=optional_int_from_str(data.get(Fields.DATA_RETENTION_MS)),
+            error_handling=(
+                error_handling_from_spec(error_handling_conf)
+                if error_handling_conf is not None
+                else None
+            ),
+        )
+
     def to_spec(self) -> StrAnyDict:
+        """Render to the wire `config` object.
+
+        `retention_ms`/`data_retention_ms` accept `int` here for caller convenience, but the API
+        schema types both as `string` (`format: int64`) on every request and response -- so
+        that's what's actually sent, even when constructed with an `int`. Without this, a value
+        that's genuinely unchanged could look different across a create/update payload and a GET
+        response purely from Python's `int`/`str` distinction, not a real difference on the wire.
+        """
         spec: StrAnyDict = {}
         if self.retention_ms is not None:
-            spec["retention_ms"] = self.retention_ms
+            spec[Fields.RETENTION_MS] = str(self.retention_ms)
         if self.data_retention_ms is not None:
-            spec["data_retention_ms"] = self.data_retention_ms
+            spec[Fields.DATA_RETENTION_MS] = str(self.data_retention_ms)
         if self.error_handling is not None:
-            spec["error_handling"] = self.error_handling.to_spec()
+            spec[Fields.ERROR_HANDLING] = self.error_handling.to_spec()
         return spec
 
 
@@ -250,16 +328,50 @@ def build_create_payload(
     empty config is omitted entirely.
     """
     spec: StrAnyDict = {
-        "display_name": table_name,
-        "storage": storage.to_spec(),
-        "table_formats": table_formats,
-        "environment": {"id": environment_id},
-        "kafka_cluster": {"id": kafka_cluster_id},
+        Fields.DISPLAY_NAME: table_name,
+        Fields.STORAGE: storage.to_spec(),
+        Fields.TABLE_FORMATS: table_formats,
+        Fields.ENVIRONMENT: {Fields.ID: environment_id},
+        Fields.KAFKA_CLUSTER: {Fields.ID: kafka_cluster_id},
     }
     if config is not None:
         config_spec = config.to_spec()
         if config_spec:
-            spec["config"] = config_spec
+            spec[Fields.CONFIG] = config_spec
+    return {"spec": spec}
+
+
+def build_update_payload(
+    *,
+    table_formats: list[str] | None,
+    config_spec: StrAnyDict | None,
+    environment_id: str,
+    kafka_cluster_id: str,
+) -> StrAnyDict:
+    """Assemble the `PATCH /tableflow/v1/tableflow-topics/{display_name}` request body.
+
+    `table_formats`/`config_spec` are the only fields updatable via this API (`storage`/
+    `display_name` are `x-immutable`; `suspended` isn't part of `tableflow`'s config surface) --
+    `None` (or an empty `config_spec`) means "leave unchanged," so it's omitted from the body
+    entirely rather than sent as `null`. Diffing to decide what's actually changing --
+    comparing against a real `get_tableflow` response -- is the caller's job, not this driver's;
+    this function (and `Connection.update_tableflow`) just assembles what it's given, same as
+    every other Tableflow request-building function here.
+
+    `environment` and `kafka_cluster` are both required routing/identity keys on this endpoint
+    (the path only carries `display_name`, which isn't unique on its own) -- not values being
+    changed. The API spec only marks `environment` required in the PATCH request schema, but
+    that's wrong in practice: `kafka_cluster` is required here too, the same as it is for
+    GET/DELETE.
+    """
+    spec: StrAnyDict = {
+        Fields.ENVIRONMENT: {Fields.ID: environment_id},
+        Fields.KAFKA_CLUSTER: {Fields.ID: kafka_cluster_id},
+    }
+    if table_formats is not None:
+        spec[Fields.TABLE_FORMATS] = table_formats
+    if config_spec:
+        spec[Fields.CONFIG] = config_spec
     return {"spec": spec}
 
 
@@ -303,17 +415,16 @@ class TableflowTopicStatus:
 
 @dataclass
 class TableflowTopicSpec:
-    """Parsed topic spec; `table_formats` and `storage` are typed, `config` retained raw.
-
-    The raw spec dict is kept (mirroring `Statement`). Config is left as a dict because its
-    response carries read-only fields (`enable_compaction`, `enable_partitioning`) the writable
-    `TableflowTopicConfig` doesn't model.
+    """Parsed topic spec, in the same shape whether it came from a real GET/create response or
+    was assembled locally to represent a desired state -- `table_formats`/`storage`/`config` are
+    all typed either way. The raw spec dict is kept (mirroring `Statement`) for anything not
+    formally modeled here.
     """
 
     display_name: str
     table_formats: list[TableFormat]
     storage: TableflowStorage
-    config: StrAnyDict | None
+    config: TableflowTopicConfig | None
     environment_id: str | None
     kafka_cluster_id: str | None
     suspended: bool
@@ -321,14 +432,15 @@ class TableflowTopicSpec:
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> TableflowTopicSpec:
+        config_data = data.get(Fields.CONFIG)
         return cls(
-            display_name=data["display_name"],
-            table_formats=[TableFormat(fmt) for fmt in data.get("table_formats", [])],
-            storage=storage_from_spec(data["storage"]),
-            config=data.get("config"),
-            environment_id=(data.get("environment") or {}).get("id"),
-            kafka_cluster_id=(data.get("kafka_cluster") or {}).get("id"),
-            suspended=bool(data.get("suspended", False)),
+            display_name=data[Fields.DISPLAY_NAME],
+            table_formats=[TableFormat(fmt) for fmt in data.get(Fields.TABLE_FORMATS, [])],
+            storage=storage_from_spec(data[Fields.STORAGE]),
+            config=TableflowTopicConfig.from_spec(config_data) if config_data is not None else None,
+            environment_id=(data.get(Fields.ENVIRONMENT) or {}).get(Fields.ID),
+            kafka_cluster_id=(data.get(Fields.KAFKA_CLUSTER) or {}).get(Fields.ID),
+            suspended=bool(data.get(Fields.SUSPENDED, False)),
             raw=data,
         )
 
@@ -361,3 +473,9 @@ class TableflowTopic:
         except KeyError as e:
             raise OperationalError(f"Error parsing Tableflow topic response, missing {e}.") from e
         return cls(spec=spec, status=status, metadata=metadata)
+
+
+def optional_int_from_str(s: str | None) -> int | None:
+    if s is None:
+        return None
+    return int(s)
