@@ -2,6 +2,12 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
+## 0.5.4, 2026-09-08
+
+### Changed
+
+- `connect()` no longer raises `InterfaceError` when both `endpoint` and `cloud_provider`/`cloud_region` are provided. A provided `endpoint` simply makes `cloud_provider`/`cloud_region` unnecessary rather than actually conflicting with it, so this now logs a warning ("No need to provide cloud_provider or cloud_region when also providing endpoint. Only using endpoint.") and proceeds using `endpoint`. (#210)
+
 ## 0.5.3, 2026-08-27
 
 ### Fixed
