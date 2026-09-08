@@ -381,13 +381,7 @@ def connect(  # noqa: PLR0913
     if not organization_id and not global_key_provided:
         raise InterfaceError("Organization ID is required")
 
-    if endpoint:
-        if cloud_provider or cloud_region:
-            logger.warning(
-                "No need to provide cloud_provider or cloud_region when also providing "
-                "endpoint. Only using endpoint."
-            )
-    else:
+    if not endpoint:
         if not cloud_provider:
             raise InterfaceError("Cloud provider is required when endpoint is not provided")
 
@@ -642,7 +636,13 @@ class Connection:
             raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
         self._http_timeout_secs = http_timeout_secs
 
-        if not endpoint and not (cloud_provider and cloud_region):
+        if endpoint:
+            if cloud_provider or cloud_region:
+                logger.warning(
+                    "No need to provide cloud_provider or cloud_region when also providing "
+                    "endpoint. Only using endpoint."
+                )
+        elif not (cloud_provider and cloud_region):
             raise InterfaceError(
                 "cloud_provider and cloud_region are required when endpoint is not provided"
             )
