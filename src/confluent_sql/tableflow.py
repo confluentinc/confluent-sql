@@ -472,6 +472,8 @@ class TableflowTopic:
             metadata = response.get("metadata", {})
         except KeyError as e:
             raise OperationalError(f"Error parsing Tableflow topic response, missing {e}.") from e
+        except (ValueError, TypeError) as e:
+            raise OperationalError(f"Error parsing Tableflow topic response: {e}") from e
         return cls(spec=spec, status=status, metadata=metadata)
 
 

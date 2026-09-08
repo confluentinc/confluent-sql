@@ -338,3 +338,12 @@ class TestTableflowTopicFromResponse:
         del response["status"]
         with pytest.raises(OperationalError, match="missing 'status'"):
             TableflowTopic.from_response(response)
+
+    def test_malformed_retention_ms_raises_operational_error(self) -> None:
+        # optional_int_from_str's int(s) raises ValueError on a non-numeric wire value -- this
+        # must surface as the same OperationalError every other malformed-response case does,
+        # not leak the raw ValueError past TableflowTopic.from_response.
+        response = _topic_response()
+        response["spec"]["config"] = {"retention_ms": "not-a-number"}
+        with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
+            TableflowTopic.from_response(response)

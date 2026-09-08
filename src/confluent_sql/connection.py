@@ -2282,8 +2282,10 @@ class Connection:
             try:
                 res = e.response.json()
                 errors = res.get("errors", [])
-                details = "; ".join([err["detail"] for err in errors])
+                details = "; ".join(err["detail"] for err in errors if err.get("detail"))
             except Exception:
+                details = ""
+            if not details:
                 details = "no more details"
             raise OperationalError(
                 f"Error updating Tableflow topic: {details}",

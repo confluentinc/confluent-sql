@@ -595,6 +595,25 @@ class TestUpdateTableflow:
             conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
         assert exc.value.http_status_code == 422
 
+    def test_other_error_status_falls_back_when_errors_list_empty(self) -> None:
+        # A parseable body with an empty (or detail-less) errors list must still fall back to
+        # "no more details" -- not silently produce a message with nothing after the colon.
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        response = Mock()
+        response.status_code = 422
+
+        def _raise() -> None:
+            inner = Mock()
+            inner.status_code = 422
+            inner.json.return_value = {"errors": []}
+            raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
+
+        response.raise_for_status = _raise
+        conn._tableflow_request = Mock(return_value=response)
+        with pytest.raises(OperationalError, match="no more details") as exc:
+            conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
+        assert exc.value.http_status_code == 422
+
     def test_other_error_status_falls_back_when_body_unparseable(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._tableflow_request = Mock(return_value=_error_response(500))
