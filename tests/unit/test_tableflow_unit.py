@@ -195,6 +195,14 @@ class TestTableflowTopicConfig:
             "retention_ms": "604800000"
         }
 
+    def test_data_retention_only(self) -> None:
+        # Same string-encoded int64 wire format as retention_ms (see test_retention_only),
+        # applied independently here since data_retention_ms has its own coercion branch
+        # in to_spec().
+        assert TableflowTopicConfig(data_retention_ms=2592000000).to_spec() == {
+            "data_retention_ms": "2592000000"
+        }
+
     def test_all_fields(self) -> None:
         config = TableflowTopicConfig(
             retention_ms=604800000,
