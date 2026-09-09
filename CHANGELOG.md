@@ -4,6 +4,11 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. `tableflow_formats` was never a real Tableflow API concept -- the wire schema only ever names `table_formats` (`spec.table_formats`, `status.failing_table_formats`) -- and the misnomer was inconsistent with the new `Connection.update_tableflow()`, which already used `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
+- `TableflowTopicSpec.config` is now a parsed `TableflowTopicConfig | None` instead of a raw `dict | None`. This lets callers (and the driver's own diffing helpers) compare `retention_ms`/`data_retention_ms`/`error_handling` as typed values instead of re-parsing wire strings themselves -- notably avoiding a false "changed" result from comparing a wire string like `"604800000"` against a caller's `int`. Code that treated `TableflowTopic.spec.config` as a mapping (e.g. `spec.config.get("retention_ms")`) will now raise `AttributeError`; use `TableflowTopicConfig`'s own `retention_ms`/`data_retention_ms`/`error_handling` attributes instead. (#214)
+
 ### Changed
 
 - `Statement.can_fetch_results()`'s snapshot-mode branch is now kind/trait-based (schema presence, `is_pure_ddl`, `is_bounded`, `is_append_only`) instead of unconditionally waiting for a terminal phase -- the same logic streaming mode already used. A bounded, append-only snapshot query that actually produces a result set (e.g. a plain projection) is now reported ready as soon as the statement reaches `RUNNING`, instead of blocking `Cursor.execute()` / `Connection.execute_snapshot_ddl()` until `COMPLETED`. Bounded, non-append-only snapshot queries (aggregations that could still retract) and any statement with no result schema at all -- `INSERT INTO`, snapshot CTAS (`CREATE TABLE ... AS SELECT`), and other DML/DDL that produces no rows -- are unaffected and still wait for terminal, since a finite write or population job isn't guaranteed to have landed until then (unlike its streaming counterpart, which may run forever and is ready once RUNNING). This can make `Cursor.execute()` and iteration/`fetchall()` return sooner for snapshot-mode queries that produce a result set. (#205)
