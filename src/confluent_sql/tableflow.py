@@ -298,10 +298,7 @@ class TableflowTopicConfig:
         """Render to the wire `config` object.
 
         `retention_ms`/`data_retention_ms` accept `int` here for caller convenience, but the API
-        schema types both as `string` (`format: int64`) on every request and response -- so
-        that's what's actually sent, even when constructed with an `int`. Without this, a value
-        that's genuinely unchanged could look different across a create/update payload and a GET
-        response purely from Python's `int`/`str` distinction, not a real difference on the wire.
+        schema types both as `string` (`format: int64`) on every request and response.
         """
         spec: StrAnyDict = {}
         if self.retention_ms is not None:
