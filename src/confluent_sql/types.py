@@ -8,12 +8,12 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from math import isinf, isnan
 from types import NoneType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
-from confluent_sql.exceptions import InterfaceError, TypeMismatchError
+from confluent_sql.exceptions import DataError, InterfaceError, TypeMismatchError
 from confluent_sql.statement_properties import Property, PropertyValue
 
 if TYPE_CHECKING:
@@ -327,7 +327,7 @@ class VarBinaryConverter(TypeConverter[bytes, str]):
 
     def to_python_value(self, response_value: str | None) -> bytes | None:
         """Expect hex-pair encoded string or None from the response value, return as bytes
-        or raise ValueError.
+        or raise DataError.
 
         Examples: "x'7f0203'" <-> b"\x7f\x02\x03"
         """
@@ -337,7 +337,7 @@ class VarBinaryConverter(TypeConverter[bytes, str]):
         self._check_to_python_param_type(str, response_value)
 
         if not (response_value.startswith("x'") and response_value.endswith("'")):
-            raise ValueError(
+            raise DataError(
                 f"Expected hex-pair encoded string starting with x' and ending with ' "
                 f"for VarBinaryConverter but got {response_value}"
             )
@@ -346,7 +346,7 @@ class VarBinaryConverter(TypeConverter[bytes, str]):
         try:
             return bytes.fromhex(hex_string)
         except ValueError as e:
-            raise ValueError(f"Invalid hex string for VarBinaryConverter: {hex_string}") from e
+            raise DataError(f"Invalid hex string for VarBinaryConverter: {hex_string}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: bytes) -> str:
@@ -368,13 +368,16 @@ class IntegerConverter(TypeConverter[int, str]):
 
     def to_python_value(self, response_value: str | None) -> int | None:
         """Expect string-encoded integer or None from the response value, return as int
-        or raise ValueError."""
+        or raise DataError."""
         if response_value is None:
             return None
 
         self._check_to_python_param_type(str, response_value)
 
-        return int(response_value)
+        try:
+            return int(response_value)
+        except ValueError as e:
+            raise DataError(f"Invalid integer value: {response_value}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: int) -> str:
@@ -394,14 +397,17 @@ class DecimalConverter(TypeConverter[Decimal, str]):
     PRIMARY_FLINK_TYPE_NAME = "DECIMAL"
 
     def to_python_value(self, response_value: str | None) -> Decimal | None:
-        """Expect string-encoded decimal or None from the response value, return as str
-        or raise ValueError."""
+        """Expect string-encoded decimal or None from the response value, return as Decimal
+        or raise DataError."""
         if response_value is None:
             return None
 
         self._check_to_python_param_type(str, response_value)
 
-        return Decimal(response_value)
+        try:
+            return Decimal(response_value)
+        except InvalidOperation as e:
+            raise DataError(f"Invalid decimal value: {response_value}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: Decimal) -> str:
@@ -436,7 +442,7 @@ class FloatConverter(TypeConverter[float, str]):
 
     def to_python_value(self, response_value: str | None) -> float | None:
         """Expect string-encoded float or None from the response value, return as float
-        or raise ValueError."""
+        or raise DataError."""
         if response_value is None:
             return None
 
@@ -447,7 +453,10 @@ class FloatConverter(TypeConverter[float, str]):
             return float_repr
 
         # Not a transcendental, parse as normal float.
-        return float(response_value)
+        try:
+            return float(response_value)
+        except ValueError as e:
+            raise DataError(f"Invalid float value: {response_value}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: float) -> str:
@@ -464,7 +473,7 @@ class FloatConverter(TypeConverter[float, str]):
         # SQL convert-from-string does not (statement will crash at this time, but hopefully
         # fixed soon. Flink does support these if, say, produced by avro Kafka, so ...).
         if isnan(python_value) or isinf(python_value):
-            raise ValueError("Cannot convert NaN or Infinity to a Flink SQL float/double literal")
+            raise DataError("Cannot convert NaN or Infinity to a Flink SQL float/double literal")
 
         # Will be interpolated as a literal number in the statement, no quotes.
         return str(python_value)
@@ -624,7 +633,7 @@ class DateConverter(TypeConverter[date, str]):
 
     def to_python_value(self, response_value: str | None) -> date | None:
         """Expect string-encoded date in 'YYYY-MM-DD' format or None from the response value,
-        return as datetime.date or raise ValueError."""
+        return as datetime.date or raise DataError."""
         if response_value is None:
             return None
 
@@ -634,7 +643,7 @@ class DateConverter(TypeConverter[date, str]):
             date = datetime.fromisoformat(response_value).date()
             return date
         except Exception as e:
-            raise ValueError(f"Invalid date string for DateConverter: {response_value}") from e
+            raise DataError(f"Invalid date string for DateConverter: {response_value}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: date) -> str:
@@ -654,7 +663,7 @@ class TimeConverter(TypeConverter[time, str]):
 
     def to_python_value(self, response_value: str | None) -> time | None:
         """Expect string-encoded time in 'HH:MM:SS(.MMMMMM)' format or None from the response value,
-        return as datetime.time or raise ValueError."""
+        return as datetime.time or raise DataError."""
         if response_value is None:
             return None
 
@@ -663,7 +672,7 @@ class TimeConverter(TypeConverter[time, str]):
         try:
             return time.fromisoformat(response_value)
         except Exception as e:
-            raise ValueError(f"Invalid time string for TimeConverter: {response_value}") from e
+            raise DataError(f"Invalid time string for TimeConverter: {response_value}") from e
 
     @classmethod
     def to_statement_string(cls, python_value: time) -> str:
@@ -703,7 +712,7 @@ class TimestampConverter(TypeConverter[datetime, str]):
             "TIMESTAMP_WITHOUT_TIME_ZONE",
             "TIMESTAMP_WITH_LOCAL_TIME_ZONE",
         ):
-            raise ValueError(
+            raise InterfaceError(
                 f"TimestampConverter can only be used with TIMESTAMP_WITHOUT_TIME_ZONE or"
                 f" TIMESTAMP_WITH_LOCAL_TIME_ZONE types, got {column_type.type_name}"
             )
@@ -729,7 +738,7 @@ class TimestampConverter(TypeConverter[datetime, str]):
 
     def to_python_value(self, response_value: str | None) -> datetime | None:
         """Expect string-encoded timestamp in 'YYYY-MM-DD HH:MM:SS(.MMMMMM)' format
-        or None from the response value, return as datetime.datetime or raise ValueError.
+        or None from the response value, return as datetime.datetime or raise DataError.
 
         If the column type is TIMESTAMP_LTZ, the returned datetime will have tzinfo=UTC,
         otherwise it will be tz-naive.
@@ -746,12 +755,12 @@ class TimestampConverter(TypeConverter[datetime, str]):
             dt = datetime.fromisoformat(response_value)
 
         except Exception as e:
-            raise ValueError(
+            raise DataError(
                 f"Invalid timestamp string for TimestampConverter: {response_value}"
             ) from e
 
         if dt.tzinfo is not None:
-            raise ValueError(
+            raise DataError(
                 f"Expected timezone-naive timestamp string from Flink but got {response_value}"
             )
 
@@ -855,7 +864,7 @@ class YearMonthIntervalConverter(TypeConverter[YearMonthInterval, str]):
 
     def __init__(self, connection: Connection, column_type: ColumnTypeDefinition):
         if column_type.type_name != "INTERVAL_YEAR_MONTH":
-            raise ValueError(
+            raise InterfaceError(
                 f"YearMonthIntervalConverter can only be used with INTERVAL_YEAR_MONTH types, "
                 f"got {column_type.type_name}"
             )
@@ -863,7 +872,7 @@ class YearMonthIntervalConverter(TypeConverter[YearMonthInterval, str]):
 
     def to_python_value(self, response_value: str | None) -> YearMonthInterval | None:
         """Expect string-encoded interval or None from the response value,
-        return as YearMonthInterval or raise ValueError."""
+        return as YearMonthInterval or raise DataError."""
 
         # Example: '+1-06' for interval of 1 year, 6 months.
         if response_value is None:
@@ -882,7 +891,7 @@ class YearMonthIntervalConverter(TypeConverter[YearMonthInterval, str]):
                 months = -months
             return YearMonthInterval(years=years, months=months)
         except Exception as e:
-            raise ValueError(
+            raise DataError(
                 f"Invalid interval string for YearMonthIntervalConverter: {response_value}"
             ) from e
 
@@ -918,7 +927,7 @@ class DaysIntervalConverter(TypeConverter[timedelta, str]):
 
     def to_python_value(self, response_value: str | None) -> timedelta | None:
         """Expect string-encoded interval or None from the response value,
-        return as str or raise ValueError."""
+        return as timedelta or raise DataError."""
 
         # Example: '+0 04:00:00.000' for interval of 0 days, 4 hours.
 
@@ -955,8 +964,8 @@ class DaysIntervalConverter(TypeConverter[timedelta, str]):
 
             return td
         except Exception as e:
-            raise ValueError(
-                f"Invalid interval string for IntervalConverter: {response_value}"
+            raise DataError(
+                f"Invalid interval string for DaysIntervalConverter: {response_value}"
             ) from e
 
     @classmethod
@@ -1057,7 +1066,7 @@ class ArrayConverter(TypeConverter[list, list]):
             # Empty array, it seems that Flink does not support literal empty arrays grr boo hoo.
             # (as well as would make it hard for us to determine element type anyway to spell the
             #  element type in an empty ARRAY<element_type> literal).
-            raise ValueError("Cannot convert empty list to Flink ARRAY literal.")
+            raise DataError("Cannot convert empty list to Flink ARRAY literal.")
 
         # Convert each element to its string representation
         element_converter_cls = determine_element_converter_cls(python_value)
@@ -1149,7 +1158,7 @@ class MapConverter(TypeConverter[dict, list]):
         result_dict = {}
         for pair in response_value:
             if not isinstance(pair, list) or len(pair) != 2:
-                raise ValueError(
+                raise InterfaceError(
                     f"Expected key-value pair list of length 2 for MapConverter but got: {pair}"
                 )
 
@@ -1172,7 +1181,7 @@ class MapConverter(TypeConverter[dict, list]):
 
         if len(python_value) == 0:
             # Empty map, it seems that Flink does not support literal empty maps grr boo hoo.
-            raise ValueError("Cannot convert empty dict to Flink MAP literal.")
+            raise DataError("Cannot convert empty dict to Flink MAP literal.")
 
         # Find the converter classes for keys and values
         key_converter_cls = determine_element_converter_cls(python_value.keys())
