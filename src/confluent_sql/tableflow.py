@@ -71,7 +71,7 @@ class TableFormat(str, Enum):
 
 
 def normalize_table_formats(
-    table_formats: TableFormat | Collection[TableFormat],
+    table_formats: TableFormat | str | Collection[TableFormat],
 ) -> list[str]:
     """Normalize the `enable_tableflow`/`update_tableflow` `table_formats` argument to the wire
     array.
