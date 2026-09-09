@@ -2102,7 +2102,7 @@ class Connection:
         self,
         table_name: str,
         *,
-        tableflow_formats: TableFormat | Collection[TableFormat],
+        table_formats: TableFormat | Collection[TableFormat],
         storage: TableflowStorage,
         config: TableflowTopicConfig | None = None,
         wait_for_running: bool = True,
@@ -2116,7 +2116,7 @@ class Connection:
         Args:
             table_name: The Flink table, which is the backing Kafka topic name, which becomes
                 spec.display_name. Passed straight through (no escaping/casing translation).
-            tableflow_formats: Which format(s) to materialize to. A single TableFormat (e.g.
+            table_formats: Which format(s) to materialize to. A single TableFormat (e.g.
                 TableFormat.ICEBERG) for the common case, or a collection for both
                 ({TableFormat.ICEBERG, TableFormat.DELTA}). Required; at least one.
             storage: The storage backend -- ManagedStorage() (zero-config), ByobAwsStorage, or
@@ -2132,7 +2132,7 @@ class Connection:
             topic (typically PENDING).
 
         Raises:
-            InterfaceError: If tableflow_formats is empty or names an unknown format.
+            InterfaceError: If table_formats is empty or names an unknown format.
             ProgrammingError: If no control-plane credential is available, or the cluster id
                 can't be resolved without a global key.
             TableflowTopicAlreadyExistsError: If Tableflow is already enabled (HTTP 409).
@@ -2140,7 +2140,7 @@ class Connection:
         """
         # Validate the formats argument before any network work, so a bad argument fails fast
         # rather than after the (possibly CMK-resolving) cluster-id lookup.
-        wire_formats = normalize_table_formats(tableflow_formats)
+        wire_formats = normalize_table_formats(table_formats)
         kafka_cluster_id = self._resolve_kafka_cluster_id()
         payload = build_create_payload(
             table_name=table_name,

@@ -28,7 +28,7 @@ pytestmark = pytest.mark.unit
 
 
 class TestNormalizeTableFormats:
-    """The `tableflow_formats` argument accepts a single TableFormat or a collection of them."""
+    """The `table_formats` argument accepts a single TableFormat or a collection of them."""
 
     def test_singleton(self) -> None:
         assert normalize_table_formats(TableFormat.ICEBERG) == ["ICEBERG"]

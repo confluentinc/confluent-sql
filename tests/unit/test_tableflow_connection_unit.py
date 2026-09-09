@@ -310,7 +310,7 @@ class TestEnableTableflow:
         conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         topic = conn.enable_tableflow(
             "orders",
-            tableflow_formats=TableFormat.ICEBERG,
+            table_formats=TableFormat.ICEBERG,
             storage=ManagedStorage(),
             wait_for_running=False,  # this test asserts request shape, not the wait loop
         )
@@ -328,7 +328,7 @@ class TestEnableTableflow:
         conn._tableflow_request = Mock(return_value=_ok_response(_topic_body(), status_code=202))
         conn.enable_tableflow(
             "orders",
-            tableflow_formats={TableFormat.DELTA, TableFormat.ICEBERG},
+            table_formats={TableFormat.DELTA, TableFormat.ICEBERG},
             storage=ManagedStorage(),
             wait_for_running=False,  # this test asserts request shape, not the wait loop
         )
@@ -340,7 +340,7 @@ class TestEnableTableflow:
         conn._tableflow_request = Mock(return_value=_error_response(409))
         with pytest.raises(TableflowTopicAlreadyExistsError) as exc:
             conn.enable_tableflow(
-                "orders", tableflow_formats=TableFormat.ICEBERG, storage=ManagedStorage()
+                "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
             )
         assert exc.value.table_name == "orders"
 
@@ -353,7 +353,7 @@ class TestEnableTableflow:
             return_value=TableflowTopic.from_response(_topic_body(phase="RUNNING"))
         )
         topic = conn.enable_tableflow(
-            "orders", tableflow_formats=TableFormat.ICEBERG, storage=ManagedStorage()
+            "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
         )
         assert topic.phase is TableflowPhase.RUNNING
         conn.get_tableflow.assert_called()
@@ -367,7 +367,7 @@ class TestEnableTableflow:
         )
         topic = conn.enable_tableflow(
             "orders",
-            tableflow_formats=TableFormat.ICEBERG,
+            table_formats=TableFormat.ICEBERG,
             storage=ManagedStorage(),
             wait_for_running=True,
         )
@@ -386,7 +386,7 @@ class TestEnableTableflow:
         with pytest.raises(OperationalError, match="schema boom"):
             conn.enable_tableflow(
                 "orders",
-                tableflow_formats=TableFormat.ICEBERG,
+                table_formats=TableFormat.ICEBERG,
                 storage=ManagedStorage(),
                 wait_for_running=True,
             )
@@ -399,7 +399,7 @@ class TestEnableTableflow:
         with pytest.raises(OperationalError, match="did not reach RUNNING within"):
             conn.enable_tableflow(
                 "orders",
-                tableflow_formats=TableFormat.ICEBERG,
+                table_formats=TableFormat.ICEBERG,
                 storage=ManagedStorage(),
                 wait_for_running=True,
                 timeout=1,
@@ -410,7 +410,7 @@ class TestEnableTableflow:
         conn._tableflow_request = Mock(return_value=_error_response(422))
         with pytest.raises(OperationalError) as exc:
             conn.enable_tableflow(
-                "orders", tableflow_formats=TableFormat.ICEBERG, storage=ManagedStorage()
+                "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
             )
         assert exc.value.http_status_code == 422
 
@@ -422,7 +422,7 @@ class TestEnableTableflow:
         conn.get_tableflow = Mock(side_effect=AssertionError("should not poll"))  # type: ignore[method-assign]
         topic = conn.enable_tableflow(
             "orders",
-            tableflow_formats=TableFormat.ICEBERG,
+            table_formats=TableFormat.ICEBERG,
             storage=ManagedStorage(),
             wait_for_running=True,
         )

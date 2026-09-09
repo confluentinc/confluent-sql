@@ -71,9 +71,10 @@ class TableFormat(str, Enum):
 
 
 def normalize_table_formats(
-    tableflow_formats: TableFormat | Collection[TableFormat],
+    table_formats: TableFormat | Collection[TableFormat],
 ) -> list[str]:
-    """Normalize the `enable_tableflow` `tableflow_formats` argument to the wire array.
+    """Normalize the `enable_tableflow`/`update_tableflow` `table_formats` argument to the wire
+    array.
 
     Accepts a single `TableFormat` (convenience for the common one-format case) or any collection
     of them, and orders the result canonically by `TableFormat` declaration order so the request
@@ -86,13 +87,13 @@ def normalize_table_formats(
         InterfaceError: If no formats are given (the API requires at least one), a value does not
             name a known `TableFormat`, or a format is repeated.
     """
-    raw = [tableflow_formats] if isinstance(tableflow_formats, str) else list(tableflow_formats)
+    raw = [table_formats] if isinstance(table_formats, str) else list(table_formats)
     if not raw:
-        raise InterfaceError("tableflow_formats must name at least one TableFormat")
+        raise InterfaceError("table_formats must name at least one TableFormat")
     try:
         coerced = [TableFormat(fmt) for fmt in raw]
     except ValueError as e:
-        raise InterfaceError(f"unknown table format in tableflow_formats: {e}") from e
+        raise InterfaceError(f"unknown table format in table_formats: {e}") from e
 
     chosen: set[TableFormat] = set()
     duplicates: set[str] = set()
@@ -102,7 +103,7 @@ def normalize_table_formats(
         chosen.add(fmt)
     if duplicates:
         raise InterfaceError(
-            f"tableflow_formats contains duplicate formats: {', '.join(sorted(duplicates))}"
+            f"table_formats contains duplicate formats: {', '.join(sorted(duplicates))}"
         )
     return [fmt.value for fmt in TableFormat if fmt in chosen]
 
