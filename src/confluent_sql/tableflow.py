@@ -224,11 +224,16 @@ class TableflowTopicConfig:
     error_handling: TableflowErrorHandling | None = None
 
     def to_spec(self) -> StrAnyDict:
+        """Render to the wire `config` object.
+
+        `retention_ms`/`data_retention_ms` accept `int` here for caller convenience, but the API
+        schema types both as `string` (`format: int64`) on every request and response.
+        """
         spec: StrAnyDict = {}
         if self.retention_ms is not None:
-            spec["retention_ms"] = self.retention_ms
+            spec["retention_ms"] = str(self.retention_ms)
         if self.data_retention_ms is not None:
-            spec["data_retention_ms"] = self.data_retention_ms
+            spec["data_retention_ms"] = str(self.data_retention_ms)
         if self.error_handling is not None:
             spec["error_handling"] = self.error_handling.to_spec()
         return spec
