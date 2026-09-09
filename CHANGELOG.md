@@ -7,6 +7,7 @@ All notable changes to this dbapi driver will be documented in this file.
 ### Changed - Breaking
 
 - `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. `tableflow_formats` was never a real Tableflow API concept -- the wire schema only ever names `table_formats` (`spec.table_formats`, `status.failing_table_formats`) -- and the misnomer was inconsistent with the new `Connection.update_tableflow()`, which already used `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
+- `TableflowTopicSpec.config`: Now parsed as a typed `TableflowTopicConfig` instead of being left as a raw mapping. If you need unmodeled wire fields, read `topic.spec.raw.get("config")` instead. (#214)
 
 ### Added
 
