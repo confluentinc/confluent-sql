@@ -347,3 +347,12 @@ class TestTableflowTopicFromResponse:
         response["spec"]["config"] = {"retention_ms": "not-a-number"}
         with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
             TableflowTopic.from_response(response)
+
+    def test_null_storage_raises_operational_error(self) -> None:
+        # A present-but-null spec.storage makes storage_from_spec(None) call .get() on None --
+        # AttributeError, not ValueError/TypeError, but the same parsing boundary must still
+        # convert it to OperationalError rather than leaking it.
+        response = _topic_response()
+        response["spec"]["storage"] = None
+        with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
+            TableflowTopic.from_response(response)
