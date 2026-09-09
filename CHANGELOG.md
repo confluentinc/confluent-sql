@@ -2,6 +2,13 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
+
+## 0.5.5, 2026-09-09
+
+### Fixed
+
+- Fix TableflowTopicConfig.to_spec() serialization of retention_ms/data_retention_ms -- must be strings, not ints.
+
 ## 0.5.4, 2026-09-08
 
 ### Changed
