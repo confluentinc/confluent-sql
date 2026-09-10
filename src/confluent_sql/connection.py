@@ -1868,21 +1868,35 @@ class Connection:
             self._get_controlplane_client(), url, method, raise_for_status, **kwargs
         )
 
-    def _raise_for_status_as_operational_error(self, response: httpx.Response) -> None:
+    @staticmethod
+    def _extract_error_detail(response: httpx.Response) -> str:
+        """Extract server-provided error detail from an error response body.
+
+        Falls back to "no more details" both when the body doesn't parse or carries
+        no non-empty detail (an `errors` list that's empty, or whose entries omit `detail`).
+        """
+        try:
+            errors = response.json().get("errors", [])
+            details = "; ".join(err["detail"] for err in errors if err.get("detail"))
+        except Exception:
+            details = ""
+        return details or "no more details"
+
+    def _raise_for_status_as_operational_error(
+        self, response: httpx.Response, *, prefix: str = "error sending request"
+    ) -> None:
         """Translate a 4xx/5xx response into OperationalError, chaining the original
-        httpx.HTTPStatusError and including any server-provided error detail."""
+        httpx.HTTPStatusError and including any server-provided error detail.
+
+        `prefix` is the message lead-in; pass a caller-specific one (e.g. "Error enabling
+        Tableflow") in place of the default.
+        """
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            try:
-                res = e.response.json()
-                errors = res.get("errors", [])
-                details = "; ".join([err["detail"] for err in errors])
-            except Exception:
-                details = "no more details"
-
+            details = self._extract_error_detail(e.response)
             raise OperationalError(
-                f"error sending request '{e.response.status_code}' - {details}",
+                f"{prefix} '{e.response.status_code}' - {details}",
                 http_status_code=e.response.status_code,
             ) from e
 
@@ -2155,17 +2169,11 @@ class Connection:
         response = self._tableflow_request(
             self._TABLEFLOW_TOPICS_PATH, method="POST", json=payload, raise_for_status=False
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 409:
-                raise TableflowTopicAlreadyExistsError(
-                    f"Tableflow is already enabled for table '{table_name}'",
-                    table_name=table_name,
-                ) from e
-            raise OperationalError(
-                "Error enabling Tableflow", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 409:
+            raise TableflowTopicAlreadyExistsError(
+                f"Tableflow is already enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(response, prefix="Error enabling Tableflow")
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2195,16 +2203,13 @@ class Connection:
             params=self._tableflow_topic_params(),
             raise_for_status=False,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise TableflowTopicNotFoundError(
-                    f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-                ) from e
-            raise OperationalError(
-                "Error reading Tableflow topic", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 404:
+            raise TableflowTopicNotFoundError(
+                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(
+            response, prefix="Error reading Tableflow topic"
+        )
         return TableflowTopic.from_response(response.json())
 
     def update_tableflow(
@@ -2273,25 +2278,13 @@ class Connection:
             json=payload,
             raise_for_status=False,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise TableflowTopicNotFoundError(
-                    f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-                ) from e
-            try:
-                res = e.response.json()
-                errors = res.get("errors", [])
-                details = "; ".join(err["detail"] for err in errors if err.get("detail"))
-            except Exception:
-                details = ""
-            if not details:
-                details = "no more details"
-            raise OperationalError(
-                f"Error updating Tableflow topic: {details}",
-                http_status_code=e.response.status_code,
-            ) from e
+        if response.status_code == 404:
+            raise TableflowTopicNotFoundError(
+                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(
+            response, prefix="Error updating Tableflow topic"
+        )
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2332,16 +2325,11 @@ class Connection:
             params=self._tableflow_topic_params(),
             raise_for_status=False,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise TableflowTopicNotFoundError(
-                    f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-                ) from e
-            raise OperationalError(
-                "Error disabling Tableflow", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 404:
+            raise TableflowTopicNotFoundError(
+                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(response, prefix="Error disabling Tableflow")
 
         if wait_for_removal:
             self._wait_for_tableflow_removal(table_name, timeout)

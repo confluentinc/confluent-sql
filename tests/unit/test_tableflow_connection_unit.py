@@ -414,6 +414,24 @@ class TestEnableTableflow:
             )
         assert exc.value.http_status_code == 422
 
+    def test_other_error_status_extracts_detail(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        response = Mock()
+        response.status_code = 422
+
+        def _raise() -> None:
+            inner = Mock()
+            inner.status_code = 422
+            inner.json.return_value = {"errors": [{"detail": "bad storage config"}]}
+            raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
+
+        response.raise_for_status = _raise
+        conn._tableflow_request = Mock(return_value=response)
+        with pytest.raises(OperationalError, match="bad storage config"):
+            conn.enable_tableflow(
+                "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
+            )
+
     def test_wait_for_running_returns_immediately_if_already_running(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._tableflow_request = Mock(
@@ -454,6 +472,22 @@ class TestGetTableflow:
             conn.get_tableflow("orders")
         assert exc.value.http_status_code == 500
 
+    def test_other_error_status_extracts_detail(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        response = Mock()
+        response.status_code = 500
+
+        def _raise() -> None:
+            inner = Mock()
+            inner.status_code = 500
+            inner.json.return_value = {"errors": [{"detail": "internal server error"}]}
+            raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
+
+        response.raise_for_status = _raise
+        conn._tableflow_request = Mock(return_value=response)
+        with pytest.raises(OperationalError, match="internal server error"):
+            conn.get_tableflow("orders")
+
 
 class TestDisableTableflow:
     """disable_tableflow request shaping, 404 mapping, and wait-for-removal polling."""
@@ -479,6 +513,22 @@ class TestDisableTableflow:
         with pytest.raises(OperationalError) as exc:
             conn.disable_tableflow("orders")
         assert exc.value.http_status_code == 500
+
+    def test_other_error_status_extracts_detail(self) -> None:
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        response = Mock()
+        response.status_code = 500
+
+        def _raise() -> None:
+            inner = Mock()
+            inner.status_code = 500
+            inner.json.return_value = {"errors": [{"detail": "cannot disable right now"}]}
+            raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
+
+        response.raise_for_status = _raise
+        conn._tableflow_request = Mock(return_value=response)
+        with pytest.raises(OperationalError, match="cannot disable right now"):
+            conn.disable_tableflow("orders")
 
     def test_waits_for_removal_by_default(self, mocker) -> None:
         # No wait_for_removal argument -> the default (True) must poll until the topic 404s.
