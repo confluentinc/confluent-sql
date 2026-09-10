@@ -319,8 +319,8 @@ class TableflowTopicConfig:
     `enable_compaction`/`enable_partitioning` flags are deliberately omitted.
     """
 
-    retention_ms: int | None = None
-    data_retention_ms: int | None = None
+    retention_ms: str | int | None = None
+    data_retention_ms: str | int | None = None
     error_handling: TableflowErrorHandling | None = None
 
     @classmethod

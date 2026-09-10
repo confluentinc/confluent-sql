@@ -376,7 +376,7 @@ class TestTableflowTopicFromResponse:
         # parse tree, which would just as readily mask a real bug elsewhere in parsing).
         response = _topic_response()
         response["spec"]["config"] = {"retention_ms": "not-a-number"}
-        with pytest.raises(OperationalError, match="Error parsing Tableflow int64 value"):
+        with pytest.raises(OperationalError, match="Error parsing int value"):
             TableflowTopic.from_response(response)
 
     def test_null_storage_raises_operational_error(self) -> None:
