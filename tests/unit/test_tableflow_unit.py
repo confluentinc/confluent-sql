@@ -15,11 +15,14 @@ from confluent_sql.tableflow import (
     TableflowErrorHandlingLog,
     TableflowErrorHandlingSkip,
     TableflowErrorHandlingSuspend,
+    TableflowErrorHandlingUnknown,
     TableflowPhase,
+    TableflowStorageUnknown,
     TableflowTopic,
     TableflowTopicConfig,
     TableFormat,
     build_create_payload,
+    error_handling_from_spec,
     normalize_table_formats,
     storage_from_spec,
 )
@@ -28,7 +31,7 @@ pytestmark = pytest.mark.unit
 
 
 class TestNormalizeTableFormats:
-    """The `tableflow_formats` argument accepts a single TableFormat or a collection of them."""
+    """The `table_formats` argument accepts a single TableFormat or a collection of them."""
 
     def test_singleton(self) -> None:
         assert normalize_table_formats(TableFormat.ICEBERG) == ["ICEBERG"]
@@ -156,9 +159,29 @@ class TestStorageFromSpec:
             provider_integration_id="cspi-xyz",
         )
 
-    def test_unknown_kind_raises_wacky(self) -> None:
-        with pytest.raises(OperationalError, match="Wacky -- .*storage kind 'Martian'"):
-            storage_from_spec({"kind": "Martian"})
+    def test_unknown_kind_falls_back_to_unknown(self) -> None:
+        # Mirrors TableflowPhase's UNKNOWN fallback: a future server-side storage kind shouldn't
+        # break response parsing for an otherwise-healthy topic.
+        assert storage_from_spec({"kind": "Martian"}) == TableflowStorageUnknown(
+            raw={"kind": "Martian"}
+        )
+
+    def test_unknown_kind_still_reads_kind_polymorphically(self) -> None:
+        # .kind stays a valid, uniform way to read the discriminator across every TableflowStorage
+        # variant (fixed to the "UNKNOWN" sentinel here); .raw carries the real value.
+        parsed = storage_from_spec({"kind": "Martian"})
+        assert parsed.kind == "UNKNOWN"
+        assert isinstance(parsed, TableflowStorageUnknown)
+        assert parsed.raw == {"kind": "Martian"}
+
+    def test_unknown_kind_preserves_unmodeled_fields(self) -> None:
+        # An unrecognized kind could carry any fields at all -- there's no way to know which of
+        # them matter, so the whole object must be kept, not just the kind string.
+        data = {"kind": "Martian", "regolith_depth_cm": 40, "atmosphere": "thin"}
+        parsed = storage_from_spec(data)
+        assert isinstance(parsed, TableflowStorageUnknown)
+        assert parsed.raw == data
+        assert parsed.to_spec() == data
 
 
 class TestTableflowErrorHandlingToSpec:
@@ -178,6 +201,43 @@ class TestTableflowErrorHandlingToSpec:
             "mode": "LOG",
             "target": "my_dlq",
         }
+
+
+class TestErrorHandlingFromSpec:
+    """Parsing the response `config.error_handling` back into a typed object, by `mode`."""
+
+    def test_suspend(self) -> None:
+        assert error_handling_from_spec({"mode": "SUSPEND"}) == TableflowErrorHandlingSuspend()
+
+    def test_log_with_target(self) -> None:
+        assert error_handling_from_spec({"mode": "LOG", "target": "dlq"}) == (
+            TableflowErrorHandlingLog(target="dlq")
+        )
+
+    def test_unknown_mode_falls_back_to_unknown(self) -> None:
+        # Mirrors TableflowPhase's UNKNOWN fallback: a future server-side error-handling mode
+        # shouldn't break response parsing for an otherwise-healthy topic.
+        assert error_handling_from_spec({"mode": "QUARANTINE"}) == TableflowErrorHandlingUnknown(
+            raw={"mode": "QUARANTINE"}
+        )
+
+    def test_unknown_mode_still_reads_mode_polymorphically(self) -> None:
+        # .mode stays a valid, uniform way to read the discriminator across every
+        # TableflowErrorHandling variant (fixed to the "UNKNOWN" sentinel here); .raw carries the
+        # real value.
+        parsed = error_handling_from_spec({"mode": "QUARANTINE"})
+        assert parsed.mode == "UNKNOWN"
+        assert isinstance(parsed, TableflowErrorHandlingUnknown)
+        assert parsed.raw == {"mode": "QUARANTINE"}
+
+    def test_unknown_mode_preserves_unmodeled_fields(self) -> None:
+        # An unrecognized mode could carry any fields at all -- there's no way to know which of
+        # them matter, so the whole object must be kept, not just the mode string.
+        data = {"mode": "QUARANTINE", "quarantine_topic": "dlq-2"}
+        parsed = error_handling_from_spec(data)
+        assert isinstance(parsed, TableflowErrorHandlingUnknown)
+        assert parsed.raw == data
+        assert parsed.to_spec() == data
 
 
 class TestTableflowTopicConfig:
@@ -214,6 +274,18 @@ class TestTableflowTopicConfig:
             "data_retention_ms": "2592000000",
             "error_handling": {"mode": "LOG", "target": "dlq"},
         }
+
+    def test_from_spec_parses_wire_strings_to_int(self) -> None:
+        # The inverse of the int-to-string encoding above: a real GET/create response always
+        # has these as strings on the wire, and from_spec must parse them back to int so a
+        # config round-tripped through from_spec/to_spec compares equal to one built directly.
+        config = TableflowTopicConfig.from_spec(
+            {"retention_ms": "604800000", "data_retention_ms": "2592000000"}
+        )
+        assert config == TableflowTopicConfig(retention_ms=604800000, data_retention_ms=2592000000)
+
+    def test_from_spec_empty(self) -> None:
+        assert TableflowTopicConfig.from_spec({}) == TableflowTopicConfig()
 
 
 class TestBuildCreatePayload:
@@ -305,7 +377,9 @@ class TestTableflowTopicFromResponse:
         assert topic.spec.environment_id == "env-1"
         assert topic.spec.kafka_cluster_id == "lkc-1"
         assert topic.spec.suspended is False
-        assert topic.spec.config == {"retention_ms": "604800000", "enable_compaction": True}
+        # enable_compaction is deprecated/read-only and deliberately not modeled -- dropped,
+        # not retained.
+        assert topic.spec.config == TableflowTopicConfig(retention_ms=604800000)
         assert topic.status.write_mode == "APPEND"
         assert topic.phase is TableflowPhase.RUNNING
         assert topic.status.phase is TableflowPhase.RUNNING
@@ -331,4 +405,29 @@ class TestTableflowTopicFromResponse:
         response = _topic_response()
         del response["status"]
         with pytest.raises(OperationalError, match="missing 'status'"):
+            TableflowTopic.from_response(response)
+
+    def test_malformed_retention_ms_raises_operational_error(self) -> None:
+        # optional_int_from_str's int(s) raises ValueError on a non-numeric wire value -- caught
+        # and converted to OperationalError right there (not by a blanket catch further up the
+        # parse tree, which would just as readily mask a real bug elsewhere in parsing).
+        response = _topic_response()
+        response["spec"]["config"] = {"retention_ms": "not-a-number"}
+        with pytest.raises(OperationalError, match="Error parsing int value"):
+            TableflowTopic.from_response(response)
+
+    def test_null_storage_raises_operational_error(self) -> None:
+        # A present-but-null spec.storage is now checked explicitly in storage_from_spec (rather
+        # than relying on a bare .get() to raise AttributeError and a broad catch further up the
+        # parse tree to relabel it).
+        response = _topic_response()
+        response["spec"]["storage"] = None
+        with pytest.raises(OperationalError, match="Error parsing Tableflow storage"):
+            TableflowTopic.from_response(response)
+
+    def test_unrecognized_table_format_raises_operational_error(self) -> None:
+        # TableFormat(fmt) raises ValueError on an unrecognized format -- caught and converted to
+        # OperationalError right at table_format_from_spec, same rationale as the two tests above.
+        response = _topic_response(table_formats=["ICEBERG", "MARTIAN"])
+        with pytest.raises(OperationalError, match="Error parsing Tableflow table format"):
             TableflowTopic.from_response(response)
