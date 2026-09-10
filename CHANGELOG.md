@@ -25,6 +25,12 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - The `dbname` parameter of `connect()`, deprecated in favor of `database` since 0.2.0, has been removed. Passing `dbname=` now raises `TypeError` for an unexpected keyword argument instead of emitting a `DeprecationWarning`. Use `database=` instead.
 
+## 0.5.5, 2026-09-09
+
+### Fixed
+
+- `TableflowTopicConfig.to_spec()` now serializes `retention_ms`/`data_retention_ms` as strings rather than ints -- the API rejects non-string values for both, since the schema types them as int64, string-encoded to dodge JS/IEEE-754 double precision loss. (#215)
+
 ## 0.5.4, 2026-09-08
 
 ### Changed
