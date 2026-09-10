@@ -1257,12 +1257,16 @@ class Connection:
 
         Args:
             statement: The name of the statement to stop, or a Statement object. Either form
-                converges on the same outcome for a statement already in a terminal phase
-                (STOPPED/COMPLETED/FAILED/DELETED): a `Statement` object is returned unchanged
-                without contacting the server; a name is still PATCHed (the server accepts this
+                converges on the same outcome for a statement already in a server-terminal phase
+                (STOPPED/COMPLETED/FAILED): a `Statement` object is returned unchanged without
+                contacting the server; a name is still PATCHed (the server accepts this
                 unconditionally, even against an already-terminal statement -- there is no
                 rejection to handle), and the terminal state the PATCH response already reflects
-                is returned as success, not raised as an error.
+                is returned as success, not raised as an error. DELETED is a client-only sentinel
+                (set by delete_statement(), which also removes the server-side resource) and isn't
+                included in this convergence: a `Statement` in that phase still short-circuits
+                without contacting the server, but the underlying resource is actually gone, so
+                passing its name instead raises StatementNotFoundError (404).
             wait_for_stopped: If True (default), block and refresh-loop until the statement reaches
                 a terminal phase before returning -- normally STOPPED, but COMPLETED if a bounded
                 query happened to finish before the stop landed. If False, return as soon as the
