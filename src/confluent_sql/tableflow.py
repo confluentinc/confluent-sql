@@ -191,6 +191,18 @@ class AzureAdlsStorage(TableflowStorage):
         }
 
 
+@dataclass(frozen=True)
+class TableflowStorageUnknown(TableflowStorage):
+    """An unrecognized `spec.storage.kind` -- mirrors `TableflowPhase`'s `UNKNOWN` fallback so a
+    future server-side storage kind doesn't break response parsing for an otherwise-healthy
+    topic. `kind` holds whatever the server actually sent (an instance field here, unlike the
+    other storage classes' fixed `ClassVar`); the other fields are unrecoverable since their
+    shape isn't known.
+    """
+
+    kind: str
+
+
 def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
     """Parse a response `spec.storage` object into its typed storage class.
 
@@ -211,7 +223,7 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
             container_name=data[Fields.CONTAINER_NAME],
             provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
-    raise OperationalError(f"Wacky -- unknown Tableflow storage kind '{kind}' in response")
+    return TableflowStorageUnknown(kind=kind)
 
 
 @dataclass(frozen=True)
@@ -251,6 +263,17 @@ class TableflowErrorHandlingLog(TableflowErrorHandling):
         return {Fields.MODE: self.mode, Fields.TARGET: self.target}
 
 
+@dataclass(frozen=True)
+class TableflowErrorHandlingUnknown(TableflowErrorHandling):
+    """An unrecognized `config.error_handling.mode` -- mirrors `TableflowPhase`'s `UNKNOWN`
+    fallback so a future server-side mode doesn't break response parsing for an otherwise-healthy
+    topic. `mode` holds whatever the server actually sent (an instance field here, unlike the
+    other error-handling classes' fixed `ClassVar`).
+    """
+
+    mode: str
+
+
 def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
     """Parse a response `config.error_handling` object into its typed error-handling class.
 
@@ -264,7 +287,7 @@ def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
         return TableflowErrorHandlingSkip()
     if mode == TableflowErrorHandlingLog.mode:
         return TableflowErrorHandlingLog(target=data.get(Fields.TARGET, "error_log"))
-    raise OperationalError(f"Wacky -- unknown Tableflow error-handling mode '{mode}' in response")
+    return TableflowErrorHandlingUnknown(mode=mode)
 
 
 @dataclass(frozen=True)

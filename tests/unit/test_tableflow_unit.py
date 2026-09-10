@@ -15,11 +15,14 @@ from confluent_sql.tableflow import (
     TableflowErrorHandlingLog,
     TableflowErrorHandlingSkip,
     TableflowErrorHandlingSuspend,
+    TableflowErrorHandlingUnknown,
     TableflowPhase,
+    TableflowStorageUnknown,
     TableflowTopic,
     TableflowTopicConfig,
     TableFormat,
     build_create_payload,
+    error_handling_from_spec,
     normalize_table_formats,
     storage_from_spec,
 )
@@ -156,9 +159,10 @@ class TestStorageFromSpec:
             provider_integration_id="cspi-xyz",
         )
 
-    def test_unknown_kind_raises_wacky(self) -> None:
-        with pytest.raises(OperationalError, match="Wacky -- .*storage kind 'Martian'"):
-            storage_from_spec({"kind": "Martian"})
+    def test_unknown_kind_falls_back_to_unknown(self) -> None:
+        # Mirrors TableflowPhase's UNKNOWN fallback: a future server-side storage kind shouldn't
+        # break response parsing for an otherwise-healthy topic.
+        assert storage_from_spec({"kind": "Martian"}) == TableflowStorageUnknown(kind="Martian")
 
 
 class TestTableflowErrorHandlingToSpec:
@@ -178,6 +182,25 @@ class TestTableflowErrorHandlingToSpec:
             "mode": "LOG",
             "target": "my_dlq",
         }
+
+
+class TestErrorHandlingFromSpec:
+    """Parsing the response `config.error_handling` back into a typed object, by `mode`."""
+
+    def test_suspend(self) -> None:
+        assert error_handling_from_spec({"mode": "SUSPEND"}) == TableflowErrorHandlingSuspend()
+
+    def test_log_with_target(self) -> None:
+        assert error_handling_from_spec({"mode": "LOG", "target": "dlq"}) == (
+            TableflowErrorHandlingLog(target="dlq")
+        )
+
+    def test_unknown_mode_falls_back_to_unknown(self) -> None:
+        # Mirrors TableflowPhase's UNKNOWN fallback: a future server-side error-handling mode
+        # shouldn't break response parsing for an otherwise-healthy topic.
+        assert error_handling_from_spec({"mode": "QUARANTINE"}) == TableflowErrorHandlingUnknown(
+            mode="QUARANTINE"
+        )
 
 
 class TestTableflowTopicConfig:
