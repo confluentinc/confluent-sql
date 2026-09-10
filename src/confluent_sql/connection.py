@@ -596,7 +596,7 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         environment_id: str,
         cloud_provider: str | None,
@@ -2741,7 +2741,7 @@ class Connection:
         return page_token or None
 
 
-def _resolve_oauth_config(  # noqa: PLR0913
+def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
     auth: str,
     oauth_config: CCloudOAuthConfig | None,
     reauth: str,
