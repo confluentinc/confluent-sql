@@ -4,19 +4,42 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. `tableflow_formats` was never a real Tableflow API concept -- the wire schema only ever names `table_formats` (`spec.table_formats`, `status.failing_table_formats`) -- and the misnomer was inconsistent with the new `Connection.update_tableflow()`, which already used `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
+- `TableflowTopicSpec.config`: Now parsed as a typed `TableflowTopicConfig` instead of being left as a raw mapping. If you need unmodeled wire fields, read `topic.spec.raw.get("config")` instead. (#214)
+
 ### Changed
 
 - `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`), so it could gain a default of `""` without a `SyntaxError` from the still-defaultless parameters ahead of it. `connect()` itself was already fully keyword-only and unaffected by this reordering; `Connection()` construction should always use keyword arguments (as every call site in this codebase already does) rather than relying on positional order.
 - `organization_id` is now genuinely optional on both `connect()` and `Connection()` when it can be self-discovered (configured to use either oauth or a global API key).
+
+### Added
+
+- `Connection.update_tableflow(table_name, *, table_formats=None, config=None, wait_for_running=True, timeout=300)` updates an already-enabled Tableflow topic's `table_formats`/`config` in place via `PATCH /tableflow/v1/tableflow-topics/{display_name}`, avoiding the disable/re-enable cycle `enable_tableflow` would otherwise require. `None` (the default) means "leave unchanged," for both of this method's own arguments and for each of `config`'s own sub-fields. `storage`/`display_name` remain immutable and have no in-place path; a caller needing to change either must recreate the topic. By default blocks until the topic returns to `RUNNING`; pass `wait_for_running=False` to return as soon as the update is accepted. Raises `TableflowTopicNotFoundError` if Tableflow isn't enabled for the table. (#214)
+
 ### Fixed
 
 - Type conversion methods across `types.py` now consistently raise dbapi-mandated exceptions (`DataError`, `InterfaceError`) rather than a bare builtin (`ValueError`, `decimal.InvalidOperation`) for problems with a Flink response value, a Python value that can't be represented as a Flink SQL literal, or a converter misconfigured with the wrong column type. (#204)
+- `stop_statement(wait_for_stopped=True)` (the default) on a statement that had already reached FAILED on its own -- before the stop was ever requested -- no longer raises `OperationalError`. The blocking wait mistook "the statement is currently FAILED" for "the statement transitioned to FAILED while we were waiting for it to stop," when the former is really the same "already terminal, nothing to stop" success the `Statement`-object short-circuit already returns for a cached terminal statement; only a transition *into* FAILED partway through the wait is a genuine failure to stop cleanly. (#203)
 
 - `Statement.can_fetch_results()`'s snapshot-mode branch is now kind/trait-based (schema presence, `is_pure_ddl`, `is_bounded`, `is_append_only`) instead of unconditionally waiting for a terminal phase -- the same logic streaming mode already used. A bounded, append-only snapshot query that actually produces a result set (e.g. a plain projection) is now reported ready as soon as the statement reaches `RUNNING`, instead of blocking `Cursor.execute()` / `Connection.execute_snapshot_ddl()` until `COMPLETED`. Bounded, non-append-only snapshot queries (aggregations that could still retract) and any statement with no result schema at all -- `INSERT INTO`, snapshot CTAS (`CREATE TABLE ... AS SELECT`), and other DML/DDL that produces no rows -- are unaffected and still wait for terminal, since a finite write or population job isn't guaranteed to have landed until then (unlike its streaming counterpart, which may run forever and is ready once RUNNING). This can make `Cursor.execute()` and iteration/`fetchall()` return sooner for snapshot-mode queries that produce a result set. (#205)
 
 ### Removed
 
 - The `dbname` parameter of `connect()`, deprecated in favor of `database` since 0.2.0, has been removed. Passing `dbname=` now raises `TypeError` for an unexpected keyword argument instead of emitting a `DeprecationWarning`. Use `database=` instead.
+
+## 0.5.5, 2026-09-09
+
+### Fixed
+
+- `TableflowTopicConfig.to_spec()` now serializes `retention_ms`/`data_retention_ms` as strings rather than ints -- the API rejects non-string values for both, since the schema types them as int64, string-encoded to dodge JS/IEEE-754 double precision loss. (#215)
+
+## 0.5.4, 2026-09-08
+
+### Changed
+
+- `connect()` no longer raises `InterfaceError` when both `endpoint` and `cloud_provider`/`cloud_region` are provided. A provided `endpoint` simply makes `cloud_provider`/`cloud_region` unnecessary rather than actually conflicting with it, so this now logs a warning ("No need to provide cloud_provider or cloud_region when also providing endpoint. Only using endpoint.") and proceeds using `endpoint`. (#210)
 
 ## 0.5.3, 2026-08-27
 

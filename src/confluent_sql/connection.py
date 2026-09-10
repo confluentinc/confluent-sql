@@ -58,12 +58,14 @@ from .statement_properties import (
     validate_properties_dict,
 )
 from .tableflow import (
+    Fields,
     TableflowPhase,
     TableflowStorage,
     TableflowTopic,
     TableflowTopicConfig,
     TableFormat,
     build_create_payload,
+    build_update_payload,
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
@@ -454,12 +456,7 @@ def connect(  # noqa: PLR0913
     if not organization_id and not global_key_provided and auth != "oauth":
         raise InterfaceError("Organization ID is required")
 
-    if endpoint:
-        if cloud_provider or cloud_region:
-            raise InterfaceError(
-                "cloud_provider and cloud_region should not be provided when endpoint is specified"
-            )
-    else:
+    if not endpoint:
         if not cloud_provider:
             raise InterfaceError("Cloud provider is required when endpoint is not provided")
 
@@ -767,7 +764,13 @@ class Connection:
             raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
         self._http_timeout_secs = http_timeout_secs
 
-        if not endpoint and not (cloud_provider and cloud_region):
+        if endpoint:
+            if cloud_provider or cloud_region:
+                logger.warning(
+                    "No need to provide cloud_provider or cloud_region when also providing "
+                    "endpoint. Only using endpoint."
+                )
+        elif not (cloud_provider and cloud_region):
             raise InterfaceError(
                 "cloud_provider and cloud_region are required when endpoint is not provided"
             )
@@ -1419,9 +1422,17 @@ class Connection:
         phase RUNNING.
 
         Args:
-            statement: The name of the statement to stop, or a Statement object. A Statement
-                already in a terminal phase (STOPPED/COMPLETED/FAILED/DELETED) is returned
-                unchanged without contacting the server.
+            statement: The name of the statement to stop, or a Statement object. Either form
+                converges on the same outcome for a statement already in a server-terminal phase
+                (STOPPED/COMPLETED/FAILED): a `Statement` object is returned unchanged without
+                contacting the server; a name is still PATCHed (the server accepts this
+                unconditionally, even against an already-terminal statement -- there is no
+                rejection to handle), and the terminal state the PATCH response already reflects
+                is returned as success, not raised as an error. DELETED is a client-only sentinel
+                (set by delete_statement(), which also removes the server-side resource) and isn't
+                included in this convergence: a `Statement` in that phase still short-circuits
+                without contacting the server, but the underlying resource is actually gone, so
+                passing its name instead raises StatementNotFoundError (404).
             wait_for_stopped: If True (default), block and refresh-loop until the statement reaches
                 a terminal phase before returning -- normally STOPPED, but COMPLETED if a bounded
                 query happened to finish before the stop landed. If False, return as soon as the
@@ -1492,13 +1503,18 @@ class Connection:
         so a GET issued immediately would almost certainly report the same non-terminal phase we
         already hold; we therefore sleep *first* and only fetch once wall-clock time has passed and
         the server state can actually have advanced. Uses exponential backoff with jitter to avoid
-        hammering the server. A statement that ends in any terminal phase other than FAILED (e.g. a
-        bounded query that COMPLETED before the stop landed) is returned, since the caller's intent
-        -- the statement is no longer running -- is satisfied.
+        hammering the server. A statement that ends in any terminal phase, including one already
+        FAILED before this stop was ever requested (confirmed live, #203: the stop PATCH is
+        accepted unconditionally, echoing back whatever phase the statement already has -- there's
+        no separate "already terminal" rejection to special-case), is returned as success, since
+        the caller's intent -- the statement is no longer running -- is satisfied either way. Only
+        a transition *into* FAILED partway through the wait (observed by a poll after the initial,
+        already-terminal check above has been passed) is treated as a genuine failure to stop
+        cleanly and raises.
 
         Raises:
-            OperationalError: If the statement transitions to FAILED, or if STOPPED is not reached
-                within the timeout.
+            OperationalError: If the statement transitions to FAILED partway through waiting, or if
+                STOPPED is not reached within the timeout.
         """
 
         def raise_if_failed(candidate: Statement) -> None:
@@ -1508,8 +1524,9 @@ class Connection:
                     f"{candidate.status.get('detail', '')}"
                 )
 
-        # Evaluate the state we already hold first -- an already-terminal statement needs no fetch.
-        raise_if_failed(statement)
+        # Evaluate the state we already hold first -- any terminal phase, FAILED included, needs
+        # no fetch and is not an error here: it mirrors the Statement-object short-circuit's
+        # "already terminal, nothing to stop" success for a cached terminal statement.
         if statement.phase.is_terminal:
             return statement
 
@@ -2054,21 +2071,35 @@ class Connection:
             self._get_controlplane_client(), url, method, raise_for_status, **kwargs
         )
 
-    def _raise_for_status_as_operational_error(self, response: httpx.Response) -> None:
+    @staticmethod
+    def _extract_error_detail(response: httpx.Response) -> str:
+        """Extract server-provided error detail from an error response body.
+
+        Falls back to "no more details" both when the body doesn't parse or carries
+        no non-empty detail (an `errors` list that's empty, or whose entries omit `detail`).
+        """
+        try:
+            errors = response.json().get("errors", [])
+            details = "; ".join(err["detail"] for err in errors if err.get("detail"))
+        except Exception:
+            details = ""
+        return details or "no more details"
+
+    def _raise_for_status_as_operational_error(
+        self, response: httpx.Response, *, prefix: str = "error sending request"
+    ) -> None:
         """Translate a 4xx/5xx response into OperationalError, chaining the original
-        httpx.HTTPStatusError and including any server-provided error detail."""
+        httpx.HTTPStatusError and including any server-provided error detail.
+
+        `prefix` is the message lead-in; pass a caller-specific one (e.g. "Error enabling
+        Tableflow") in place of the default.
+        """
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            try:
-                res = e.response.json()
-                errors = res.get("errors", [])
-                details = "; ".join([err["detail"] for err in errors])
-            except Exception:
-                details = "no more details"
-
+            details = self._extract_error_detail(e.response)
             raise OperationalError(
-                f"error sending request '{e.response.status_code}' - {details}",
+                f"{prefix} '{e.response.status_code}' - {details}",
                 http_status_code=e.response.status_code,
             ) from e
 
@@ -2313,7 +2344,7 @@ class Connection:
         self,
         table_name: str,
         *,
-        tableflow_formats: TableFormat | Collection[TableFormat],
+        table_formats: TableFormat | str | Collection[TableFormat],
         storage: TableflowStorage,
         config: TableflowTopicConfig | None = None,
         wait_for_running: bool = True,
@@ -2327,7 +2358,7 @@ class Connection:
         Args:
             table_name: The Flink table, which is the backing Kafka topic name, which becomes
                 spec.display_name. Passed straight through (no escaping/casing translation).
-            tableflow_formats: Which format(s) to materialize to. A single TableFormat (e.g.
+            table_formats: Which format(s) to materialize to. A single TableFormat (e.g.
                 TableFormat.ICEBERG) for the common case, or a collection for both
                 ({TableFormat.ICEBERG, TableFormat.DELTA}). Required; at least one.
             storage: The storage backend -- ManagedStorage() (zero-config), ByobAwsStorage, or
@@ -2343,7 +2374,7 @@ class Connection:
             topic (typically PENDING).
 
         Raises:
-            InterfaceError: If tableflow_formats is empty or names an unknown format.
+            InterfaceError: If table_formats is empty or names an unknown format.
             ProgrammingError: If no control-plane credential is available, or the cluster id
                 can't be resolved without a global key or an interactive OAuth connection.
             TableflowTopicAlreadyExistsError: If Tableflow is already enabled (HTTP 409).
@@ -2351,7 +2382,7 @@ class Connection:
         """
         # Validate the formats argument before any network work, so a bad argument fails fast
         # rather than after the (possibly CMK-resolving) cluster-id lookup.
-        wire_formats = normalize_table_formats(tableflow_formats)
+        wire_formats = normalize_table_formats(table_formats)
         kafka_cluster_id = self._resolve_kafka_cluster_id()
         payload = build_create_payload(
             table_name=table_name,
@@ -2365,17 +2396,11 @@ class Connection:
         response = self._tableflow_request(
             self._TABLEFLOW_TOPICS_PATH, method="POST", json=payload, raise_for_status=False
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 409:
-                raise TableflowTopicAlreadyExistsError(
-                    f"Tableflow is already enabled for table '{table_name}'",
-                    table_name=table_name,
-                ) from e
-            raise OperationalError(
-                "Error enabling Tableflow", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 409:
+            raise TableflowTopicAlreadyExistsError(
+                f"Tableflow is already enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(response, prefix="Error enabling Tableflow")
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2405,17 +2430,93 @@ class Connection:
             params=self._tableflow_topic_params(),
             raise_for_status=False,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise TableflowTopicNotFoundError(
-                    f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-                ) from e
-            raise OperationalError(
-                "Error reading Tableflow topic", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 404:
+            raise TableflowTopicNotFoundError(
+                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(
+            response, prefix="Error reading Tableflow topic"
+        )
         return TableflowTopic.from_response(response.json())
+
+    def update_tableflow(
+        self,
+        table_name: str,
+        *,
+        table_formats: TableFormat | str | Collection[TableFormat] | None = None,
+        config: TableflowTopicConfig | None = None,
+        wait_for_running: bool = True,
+        timeout: float = 300,
+    ) -> TableflowTopic:
+        """Update an already-enabled Tableflow topic's `table_formats`/`config`.
+
+        `PATCH /tableflow/v1/tableflow-topics/{display_name}`. `table_formats`/`config` are the
+        only fields updatable this way -- `storage`/`display_name` are `x-immutable`; a caller
+        needing to change either has no in-place path and must recreate the topic instead.
+
+        `None` means "leave unchanged," for this method's own two arguments and for each of
+        `config`'s own sub-fields (same convention `config.to_spec()` already uses for create) --
+        not "clear it": none of `retention_ms`/`data_retention_ms`/`error_handling` can actually
+        be unset via this API (each has a server-enforced default, and the server rejects an
+        explicit null for any of them), so there's no supported way to request a delete, and this
+        method doesn't attempt one. This method itself doesn't diff against the topic's current
+        live state -- that's the caller's job (comparing against `get_tableflow`'s response);
+        it just sends whatever `table_formats`/`config` it's given, same as `enable_tableflow`.
+
+        Args:
+            table_name: The Flink table / Kafka topic name (the {display_name} path segment).
+            table_formats: New table_formats, replacing the full list -- or None to leave
+                unchanged.
+            config: New topic-level config -- or None to leave unchanged. Only fields actually
+                set on it (not None) are changed; the rest are left as-is.
+            wait_for_running: If True (default), poll until the topic reaches RUNNING, raising on
+                FAILED. If False, return as soon as the update is accepted.
+            timeout: Maximum seconds to wait when wait_for_running is True.
+
+        Returns:
+            The TableflowTopic -- RUNNING when waited (the default), otherwise the just-accepted
+            topic (typically PENDING while formats/config changes roll out).
+
+        Raises:
+            InterfaceError: If table_formats and config are both None (nothing to update), or if
+                table_formats is empty or names an unknown format.
+            ProgrammingError: If no control-plane credential is available, or the cluster id
+                can't be resolved without a global key.
+            TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
+            OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
+        """
+        # Validate/normalize before any network work (including the possibly CMK-resolving
+        # cluster-id lookup below), same as enable_tableflow.
+        wire_formats = normalize_table_formats(table_formats) if table_formats is not None else None
+        config_spec = config.to_spec() if config is not None else None
+        if not wire_formats and not config_spec:
+            raise InterfaceError("update_tableflow requires at least one of table_formats/config")
+
+        payload = build_update_payload(
+            table_formats=wire_formats,
+            config_spec=config_spec,
+            environment_id=self.environment_id,
+            kafka_cluster_id=self._resolve_kafka_cluster_id(),
+        )
+        logger.info(f"Updating Tableflow for table '{table_name}'")
+        response = self._tableflow_request(
+            f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
+            method="PATCH",
+            json=payload,
+            raise_for_status=False,
+        )
+        if response.status_code == 404:
+            raise TableflowTopicNotFoundError(
+                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(
+            response, prefix="Error updating Tableflow topic"
+        )
+
+        topic = TableflowTopic.from_response(response.json())
+        if wait_for_running:
+            return self._wait_for_tableflow_running(topic, timeout)
+        return topic
 
     def disable_tableflow(
         self,
@@ -2451,16 +2552,11 @@ class Connection:
             params=self._tableflow_topic_params(),
             raise_for_status=False,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise TableflowTopicNotFoundError(
-                    f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-                ) from e
-            raise OperationalError(
-                "Error disabling Tableflow", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 404:
+            raise TableflowTopicNotFoundError(
+                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+            )
+        self._raise_for_status_as_operational_error(response, prefix="Error disabling Tableflow")
 
         if wait_for_removal:
             self._wait_for_tableflow_removal(table_name, timeout)
@@ -2468,8 +2564,8 @@ class Connection:
     def _tableflow_topic_params(self) -> dict[str, str]:
         """The environment + cluster query params the per-topic GET/DELETE routes require."""
         return {
-            "environment": self.environment_id,
-            "spec.kafka_cluster": self._resolve_kafka_cluster_id(),
+            Fields.ENVIRONMENT: self.environment_id,
+            f"spec.{Fields.KAFKA_CLUSTER}": self._resolve_kafka_cluster_id(),
         }
 
     def _wait_for_tableflow_running(self, topic: TableflowTopic, timeout: float) -> TableflowTopic:

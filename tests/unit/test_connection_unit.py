@@ -400,6 +400,35 @@ class TestConnectionStopStatement:
             invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
         assert exc_info.value.http_status_code == 500
 
+    def test_blocking_returns_without_polling_when_patch_already_failed(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A statement that reached FAILED on its own *before* stop_statement() was ever called
+        still returns cleanly, matching the Statement-object short-circuit's "already terminal,
+        nothing to stop" success -- not an error. This is the actual #203 bug: confirmed live
+        against the real Flink Statements API, the stop PATCH is accepted unconditionally (200 OK)
+        even against an already-FAILED statement, simply echoing back its current phase; there is
+        no server-side rejection to special-case. The bug was that the blocking wait's
+        transitioned-to-FAILED check ran before its already-terminal check, so it raised for a
+        statement that was already FAILED on the very first look, not one that failed *during* the
+        wait (that case is covered separately by test_blocking_failed_raises below)."""
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
+        request_mock.return_value = _ok_response(
+            statement_response_factory(name="stmt-1", phase="FAILED", stopped=True)
+        )
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert result.is_failed
+        # Just the PATCH -- already terminal, so no follow-up GET poll is needed.
+        request_mock.assert_called_once()
+        assert request_mock.call_args.args[0] == "PATCH"
+
     def test_blocking_timeout_raises(
         self,
         invalid_credential_connection: Connection,
@@ -876,17 +905,14 @@ class TestConnectChecks:
             == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
         )
 
-    def test_endpoint_raises_error_when_cloud_provider_also_provided(
-        self, connection_factory: ConnectionFactory
+    def test_endpoint_warns_when_cloud_provider_also_provided(
+        self, connection_factory: ConnectionFactory, caplog
     ):
-        """Test that providing endpoint with cloud_provider raises an error."""
-        with pytest.raises(
-            InterfaceError,
-            match=(
-                "cloud_provider and cloud_region should not be provided when endpoint is specified"
-            ),
-        ):
-            connection_factory(
+        """Providing endpoint with cloud_provider is not an error (#210) -- endpoint wins and
+        we just warn, since a provided endpoint makes cloud_provider/cloud_region moot rather
+        than actually breaking anything."""
+        with caplog.at_level("WARNING", logger=connection_module_logger.name):
+            conn = connection_factory(
                 environment_id="env-123",
                 organization_id="org-456",
                 compute_pool_id="cp-789",
@@ -895,18 +921,21 @@ class TestConnectChecks:
                 endpoint="https://custom.example.com",
                 cloud_provider="aws",
             )
+        assert "custom.example.com" in str(conn._get_flink_client().base_url)
+        assert any(
+            "No need to provide cloud_provider or cloud_region" in record.getMessage()
+            and record.levelname == "WARNING"
+            for record in caplog.records
+        )
 
-    def test_endpoint_raises_error_when_cloud_region_also_provided(
-        self, connection_factory: ConnectionFactory
+    def test_endpoint_warns_when_cloud_region_also_provided(
+        self, connection_factory: ConnectionFactory, caplog
     ):
-        """Test that providing endpoint with cloud_region raises an error."""
-        with pytest.raises(
-            InterfaceError,
-            match=(
-                "cloud_provider and cloud_region should not be provided when endpoint is specified"
-            ),
-        ):
-            connection_factory(
+        """Providing endpoint with cloud_region is not an error (#210) -- endpoint wins and
+        we just warn, since a provided endpoint makes cloud_provider/cloud_region moot rather
+        than actually breaking anything."""
+        with caplog.at_level("WARNING", logger=connection_module_logger.name):
+            conn = connection_factory(
                 environment_id="env-123",
                 organization_id="org-456",
                 compute_pool_id="cp-789",
@@ -915,6 +944,12 @@ class TestConnectChecks:
                 endpoint="https://custom.example.com",
                 cloud_region="us-east-1",
             )
+        assert "custom.example.com" in str(conn._get_flink_client().base_url)
+        assert any(
+            "No need to provide cloud_provider or cloud_region" in record.getMessage()
+            and record.levelname == "WARNING"
+            for record in caplog.records
+        )
 
 
 @pytest.mark.unit
