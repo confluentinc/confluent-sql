@@ -410,7 +410,7 @@ class TestStopStatement:
 
         `SELECT 1/0` fails fast enough (confirmed live: well under a second) that execute() itself
         raises with "submission failed" -- Cursor.execute() sets cursor.statement before that
-        raise (cursor.py:251-264), so the FAILED statement is still available to stop by name."""
+        raise, so the FAILED statement is still available to stop by name."""
         cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
         try:
             with pytest.raises(OperationalError, match="submission failed"):
