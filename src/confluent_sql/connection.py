@@ -47,6 +47,7 @@ from .statement_properties import (
     validate_properties_dict,
 )
 from .tableflow import (
+    Fields,
     TableflowPhase,
     TableflowStorage,
     TableflowTopic,
@@ -2337,8 +2338,8 @@ class Connection:
     def _tableflow_topic_params(self) -> dict[str, str]:
         """The environment + cluster query params the per-topic GET/DELETE routes require."""
         return {
-            "environment": self.environment_id,
-            "spec.kafka_cluster": self._resolve_kafka_cluster_id(),
+            Fields.ENVIRONMENT: self.environment_id,
+            f"spec.{Fields.KAFKA_CLUSTER}": self._resolve_kafka_cluster_id(),
         }
 
     def _wait_for_tableflow_running(self, topic: TableflowTopic, timeout: float) -> TableflowTopic:
