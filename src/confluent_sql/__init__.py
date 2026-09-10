@@ -58,6 +58,7 @@ from .tableflow import (
     TableflowPhase,
     TableflowTopic,
     TableflowTopicConfig,
+    TableflowTopicSpec,
     TableFormat,
 )
 from .types import PropertiesDict, PropertiesMapping, SqlNone, YearMonthInterval
@@ -103,6 +104,7 @@ __all__ = [
     "TableflowPhase",
     "TableflowTopic",
     "TableflowTopicConfig",
+    "TableflowTopicSpec",
     "ManagedStorage",
     "ByobAwsStorage",
     "AzureAdlsStorage",

@@ -28,7 +28,7 @@ pytestmark = pytest.mark.unit
 
 
 class TestNormalizeTableFormats:
-    """The `tableflow_formats` argument accepts a single TableFormat or a collection of them."""
+    """The `table_formats` argument accepts a single TableFormat or a collection of them."""
 
     def test_singleton(self) -> None:
         assert normalize_table_formats(TableFormat.ICEBERG) == ["ICEBERG"]
@@ -215,6 +215,18 @@ class TestTableflowTopicConfig:
             "error_handling": {"mode": "LOG", "target": "dlq"},
         }
 
+    def test_from_spec_parses_wire_strings_to_int(self) -> None:
+        # The inverse of the int-to-string encoding above: a real GET/create response always
+        # has these as strings on the wire, and from_spec must parse them back to int so a
+        # config round-tripped through from_spec/to_spec compares equal to one built directly.
+        config = TableflowTopicConfig.from_spec(
+            {"retention_ms": "604800000", "data_retention_ms": "2592000000"}
+        )
+        assert config == TableflowTopicConfig(retention_ms=604800000, data_retention_ms=2592000000)
+
+    def test_from_spec_empty(self) -> None:
+        assert TableflowTopicConfig.from_spec({}) == TableflowTopicConfig()
+
 
 class TestBuildCreatePayload:
     """The POST body assembles spec from the wire formats, storage, config, and connection ids."""
@@ -305,7 +317,9 @@ class TestTableflowTopicFromResponse:
         assert topic.spec.environment_id == "env-1"
         assert topic.spec.kafka_cluster_id == "lkc-1"
         assert topic.spec.suspended is False
-        assert topic.spec.config == {"retention_ms": "604800000", "enable_compaction": True}
+        # enable_compaction is deprecated/read-only and deliberately not modeled -- dropped,
+        # not retained.
+        assert topic.spec.config == TableflowTopicConfig(retention_ms=604800000)
         assert topic.status.write_mode == "APPEND"
         assert topic.phase is TableflowPhase.RUNNING
         assert topic.status.phase is TableflowPhase.RUNNING
@@ -331,4 +345,22 @@ class TestTableflowTopicFromResponse:
         response = _topic_response()
         del response["status"]
         with pytest.raises(OperationalError, match="missing 'status'"):
+            TableflowTopic.from_response(response)
+
+    def test_malformed_retention_ms_raises_operational_error(self) -> None:
+        # optional_int_from_str's int(s) raises ValueError on a non-numeric wire value -- this
+        # must surface as the same OperationalError every other malformed-response case does,
+        # not leak the raw ValueError past TableflowTopic.from_response.
+        response = _topic_response()
+        response["spec"]["config"] = {"retention_ms": "not-a-number"}
+        with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
+            TableflowTopic.from_response(response)
+
+    def test_null_storage_raises_operational_error(self) -> None:
+        # A present-but-null spec.storage makes storage_from_spec(None) call .get() on None --
+        # AttributeError, not ValueError/TypeError, but the same parsing boundary must still
+        # convert it to OperationalError rather than leaking it.
+        response = _topic_response()
+        response["spec"]["storage"] = None
+        with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
             TableflowTopic.from_response(response)
