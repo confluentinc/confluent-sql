@@ -4,6 +4,15 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. `tableflow_formats` was never a real Tableflow API concept -- the wire schema only ever names `table_formats` (`spec.table_formats`, `status.failing_table_formats`) -- and the misnomer was inconsistent with the new `Connection.update_tableflow()`, which already used `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
+- `TableflowTopicSpec.config`: Now parsed as a typed `TableflowTopicConfig` instead of being left as a raw mapping. If you need unmodeled wire fields, read `topic.spec.raw.get("config")` instead. (#214)
+
+### Added
+
+- `Connection.update_tableflow(table_name, *, table_formats=None, config=None, wait_for_running=True, timeout=300)` updates an already-enabled Tableflow topic's `table_formats`/`config` in place via `PATCH /tableflow/v1/tableflow-topics/{display_name}`, avoiding the disable/re-enable cycle `enable_tableflow` would otherwise require. `None` (the default) means "leave unchanged," for both of this method's own arguments and for each of `config`'s own sub-fields. `storage`/`display_name` remain immutable and have no in-place path; a caller needing to change either must recreate the topic. By default blocks until the topic returns to `RUNNING`; pass `wait_for_running=False` to return as soon as the update is accepted. Raises `TableflowTopicNotFoundError` if Tableflow isn't enabled for the table. (#214)
+
 ### Fixed
 
 - Type conversion methods across `types.py` now consistently raise dbapi-mandated exceptions (`DataError`, `InterfaceError`) rather than a bare builtin (`ValueError`, `decimal.InvalidOperation`) for problems with a Flink response value, a Python value that can't be represented as a Flink SQL literal, or a converter misconfigured with the wrong column type. (#204)
