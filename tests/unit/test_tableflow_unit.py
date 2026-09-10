@@ -162,7 +162,26 @@ class TestStorageFromSpec:
     def test_unknown_kind_falls_back_to_unknown(self) -> None:
         # Mirrors TableflowPhase's UNKNOWN fallback: a future server-side storage kind shouldn't
         # break response parsing for an otherwise-healthy topic.
-        assert storage_from_spec({"kind": "Martian"}) == TableflowStorageUnknown(kind="Martian")
+        assert storage_from_spec({"kind": "Martian"}) == TableflowStorageUnknown(
+            raw={"kind": "Martian"}
+        )
+
+    def test_unknown_kind_still_reads_kind_polymorphically(self) -> None:
+        # .kind stays a valid, uniform way to read the discriminator across every TableflowStorage
+        # variant (fixed to the "UNKNOWN" sentinel here); .raw carries the real value.
+        parsed = storage_from_spec({"kind": "Martian"})
+        assert parsed.kind == "UNKNOWN"
+        assert isinstance(parsed, TableflowStorageUnknown)
+        assert parsed.raw == {"kind": "Martian"}
+
+    def test_unknown_kind_preserves_unmodeled_fields(self) -> None:
+        # An unrecognized kind could carry any fields at all -- there's no way to know which of
+        # them matter, so the whole object must be kept, not just the kind string.
+        data = {"kind": "Martian", "regolith_depth_cm": 40, "atmosphere": "thin"}
+        parsed = storage_from_spec(data)
+        assert isinstance(parsed, TableflowStorageUnknown)
+        assert parsed.raw == data
+        assert parsed.to_spec() == data
 
 
 class TestTableflowErrorHandlingToSpec:
@@ -199,8 +218,26 @@ class TestErrorHandlingFromSpec:
         # Mirrors TableflowPhase's UNKNOWN fallback: a future server-side error-handling mode
         # shouldn't break response parsing for an otherwise-healthy topic.
         assert error_handling_from_spec({"mode": "QUARANTINE"}) == TableflowErrorHandlingUnknown(
-            mode="QUARANTINE"
+            raw={"mode": "QUARANTINE"}
         )
+
+    def test_unknown_mode_still_reads_mode_polymorphically(self) -> None:
+        # .mode stays a valid, uniform way to read the discriminator across every
+        # TableflowErrorHandling variant (fixed to the "UNKNOWN" sentinel here); .raw carries the
+        # real value.
+        parsed = error_handling_from_spec({"mode": "QUARANTINE"})
+        assert parsed.mode == "UNKNOWN"
+        assert isinstance(parsed, TableflowErrorHandlingUnknown)
+        assert parsed.raw == {"mode": "QUARANTINE"}
+
+    def test_unknown_mode_preserves_unmodeled_fields(self) -> None:
+        # An unrecognized mode could carry any fields at all -- there's no way to know which of
+        # them matter, so the whole object must be kept, not just the mode string.
+        data = {"mode": "QUARANTINE", "quarantine_topic": "dlq-2"}
+        parsed = error_handling_from_spec(data)
+        assert isinstance(parsed, TableflowErrorHandlingUnknown)
+        assert parsed.raw == data
+        assert parsed.to_spec() == data
 
 
 class TestTableflowTopicConfig:

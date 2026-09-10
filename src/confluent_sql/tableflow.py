@@ -206,12 +206,22 @@ class AzureAdlsStorage(TableflowStorage):
 class TableflowStorageUnknown(TableflowStorage):
     """An unrecognized `spec.storage.kind` -- mirrors `TableflowPhase`'s `UNKNOWN` fallback so a
     future server-side storage kind doesn't break response parsing for an otherwise-healthy
-    topic. `kind` holds whatever the server actually sent (an instance field here, unlike the
-    other storage classes' fixed `ClassVar`); the other fields are unrecoverable since their
-    shape isn't known.
+    topic. `kind` is fixed to the "UNKNOWN" sentinel (same kind of symbol -- a `ClassVar[str]` --
+    as every other storage class, so it stays valid to read polymorphically).
+
+    `raw` holds the entire unparsed `spec.storage` object, not just `kind`: an unrecognized kind
+    could carry any fields at all (the way `AzureAdlsStorage` has `container_name`,
+    `ByobAwsStorage` has `bucket_name`, ...), and there's no way to know which of them matter for
+    a kind we don't recognize -- so, unlike the other storage classes (which capture only their
+    own known-writable fields), this one keeps everything rather than guess.
     """
 
-    kind: str
+    kind: ClassVar[str] = "UNKNOWN"
+
+    raw: StrAnyDict
+
+    def to_spec(self) -> StrAnyDict:
+        return self.raw
 
 
 def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
@@ -239,7 +249,7 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
             container_name=data[Fields.CONTAINER_NAME],
             provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
-    return TableflowStorageUnknown(kind=kind)
+    return TableflowStorageUnknown(raw=data)
 
 
 @dataclass(frozen=True)
@@ -283,11 +293,21 @@ class TableflowErrorHandlingLog(TableflowErrorHandling):
 class TableflowErrorHandlingUnknown(TableflowErrorHandling):
     """An unrecognized `config.error_handling.mode` -- mirrors `TableflowPhase`'s `UNKNOWN`
     fallback so a future server-side mode doesn't break response parsing for an otherwise-healthy
-    topic. `mode` holds whatever the server actually sent (an instance field here, unlike the
-    other error-handling classes' fixed `ClassVar`).
+    topic. `mode` is fixed to the "UNKNOWN" sentinel (same kind of symbol -- a `ClassVar[str]` --
+    as every other error-handling class, so it stays valid to read polymorphically).
+
+    `raw` holds the entire unparsed `config.error_handling` object, not just `mode`: an
+    unrecognized mode could carry any fields at all (the way `TableflowErrorHandlingLog` has
+    `target`), and there's no way to know which of them matter for a mode we don't recognize --
+    so, unlike the other error-handling classes, this one keeps everything rather than guess.
     """
 
-    mode: str
+    mode: ClassVar[str] = "UNKNOWN"
+
+    raw: StrAnyDict
+
+    def to_spec(self) -> StrAnyDict:
+        return self.raw
 
 
 def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
@@ -307,7 +327,7 @@ def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
         return TableflowErrorHandlingSkip()
     if mode == TableflowErrorHandlingLog.mode:
         return TableflowErrorHandlingLog(target=data.get(Fields.TARGET, "error_log"))
-    return TableflowErrorHandlingUnknown(mode=mode)
+    return TableflowErrorHandlingUnknown(raw=data)
 
 
 @dataclass(frozen=True)
