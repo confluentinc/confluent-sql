@@ -70,6 +70,17 @@ class TableFormat(str, Enum):
     DELTA = "DELTA"
 
 
+def table_format_from_spec(value: object) -> TableFormat:
+    """Parse a single wire table-format value, converting an unrecognized one to
+    `OperationalError` right here -- narrower than catching broadly further up the parse tree,
+    so a real bug elsewhere in parsing isn't mistaken for a malformed server response.
+    """
+    try:
+        return TableFormat(value)
+    except ValueError as e:
+        raise OperationalError(f"Error parsing Tableflow table format {value!r}: {e}") from e
+
+
 def normalize_table_formats(
     table_formats: TableFormat | str | Collection[TableFormat],
 ) -> list[str]:
@@ -209,6 +220,11 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
     Captures only the writable fields; server-assigned read-only fields (`table_path`,
     `bucket_region`, `storage_region`) remain available on the topic's raw spec dict.
     """
+    if not isinstance(data, dict):
+        # A present-but-null (or otherwise non-mapping) storage section: raise explicitly here,
+        # rather than let a bare .get() below raise AttributeError and rely on a broad except
+        # further up the parse tree to relabel it -- that would just as readily mask a real bug.
+        raise OperationalError(f"Error parsing Tableflow storage: expected a mapping, got {data!r}")
     kind = data.get(Fields.KIND)
     if kind == ManagedStorage.kind:
         return ManagedStorage()
@@ -280,6 +296,10 @@ def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
     Mirrors `storage_from_spec` -- only the mode-to-class dispatch is ours, and every mode's
     field shape already round-trips through its own dataclass.
     """
+    if not isinstance(data, dict):
+        raise OperationalError(
+            f"Error parsing Tableflow error_handling: expected a mapping, got {data!r}"
+        )
     mode = data.get(Fields.MODE)
     if mode == TableflowErrorHandlingSuspend.mode:
         return TableflowErrorHandlingSuspend()
@@ -306,6 +326,10 @@ class TableflowTopicConfig:
     @classmethod
     def from_spec(cls, data: StrAnyDict) -> TableflowTopicConfig:
         """Parse a response `spec.config` object, dropping anything not formally modeled."""
+        if not isinstance(data, dict):
+            raise OperationalError(
+                f"Error parsing Tableflow config: expected a mapping, got {data!r}"
+            )
         error_handling_conf = data.get(Fields.ERROR_HANDLING)
         return cls(
             retention_ms=optional_int_from_str(data.get(Fields.RETENTION_MS)),
@@ -405,7 +429,9 @@ class FailingTableFormat:
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> FailingTableFormat:
-        return cls(format=TableFormat(data["format"]), error_message=data["error_message"])
+        return cls(
+            format=table_format_from_spec(data["format"]), error_message=data["error_message"]
+        )
 
 
 @dataclass
@@ -456,7 +482,9 @@ class TableflowTopicSpec:
         config_data = data.get(Fields.CONFIG)
         return cls(
             display_name=data[Fields.DISPLAY_NAME],
-            table_formats=[TableFormat(fmt) for fmt in data.get(Fields.TABLE_FORMATS, [])],
+            table_formats=[
+                table_format_from_spec(fmt) for fmt in data.get(Fields.TABLE_FORMATS, [])
+            ],
             storage=storage_from_spec(data[Fields.STORAGE]),
             config=TableflowTopicConfig.from_spec(config_data) if config_data is not None else None,
             environment_id=(data.get(Fields.ENVIRONMENT) or {}).get(Fields.ID),
@@ -493,12 +521,18 @@ class TableflowTopic:
             metadata = response.get("metadata", {})
         except KeyError as e:
             raise OperationalError(f"Error parsing Tableflow topic response, missing {e}.") from e
-        except (ValueError, TypeError, AttributeError) as e:
-            raise OperationalError(f"Error parsing Tableflow topic response: {e}") from e
         return cls(spec=spec, status=status, metadata=metadata)
 
 
 def optional_int_from_str(s: str | None) -> int | None:
+    """Parse a wire string-encoded int64 value (see `TableflowTopicConfig.to_spec`) back to
+    `int`, converting a malformed value to `OperationalError` right here -- narrower than
+    catching broadly further up the parse tree, so a real bug elsewhere in parsing isn't
+    mistaken for a malformed server response.
+    """
     if s is None:
         return None
-    return int(s)
+    try:
+        return int(s)
+    except (ValueError, TypeError) as e:
+        raise OperationalError(f"Error parsing int value {s!r}: {e}") from e

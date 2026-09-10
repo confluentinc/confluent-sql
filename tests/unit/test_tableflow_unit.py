@@ -371,19 +371,26 @@ class TestTableflowTopicFromResponse:
             TableflowTopic.from_response(response)
 
     def test_malformed_retention_ms_raises_operational_error(self) -> None:
-        # optional_int_from_str's int(s) raises ValueError on a non-numeric wire value -- this
-        # must surface as the same OperationalError every other malformed-response case does,
-        # not leak the raw ValueError past TableflowTopic.from_response.
+        # optional_int_from_str's int(s) raises ValueError on a non-numeric wire value -- caught
+        # and converted to OperationalError right there (not by a blanket catch further up the
+        # parse tree, which would just as readily mask a real bug elsewhere in parsing).
         response = _topic_response()
         response["spec"]["config"] = {"retention_ms": "not-a-number"}
-        with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
+        with pytest.raises(OperationalError, match="Error parsing Tableflow int64 value"):
             TableflowTopic.from_response(response)
 
     def test_null_storage_raises_operational_error(self) -> None:
-        # A present-but-null spec.storage makes storage_from_spec(None) call .get() on None --
-        # AttributeError, not ValueError/TypeError, but the same parsing boundary must still
-        # convert it to OperationalError rather than leaking it.
+        # A present-but-null spec.storage is now checked explicitly in storage_from_spec (rather
+        # than relying on a bare .get() to raise AttributeError and a broad catch further up the
+        # parse tree to relabel it).
         response = _topic_response()
         response["spec"]["storage"] = None
-        with pytest.raises(OperationalError, match="Error parsing Tableflow topic response"):
+        with pytest.raises(OperationalError, match="Error parsing Tableflow storage"):
+            TableflowTopic.from_response(response)
+
+    def test_unrecognized_table_format_raises_operational_error(self) -> None:
+        # TableFormat(fmt) raises ValueError on an unrecognized format -- caught and converted to
+        # OperationalError right at table_format_from_spec, same rationale as the two tests above.
+        response = _topic_response(table_formats=["ICEBERG", "MARTIAN"])
+        with pytest.raises(OperationalError, match="Error parsing Tableflow table format"):
             TableflowTopic.from_response(response)
