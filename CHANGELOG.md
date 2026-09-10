@@ -7,6 +7,7 @@ All notable changes to this dbapi driver will be documented in this file.
 ### Fixed
 
 - Type conversion methods across `types.py` now consistently raise dbapi-mandated exceptions (`DataError`, `InterfaceError`) rather than a bare builtin (`ValueError`, `decimal.InvalidOperation`) for problems with a Flink response value, a Python value that can't be represented as a Flink SQL literal, or a converter misconfigured with the wrong column type. (#204)
+- `stop_statement(wait_for_stopped=True)` (the default) on a statement that had already reached FAILED on its own -- before the stop was ever requested -- no longer raises `OperationalError`. The blocking wait mistook "the statement is currently FAILED" for "the statement transitioned to FAILED while we were waiting for it to stop," when the former is really the same "already terminal, nothing to stop" success the `Statement`-object short-circuit already returns for a cached terminal statement; only a transition *into* FAILED partway through the wait is a genuine failure to stop cleanly. (#203)
 
 ### Changed
 
