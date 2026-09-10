@@ -17,6 +17,18 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - The `dbname` parameter of `connect()`, deprecated in favor of `database` since 0.2.0, has been removed. Passing `dbname=` now raises `TypeError` for an unexpected keyword argument instead of emitting a `DeprecationWarning`. Use `database=` instead.
 
+## 0.5.5, 2026-09-09
+
+### Fixed
+
+- `TableflowTopicConfig.to_spec()` now serializes `retention_ms`/`data_retention_ms` as strings rather than ints -- the API rejects non-string values for both, since the schema types them as int64, string-encoded to dodge JS/IEEE-754 double precision loss. (#215)
+
+## 0.5.4, 2026-09-08
+
+### Changed
+
+- `connect()` no longer raises `InterfaceError` when both `endpoint` and `cloud_provider`/`cloud_region` are provided. A provided `endpoint` simply makes `cloud_provider`/`cloud_region` unnecessary rather than actually conflicting with it, so this now logs a warning ("No need to provide cloud_provider or cloud_region when also providing endpoint. Only using endpoint.") and proceeds using `endpoint`. (#210)
+
 ## 0.5.3, 2026-08-27
 
 ### Fixed
