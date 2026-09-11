@@ -127,7 +127,7 @@ class TestTableflowLifecycle:
         try:
             topic = conn.enable_tableflow(
                 table,
-                tableflow_formats=TableFormat.ICEBERG,
+                table_formats=TableFormat.ICEBERG,
                 storage=ManagedStorage(),
                 wait_for_running=True,
             )

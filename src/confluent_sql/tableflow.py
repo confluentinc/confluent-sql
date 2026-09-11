@@ -19,6 +19,46 @@ from .exceptions import InterfaceError, OperationalError
 from .types import StrAnyDict
 
 
+class Fields:
+    """Wire field names for the Tableflow Topic API
+
+    Plain string class attributes, not an Enum: `StrEnum` needs Python 3.11+ (newer than this
+    package's floor, 3.10), and the older `class X(str, Enum)` mixin (used above for `TableFormat`/
+    `TableflowPhase`) returns the qualified member name from `str()`/default formatting rather
+    than the plain value unless a caller remembers `.value` -- a real risk given how pervasively
+    these get used directly as dict keys, in f-strings, and in JSON payloads. Plain strings have
+    no such gotcha.
+    """
+
+    ID = "id"
+    DISPLAY_NAME = "display_name"
+    STORAGE = "storage"
+    TABLE_FORMATS = "table_formats"
+    ENVIRONMENT = "environment"
+    KAFKA_CLUSTER = "kafka_cluster"
+    CONFIG = "config"
+    SUSPENDED = "suspended"
+
+    RETENTION_MS = "retention_ms"
+    DATA_RETENTION_MS = "data_retention_ms"
+    ERROR_HANDLING = "error_handling"
+    # Deliberately unmodeled by TableflowTopicConfig (deprecated/read-only), but still
+    # referenced by name by a caller masking them out of a diff.
+    ENABLE_COMPACTION = "enable_compaction"
+    ENABLE_PARTITIONING = "enable_partitioning"
+    RECORD_FAILURE_STRATEGY = "record_failure_strategy"
+
+    KIND = "kind"
+    BUCKET_NAME = "bucket_name"
+    PROVIDER_INTEGRATION_ID = "provider_integration_id"
+    STORAGE_ACCOUNT_NAME = "storage_account_name"
+    CONTAINER_NAME = "container_name"
+    TABLE_PATH = "table_path"
+
+    MODE = "mode"
+    TARGET = "target"
+
+
 class TableFormat(str, Enum):
     """A concrete table format a Tableflow topic materializes to.
 
@@ -30,10 +70,22 @@ class TableFormat(str, Enum):
     DELTA = "DELTA"
 
 
+def table_format_from_spec(value: object) -> TableFormat:
+    """Parse a single wire table-format value, converting an unrecognized one to
+    `OperationalError` right here -- narrower than catching broadly further up the parse tree,
+    so a real bug elsewhere in parsing isn't mistaken for a malformed server response.
+    """
+    try:
+        return TableFormat(value)
+    except ValueError as e:
+        raise OperationalError(f"Error parsing Tableflow table format {value!r}: {e}") from e
+
+
 def normalize_table_formats(
-    tableflow_formats: TableFormat | Collection[TableFormat],
+    table_formats: TableFormat | str | Collection[TableFormat],
 ) -> list[str]:
-    """Normalize the `enable_tableflow` `tableflow_formats` argument to the wire array.
+    """Normalize the `enable_tableflow`/`update_tableflow` `table_formats` argument to the wire
+    array.
 
     Accepts a single `TableFormat` (convenience for the common one-format case) or any collection
     of them, and orders the result canonically by `TableFormat` declaration order so the request
@@ -46,13 +98,13 @@ def normalize_table_formats(
         InterfaceError: If no formats are given (the API requires at least one), a value does not
             name a known `TableFormat`, or a format is repeated.
     """
-    raw = [tableflow_formats] if isinstance(tableflow_formats, str) else list(tableflow_formats)
+    raw = [table_formats] if isinstance(table_formats, str) else list(table_formats)
     if not raw:
-        raise InterfaceError("tableflow_formats must name at least one TableFormat")
+        raise InterfaceError("table_formats must name at least one TableFormat")
     try:
         coerced = [TableFormat(fmt) for fmt in raw]
     except ValueError as e:
-        raise InterfaceError(f"unknown table format in tableflow_formats: {e}") from e
+        raise InterfaceError(f"unknown table format in table_formats: {e}") from e
 
     chosen: set[TableFormat] = set()
     duplicates: set[str] = set()
@@ -62,7 +114,7 @@ def normalize_table_formats(
         chosen.add(fmt)
     if duplicates:
         raise InterfaceError(
-            f"tableflow_formats contains duplicate formats: {', '.join(sorted(duplicates))}"
+            f"table_formats contains duplicate formats: {', '.join(sorted(duplicates))}"
         )
     return [fmt.value for fmt in TableFormat if fmt in chosen]
 
@@ -104,7 +156,7 @@ class TableflowStorage:
 
     def to_spec(self) -> StrAnyDict:
         """Render the writable storage fields to the wire `spec.storage` object."""
-        return {"kind": self.kind}
+        return {Fields.KIND: self.kind}
 
 
 @dataclass(frozen=True)
@@ -125,9 +177,9 @@ class ByobAwsStorage(TableflowStorage):
 
     def to_spec(self) -> StrAnyDict:
         return {
-            "kind": self.kind,
-            "bucket_name": self.bucket_name,
-            "provider_integration_id": self.provider_integration_id,
+            Fields.KIND: self.kind,
+            Fields.BUCKET_NAME: self.bucket_name,
+            Fields.PROVIDER_INTEGRATION_ID: self.provider_integration_id,
         }
 
 
@@ -143,11 +195,33 @@ class AzureAdlsStorage(TableflowStorage):
 
     def to_spec(self) -> StrAnyDict:
         return {
-            "kind": self.kind,
-            "storage_account_name": self.storage_account_name,
-            "container_name": self.container_name,
-            "provider_integration_id": self.provider_integration_id,
+            Fields.KIND: self.kind,
+            Fields.STORAGE_ACCOUNT_NAME: self.storage_account_name,
+            Fields.CONTAINER_NAME: self.container_name,
+            Fields.PROVIDER_INTEGRATION_ID: self.provider_integration_id,
         }
+
+
+@dataclass(frozen=True)
+class TableflowStorageUnknown(TableflowStorage):
+    """An unrecognized `spec.storage.kind` -- mirrors `TableflowPhase`'s `UNKNOWN` fallback so a
+    future server-side storage kind doesn't break response parsing for an otherwise-healthy
+    topic. `kind` is fixed to the "UNKNOWN" sentinel (same kind of symbol -- a `ClassVar[str]` --
+    as every other storage class, so it stays valid to read polymorphically).
+
+    `raw` holds the entire unparsed `spec.storage` object, not just `kind`: an unrecognized kind
+    could carry any fields at all (the way `AzureAdlsStorage` has `container_name`,
+    `ByobAwsStorage` has `bucket_name`, ...), and there's no way to know which of them matter for
+    a kind we don't recognize -- so, unlike the other storage classes (which capture only their
+    own known-writable fields), this one keeps everything rather than guess.
+    """
+
+    kind: ClassVar[str] = "UNKNOWN"
+
+    raw: StrAnyDict
+
+    def to_spec(self) -> StrAnyDict:
+        return self.raw
 
 
 def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
@@ -156,21 +230,26 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
     Captures only the writable fields; server-assigned read-only fields (`table_path`,
     `bucket_region`, `storage_region`) remain available on the topic's raw spec dict.
     """
-    kind = data.get("kind")
+    if not isinstance(data, dict):
+        # A present-but-null (or otherwise non-mapping) storage section: raise explicitly here,
+        # rather than let a bare .get() below raise AttributeError and rely on a broad except
+        # further up the parse tree to relabel it -- that would just as readily mask a real bug.
+        raise OperationalError(f"Error parsing Tableflow storage: expected a mapping, got {data!r}")
+    kind = data.get(Fields.KIND)
     if kind == ManagedStorage.kind:
         return ManagedStorage()
     if kind == ByobAwsStorage.kind:
         return ByobAwsStorage(
-            bucket_name=data["bucket_name"],
-            provider_integration_id=data["provider_integration_id"],
+            bucket_name=data[Fields.BUCKET_NAME],
+            provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
     if kind == AzureAdlsStorage.kind:
         return AzureAdlsStorage(
-            storage_account_name=data["storage_account_name"],
-            container_name=data["container_name"],
-            provider_integration_id=data["provider_integration_id"],
+            storage_account_name=data[Fields.STORAGE_ACCOUNT_NAME],
+            container_name=data[Fields.CONTAINER_NAME],
+            provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
-    raise OperationalError(f"Wacky -- unknown Tableflow storage kind '{kind}' in response")
+    return TableflowStorageUnknown(raw=data)
 
 
 @dataclass(frozen=True)
@@ -181,7 +260,7 @@ class TableflowErrorHandling:
 
     def to_spec(self) -> StrAnyDict:
         """Render to the wire `error_handling` object."""
-        return {"mode": self.mode}
+        return {Fields.MODE: self.mode}
 
 
 @dataclass(frozen=True)
@@ -207,7 +286,48 @@ class TableflowErrorHandlingLog(TableflowErrorHandling):
     target: str = "error_log"
 
     def to_spec(self) -> StrAnyDict:
-        return {"mode": self.mode, "target": self.target}
+        return {Fields.MODE: self.mode, Fields.TARGET: self.target}
+
+
+@dataclass(frozen=True)
+class TableflowErrorHandlingUnknown(TableflowErrorHandling):
+    """An unrecognized `config.error_handling.mode` -- mirrors `TableflowPhase`'s `UNKNOWN`
+    fallback so a future server-side mode doesn't break response parsing for an otherwise-healthy
+    topic. `mode` is fixed to the "UNKNOWN" sentinel (same kind of symbol -- a `ClassVar[str]` --
+    as every other error-handling class, so it stays valid to read polymorphically).
+
+    `raw` holds the entire unparsed `config.error_handling` object, not just `mode`: an
+    unrecognized mode could carry any fields at all (the way `TableflowErrorHandlingLog` has
+    `target`), and there's no way to know which of them matter for a mode we don't recognize --
+    so, unlike the other error-handling classes, this one keeps everything rather than guess.
+    """
+
+    mode: ClassVar[str] = "UNKNOWN"
+
+    raw: StrAnyDict
+
+    def to_spec(self) -> StrAnyDict:
+        return self.raw
+
+
+def error_handling_from_spec(data: StrAnyDict) -> TableflowErrorHandling:
+    """Parse a response `config.error_handling` object into its typed error-handling class.
+
+    Mirrors `storage_from_spec` -- only the mode-to-class dispatch is ours, and every mode's
+    field shape already round-trips through its own dataclass.
+    """
+    if not isinstance(data, dict):
+        raise OperationalError(
+            f"Error parsing Tableflow error_handling: expected a mapping, got {data!r}"
+        )
+    mode = data.get(Fields.MODE)
+    if mode == TableflowErrorHandlingSuspend.mode:
+        return TableflowErrorHandlingSuspend()
+    if mode == TableflowErrorHandlingSkip.mode:
+        return TableflowErrorHandlingSkip()
+    if mode == TableflowErrorHandlingLog.mode:
+        return TableflowErrorHandlingLog(target=data.get(Fields.TARGET, "error_log"))
+    return TableflowErrorHandlingUnknown(raw=data)
 
 
 @dataclass(frozen=True)
@@ -223,14 +343,37 @@ class TableflowTopicConfig:
     data_retention_ms: str | int | None = None
     error_handling: TableflowErrorHandling | None = None
 
+    @classmethod
+    def from_spec(cls, data: StrAnyDict) -> TableflowTopicConfig:
+        """Parse a response `spec.config` object, dropping anything not formally modeled."""
+        if not isinstance(data, dict):
+            raise OperationalError(
+                f"Error parsing Tableflow config: expected a mapping, got {data!r}"
+            )
+        error_handling_conf = data.get(Fields.ERROR_HANDLING)
+        return cls(
+            retention_ms=optional_int_from_str(data.get(Fields.RETENTION_MS)),
+            data_retention_ms=optional_int_from_str(data.get(Fields.DATA_RETENTION_MS)),
+            error_handling=(
+                error_handling_from_spec(error_handling_conf)
+                if error_handling_conf is not None
+                else None
+            ),
+        )
+
     def to_spec(self) -> StrAnyDict:
+        """Render to the wire `config` object.
+
+        `retention_ms`/`data_retention_ms` accept `int` here for caller convenience, but the API
+        schema types both as `string` (`format: int64`) on every request and response.
+        """
         spec: StrAnyDict = {}
         if self.retention_ms is not None:
-            spec["retention_ms"] = self.retention_ms
+            spec[Fields.RETENTION_MS] = str(self.retention_ms)
         if self.data_retention_ms is not None:
-            spec["data_retention_ms"] = self.data_retention_ms
+            spec[Fields.DATA_RETENTION_MS] = str(self.data_retention_ms)
         if self.error_handling is not None:
-            spec["error_handling"] = self.error_handling.to_spec()
+            spec[Fields.ERROR_HANDLING] = self.error_handling.to_spec()
         return spec
 
 
@@ -250,16 +393,50 @@ def build_create_payload(
     empty config is omitted entirely.
     """
     spec: StrAnyDict = {
-        "display_name": table_name,
-        "storage": storage.to_spec(),
-        "table_formats": table_formats,
-        "environment": {"id": environment_id},
-        "kafka_cluster": {"id": kafka_cluster_id},
+        Fields.DISPLAY_NAME: table_name,
+        Fields.STORAGE: storage.to_spec(),
+        Fields.TABLE_FORMATS: table_formats,
+        Fields.ENVIRONMENT: {Fields.ID: environment_id},
+        Fields.KAFKA_CLUSTER: {Fields.ID: kafka_cluster_id},
     }
     if config is not None:
         config_spec = config.to_spec()
         if config_spec:
-            spec["config"] = config_spec
+            spec[Fields.CONFIG] = config_spec
+    return {"spec": spec}
+
+
+def build_update_payload(
+    *,
+    table_formats: list[str] | None,
+    config_spec: StrAnyDict | None,
+    environment_id: str,
+    kafka_cluster_id: str,
+) -> StrAnyDict:
+    """Assemble the `PATCH /tableflow/v1/tableflow-topics/{display_name}` request body.
+
+    `table_formats`/`config_spec` are the only fields updatable via this API (`storage`/
+    `display_name` are `x-immutable`; `suspended` isn't part of `tableflow`'s config surface) --
+    `None` (or an empty `config_spec`) means "leave unchanged," so it's omitted from the body
+    entirely rather than sent as `null`. Diffing to decide what's actually changing --
+    comparing against a real `get_tableflow` response -- is the caller's job, not this driver's;
+    this function (and `Connection.update_tableflow`) just assembles what it's given, same as
+    every other Tableflow request-building function here.
+
+    `environment` and `kafka_cluster` are both required routing/identity keys on this endpoint
+    (the path only carries `display_name`, which isn't unique on its own) -- not values being
+    changed. The API spec only marks `environment` required in the PATCH request schema, but
+    that's wrong in practice: `kafka_cluster` is required here too, the same as it is for
+    GET/DELETE.
+    """
+    spec: StrAnyDict = {
+        Fields.ENVIRONMENT: {Fields.ID: environment_id},
+        Fields.KAFKA_CLUSTER: {Fields.ID: kafka_cluster_id},
+    }
+    if table_formats is not None:
+        spec[Fields.TABLE_FORMATS] = table_formats
+    if config_spec:
+        spec[Fields.CONFIG] = config_spec
     return {"spec": spec}
 
 
@@ -272,7 +449,9 @@ class FailingTableFormat:
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> FailingTableFormat:
-        return cls(format=TableFormat(data["format"]), error_message=data["error_message"])
+        return cls(
+            format=table_format_from_spec(data["format"]), error_message=data["error_message"]
+        )
 
 
 @dataclass
@@ -303,17 +482,16 @@ class TableflowTopicStatus:
 
 @dataclass
 class TableflowTopicSpec:
-    """Parsed topic spec; `table_formats` and `storage` are typed, `config` retained raw.
-
-    The raw spec dict is kept (mirroring `Statement`). Config is left as a dict because its
-    response carries read-only fields (`enable_compaction`, `enable_partitioning`) the writable
-    `TableflowTopicConfig` doesn't model.
+    """Parsed topic spec, in the same shape whether it came from a real GET/create response or
+    was assembled locally to represent a desired state -- `table_formats`/`storage`/`config` are
+    all typed either way. The raw spec dict is kept (mirroring `Statement`) for anything not
+    formally modeled here.
     """
 
     display_name: str
     table_formats: list[TableFormat]
     storage: TableflowStorage
-    config: StrAnyDict | None
+    config: TableflowTopicConfig | None
     environment_id: str | None
     kafka_cluster_id: str | None
     suspended: bool
@@ -321,14 +499,17 @@ class TableflowTopicSpec:
 
     @classmethod
     def from_response(cls, data: StrAnyDict) -> TableflowTopicSpec:
+        config_data = data.get(Fields.CONFIG)
         return cls(
-            display_name=data["display_name"],
-            table_formats=[TableFormat(fmt) for fmt in data.get("table_formats", [])],
-            storage=storage_from_spec(data["storage"]),
-            config=data.get("config"),
-            environment_id=(data.get("environment") or {}).get("id"),
-            kafka_cluster_id=(data.get("kafka_cluster") or {}).get("id"),
-            suspended=bool(data.get("suspended", False)),
+            display_name=data[Fields.DISPLAY_NAME],
+            table_formats=[
+                table_format_from_spec(fmt) for fmt in data.get(Fields.TABLE_FORMATS, [])
+            ],
+            storage=storage_from_spec(data[Fields.STORAGE]),
+            config=TableflowTopicConfig.from_spec(config_data) if config_data is not None else None,
+            environment_id=(data.get(Fields.ENVIRONMENT) or {}).get(Fields.ID),
+            kafka_cluster_id=(data.get(Fields.KAFKA_CLUSTER) or {}).get(Fields.ID),
+            suspended=bool(data.get(Fields.SUSPENDED, False)),
             raw=data,
         )
 
@@ -361,3 +542,17 @@ class TableflowTopic:
         except KeyError as e:
             raise OperationalError(f"Error parsing Tableflow topic response, missing {e}.") from e
         return cls(spec=spec, status=status, metadata=metadata)
+
+
+def optional_int_from_str(s: str | None) -> int | None:
+    """Parse a wire string-encoded int64 value (see `TableflowTopicConfig.to_spec`) back to
+    `int`, converting a malformed value to `OperationalError` right here -- narrower than
+    catching broadly further up the parse tree, so a real bug elsewhere in parsing isn't
+    mistaken for a malformed server response.
+    """
+    if s is None:
+        return None
+    try:
+        return int(s)
+    except (ValueError, TypeError) as e:
+        raise OperationalError(f"Error parsing int value {s!r}: {e}") from e

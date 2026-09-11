@@ -32,7 +32,7 @@ try:
     # OperationalError if it goes FAILED instead.
     topic = conn.enable_tableflow(
         table_name,
-        tableflow_formats=TableFormat.ICEBERG,
+        table_formats=TableFormat.ICEBERG,
         storage=ManagedStorage(),
     )
     print(f"enabled Tableflow on {table_name!r}: phase={topic.phase}")

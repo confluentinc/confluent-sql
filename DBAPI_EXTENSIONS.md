@@ -590,13 +590,13 @@ A runnable example covering the full enable/get/disable lifecycle is in
 
 There is a single format vocabulary, `TableFormat` (`ICEBERG` / `DELTA`), on both the request and
 response sides. A topic can carry **both** formats at once (there is no per-format config), so
-`enable_tableflow`'s `tableflow_formats` argument accepts either a single `TableFormat` for the
+`enable_tableflow`'s `table_formats` argument accepts either a single `TableFormat` for the
 common case or a collection for both:
 
 ```python
-connection.enable_tableflow("orders", tableflow_formats=TableFormat.ICEBERG, storage=...)
+connection.enable_tableflow("orders", table_formats=TableFormat.ICEBERG, storage=...)
 connection.enable_tableflow(
-    "orders", tableflow_formats={TableFormat.ICEBERG, TableFormat.DELTA}, storage=...
+    "orders", table_formats={TableFormat.ICEBERG, TableFormat.DELTA}, storage=...
 )
 ```
 
@@ -606,7 +606,7 @@ plain set comparison:
 
 ```python
 topic = connection.enable_tableflow(
-    "orders", tableflow_formats={TableFormat.ICEBERG, TableFormat.DELTA},
+    "orders", table_formats={TableFormat.ICEBERG, TableFormat.DELTA},
     storage=ManagedStorage(), wait_for_running=True,
 )
 assert set(topic.spec.table_formats) == {TableFormat.ICEBERG, TableFormat.DELTA}
@@ -638,7 +638,7 @@ from confluent_sql import ManagedStorage, TableFormat, TableflowPhase
 
 topic = connection.enable_tableflow(
     "orders",
-    tableflow_formats=TableFormat.ICEBERG,
+    table_formats=TableFormat.ICEBERG,
     storage=ManagedStorage(),
 )
 assert topic.phase is TableflowPhase.RUNNING   # blocked to RUNNING by default
@@ -646,7 +646,7 @@ assert topic.phase is TableflowPhase.RUNNING   # blocked to RUNNING by default
 
 **Behavior notes:**
 
-- `tableflow_formats` and `storage` are required (no defaults); `tableflow_formats` must name at
+- `table_formats` and `storage` are required (no defaults); `table_formats` must name at
   least one format. `config` is an optional `TableflowTopicConfig` (retention, error-handling)
   shared across all enabled formats.
 - Blocks until `RUNNING` by default (`wait_for_running=True`), raising `OperationalError` on
@@ -699,7 +699,7 @@ config = TableflowTopicConfig(retention_ms="604800000")
 for table in ("orders", "shipments", "returns"):
     connection.enable_tableflow(
         table,
-        tableflow_formats=TableFormat.ICEBERG,
+        table_formats=TableFormat.ICEBERG,
         storage=storage,
         config=config,
     )

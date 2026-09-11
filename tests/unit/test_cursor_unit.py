@@ -355,9 +355,11 @@ class TestExecute:
         if streaming_mode == ExecutionMode.STREAMING_DDL:
             sql_statement = "CREATE TABLE new_table AS SELECT * FROM source_table"
             sql_kind = "CREATE_TABLE_AS"
+            null_schema = True  # CTAS produces no result schema, same as pure DDL
         else:  # STREAMING_QUERY
             sql_statement = "SELECT * FROM source_table"
             sql_kind = "SELECT"
+            null_schema = False
 
         # Create a statement that is:
         # - Erroneously marked as bounded (the bug)
@@ -368,6 +370,7 @@ class TestExecute:
             is_bounded=True,  # This is the bug - streaming statement marked as bounded
             phase="RUNNING",  # Statement is running
             is_append_only=True,
+            null_schema=null_schema,
         )
 
         # Set execution mode to the streaming mode being tested
@@ -399,18 +402,16 @@ class TestExecute:
         assert mock_connection_cursor._statement.phase.name == "RUNNING"
         assert mock_connection_cursor._statement.is_bounded  # Verify the bug condition
 
-    def test_bounded_running_without_streaming_mode_keeps_waiting(
+    def test_snapshot_mode_bounded_append_only_becomes_ready_at_running(
         self,
         mock_connection_cursor: Cursor,
         statement_response_factory: StatementResponseFactory,
         mocker,
     ):
-        """Test that the workaround for the bounded+RUNNING bug is NOT applied
-        when NOT in streaming mode - it should keep waiting/timeout.
-
-        This ensures the workaround is only applied in streaming mode.
+        """Bounded+append-only readiness is kind/trait-based, not mode-based (#205) -- a
+        snapshot-mode query reaches this same RUNNING-is-ready path as its streaming
+        counterpart, rather than blocking until a terminal phase.
         """
-        # Create a statement that is bounded and RUNNING (similar to the bug case)
         bounded_running_statement = statement_response_factory(
             sql_statement="SELECT * FROM table",
             sql_kind="SELECT",
@@ -427,20 +428,59 @@ class TestExecute:
             bounded_running_statement
         )
 
-        # Mock time functions to simulate timeout
+        mocker.patch("time.sleep", return_value=None)
+        mocker.patch("time.monotonic", return_value=1000000.0)
+
+        try:
+            mock_connection_cursor.execute("SELECT * FROM table", timeout=5)
+        except OperationalError as e:
+            pytest.fail(
+                f"Execute raised OperationalError: {e}. Snapshot mode bounded+append-only "
+                "queries should be ready at RUNNING, same as streaming mode."
+            )
+
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase.name == "RUNNING"
+
+    def test_snapshot_ddl_ctas_waits_for_terminal_through_running(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A snapshot-mode CTAS is a genuinely bounded, one-shot population job (unlike
+        streaming CTAS, which runs forever) -- it must keep waiting through RUNNING rather
+        than being reported ready early, per execute_snapshot_ddl's blocking-until-populated
+        contract (#205).
+        """
+        ctas_running_statement = statement_response_factory(
+            sql_statement="CREATE TABLE new_table AS SELECT * FROM source_table",
+            sql_kind="CREATE_TABLE_AS",
+            is_bounded=True,
+            phase="RUNNING",
+            is_append_only=True,
+            null_schema=True,  # CTAS produces no result schema
+        )
+
+        mock_connection_cursor._execution_mode = ExecutionMode.SNAPSHOT_DDL
+
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            ctas_running_statement
+        )
+
         mocker.patch("time.sleep", return_value=None)
         start_time = 1000000.0
         time_mock = mocker.patch(
             "time.monotonic", side_effect=lambda: start_time + time_mock.call_count * 10
         )
 
-        # Execute should timeout because the workaround should NOT apply
-        # (execution_mode.is_streaming is False for SNAPSHOT mode)
         with pytest.raises(
             OperationalError,
             match="Statement submission timed out",
         ):
-            mock_connection_cursor.execute("SELECT * FROM table", timeout=5)
+            mock_connection_cursor.execute(
+                "CREATE TABLE new_table AS SELECT * FROM source_table", timeout=5
+            )
 
     def test_streaming_pure_ddl_waits_for_terminal_through_running(
         self,
