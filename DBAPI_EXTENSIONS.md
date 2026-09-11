@@ -687,7 +687,7 @@ the table name itself are immutable server-side and have no in-place path; chang
 
 **Behavior notes:**
 
-- `table_formats` and `config` are each independently optional, but at least one must be given.
+- `table_formats` and `config` are each independently optional, but at least one non-empty update must be given.
   `None` means "leave unchanged" — both for the method's own two arguments and for each field on
   `config` (`retention_ms`, `data_retention_ms`, `error_handling`). A field can't be *cleared* this
   way: every `config` field has a server-enforced default and the server rejects an explicit null.
