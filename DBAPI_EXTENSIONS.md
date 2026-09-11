@@ -670,7 +670,7 @@ no separate health check — health is read off `get_tableflow(...).phase`.
 ### `update_tableflow()` — change formats/config on an existing sink
 
 ```python
-from confluent_sql import TableflowTopicConfig, TableFormat
+from confluent_sql import TableflowTopicConfig, TableFormat, TableflowPhase
 
 topic = connection.update_tableflow(
     "orders",
