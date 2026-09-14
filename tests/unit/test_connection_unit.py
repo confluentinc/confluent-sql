@@ -525,22 +525,24 @@ class TestConnectionInit:
     """Tests for Connection.__init__ method."""
 
     @pytest.mark.parametrize(
-        "cloud_provider,cloud_region,endpoint",
+        "cloud_provider,cloud_region,endpoint,expected_message",
         [
-            (None, None, None),
-            ("aws", None, None),
-            (None, "us-east-1", None),
-            ("", "", None),
-            ("aws", "", None),
-            ("", "us-east-1", None),
+            # cloud_provider missing (falsy) -> provider is complained about first.
+            (None, None, None, "Cloud provider is required when endpoint is not provided"),
+            (None, "us-east-1", None, "Cloud provider is required when endpoint is not provided"),
+            ("", "", None, "Cloud provider is required when endpoint is not provided"),
+            ("", "us-east-1", None, "Cloud provider is required when endpoint is not provided"),
+            # cloud_provider present but cloud_region missing -> region is complained about.
+            ("aws", None, None, "Cloud region is required when endpoint is not provided"),
+            ("aws", "", None, "Cloud region is required when endpoint is not provided"),
         ],
     )
-    def test_requires_endpoint_or_cloud_info(self, cloud_provider, cloud_region, endpoint):
-        """Test that creating a connection without proper endpoint or cloud info raises an error."""
-        with pytest.raises(
-            InterfaceError,
-            match="cloud_provider and cloud_region are required when endpoint is not provided",
-        ):
+    def test_requires_endpoint_or_cloud_info(
+        self, cloud_provider, cloud_region, endpoint, expected_message
+    ):
+        """Direct Connection() without an endpoint must fail fast, per-field, on missing cloud
+        info -- the single source of truth for this check now lives in __init__ (#213)."""
+        with pytest.raises(InterfaceError, match=expected_message):
             Connection(
                 environment_id="foo_id",
                 compute_pool_id="1234",
@@ -552,15 +554,69 @@ class TestConnectionInit:
                 endpoint=endpoint,
             )
 
+    def test_requires_environment_id_direct_construction(self):
+        """A blank environment_id fails fast at direct Connection() construction (#213), the same
+        as it long has through connect() -- an empty id would otherwise interpolate into a
+        malformed request path and only surface later as a confusing server-side 404."""
+        with pytest.raises(InterfaceError, match="Environment ID is required"):
+            Connection(
+                environment_id="",
+                organization_id="4567",
+                flink_api_key="valid-key",
+                flink_api_secret="valid-secret",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                endpoint=None,
+            )
+
+    def test_requires_organization_id_direct_construction(self):
+        """A blank organization_id with no global key fails fast at direct Connection()
+        construction (#213). Without a global key there's no /org/v2 reach to infer it, so an empty
+        org would otherwise be silently accepted (organization_id property returned "") and only
+        surface later as a malformed request path -- the same disease #213 cured for env_id."""
+        with pytest.raises(InterfaceError, match="Organization ID is required"):
+            Connection(
+                environment_id="env-id",
+                organization_id="",
+                flink_api_key="valid-key",
+                flink_api_secret="valid-secret",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                endpoint=None,
+            )
+
+    def test_global_key_defers_organization_id_direct_construction(self, mocker):
+        """A global key + blank organization_id is *not* an error at construction (#213): __init__
+        must preserve the lazy-inference contract, deferring the /org/v2 lookup to first use rather
+        than raising or making a network call while constructing."""
+        mock_lookup = mocker.patch.object(
+            Connection,
+            "_organization_lookup_request",
+            Mock(side_effect=AssertionError("must not be called during construction")),
+        )
+        conn = Connection(
+            environment_id="env-id",
+            organization_id="",
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            endpoint=None,
+        )
+        assert conn._organization_id_value is None
+        mock_lookup.assert_not_called()
+
 
 @pytest.mark.unit
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
     def test_requires_environment_id(self, connection_factory: ConnectionFactory):
-        """Test that creating a connection without an environment ID raises an error."""
+        """Test that creating a connection without an environment ID raises an error. A valid
+        organization_id is supplied so this isolates the missing environment_id: the env_id gate
+        now lives in __init__ (#213), which connect() only reaches after its own org_id check."""
         with pytest.raises(InterfaceError, match="Environment ID is required"):
-            connection_factory(environment_id="")
+            connection_factory(environment_id="", organization_id="4567")
 
     @pytest.mark.parametrize(
         "compute_pool_id",
