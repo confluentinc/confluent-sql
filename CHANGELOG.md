@@ -20,6 +20,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Changed
 
+- Pushed the remaining `connect()`-only validation (`environment_id`, `organization_id`, and the endpoint-vs-`cloud_provider`/`cloud_region` requirement) down into `Connection.__init__()` as the single source of truth, so `connect()` and direct `Connection()` construction validate uniformly. Callers to `connect()` see no new errors. (#213)
 - `Statement.can_fetch_results()`'s snapshot-mode branch is now kind/trait-based (schema presence, `is_pure_ddl`, `is_bounded`, `is_append_only`) instead of unconditionally waiting for a terminal phase -- the same logic streaming mode already used. A bounded, append-only snapshot query that actually produces a result set (e.g. a plain projection) is now reported ready as soon as the statement reaches `RUNNING`, instead of blocking `Cursor.execute()` / `Connection.execute_snapshot_ddl()` until `COMPLETED`. Bounded, non-append-only snapshot queries (aggregations that could still retract) and any statement with no result schema at all -- `INSERT INTO`, snapshot CTAS (`CREATE TABLE ... AS SELECT`), and other DML/DDL that produces no rows -- are unaffected and still wait for terminal, since a finite write or population job isn't guaranteed to have landed until then (unlike its streaming counterpart, which may run forever and is ready once RUNNING). This can make `Cursor.execute()` and iteration/`fetchall()` return sooner for snapshot-mode queries that produce a result set. (#205)
 
 ### Removed
