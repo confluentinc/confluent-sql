@@ -542,10 +542,12 @@ class Connection:
             identity_pool_id: Identity-pool id scoping external_access_token, stamped as the
                 `Confluent-Identity-Pool-Id` header. Must be supplied with external_access_token.
             environment_id: Environment ID
-            organization_id: Organization ID. If omitted ("") with a global key present, it's
-                resolved lazily from the `organization_id` property (see there) rather than
-                here; if omitted with no global key, this constructor leaves it empty rather
-                than raising -- connect() is what enforces its presence for that case.
+            organization_id: Organization ID. Required unless a global_api_key/global_api_secret
+                pair is supplied; omitting it with no global key raises InterfaceError here (#213),
+                the same as connect() -- a Flink-only key or a dedicated Tableflow/Connect key has
+                no /org/v2 reach to infer it. When omitted ("") with a global key present, it's
+                left unresolved and inferred lazily from the `organization_id` property (see there)
+                on first use rather than here.
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
                 not provided.
@@ -587,10 +589,11 @@ class Connection:
         self.environment_id = environment_id
 
         # Validated here too (not only in connect()) so direct Connection() construction fails
-        # fast (#213). An empty organization_id with no global key would otherwise be silently
-        # accepted -- the organization_id property returns "" when it has no global key to infer
-        # from -- and only surface later as a malformed request path / confusing 404. Any global
-        # key material (even a half-supplied pair) defers this gate to the more specific
+        # fast (#213). Without this gate an empty organization_id with no global key would be
+        # silently accepted -- the organization_id property used to fall back to "" when it had no
+        # global key to infer from -- and only surface later as a malformed request path / confusing
+        # 404 (organization_id is interpolated into the Flink base URL). Any global key material
+        # (even a half-supplied pair) defers this gate to the more specific
         # "must be provided together" credential error _resolve_*_credentials raises below,
         # otherwise a half-supplied pair plus an omitted organization_id would be misdiagnosed as
         # a missing org id instead of the actual credential mistake (#144 review). Mirrors the
