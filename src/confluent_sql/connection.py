@@ -372,24 +372,6 @@ def connect(  # noqa: PLR0913
         OperationalError: If connection cannot be established
     """
 
-    if not environment_id:
-        raise InterfaceError("Environment ID is required")
-
-    # Any global key material (even a half-supplied pair) defers this gate to the more specific
-    # "must be provided together" error _resolve_api_credentials raises below -- otherwise a
-    # half-supplied pair plus an omitted organization_id would be misdiagnosed as a missing org
-    # id instead of the actual credential mistake (#144 review).
-    global_key_provided = bool(global_api_key) or bool(global_api_secret)
-    if not organization_id and not global_key_provided:
-        raise InterfaceError("Organization ID is required")
-
-    if not endpoint:
-        if not cloud_provider:
-            raise InterfaceError("Cloud provider is required when endpoint is not provided")
-
-        if not cloud_region:
-            raise InterfaceError("Cloud region is required when endpoint is not provided")
-
     return Connection(
         environment_id,
         organization_id,
@@ -560,10 +542,12 @@ class Connection:
             identity_pool_id: Identity-pool id scoping external_access_token, stamped as the
                 `Confluent-Identity-Pool-Id` header. Must be supplied with external_access_token.
             environment_id: Environment ID
-            organization_id: Organization ID. If omitted ("") with a global key present, it's
-                resolved lazily from the `organization_id` property (see there) rather than
-                here; if omitted with no global key, this constructor leaves it empty rather
-                than raising -- connect() is what enforces its presence for that case.
+            organization_id: Organization ID. Required unless a global_api_key/global_api_secret
+                pair is supplied; omitting it with no global key raises InterfaceError here (#213),
+                the same as connect() -- a Flink-only key or a dedicated Tableflow/Connect key has
+                no /org/v2 reach to infer it. When omitted ("") with a global key present, it's
+                left unresolved and inferred lazily from the `organization_id` property (see there)
+                on first use rather than here.
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
                 not provided.
@@ -597,7 +581,26 @@ class Connection:
             http_timeout_secs: Timeout in seconds applied to the underlying httpx client.
                            Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS.
         """
+        # Validated here (not only in connect()) so direct Connection() construction fails fast
+        # too (#213): an empty environment_id interpolates into request paths and would otherwise
+        # only surface later as a confusing server-side 404 rather than a clear InterfaceError.
+        if not environment_id:
+            raise InterfaceError("Environment ID is required")
         self.environment_id = environment_id
+
+        # Validated here too (not only in connect()) so direct Connection() construction fails
+        # fast (#213). Without this gate an empty organization_id with no global key would be
+        # silently accepted -- the organization_id property used to fall back to "" when it had no
+        # global key to infer from -- and only surface later as a malformed request path / confusing
+        # 404 (organization_id is interpolated into the Flink base URL). Any global key material
+        # (even a half-supplied pair) defers this gate to the more specific
+        # "must be provided together" credential error _resolve_*_credentials raises below,
+        # otherwise a half-supplied pair plus an omitted organization_id would be misdiagnosed as
+        # a missing org id instead of the actual credential mistake (#144 review). Mirrors the
+        # check connect() used to own.
+        global_key_provided = bool(global_api_key) or bool(global_api_secret)
+        if not organization_id and not global_key_provided:
+            raise InterfaceError("Organization ID is required")
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
         self.compute_pool_id = compute_pool_id or None
@@ -638,16 +641,20 @@ class Connection:
             raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
         self._http_timeout_secs = http_timeout_secs
 
+        # Single source of truth for the endpoint-vs-cloud-info gate (#213): connect() no longer
+        # duplicates this, so direct Connection() construction and connect() report the same
+        # per-field errors. Per-field wording (rather than one combined message) gives the caller
+        # the more specific complaint.
         if endpoint:
             if cloud_provider or cloud_region:
                 logger.warning(
                     "No need to provide cloud_provider or cloud_region when also providing "
                     "endpoint. Only using endpoint."
                 )
-        elif not (cloud_provider and cloud_region):
-            raise InterfaceError(
-                "cloud_provider and cloud_region are required when endpoint is not provided"
-            )
+        elif not cloud_provider:
+            raise InterfaceError("Cloud provider is required when endpoint is not provided")
+        elif not cloud_region:
+            raise InterfaceError("Cloud region is required when endpoint is not provided")
 
         # Create httpx client for making API calls
         if not endpoint:
@@ -1391,15 +1398,17 @@ class Connection:
         """
         The connection's Confluent Cloud organization id.
 
-        Returned as supplied to connect()/Connection() if given. If omitted and a global API
-        key was supplied, inferred once via GET /org/v2/organizations on first access and
-        cached thereafter -- see _resolve_organization_id(). If omitted with no global key,
-        returns "".
+        Returned as supplied to connect()/Connection() if given. If omitted, it must have been
+        omitted alongside a global API key (Connection.__init__ rejects an omitted organization_id
+        with no global key, #213), so it is inferred once via GET /org/v2/organizations on first
+        access and cached thereafter -- see _resolve_organization_id().
         """
         if self._organization_id_value is None:
-            self._organization_id_value = (
-                self._resolve_organization_id() if self._global_credentials is not None else ""
-            )
+            # Reaching here means organization_id was omitted; __init__'s gate guarantees that only
+            # happens when a global key is present, so _global_credentials is not None and
+            # inference can proceed (#213). The old "no global key -> return ''" fallback is now
+            # unreachable and has been removed.
+            self._organization_id_value = self._resolve_organization_id()
         return self._organization_id_value
 
     @property
