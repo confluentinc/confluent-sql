@@ -165,21 +165,27 @@ class Phase(Enum):
 Phase._TERMINAL_PHASES = frozenset({"COMPLETED", "STOPPED", "FAILED", "DELETED"})  # type: ignore[attr-defined]
 
 
-class WarningSeverity(Enum):
+class WarningSeverity(str, Enum):
     """Severity of a non-fatal warning reported for a statement.
 
     LOW: Informational only.
     MODERATE: May require user action; could cause a degraded statement if
         certain conditions apply.
     CRITICAL: Requires user action; will cause a degraded statement eventually.
+
+    The API marks this an extensible enum, so an unrecognized value parses to `UNKNOWN`
+    rather than raising -- a future server-side severity shouldn't break response parsing
+    (mirrors `TableflowPhase`'s `UNKNOWN` fallback in `tableflow.py`).
     """
 
     LOW = "LOW"
     MODERATE = "MODERATE"
     CRITICAL = "CRITICAL"
+    UNKNOWN = "UNKNOWN"
 
-    def __init__(self, value: str) -> None:
-        self._value_ = value
+    @classmethod
+    def _missing_(cls, value: object) -> WarningSeverity:
+        return cls.UNKNOWN
 
 
 @dataclass(kw_only=True)

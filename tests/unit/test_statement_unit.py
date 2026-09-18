@@ -678,6 +678,30 @@ class TestWarnings:
             ),
         ]
 
+    def test_warnings_unrecognized_severity_maps_to_unknown(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that a severity value not yet known to this driver parses to UNKNOWN
+        instead of raising -- severity is documented as an extensible enum, so a future
+        server-side severity shouldn't break response parsing."""
+        statement_json = statement_response_factory(
+            warnings=[
+                {
+                    "severity": "SOME_FUTURE_SEVERITY",
+                    "created_at": "2025-11-10T16:20:00Z",
+                    "reason": "SOME_REASON",
+                    "message": "Some message.",
+                }
+            ]
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        warnings = statement.warnings
+        assert len(warnings) == 1
+        assert warnings[0].severity is WarningSeverity.UNKNOWN
+
 
 @pytest.mark.unit
 class TestStatementFromResponse:
