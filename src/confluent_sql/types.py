@@ -1462,9 +1462,7 @@ class VariantConverter(TypeConverter[VariantValue, list]):
 
     A VARIANT value is self-describing: its element types live inline in the payload as a
     tree of positional ``[code, ...]`` nodes rather than in the schema. Decoding that tree
-    into typed Python values lives in ``confluent_sql.variant`` (see
-    :func:`~confluent_sql.variant._decode_variant_node`); this converter is the thin
-    ``TypeConverter`` adapter over it.
+    into typed Python values lives in ``confluent_sql.variant``.
 
     Nanosecond-precision timestamps (``TIMESTAMP_NS`` / ``TIMESTAMP_LTZ_NS``) are truncated
     to microseconds, since Python's ``datetime`` cannot represent finer resolution.
