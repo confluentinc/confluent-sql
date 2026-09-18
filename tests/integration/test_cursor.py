@@ -15,7 +15,7 @@ from confluent_sql import (
     StatementProperties,
 )
 from confluent_sql.exceptions import NotSupportedError
-from confluent_sql.statement import Op, Phase, Statement
+from confluent_sql.statement import Op, Phase, Statement, StatementWarning
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +296,48 @@ class TestCursor:
         cursor.execute(SINGLE_COLUMN_QUERY)
 
         assert cursor.statement.is_bounded is True
+
+    @pytest.mark.slow
+    def test_windowed_aggregation_missing_window_start_reports_warning(
+        self, populated_table_connection: Connection, test_table_name: str
+    ):
+        """A tumbling-window aggregation that groups only by `window_end` (omitting
+        `window_start`) isn't recognized by Flink as a proper windowed aggregation --
+        it degrades into a continuously-updating, unbounded-state aggregation instead.
+        Confluent's own docs document this exact query shape as producing a
+        MISSING_WINDOW_START_END statement warning:
+        https://docs.confluent.io/cloud/current/flink/how-to-guides/resolve-common-query-problems.html
+
+        `$rowtime` is the implicit, watermarked event-time system column present on every
+        Confluent Cloud Flink table backed by a Kafka topic, so no extra watermark setup is
+        needed on top of the existing test table fixture.
+
+        The advisor evaluates the statement at submission time -- Confluent's own docs show
+        the warning already present in the `confluent flink statement create` output -- so
+        execute()'s own internal readiness polling (which runs before it returns) is expected
+        to have already picked it up. No separate re-fetch of the statement should be needed.
+        """
+        cursor = populated_table_connection.streaming_cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT window_end, COUNT(*) as `cnt`
+                FROM TABLE(
+                    TUMBLE(TABLE {test_table_name}, DESCRIPTOR($rowtime), INTERVAL '10' MINUTES)
+                )
+                GROUP BY window_end
+                """
+            )
+
+            warnings: list[StatementWarning] = cursor.warnings
+            assert any(w.reason == "MISSING_WINDOW_START_END" for w in warnings), (
+                f"Expected a MISSING_WINDOW_START_END warning, got: {warnings}"
+            )
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     def test_streaming_append_only_cursor(
