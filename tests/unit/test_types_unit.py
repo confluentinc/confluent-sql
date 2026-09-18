@@ -347,14 +347,14 @@ class TestVarBinaryConverter:
     def test_to_python_value_invalid_format(self, converter: VarBinaryConverter):
         with pytest.raises(
             DataError,
-            match="Expected hex-pair encoded string",
+            match="Expected an x'..'-encoded hex byte string",
         ):
             converter.to_python_value("7f0203'")  # Missing x' prefix
 
     def test_to_python_value_invalid_hex(self, converter: VarBinaryConverter):
         with pytest.raises(
             DataError,
-            match="Invalid hex string",
+            match="Invalid hex digits",
         ):
             converter.to_python_value("x'7g0203'")  # 'g' is not a valid hex digit
 
@@ -1711,10 +1711,12 @@ class TestVariantConverter:
             ([4, "7"], 7),  # TINYINT
             ([5, "300"], 300),  # SMALLINT
             ([6, "42"], 42),  # INT
+            ([6, "-42"], -42),  # INT, negative
             ([7, "9223372036854775807"], 9223372036854775807),  # BIGINT
             ([8, "0.1"], 0.1),  # FLOAT
             ([9, "21.5"], 21.5),  # DOUBLE
             ([10, "100.00"], Decimal("100.00")),  # DECIMAL, scale preserved
+            ([10, "-3.14"], Decimal("-3.14")),  # DECIMAL, negative
             ([11, "sensor-7"], "sensor-7"),  # STRING
             ([12, "2026-07-28"], date(2026, 7, 28)),  # DATE
             ([16, "09:14:02.123"], time(9, 14, 2, 123000)),  # TIME
@@ -1812,6 +1814,15 @@ class TestVariantConverter:
     def test_degraded_nodes(self, converter: VariantConverter, node, expected):
         assert converter.to_python_value(node) == expected
 
+    def test_degraded_node_inside_array(self, converter: VariantConverter):
+        # A degraded node degrades per-node; its siblings decode normally. The worked
+        # example covers this inside an OBJECT; this covers it inside an ARRAY.
+        node = [2, [[11, "ok"], [-1, "x'01'", "x'02'"]]]
+        assert converter.to_python_value(node) == [
+            "ok",
+            UndecodableVariant(code=-1, metadata=b"\x01", value=b"\x02"),
+        ]
+
     def test_none_column(self, converter: VariantConverter):
         assert converter.to_python_value(None) is None
 
@@ -1820,9 +1831,18 @@ class TestVariantConverter:
         [
             [],  # empty node
             [1.5, "x"],  # non-integer type code
+            # bool is an int subclass, so without the explicit bool guard these would be
+            # silently mis-read: [False] as NULL (code 0) and [True, ...] as an OBJECT
+            # (code 1). Both must raise instead.
+            [False],  # bool type code masquerading as NULL
+            [True, [["k", [0]]]],  # bool type code masquerading as OBJECT
             [1, [["k"]]],  # malformed object field (not a pair)
+            [1],  # object node missing its field list
+            [2],  # array node missing its element list
             [1, 5],  # object payload not a list
             [2, "notalist"],  # array payload not a list
+            [2, ["notalist"]],  # array element is not a node (non-list child)
+            [1, [["k", "notalist"]]],  # object field value is not a node (non-list child)
             [99, "x"],  # unhandled positive code
             [6, "not-an-int"],  # unparseable scalar
             [6],  # scalar type code with no value element
@@ -1832,6 +1852,7 @@ class TestVariantConverter:
             [1, [[5, [0]]]],  # object key is not a string
             [15, "not-hex"],  # BYTES value missing the x'..' wrapper
             [15, "x'zz'"],  # BYTES value with invalid hex digits
+            [15, 123],  # BYTES value is not even a string
         ],
     )
     def test_malformed_nodes_raise_dataerror(self, converter: VariantConverter, node):
