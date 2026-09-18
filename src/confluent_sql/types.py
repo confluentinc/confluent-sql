@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, TypeAlias, T
 from confluent_sql import variant
 from confluent_sql.exceptions import DataError, InterfaceError, TypeMismatchError
 from confluent_sql.statement_properties import Property, PropertyValue
+from confluent_sql.utils import decode_sql_hex_literal
 from confluent_sql.variant import VariantValue
 
 if TYPE_CHECKING:
@@ -338,17 +339,7 @@ class VarBinaryConverter(TypeConverter[bytes, str]):
 
         self._check_to_python_param_type(str, response_value)
 
-        if not (response_value.startswith("x'") and response_value.endswith("'")):
-            raise DataError(
-                f"Expected hex-pair encoded string starting with x' and ending with ' "
-                f"for VarBinaryConverter but got {response_value}"
-            )
-
-        hex_string = response_value[2:-1]  # Strip off the x' and trailing '
-        try:
-            return bytes.fromhex(hex_string)
-        except ValueError as e:
-            raise DataError(f"Invalid hex string for VarBinaryConverter: {hex_string}") from e
+        return decode_sql_hex_literal(response_value)
 
     @classmethod
     def to_statement_string(cls, python_value: bytes) -> str:
