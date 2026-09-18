@@ -32,6 +32,7 @@ from decimal import Decimal
 from typing import Any, TypeAlias
 
 from confluent_sql.exceptions import DataError
+from confluent_sql.utils import decode_sql_hex_literal
 
 
 @dataclass(frozen=True)
@@ -95,17 +96,6 @@ def _cap_variant_microseconds(value: str) -> str:
     return f"{head}.{fractional[:6]}"
 
 
-def _decode_variant_hex_bytes(encoded: Any) -> bytes:
-    """Decode an ``x'..'`` hex-encoded byte string (e.g. ``x'7f0203'``) to bytes."""
-    if not (isinstance(encoded, str) and encoded.startswith("x'") and encoded.endswith("'")):
-        raise DataError(f"Expected x'..'-encoded bytes in VARIANT node but got {encoded!r}")
-    hex_digits = encoded[2:-1]
-    try:
-        return bytes.fromhex(hex_digits)
-    except ValueError as e:
-        raise DataError(f"Invalid hex in VARIANT byte string: {hex_digits!r}") from e
-
-
 def _decode_variant_utc_timestamp(value: str) -> datetime:
     """Decode a VARIANT LTZ timestamp value (at UTC) as a UTC-aware datetime.
 
@@ -146,7 +136,7 @@ _VARIANT_SCALAR_DECODERS: dict[int, Callable[[str], VariantValue]] = {
     _VARIANT_TIMESTAMP_LTZ_NS: lambda value: _decode_variant_utc_timestamp(
         _cap_variant_microseconds(value)
     ),
-    _VARIANT_BYTES: _decode_variant_hex_bytes,
+    _VARIANT_BYTES: decode_sql_hex_literal,
 }
 
 
@@ -188,8 +178,8 @@ def _decode_variant_node(node: Any) -> VariantValue:
 
     if code < 0:
         # Degraded node: [code, metadataHex, valueHex], each possibly "x''" (empty).
-        metadata = _decode_variant_hex_bytes(node[1]) if len(node) > 1 else b""
-        value = _decode_variant_hex_bytes(node[2]) if len(node) > 2 else b""
+        metadata = decode_sql_hex_literal(node[1]) if len(node) > 1 else b""
+        value = decode_sql_hex_literal(node[2]) if len(node) > 2 else b""
         return UndecodableVariant(code=code, metadata=metadata, value=value)
 
     if code == _VARIANT_OBJECT:

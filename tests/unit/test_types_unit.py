@@ -347,14 +347,14 @@ class TestVarBinaryConverter:
     def test_to_python_value_invalid_format(self, converter: VarBinaryConverter):
         with pytest.raises(
             DataError,
-            match="Expected hex-pair encoded string",
+            match="Expected an x'..'-encoded hex byte string",
         ):
             converter.to_python_value("7f0203'")  # Missing x' prefix
 
     def test_to_python_value_invalid_hex(self, converter: VarBinaryConverter):
         with pytest.raises(
             DataError,
-            match="Invalid hex string",
+            match="Invalid hex digits",
         ):
             converter.to_python_value("x'7g0203'")  # 'g' is not a valid hex digit
 
