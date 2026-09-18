@@ -64,6 +64,7 @@ from .tableflow import (
     TableFormat,
 )
 from .types import PropertiesDict, PropertiesMapping, SqlNone, YearMonthInterval
+from .variant import UndecodableVariant
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -129,5 +130,6 @@ __all__ = [
     "StatementProperties",
     "SqlNone",
     "YearMonthInterval",
+    "UndecodableVariant",
     "HIDDEN_LABEL",
 ]
