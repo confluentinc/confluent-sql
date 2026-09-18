@@ -504,6 +504,95 @@ class TestCursorFetch:
                 "null_day_second_interval": None,
             }
 
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_decoding_variant(self, connection: Connection):
+        """Decode VARIANT result columns end-to-end -- scalar, container, and
+        deeply-nested shapes -- in a single round trip.
+
+        The unit tests hard-code the [code, value] VARIANT wire shape; this proves the
+        server actually emits it and the driver decodes it into typed Python values. Each
+        column below is a distinct shape:
+
+        - top-level (non-container) primitives, one per JSON-expressible type. A plain
+          decimal literal decodes to DECIMAL, an exponent to DOUBLE.
+        - ``PARSE_JSON('null')``, a real VARIANT whose root node is NULL (not a SQL-NULL
+          column), decoding to Python None.
+        - a top-level ARRAY mixing scalar types and a null element.
+        - the flat OBJECT case, one field of each JSON-expressible type.
+        - a fully recursive value: objects nested in arrays, arrays nested in objects, and
+          arrays of arrays, exercising the walker's mutual recursion at depth.
+
+        DATE/TIME/TIMESTAMP/BYTES would need a variant-builder UDF or CAST-to-VARIANT and
+        aren't reachable through PARSE_JSON, so they aren't covered here.
+        """
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    PARSE_JSON('"flink"') AS top_string,
+                    PARSE_JSON('42') AS top_int,
+                    PARSE_JSON('true') AS top_bool,
+                    PARSE_JSON('100.50') AS top_decimal,
+                    PARSE_JSON('1.5e10') AS top_double,
+                    PARSE_JSON('null') AS top_json_null,
+                    PARSE_JSON('[1, "two", true, null]') AS top_array,
+                    PARSE_JSON('{
+                        "name": "flink",
+                        "count": 3,
+                        "big": 9223372036854775807,
+                        "price": 100.50,
+                        "ratio": 1.5e10,
+                        "active": true,
+                        "note": null,
+                        "tags": ["a", "b"],
+                        "meta": {"k": "v"}
+                    }') AS flat_object,
+                    PARSE_JSON('{
+                        "id": 1,
+                        "items": [
+                            {"sku": "a", "qty": 2, "tags": ["x", "y"]},
+                            {"sku": "b", "qty": 3, "tags": []}
+                        ],
+                        "meta": {
+                            "nested": {"deep": [true, false, null]},
+                            "list_of_lists": [[1, 2], [3, 4]]
+                        }
+                    }') AS recursive_object
+                """
+            )
+            assert cursor.fetchone() == {
+                "top_string": "flink",
+                "top_int": 42,
+                "top_bool": True,
+                "top_decimal": Decimal("100.50"),
+                "top_double": 1.5e10,
+                "top_json_null": None,
+                "top_array": [1, "two", True, None],
+                "flat_object": {
+                    "name": "flink",
+                    "count": 3,
+                    "big": 9223372036854775807,
+                    "price": Decimal("100.50"),
+                    "ratio": 1.5e10,
+                    "active": True,
+                    "note": None,
+                    "tags": ["a", "b"],
+                    "meta": {"k": "v"},
+                },
+                "recursive_object": {
+                    "id": 1,
+                    "items": [
+                        {"sku": "a", "qty": 2, "tags": ["x", "y"]},
+                        {"sku": "b", "qty": 3, "tags": []},
+                    ],
+                    "meta": {
+                        "nested": {"deep": [True, False, None]},
+                        "list_of_lists": [[1, 2], [3, 4]],
+                    },
+                },
+            }
+
 
 @pytest.fixture(scope="session")
 def auto_dropped_table_name_factory(connection):

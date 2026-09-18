@@ -20,6 +20,7 @@ All notable changes to this dbapi driver will be documented in this file.
 ### Added
 
 - `Connection.update_tableflow(table_name, *, table_formats=None, config=None, wait_for_running=True, timeout=300)` updates an already-enabled Tableflow topic's `table_formats`/`config` in place via `PATCH /tableflow/v1/tableflow-topics/{display_name}`, avoiding the disable/re-enable cycle `enable_tableflow` would otherwise require. `None` (the default) means "leave unchanged," for both of this method's own arguments and for each of `config`'s own sub-fields. `storage`/`display_name` remain immutable and have no in-place path; a caller needing to change either must recreate the topic. By default blocks until the topic returns to `RUNNING`; pass `wait_for_running=False` to return as soon as the update is accepted. Raises `TableflowTopicNotFoundError` if Tableflow isn't enabled for the table. (#214)
+- VARIANT result columns are now decoded into typed Python values instead of raising `NotImplementedError`. An OBJECT becomes a `dict`, an ARRAY a `list`, and each scalar its matching Python type (`bool`, `int`, `float`, `Decimal`, `str`, `date`, `time`, `datetime`, `bytes`). Nanosecond-precision timestamps are truncated to microseconds. An undecodable node is returned as the new `UndecodableVariant`. VARIANT is not yet supported as a statement parameter (Flink has no VARIANT literal syntax).
 
 ### Fixed
 

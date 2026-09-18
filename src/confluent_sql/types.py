@@ -13,8 +13,11 @@ from math import isinf, isnan
 from types import NoneType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
+from confluent_sql import variant
 from confluent_sql.exceptions import DataError, InterfaceError, TypeMismatchError
 from confluent_sql.statement_properties import Property, PropertyValue
+from confluent_sql.utils import decode_sql_hex_literal
+from confluent_sql.variant import VariantValue
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -336,17 +339,7 @@ class VarBinaryConverter(TypeConverter[bytes, str]):
 
         self._check_to_python_param_type(str, response_value)
 
-        if not (response_value.startswith("x'") and response_value.endswith("'")):
-            raise DataError(
-                f"Expected hex-pair encoded string starting with x' and ending with ' "
-                f"for VarBinaryConverter but got {response_value}"
-            )
-
-        hex_string = response_value[2:-1]  # Strip off the x' and trailing '
-        try:
-            return bytes.fromhex(hex_string)
-        except ValueError as e:
-            raise DataError(f"Invalid hex string for VarBinaryConverter: {hex_string}") from e
+        return decode_sql_hex_literal(response_value)
 
     @classmethod
     def to_statement_string(cls, python_value: bytes) -> str:
@@ -1464,6 +1457,35 @@ class RowConverter(TypeConverter[RowPythonTypes, list]):
         return f"(ROW({', '.join(field_strings)}))"
 
 
+class VariantConverter(TypeConverter[VariantValue, list]):
+    """Handles the Flink VARIANT (semi-structured) type.
+
+    A VARIANT value is self-describing: its element types live inline in the payload as a
+    tree of positional ``[code, ...]`` nodes rather than in the schema. Decoding that tree
+    into typed Python values lives in ``confluent_sql.variant``.
+
+    Nanosecond-precision timestamps (``TIMESTAMP_NS`` / ``TIMESTAMP_LTZ_NS``) are truncated
+    to microseconds, since Python's ``datetime`` cannot represent finer resolution.
+    """
+
+    PRIMARY_FLINK_TYPE_NAME = "VARIANT"
+
+    def to_python_value(self, response_value: list | None) -> VariantValue:
+        """Decode a VARIANT payload node into its typed Python value (None for a SQL NULL
+        column)."""
+        if response_value is None:
+            return None
+
+        self._check_to_python_param_type(list, response_value)
+
+        return variant._decode_variant_node(response_value)
+
+    @classmethod
+    def to_statement_string(cls, python_value: VariantValue) -> str:
+        """Flink does not support VARIANT literals."""
+        raise InterfaceError("Flink does not support VARIANT literals.")
+
+
 _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     # Null type
     "NULL": NullResultConverter,
@@ -1513,6 +1535,8 @@ _flink_type_name_to_converter_map: dict[str, type[TypeConverter]] = {
     "MULTISET": MultisetConverter,
     # Row type
     "ROW": RowConverter,
+    # Variant (semi-structured) type
+    "VARIANT": VariantConverter,
 }
 
 
