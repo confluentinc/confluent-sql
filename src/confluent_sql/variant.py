@@ -204,8 +204,14 @@ def _decode_variant_node(node: Any) -> VariantValue:
 
 
 def _decode_variant_object(node: list) -> dict[str, VariantValue]:
-    """Decode an OBJECT node ``[1, [[key, node], ...]]`` into a dict."""
-    fields = node[1] if len(node) > 1 else []
+    """Decode an OBJECT node ``[1, [[key, node], ...]]`` into a dict.
+
+    An empty object is ``[1, []]``; the field-list element is always present, so a bare
+    ``[1]`` is malformed rather than an empty object.
+    """
+    if len(node) < 2:
+        raise DataError(f"Malformed VARIANT object, missing field list: {node!r}")
+    fields = node[1]
     if not isinstance(fields, list):
         raise DataError(f"Malformed VARIANT object, expected a list of fields: {node!r}")
     result: dict[str, VariantValue] = {}
@@ -220,8 +226,14 @@ def _decode_variant_object(node: list) -> dict[str, VariantValue]:
 
 
 def _decode_variant_array(node: list) -> list[VariantValue]:
-    """Decode an ARRAY node ``[2, [node, ...]]`` into a list."""
-    elements = node[1] if len(node) > 1 else []
+    """Decode an ARRAY node ``[2, [node, ...]]`` into a list.
+
+    An empty array is ``[2, []]``; the element-list element is always present, so a bare
+    ``[2]`` is malformed rather than an empty array.
+    """
+    if len(node) < 2:
+        raise DataError(f"Malformed VARIANT array, missing element list: {node!r}")
+    elements = node[1]
     if not isinstance(elements, list):
         raise DataError(f"Malformed VARIANT array, expected a list of nodes: {node!r}")
     return [_decode_variant_node(child) for child in elements]

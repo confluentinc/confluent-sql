@@ -1775,14 +1775,6 @@ class TestVariantConverter:
         assert converter.to_python_value([1, []]) == {}
         assert converter.to_python_value([2, []]) == []
 
-    def test_arity_one_container_is_leniently_empty(self, converter: VariantConverter):
-        # The server always emits an explicit [] payload ([1, []] / [2, []]); a bare
-        # arity-1 container is malformed by the spec. The decoder currently accepts it
-        # leniently as empty. This pins that behavior -- if we decide arity-1 containers
-        # should instead raise DataError, tighten the decoder and flip this test.
-        assert converter.to_python_value([1]) == {}
-        assert converter.to_python_value([2]) == []
-
     def test_nested_worked_example(self, converter: VariantConverter):
         """A nested VARIANT: an object with scalars, a nested object, an array with a
         null element, and a degraded (unknown-type) node."""
@@ -1845,6 +1837,8 @@ class TestVariantConverter:
             [False],  # bool type code masquerading as NULL
             [True, [["k", [0]]]],  # bool type code masquerading as OBJECT
             [1, [["k"]]],  # malformed object field (not a pair)
+            [1],  # object node missing its field list
+            [2],  # array node missing its element list
             [1, 5],  # object payload not a list
             [2, "notalist"],  # array payload not a list
             [2, ["notalist"]],  # array element is not a node (non-list child)
