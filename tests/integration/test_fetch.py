@@ -504,6 +504,47 @@ class TestCursorFetch:
                 "null_day_second_interval": None,
             }
 
+    @pytest.mark.slow
+    @pytest.mark.typeconv
+    def test_decoding_variant(self, connection: Connection):
+        """Decode a VARIANT result column end-to-end.
+
+        The unit tests hard-code the [code, value] VARIANT wire shape; this proves the
+        server actually emits it. PARSE_JSON yields the JSON-expressible types (including
+        DECIMAL for a plain decimal literal), which the driver decodes into typed Python
+        values. DATE/TIME/TIMESTAMP/BYTES need a variant-builder UDF or CAST-to-VARIANT
+        and aren't covered here.
+        """
+        with connection.closing_cursor(as_dict=True) as cursor:
+            cursor.execute(
+                """
+                SELECT PARSE_JSON('{
+                    "name": "flink",
+                    "count": 3,
+                    "big": 9223372036854775807,
+                    "price": 100.50,
+                    "ratio": 1.5e10,
+                    "active": true,
+                    "note": null,
+                    "tags": ["a", "b"],
+                    "meta": {"k": "v"}
+                }') AS doc
+                """
+            )
+            assert cursor.fetchone() == {
+                "doc": {
+                    "name": "flink",
+                    "count": 3,
+                    "big": 9223372036854775807,
+                    "price": Decimal("100.50"),
+                    "ratio": 1.5e10,
+                    "active": True,
+                    "note": None,
+                    "tags": ["a", "b"],
+                    "meta": {"k": "v"},
+                }
+            }
+
 
 @pytest.fixture(scope="session")
 def auto_dropped_table_name_factory(connection):
