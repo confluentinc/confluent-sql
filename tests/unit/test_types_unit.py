@@ -33,12 +33,14 @@ from confluent_sql.types import (
     TimeConverter,
     TimestampConverter,
     VarBinaryConverter,
+    VariantConverter,
     YearMonthInterval,
     YearMonthIntervalConverter,
     _flink_type_name_to_converter_map,
     convert_statement_parameters,
     get_api_type_converter,
 )
+from confluent_sql.variant import UndecodableVariant
 
 
 @contextmanager
@@ -345,14 +347,14 @@ class TestVarBinaryConverter:
     def test_to_python_value_invalid_format(self, converter: VarBinaryConverter):
         with pytest.raises(
             DataError,
-            match="Expected hex-pair encoded string",
+            match="Expected an x'..'-encoded hex byte string",
         ):
             converter.to_python_value("7f0203'")  # Missing x' prefix
 
     def test_to_python_value_invalid_hex(self, converter: VarBinaryConverter):
         with pytest.raises(
             DataError,
-            match="Invalid hex string",
+            match="Invalid hex digits",
         ):
             converter.to_python_value("x'7g0203'")  # 'g' is not a valid hex digit
 
@@ -1024,6 +1026,8 @@ class TestGetDataTypeConverter:
             ("VARBINARY", VarBinaryConverter),
             ("BINARY", VarBinaryConverter),
             ("BYTES", VarBinaryConverter),
+            # Variant (semi-structured) type
+            ("VARIANT", VariantConverter),
         ],
     )
     def test_get_data_type_converter(
@@ -1685,6 +1689,188 @@ class TestMultisetConverter:
             match="Flink does not currently support MULTISET literals",
         ):
             integer_multiset_converter.to_statement_string(Counter({10: 2, 20: 3}))
+
+
+@pytest.mark.unit
+@pytest.mark.typeconv
+class TestVariantConverter:
+    """Unit tests over VariantConverter's decoding of the VARIANT payload tree."""
+
+    @pytest.fixture
+    def converter(self, mock_connection: Connection) -> VariantConverter:
+        return VariantConverter(
+            mock_connection, ColumnTypeDefinition(type="VARIANT", nullable=True)
+        )
+
+    @pytest.mark.parametrize(
+        "node, expected",
+        [
+            ([0], None),  # NULL
+            ([3, "TRUE"], True),  # BOOLEAN
+            ([3, "FALSE"], False),
+            ([4, "7"], 7),  # TINYINT
+            ([5, "300"], 300),  # SMALLINT
+            ([6, "42"], 42),  # INT
+            ([6, "-42"], -42),  # INT, negative
+            ([7, "9223372036854775807"], 9223372036854775807),  # BIGINT
+            ([8, "0.1"], 0.1),  # FLOAT
+            ([9, "21.5"], 21.5),  # DOUBLE
+            ([10, "100.00"], Decimal("100.00")),  # DECIMAL, scale preserved
+            ([10, "-3.14"], Decimal("-3.14")),  # DECIMAL, negative
+            ([11, "sensor-7"], "sensor-7"),  # STRING
+            ([12, "2026-07-28"], date(2026, 7, 28)),  # DATE
+            ([16, "09:14:02.123"], time(9, 14, 2, 123000)),  # TIME
+            ([15, "x'7f0203'"], b"\x7f\x02\x03"),  # BYTES
+            ([15, "x''"], b""),  # empty BYTES
+        ],
+    )
+    def test_scalar_nodes(self, converter: VariantConverter, node, expected):
+        assert converter.to_python_value(node) == expected
+
+    def test_decimal_keeps_type_and_scale(self, converter: VariantConverter):
+        result = converter.to_python_value([10, "100.00"])
+        assert isinstance(result, Decimal)
+        assert str(result) == "100.00"
+
+    def test_naive_timestamp(self, converter: VariantConverter):
+        result = converter.to_python_value([13, "2026-07-28 09:14:02.117000"])
+        assert result == datetime(2026, 7, 28, 9, 14, 2, 117000)
+        assert isinstance(result, datetime)
+        assert result.tzinfo is None
+
+    def test_ltz_timestamp_is_utc_aware_and_drops_offset(self, converter: VariantConverter):
+        # [14, utcTimestamp, sessionOffset] -- instant is already UTC, offset dropped.
+        result = converter.to_python_value([14, "2026-07-28 09:14:02.117000", "-05:00"])
+        assert result == datetime(2026, 7, 28, 9, 14, 2, 117000, tzinfo=timezone.utc)
+        assert isinstance(result, datetime)
+        assert result.tzinfo == timezone.utc
+
+    def test_scalar_python_types_are_exact(self, converter: VariantConverter):
+        # `True == 1` and `1 == 1.0`, so `==` alone wouldn't catch a type regression.
+        assert converter.to_python_value([3, "TRUE"]) is True  # a real bool, not 1
+        assert type(converter.to_python_value([6, "42"])) is int  # int, not bool
+
+    def test_nanosecond_timestamp_truncated_to_micros(self, converter: VariantConverter):
+        result = converter.to_python_value([17, "2026-07-28 09:14:02.123456789"])
+        assert result == datetime(2026, 7, 28, 9, 14, 2, 123456)
+
+    def test_nanosecond_timestamp_without_fraction(self, converter: VariantConverter):
+        # No fractional part: the microsecond cap is a no-op.
+        result = converter.to_python_value([17, "2026-07-28 09:14:02"])
+        assert result == datetime(2026, 7, 28, 9, 14, 2)
+
+    def test_nanosecond_ltz_timestamp_truncated_and_utc(self, converter: VariantConverter):
+        result = converter.to_python_value([18, "2026-07-28 09:14:02.123456789", "+00:00"])
+        assert result == datetime(2026, 7, 28, 9, 14, 2, 123456, tzinfo=timezone.utc)
+
+    def test_object_becomes_dict(self, converter: VariantConverter):
+        node = [1, [["n", [4, "7"]], ["ok", [3, "TRUE"]]]]
+        assert converter.to_python_value(node) == {"n": 7, "ok": True}
+
+    def test_array_becomes_list_with_null(self, converter: VariantConverter):
+        node = [2, [[11, "hot"], [0]]]
+        assert converter.to_python_value(node) == ["hot", None]
+
+    def test_empty_object_and_array(self, converter: VariantConverter):
+        assert converter.to_python_value([1, []]) == {}
+        assert converter.to_python_value([2, []]) == []
+
+    def test_nested_worked_example(self, converter: VariantConverter):
+        """A nested VARIANT: an object with scalars, a nested object, an array with a
+        null element, and a degraded (unknown-type) node."""
+        node = [
+            1,
+            [
+                ["device", [11, "sensor-7"]],
+                ["meta", [1, [["n", [4, "7"]], ["ok", [3, "TRUE"]]]]],
+                ["price", [10, "100.00"]],
+                ["seen_at", [13, "2026-07-28 09:14:02.117000"]],
+                ["seq", [7, "9223372036854775807"]],
+                ["tags", [2, [[11, "hot"], [0]]]],
+                ["temp", [9, "21.5"]],
+                ["weird", [-1, "x'0102'", "x'7f2a'"]],
+            ],
+        ]
+        result = converter.to_python_value(node)
+        assert result == {
+            "device": "sensor-7",
+            "meta": {"n": 7, "ok": True},
+            "price": Decimal("100.00"),
+            "seen_at": datetime(2026, 7, 28, 9, 14, 2, 117000),
+            "seq": 9223372036854775807,
+            "tags": ["hot", None],
+            "temp": 21.5,
+            "weird": UndecodableVariant(code=-1, metadata=b"\x01\x02", value=b"\x7f\x2a"),
+        }
+
+    @pytest.mark.parametrize(
+        "node, expected",
+        [
+            ([-1, "x'0102'", "x'7f2a'"], UndecodableVariant(-1, b"\x01\x02", b"\x7f\x2a")),
+            ([-2, "x''", "x''"], UndecodableVariant(-2, b"", b"")),
+            ([-1], UndecodableVariant(-1, b"", b"")),  # no bytes recoverable
+        ],
+    )
+    def test_degraded_nodes(self, converter: VariantConverter, node, expected):
+        assert converter.to_python_value(node) == expected
+
+    def test_degraded_node_inside_array(self, converter: VariantConverter):
+        # A degraded node degrades per-node; its siblings decode normally. The worked
+        # example covers this inside an OBJECT; this covers it inside an ARRAY.
+        node = [2, [[11, "ok"], [-1, "x'01'", "x'02'"]]]
+        assert converter.to_python_value(node) == [
+            "ok",
+            UndecodableVariant(code=-1, metadata=b"\x01", value=b"\x02"),
+        ]
+
+    def test_none_column(self, converter: VariantConverter):
+        assert converter.to_python_value(None) is None
+
+    @pytest.mark.parametrize(
+        "node",
+        [
+            [],  # empty node
+            [1.5, "x"],  # non-integer type code
+            # bool is an int subclass, so without the explicit bool guard these would be
+            # silently mis-read: [False] as NULL (code 0) and [True, ...] as an OBJECT
+            # (code 1). Both must raise instead.
+            [False],  # bool type code masquerading as NULL
+            [True, [["k", [0]]]],  # bool type code masquerading as OBJECT
+            [1, [["k"]]],  # malformed object field (not a pair)
+            [1],  # object node missing its field list
+            [2],  # array node missing its element list
+            [1, 5],  # object payload not a list
+            [2, "notalist"],  # array payload not a list
+            [2, ["notalist"]],  # array element is not a node (non-list child)
+            [1, [["k", "notalist"]]],  # object field value is not a node (non-list child)
+            [99, "x"],  # unhandled positive code
+            [6, "not-an-int"],  # unparseable scalar
+            [6],  # scalar type code with no value element
+            [13],  # scalar type code with no value element
+            [3, "MAYBE"],  # invalid boolean token (not TRUE/FALSE)
+            [1, [[["a"], [0]]]],  # object key is a list (unhashable)
+            [1, [[5, [0]]]],  # object key is not a string
+            [15, "not-hex"],  # BYTES value missing the x'..' wrapper
+            [15, "x'zz'"],  # BYTES value with invalid hex digits
+            [15, 123],  # BYTES value is not even a string
+        ],
+    )
+    def test_malformed_nodes_raise_dataerror(self, converter: VariantConverter, node):
+        with pytest.raises(DataError):
+            converter.to_python_value(node)
+
+    def test_wrong_response_type_raises_typemismatch(self, converter: VariantConverter):
+        # A VARIANT cell is a JSON array; anything else is an interface-level type error,
+        # consistent with the other converters.
+        with ensure_raises_typemismatch("list"):
+            converter.to_python_value("not a list")  # type: ignore[arg-type]
+
+    def test_to_statement_string_raises(self):
+        with pytest.raises(
+            InterfaceError,
+            match="Flink does not support VARIANT literals",
+        ):
+            VariantConverter.to_statement_string({"a": 1})
 
 
 @pytest.mark.unit
