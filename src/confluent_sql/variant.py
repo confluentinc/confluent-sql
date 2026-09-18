@@ -10,6 +10,17 @@ the same way the same-typed top-level column would be. It is driven from
 Nanosecond-precision timestamps (``TIMESTAMP_NS`` / ``TIMESTAMP_LTZ_NS``) are truncated
 (not rounded) to microseconds, since Python's ``datetime`` cannot represent finer
 resolution. Every other value is decoded losslessly.
+
+The walk is recursive and deliberately unbounded, with no depth guard. That is safe
+because by the time a node reaches this module the payload has already been fully
+parsed from the HTTP response by ``response.json()`` (stdlib ``json.loads``), which is
+itself recursive over the same nesting -- each node is ``[code, [...]]``, so its JSON
+form nests at least as deep as this walk does. A payload deep enough to overflow this
+recursion would therefore have overflowed ``json.loads`` first and never have produced
+the Python ``list`` we are handed. In other words, receiving a finite parsed structure
+here is proof that its depth is already within the interpreter's recursion limit. (The
+paths that build the payload -- a Kafka producer's schema serializer, or Flink's own
+JSON parser for a ``PARSE_JSON`` literal -- bound the depth well below that besides.)
 """
 
 from __future__ import annotations
