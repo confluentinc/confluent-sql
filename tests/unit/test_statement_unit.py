@@ -7,7 +7,7 @@ from confluent_sql import OperationalError
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import InterfaceError
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import Op, Phase, Schema, Statement
+from confluent_sql.statement import Op, Phase, Schema, Statement, StatementWarning, WarningSeverity
 from confluent_sql.types import StatementTypeConverter
 from tests.unit.conftest import StatementResponseFactory
 
@@ -574,6 +574,168 @@ class TestStatementProperties:
 
         # Should return False when scaling_state is not present
         assert statement.is_pool_exhausted is False
+
+
+@pytest.mark.unit
+class TestWarnings:
+    """Tests for Statement.warnings property."""
+
+    def test_warnings_absent(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that warnings property returns an empty list when the key is absent."""
+        statement_json = statement_response_factory()
+        del statement_json["status"]["warnings"]
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        assert statement.warnings == []
+
+    def test_warnings_empty(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that warnings property returns an empty list when the key is present but empty."""
+        statement_json = statement_response_factory()
+
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        assert statement.warnings == []
+
+    def test_warnings_present(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that warnings property parses a single warning into a StatementWarning."""
+        statement_json = statement_response_factory(
+            warnings=[
+                {
+                    "severity": "MODERATE",
+                    "created_at": "2025-11-10T16:20:00Z",
+                    "reason": "MISSING_WINDOW_START_END",
+                    "message": (
+                        "The statement is missing window start and end bounds which may "
+                        "lead to unbounded state growth."
+                    ),
+                }
+            ]
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        assert statement.warnings == [
+            StatementWarning(
+                severity=WarningSeverity.MODERATE,
+                severity_raw="MODERATE",
+                created_at="2025-11-10T16:20:00Z",
+                reason="MISSING_WINDOW_START_END",
+                message=(
+                    "The statement is missing window start and end bounds which may "
+                    "lead to unbounded state growth."
+                ),
+            )
+        ]
+
+    def test_warnings_multiple_preserve_order(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that multiple warnings are all parsed and returned in response order."""
+        statement_json = statement_response_factory(
+            warnings=[
+                {
+                    "severity": "LOW",
+                    "created_at": "2025-11-10T16:20:00Z",
+                    "reason": "FIRST_REASON",
+                    "message": "First message.",
+                },
+                {
+                    "severity": "CRITICAL",
+                    "created_at": "2025-11-10T16:21:00Z",
+                    "reason": "SECOND_REASON",
+                    "message": "Second message.",
+                },
+            ]
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        warnings = statement.warnings
+        assert len(warnings) == 2
+        assert warnings == [
+            StatementWarning(
+                severity=WarningSeverity.LOW,
+                severity_raw="LOW",
+                created_at="2025-11-10T16:20:00Z",
+                reason="FIRST_REASON",
+                message="First message.",
+            ),
+            StatementWarning(
+                severity=WarningSeverity.CRITICAL,
+                severity_raw="CRITICAL",
+                created_at="2025-11-10T16:21:00Z",
+                reason="SECOND_REASON",
+                message="Second message.",
+            ),
+        ]
+
+    def test_warnings_unrecognized_severity_maps_to_unknown(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that a severity value not yet known to this driver parses to UNKNOWN
+        instead of raising -- severity is documented as an extensible enum, so a future
+        server-side severity shouldn't break response parsing."""
+        statement_json = statement_response_factory(
+            warnings=[
+                {
+                    "severity": "SOME_FUTURE_SEVERITY",
+                    "created_at": "2025-11-10T16:20:00Z",
+                    "reason": "SOME_REASON",
+                    "message": "Some message.",
+                }
+            ]
+        )
+        statement = Statement.from_response(mock_connection, statement_json)
+
+        warnings = statement.warnings
+        assert len(warnings) == 1
+        assert warnings[0].severity is WarningSeverity.UNKNOWN
+        assert warnings[0].severity_raw == "SOME_FUTURE_SEVERITY"
+
+    def test_str_known_severity(self):
+        """Test that str() of a warning with a known severity shows the enum value."""
+        warning = StatementWarning(
+            severity=WarningSeverity.CRITICAL,
+            severity_raw="CRITICAL",
+            created_at="2025-11-10T16:20:00Z",
+            reason="MISSING_WINDOW_START_END",
+            message="The statement is missing window start and end bounds.",
+        )
+
+        assert str(warning) == (
+            "[CRITICAL] MISSING_WINDOW_START_END: "
+            "The statement is missing window start and end bounds."
+        )
+
+    def test_str_unrecognized_severity_includes_raw_value(self):
+        """Test that str() of a warning with an unrecognized severity surfaces the
+        server's original severity string instead of just 'UNKNOWN', so callers that
+        re-emit warnings (e.g. dbt-adapter logging) don't lose the server's value."""
+        warning = StatementWarning(
+            severity=WarningSeverity.UNKNOWN,
+            severity_raw="SOME_FUTURE_SEVERITY",
+            created_at="2025-11-10T16:20:00Z",
+            reason="SOME_REASON",
+            message="Some message.",
+        )
+
+        assert str(warning) == (
+            "[UNKNOWN severity: SOME_FUTURE_SEVERITY] SOME_REASON: Some message."
+        )
 
 
 @pytest.mark.unit
