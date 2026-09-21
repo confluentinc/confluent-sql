@@ -1345,6 +1345,7 @@ class TestStreamingChangelogCursor:
     def test_snapshot_bounded_append_only_query_ready_at_running(
         self,
         connection: Connection,
+        database: str,
     ):
         """Snapshot-mode counterpart to test_streaming_bounded_changelog_query above: a
         bounded, append-only query (a plain projection, no aggregation) becomes fetchable as
@@ -1357,8 +1358,15 @@ class TestStreamingChangelogCursor:
         returned control from execute() while the statement was RUNNING; asserting RUNNING
         here is what actually distinguishes the fixed behavior from the old one.
 
-        Queries `sample_data_stock_trades` (a sizable demo source used elsewhere in this
-        suite, e.g. the CTAS tests in test_fetch.py) filtered down to `quantity > 5000`,
+        Queries `sample_data_stock_trades`, an externally-provisioned demo source that the
+        suite does not create. Unlike the DDL/CTAS tests in test_fetch.py (which migrated to the
+        suite's own fixture table in #227), this one genuinely needs a large, continuously
+        generated source: a bounded snapshot over a tiny table completes before the driver's
+        first successful poll and would never be observed RUNNING. So it stays on the demo
+        source but probes for it first (INFORMATION_SCHEMA below) and skips -- rather than
+        failing with a cryptic `SQL validation failed` -- on any environment that lacks it.
+
+        Filtered down to `quantity > 5000`,
         keeping the client-side transfer light while the job itself still realistically
         spends multiple seconds RUNNING before COMPLETED -- long enough for the driver's
         polling to reliably observe it; confirmed live against a real server (2026-09-01)
@@ -1376,6 +1384,23 @@ class TestStreamingChangelogCursor:
         it becomes flaky because the query completes before the driver's first successful
         poll, size the workload up (a lower `quantity` threshold) rather than loosening it.
         """
+        # This test can't fall back to the suite's fixture table (see docstring), so guard its
+        # dependency explicitly: probe INFORMATION_SCHEMA for the demo source in the connection's
+        # database and skip legibly if it's absent, rather than letting the SELECT below fail with
+        # a cryptic `SQL validation failed`.
+        with connection.closing_cursor() as probe:
+            probe.execute(
+                "SELECT 1 FROM `INFORMATION_SCHEMA`.`TABLES` "
+                "WHERE TABLE_NAME = %s AND TABLE_SCHEMA = %s",
+                ("sample_data_stock_trades", database),
+            )
+            if probe.fetchone() is None:
+                pytest.skip(
+                    "sample_data_stock_trades is not present in this environment's database "
+                    f"({database}); this test needs a large, continuously-generated source to "
+                    "observe RUNNING before COMPLETED (see #227)."
+                )
+
         cursor: Cursor | None = None
         try:
             cursor = connection.cursor()
