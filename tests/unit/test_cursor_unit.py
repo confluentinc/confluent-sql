@@ -13,7 +13,7 @@ from confluent_sql.exceptions import (
 )
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
-from confluent_sql.statement import ChangelogRow, Op, Phase, Statement
+from confluent_sql.statement import ChangelogRow, Op, Phase, Statement, WarningSeverity
 from tests.unit.conftest import (
     CursorWithStatementFactory,
     MockConnectionFactory,
@@ -1304,6 +1304,69 @@ class TestCursorStatementProperty:
             match="No statement has been executed yet",
         ):
             _ = mock_connection_cursor.statement
+
+
+@pytest.mark.unit
+class TestCursorWarningsProperty:
+    """Unit tests over the cursor.warnings property."""
+
+    def test_warnings_no_execute_returns_empty_list(self, mock_connection_cursor: Cursor):
+        """Test that if no statement has been executed, cursor.warnings is an empty list."""
+        assert mock_connection_cursor.warnings == []
+
+    def test_warnings_delegates_to_statement(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that cursor.warnings reflects the current statement's warnings."""
+        expected_statement_dict = statement_response_factory(
+            warnings=[
+                {
+                    "severity": "MODERATE",
+                    "created_at": "2025-11-10T16:20:00Z",
+                    "reason": "MISSING_WINDOW_START_END",
+                    "message": "The statement is missing window start and end bounds.",
+                }
+            ]
+        )
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            expected_statement_dict
+        )
+
+        mock_connection_cursor.execute("SELECT 1 AS col")
+
+        warnings = mock_connection_cursor.warnings
+        assert len(warnings) == 1
+        assert warnings[0].severity == WarningSeverity.MODERATE
+        assert warnings[0].reason == "MISSING_WINDOW_START_END"
+
+    def test_warnings_readable_after_close(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Test that cursor.warnings remains readable (not raising) after close()."""
+        expected_statement_dict = statement_response_factory(
+            warnings=[
+                {
+                    "severity": "LOW",
+                    "created_at": "2025-11-10T16:20:00Z",
+                    "reason": "SOME_REASON",
+                    "message": "Some message.",
+                }
+            ]
+        )
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            expected_statement_dict
+        )
+
+        mock_connection_cursor.execute("SELECT 1 AS col")
+        mock_connection_cursor.close()
+
+        warnings = mock_connection_cursor.warnings
+        assert len(warnings) == 1
+        assert warnings[0].reason == "SOME_REASON"
 
 
 @pytest.mark.unit

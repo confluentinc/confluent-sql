@@ -73,6 +73,7 @@ def statement_response_factory() -> StatementResponseFactory:
         labels: dict[str, str] | None = None,
         stopped: bool = False,
         scaling_state: str = "OK",
+        warnings: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Construct a statement v1 as from JSON dictionary."""
 
@@ -128,6 +129,7 @@ def statement_response_factory() -> StatementResponseFactory:
                     "sql_kind": sql_kind,
                     "upsert_columns": None,
                 },
+                "warnings": warnings if warnings is not None else [],
             },
         }
 
