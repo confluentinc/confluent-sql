@@ -628,6 +628,7 @@ class TestWarnings:
         assert statement.warnings == [
             StatementWarning(
                 severity=WarningSeverity.MODERATE,
+                severity_raw="MODERATE",
                 created_at="2025-11-10T16:20:00Z",
                 reason="MISSING_WINDOW_START_END",
                 message=(
@@ -666,12 +667,14 @@ class TestWarnings:
         assert warnings == [
             StatementWarning(
                 severity=WarningSeverity.LOW,
+                severity_raw="LOW",
                 created_at="2025-11-10T16:20:00Z",
                 reason="FIRST_REASON",
                 message="First message.",
             ),
             StatementWarning(
                 severity=WarningSeverity.CRITICAL,
+                severity_raw="CRITICAL",
                 created_at="2025-11-10T16:21:00Z",
                 reason="SECOND_REASON",
                 message="Second message.",
@@ -701,6 +704,38 @@ class TestWarnings:
         warnings = statement.warnings
         assert len(warnings) == 1
         assert warnings[0].severity is WarningSeverity.UNKNOWN
+        assert warnings[0].severity_raw == "SOME_FUTURE_SEVERITY"
+
+    def test_str_known_severity(self):
+        """Test that str() of a warning with a known severity shows the enum value."""
+        warning = StatementWarning(
+            severity=WarningSeverity.CRITICAL,
+            severity_raw="CRITICAL",
+            created_at="2025-11-10T16:20:00Z",
+            reason="MISSING_WINDOW_START_END",
+            message="The statement is missing window start and end bounds.",
+        )
+
+        assert str(warning) == (
+            "[CRITICAL] MISSING_WINDOW_START_END: "
+            "The statement is missing window start and end bounds."
+        )
+
+    def test_str_unrecognized_severity_includes_raw_value(self):
+        """Test that str() of a warning with an unrecognized severity surfaces the
+        server's original severity string instead of just 'UNKNOWN', so callers that
+        re-emit warnings (e.g. dbt-adapter logging) don't lose the server's value."""
+        warning = StatementWarning(
+            severity=WarningSeverity.UNKNOWN,
+            severity_raw="SOME_FUTURE_SEVERITY",
+            created_at="2025-11-10T16:20:00Z",
+            reason="SOME_REASON",
+            message="Some message.",
+        )
+
+        assert str(warning) == (
+            "[UNKNOWN severity: SOME_FUTURE_SEVERITY] SOME_REASON: Some message."
+        )
 
 
 @pytest.mark.unit

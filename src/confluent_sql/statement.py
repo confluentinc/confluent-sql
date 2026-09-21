@@ -198,6 +198,10 @@ class StatementWarning:
 
     severity: WarningSeverity
     """How severe the warning is."""
+    severity_raw: str
+    """The severity exactly as reported by the server, even when `severity` falls back to
+    WarningSeverity.UNKNOWN for a value this driver doesn't recognize -- so callers that
+    re-emit warnings (e.g. dbt-adapter logging) don't lose the server's actual value."""
     created_at: str
     """RFC3339 UTC timestamp string of when the warning was created, as returned by the
     server (left unparsed, consistent with other server-provided timestamps such as
@@ -212,10 +216,19 @@ class StatementWarning:
     def from_response(cls, data: StrAnyDict) -> StatementWarning:
         return cls(
             severity=WarningSeverity(data["severity"]),
+            severity_raw=data["severity"],
             created_at=data["created_at"],
             reason=data["reason"],
             message=data["message"],
         )
+
+    def __str__(self) -> str:
+        severity_display = (
+            f"UNKNOWN severity: {self.severity_raw}"
+            if self.severity is WarningSeverity.UNKNOWN
+            else self.severity.value
+        )
+        return f"[{severity_display}] {self.reason}: {self.message}"
 
 
 @dataclass
