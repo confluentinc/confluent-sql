@@ -114,16 +114,22 @@ class TestConnection:
         # Stop + delete the statement, CCloud-Flink side.
         cursor.close()
 
+    @pytest.mark.slow
     def test_default_compute_pool_when_none_specified(self, poolless_connection: Connection):
         """A connection without a compute pool runs statements in the environment default.
 
         Proves the end-to-end #108 path: no compute_pool_id is sent, yet Flink still runs the
         statement and associates it with a (default) compute pool in the response.
+
+        The probe deliberately selects from an inline VALUES list rather than reading
+        INFORMATION_SCHEMA: a catalog/metadata read is answered without scheduling onto a compute
+        pool, so it never provokes default-pool auto-provisioning. A VALUES-backed query is a real
+        Flink job (hence @pytest.mark.slow), which forces the server to assign a pool.
         """
         assert poolless_connection.compute_pool_id is None
 
         with poolless_connection.closing_cursor() as cursor:
-            cursor.execute("SELECT 1 as answer FROM `INFORMATION_SCHEMA`.`TABLES`")
+            cursor.execute("SELECT answer FROM (VALUES (1)) AS t(answer)")
             row = cursor.fetchone()
             assert row == (1,)
 
