@@ -18,7 +18,7 @@ from typing import Any, NoReturn
 
 import httpx
 
-from .__version__ import VERSION
+from .__version__ import __version__
 from .auth import FlinkBearerAuth
 from .connectors import Connector, ConnectorApi
 from .cursor import Cursor
@@ -417,7 +417,7 @@ class Connection:
     """
 
     DEFAULT_USER_AGENT = (
-        f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
+        f"Confluent-SQL-Dbapi/v{__version__} (https://confluent.io; support@confluent.io)"
     )
 
     _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"

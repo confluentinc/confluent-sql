@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError, StatementNotFoundError
-from confluent_sql.__version__ import VERSION
+from confluent_sql.__version__ import __version__
 from confluent_sql.connection import (
     DEFAULT_HTTP_TIMEOUT_SECS,
     Connection,
@@ -2609,7 +2609,9 @@ class TestHttpUserAgentProperty:
 
     def test_default_user_agent(self, invalid_credential_connection: Connection):
         """Test that the default user agent is set correctly."""
-        expected = f"Confluent-SQL-Dbapi/v{VERSION} (https://confluent.io; support@confluent.io)"
+        expected = (
+            f"Confluent-SQL-Dbapi/v{__version__} (https://confluent.io; support@confluent.io)"
+        )
         assert invalid_credential_connection.http_user_agent == expected
         assert invalid_credential_connection.http_user_agent == Connection.DEFAULT_USER_AGENT
         # Verify the header is applied to the httpx client
