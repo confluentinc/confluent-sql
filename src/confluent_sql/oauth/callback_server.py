@@ -523,7 +523,8 @@ def _success_page(config: CCloudOAuthConfig) -> str:
     link = html.escape(config.api_host, quote=True)
     return _page(
         "Login successful",
-        f'You are signed in to <a href="{link}">Confluent Cloud</a>. You can close this tab and '
+        f'You are signed in to <a href="{link}" referrerpolicy="no-referrer">Confluent Cloud</a>. '
+        "You can close this tab and "
         "return to your program.",
     )
 
