@@ -89,13 +89,26 @@ class TestSuccessfulRedirect:
     def test_success_page_references_no_external_assets(self):
         """The page has to render on a browser that may have no reach past loopback -- and must
         not phone anywhere from a tab whose URL bar holds an authorization code -- so everything
-        it needs is inline."""
+        it needs to *render* is inline. The one deliberate exception is the "Confluent Cloud" link
+        in the body text, which only sends the browser anywhere if the human clicks it -- covered
+        separately by test_success_page_links_confluent_cloud_to_api_host."""
         with _running_server() as server:
             response = _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
 
         assert "src=" not in response.text
-        assert "href=" not in response.text
         assert "@import" not in response.text
+
+    def test_success_page_links_confluent_cloud_to_api_host(self):
+        """The "Confluent Cloud" text links to the deployment lane's top-level URL, so a human
+        landing on this page can jump straight to the console for the environment they just
+        signed into -- api_host doubles as that URL (see its field comment in config.py)."""
+        with _running_server() as server:
+            response = _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
+
+        assert (
+            '<a href="https://confluent.cloud" referrerpolicy="no-referrer">Confluent Cloud</a>'
+            in response.text
+        )
 
     def test_the_code_can_be_read_repeatedly(self):
         """wait_for_code is not a one-shot consume: #153's login() reads the code once, but a

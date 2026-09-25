@@ -390,7 +390,7 @@ class _CallbackRequestHandler(BaseHTTPRequestHandler):
         # response depends on recording later, either -- the waiter's `stop()` closes the
         # *listening* socket, not this handler's already-accepted connection.
         callback_server._record_code(code)
-        self._send_page(HTTPStatus.OK, _SUCCESS_PAGE)
+        self._send_page(HTTPStatus.OK, _success_page(callback_server._config))
 
     def log_message(self, format: str, *args: Any) -> None:
         """Silence the default stderr access log.
@@ -469,10 +469,14 @@ def _first(params: dict[str, list[str]], key: str) -> str | None:
     return values[0] if values else None
 
 
-def _page(heading: str, message: str) -> str:
+def _page(heading: str, message_html: str) -> str:
     """One self-contained HTML page. No external stylesheet, font, script, or image: the browser
     showing this may have no reach past loopback, and a tab whose URL bar holds an authorization
-    code has no business making requests anywhere."""
+    code has no business making requests anywhere.
+
+    `message_html` is trusted, already-safe HTML, not plain text -- callers escape whatever pieces
+    of it come from outside this module (see `_error_page`) before interpolating.
+    """
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -499,24 +503,31 @@ def _page(heading: str, message: str) -> str:
   }}
   h1 {{ font-size: 1.35rem; margin: 0 0 0.75rem; }}
   p {{ color: #4a4a68; line-height: 1.5; margin: 0; }}
+  a {{ color: #1a1a2e; }}
 </style>
 </head>
 <body>
 <main>
 <h1>{html.escape(heading)}</h1>
-<p>{html.escape(message)}</p>
+<p>{message_html}</p>
 </main>
 </body>
 </html>
 """
 
 
-_SUCCESS_PAGE = _page(
-    "Login successful",
-    "You are signed in to Confluent Cloud. You can close this tab and return to your program.",
-)
-"""Rendered once at import: the success page has nothing per-request to interpolate."""
+def _success_page(config: CCloudOAuthConfig) -> str:
+    """The "you can close this tab" page, linking "Confluent Cloud" to the deployment lane's
+    top-level URL (prod/stag/devel each land somewhere different) -- `api_host` doubles as that
+    URL, see its field comment in config.py."""
+    link = html.escape(config.api_host, quote=True)
+    return _page(
+        "Login successful",
+        f'You are signed in to <a href="{link}" referrerpolicy="no-referrer">Confluent Cloud</a>. '
+        "You can close this tab and "
+        "return to your program.",
+    )
 
 
 def _error_page(message: str) -> str:
-    return _page("Login failed", message)
+    return _page("Login failed", html.escape(message))
