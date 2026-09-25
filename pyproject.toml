@@ -2,9 +2,12 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/confluent_sql/__version__.py"
+
 [project]
 name = "confluent-sql"
-version = "0.6.0-pre"
+dynamic = ["version"]
 description = "DB-API v2 compliant driver for Confluent Cloud Flink SQL"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,7 +38,7 @@ Changelog = "https://github.com/confluentinc/confluent-sql/blob/main/CHANGELOG.m
 
 [tool.ruff]
 line-length = 100
-include = ["src/**", "tests/**", "examples/**"]
+include = ["src/**/*.py", "tests/**/*.py", "examples/**/*.py"]
 lint.ignore = [
     "PLR2004", # stop complaining about inlined constants, mostly in test cases
 ]

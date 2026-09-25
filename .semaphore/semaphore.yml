@@ -22,7 +22,7 @@ global_job_config:
       - . vault-setup
       - curl -LsSf https://astral.sh/uv/0.10.11/install.sh | sh
       - uv sync --frozen
-      - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+      - export VERSION=$(grep '^__version__' src/confluent_sql/__version__.py | cut -d'"' -f2)
 
 blocks:
   - name: "Test"
