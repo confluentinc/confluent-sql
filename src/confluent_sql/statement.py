@@ -165,6 +165,72 @@ class Phase(Enum):
 Phase._TERMINAL_PHASES = frozenset({"COMPLETED", "STOPPED", "FAILED", "DELETED"})  # type: ignore[attr-defined]
 
 
+class WarningSeverity(str, Enum):
+    """Severity of a non-fatal warning reported for a statement.
+
+    LOW: Informational only.
+    MODERATE: May require user action; could cause a degraded statement if
+        certain conditions apply.
+    CRITICAL: Requires user action; will cause a degraded statement eventually.
+
+    The API marks this an extensible enum, so an unrecognized value parses to `UNKNOWN`
+    rather than raising -- a future server-side severity shouldn't break response parsing
+    (mirrors `TableflowPhase`'s `UNKNOWN` fallback in `tableflow.py`).
+    """
+
+    LOW = "LOW"
+    MODERATE = "MODERATE"
+    CRITICAL = "CRITICAL"
+    UNKNOWN = "UNKNOWN"
+
+    @classmethod
+    def _missing_(cls, value: object) -> WarningSeverity:
+        return cls.UNKNOWN
+
+
+@dataclass(kw_only=True)
+class StatementWarning:
+    """A non-fatal issue encountered during statement processing.
+
+    Surfaced by the server under Statement.status.warnings; see
+    Statement.warnings and Cursor.warnings.
+    """
+
+    severity: WarningSeverity
+    """How severe the warning is."""
+    severity_raw: str
+    """The severity exactly as reported by the server, even when `severity` falls back to
+    WarningSeverity.UNKNOWN for a value this driver doesn't recognize -- so callers that
+    re-emit warnings (e.g. dbt-adapter logging) don't lose the server's actual value."""
+    created_at: str
+    """RFC3339 UTC timestamp string of when the warning was created, as returned by the
+    server (left unparsed, consistent with other server-provided timestamps such as
+    Statement.metadata's created_at/updated_at)."""
+    reason: str
+    """Machine-readable short, upper case summary delimited by underscore (e.g.
+    MISSING_WINDOW_START_END)."""
+    message: str
+    """Human-readable description of the warning."""
+
+    @classmethod
+    def from_response(cls, data: StrAnyDict) -> StatementWarning:
+        return cls(
+            severity=WarningSeverity(data["severity"]),
+            severity_raw=data["severity"],
+            created_at=data["created_at"],
+            reason=data["reason"],
+            message=data["message"],
+        )
+
+    def __str__(self) -> str:
+        severity_display = (
+            f"UNKNOWN severity: {self.severity_raw}"
+            if self.severity is WarningSeverity.UNKNOWN
+            else self.severity.value
+        )
+        return f"[{severity_display}] {self.reason}: {self.message}"
+
+
 @dataclass
 class Statement:
     """Represents a Confluent SQL statement, including its metadata, spec, status,
@@ -333,6 +399,11 @@ class Statement:
             return {}
         else:
             return scaling_status_dict
+
+    @property
+    def warnings(self) -> list[StatementWarning]:
+        """Get non-fatal warnings reported by the server for this statement, if any."""
+        return [StatementWarning.from_response(w) for w in self.status.get("warnings", [])]
 
     @property
     def is_pool_exhausted(self) -> bool:

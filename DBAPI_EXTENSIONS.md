@@ -569,7 +569,7 @@ cursor.delete_statement()
 ## Tableflow Lifecycle
 
 [Tableflow](https://www.confluent.io/product/tableflow/) materializes the Kafka topic backing a
-Flink table into an Iceberg or Delta table. Three `Connection` methods manage that sink. Enabling
+Flink table into an Iceberg or Delta table. Four `Connection` methods manage that sink. Enabling
 it also unlocks
 [efficiency gains for snapshot queries](https://docs.confluent.io/cloud/current/flink/concepts/snapshot-queries.html#snapshot-queries-and-tableflow)
 against the table.
@@ -666,6 +666,38 @@ print(topic.spec.table_formats)          # [TableFormat.ICEBERG, ...]
 
 Raises `TableflowTopicNotFoundError` if Tableflow is not enabled for the topic (HTTP 404). There is
 no separate health check — health is read off `get_tableflow(...).phase`.
+
+### `update_tableflow()` — change formats/config on an existing sink
+
+```python
+from confluent_sql import TableflowTopicConfig, TableFormat, TableflowPhase
+
+topic = connection.update_tableflow(
+    "orders",
+    table_formats={TableFormat.ICEBERG, TableFormat.DELTA},
+    config=TableflowTopicConfig(retention_ms="1209600000"),
+)
+assert topic.phase is TableflowPhase.RUNNING   # blocked to RUNNING by default
+```
+
+Lets a caller change only `table_formats`/`config` on an already-enabled topic — a `PATCH`, not a
+disable/re-enable — so an in-place config change doesn't drop and rebuild the sink. `storage` and
+the table name itself are immutable server-side and have no in-place path; changing either requires
+`disable_tableflow` + `enable_tableflow` instead.
+
+**Behavior notes:**
+
+- `table_formats` and `config` are each independently optional, but at least one non-empty update must be given.
+  `None` means "leave unchanged" — both for the method's own two arguments and for each field on
+  `config` (`retention_ms`, `data_retention_ms`, `error_handling`). A field can't be *cleared* this
+  way: every `config` field has a server-enforced default and the server rejects an explicit null.
+- When `table_formats` is given, it replaces the full list rather than adding to it.
+- This method sends whatever it's given — it does not diff against the topic's current state.
+  Compare against a prior `get_tableflow()` yourself if you only want to send what actually changed.
+- Blocks until `RUNNING` by default (`wait_for_running=True`), raising `OperationalError` on
+  `FAILED`, same as `enable_tableflow`. Pass `wait_for_running=False` to return as soon as the
+  update is accepted.
+- Raises `TableflowTopicNotFoundError` if Tableflow is not enabled for the topic (HTTP 404).
 
 ### `disable_tableflow()` — tear down the sink
 

@@ -30,7 +30,7 @@ from .result_readers import (
     ResultReader,
     ResultTupleOrDict,
 )
-from .statement import Statement
+from .statement import Statement, StatementWarning
 from .statement_properties import StatementProperties
 from .types import PropertiesDict, convert_statement_parameters
 
@@ -130,6 +130,19 @@ class Cursor:
             return None
         else:
             return self._statement.description
+
+    @property
+    def warnings(self) -> list[StatementWarning]:
+        """
+        Get non-fatal warnings reported by the server for the current statement, if any.
+
+        Returns an empty list if no statement has been executed yet. Unlike most cursor
+        operations, this remains readable after the cursor has been closed, since it's a
+        pure read of already-cached statement state rather than an I/O operation.
+        """
+        if self._statement is None:
+            return []
+        return self._statement.warnings
 
     @property
     def arraysize(self) -> int:

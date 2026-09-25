@@ -15,7 +15,7 @@ from confluent_sql import (
     StatementProperties,
 )
 from confluent_sql.exceptions import NotSupportedError
-from confluent_sql.statement import Op, Phase, Statement
+from confluent_sql.statement import Op, Phase, Statement, StatementWarning
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +296,48 @@ class TestCursor:
         cursor.execute(SINGLE_COLUMN_QUERY)
 
         assert cursor.statement.is_bounded is True
+
+    @pytest.mark.slow
+    def test_windowed_aggregation_missing_window_start_reports_warning(
+        self, populated_table_connection: Connection, test_table_name: str
+    ):
+        """A tumbling-window aggregation that groups only by `window_end` (omitting
+        `window_start`) isn't recognized by Flink as a proper windowed aggregation --
+        it degrades into a continuously-updating, unbounded-state aggregation instead.
+        Confluent's own docs document this exact query shape as producing a
+        MISSING_WINDOW_START_END statement warning:
+        https://docs.confluent.io/cloud/current/flink/how-to-guides/resolve-common-query-problems.html
+
+        `$rowtime` is the implicit, watermarked event-time system column present on every
+        Confluent Cloud Flink table backed by a Kafka topic, so no extra watermark setup is
+        needed on top of the existing test table fixture.
+
+        The advisor evaluates the statement at submission time -- Confluent's own docs show
+        the warning already present in the `confluent flink statement create` output -- so
+        execute()'s own internal readiness polling (which runs before it returns) is expected
+        to have already picked it up. No separate re-fetch of the statement should be needed.
+        """
+        cursor = populated_table_connection.streaming_cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT window_end, COUNT(*) as `cnt`
+                FROM TABLE(
+                    TUMBLE(TABLE {test_table_name}, DESCRIPTOR($rowtime), INTERVAL '10' MINUTES)
+                )
+                GROUP BY window_end
+                """
+            )
+
+            warnings: list[StatementWarning] = cursor.warnings
+            assert any(w.reason == "MISSING_WINDOW_START_END" for w in warnings), (
+                f"Expected a MISSING_WINDOW_START_END warning, got: {warnings}"
+            )
+        finally:
+            # Reap the unbounded statement before the session-scoped table fixture drops the
+            # table out from under it.
+            cursor.delete_statement()
+            cursor.close()
 
     @pytest.mark.slow
     def test_streaming_append_only_cursor(
@@ -1345,6 +1387,7 @@ class TestStreamingChangelogCursor:
     def test_snapshot_bounded_append_only_query_ready_at_running(
         self,
         connection: Connection,
+        database: str,
     ):
         """Snapshot-mode counterpart to test_streaming_bounded_changelog_query above: a
         bounded, append-only query (a plain projection, no aggregation) becomes fetchable as
@@ -1357,8 +1400,15 @@ class TestStreamingChangelogCursor:
         returned control from execute() while the statement was RUNNING; asserting RUNNING
         here is what actually distinguishes the fixed behavior from the old one.
 
-        Queries `sample_data_stock_trades` (a sizable demo source used elsewhere in this
-        suite, e.g. the CTAS tests in test_fetch.py) filtered down to `quantity > 5000`,
+        Queries `sample_data_stock_trades`, an externally-provisioned demo source that the
+        suite does not create. Unlike the DDL/CTAS tests in test_fetch.py (which migrated to the
+        suite's own fixture table in #227), this one genuinely needs a large, continuously
+        generated source: a bounded snapshot over a tiny table completes before the driver's
+        first successful poll and would never be observed RUNNING. So it stays on the demo
+        source but probes for it first (INFORMATION_SCHEMA below) and skips -- rather than
+        failing with a cryptic `SQL validation failed` -- on any environment that lacks it.
+
+        Filtered down to `quantity > 5000`,
         keeping the client-side transfer light while the job itself still realistically
         spends multiple seconds RUNNING before COMPLETED -- long enough for the driver's
         polling to reliably observe it; confirmed live against a real server (2026-09-01)
@@ -1376,6 +1426,23 @@ class TestStreamingChangelogCursor:
         it becomes flaky because the query completes before the driver's first successful
         poll, size the workload up (a lower `quantity` threshold) rather than loosening it.
         """
+        # This test can't fall back to the suite's fixture table (see docstring), so guard its
+        # dependency explicitly: probe INFORMATION_SCHEMA for the demo source in the connection's
+        # database and skip legibly if it's absent, rather than letting the SELECT below fail with
+        # a cryptic `SQL validation failed`.
+        with connection.closing_cursor() as probe:
+            probe.execute(
+                "SELECT 1 FROM `INFORMATION_SCHEMA`.`TABLES` "
+                "WHERE TABLE_NAME = %s AND TABLE_SCHEMA = %s",
+                ("sample_data_stock_trades", database),
+            )
+            if probe.fetchone() is None:
+                pytest.skip(
+                    "sample_data_stock_trades is not present in this environment's database "
+                    f"({database}); this test needs a large, continuously-generated source to "
+                    "observe RUNNING before COMPLETED (see #227)."
+                )
+
         cursor: Cursor | None = None
         try:
             cursor = connection.cursor()

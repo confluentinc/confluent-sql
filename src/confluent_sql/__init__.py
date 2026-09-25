@@ -43,7 +43,7 @@ from .exceptions import (
 )
 from .execution_mode import ExecutionMode
 from .result_readers import ChangeloggedRow
-from .statement import HIDDEN_LABEL, Op
+from .statement import HIDDEN_LABEL, Op, StatementWarning, WarningSeverity
 from .statement_properties import (
     Property,
     PropertyValue,
@@ -69,6 +69,7 @@ from .tableflow import (
     TableFormat,
 )
 from .types import PropertiesDict, PropertiesMapping, SqlNone, YearMonthInterval
+from .variant import UndecodableVariant
 
 # DB-API v2 module globals
 apilevel = "2.0"
@@ -139,5 +140,8 @@ __all__ = [
     "StatementProperties",
     "SqlNone",
     "YearMonthInterval",
+    "UndecodableVariant",
     "HIDDEN_LABEL",
+    "StatementWarning",
+    "WarningSeverity",
 ]

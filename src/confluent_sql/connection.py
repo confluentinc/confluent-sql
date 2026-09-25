@@ -349,17 +349,10 @@ def connect(  # noqa: PLR0913
             `"raise"` would have (both eventually give up with no one at the browser), it just
             spends the login timeout finding that out. Only valid with `auth="oauth"`.
         environment_id: Environment ID
-        organization_id: Organization ID. Defaults to "" (omitted). May be omitted -- left as ""
-            or simply not passed -- when a global_api_key/global_api_secret pair is supplied (in
-            which case it's inferred lazily, on first use of the connection, via GET
-            /org/v2/organizations -- only when exactly one organization is visible to the key;
-            OperationalError surfaces from that first use, not from connect() itself, if zero or
-            multiple organizations are visible) or `auth="oauth"` is used (in which case it's
-            discovered from the Confluent Cloud session established by the interactive login, or
-            scopes that login to the named organization if supplied -- see `auth` above).
-            Otherwise required -- a Flink-only key or a dedicated Tableflow/Connect key has no
-            such reach and always requires organization_id; omitting it in that case raises
-            `InterfaceError`.
+        organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
+            interactive login's session) or with a global_api_key/global_api_secret pair (inferred
+            on first use). Required with a Flink-only API key, which has no reach to determine it;
+            omitting it there raises `InterfaceError`.
         compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
             created on this connection name no pool, so Confluent Cloud Flink runs them in
             the environment+region default compute pool (provisioning if necessary). Individual
@@ -420,49 +413,11 @@ def connect(  # noqa: PLR0913
         OperationalError: If connection cannot be established
     """
 
-    # Validated first, ahead of every other gate below: the org-required gate immediately after
-    # this one inspects `auth` itself (`auth != "oauth"`), so an invalid `auth` value or a
-    # misplaced `oauth_config` would otherwise be masked by "Organization ID is required" or
-    # similar -- a confusing error pointing at the wrong parameter entirely. Also called again
-    # from Connection.__init__ (which validates independently of connect(), the same way
-    # cloud_provider/cloud_region/endpoint's requirements are checked in both places) since
-    # Connection is directly constructible without going through connect().
-    _resolve_oauth_config(
-        auth,
-        oauth_config,
-        reauth,
-        external_access_token,
-        identity_pool_id,
-        global_api_key,
-        global_api_secret,
-        flink_api_key,
-        flink_api_secret,
-        tableflow_api_key,
-        tableflow_api_secret,
-        connect_api_key,
-        connect_api_secret,
-    )
-
-    if not environment_id:
-        raise InterfaceError("Environment ID is required")
-
-    # Any global key material (even a half-supplied pair) defers this gate to the more specific
-    # "must be provided together" error _resolve_api_credentials raises below -- otherwise a
-    # half-supplied pair plus an omitted organization_id would be misdiagnosed as a missing org
-    # id instead of the actual credential mistake (#144 review). auth="oauth" gets the same
-    # deferral for a different reason: it has its own reach to discover organization_id (the
-    # interactive login's session), so the omission is never actually an error for that mode.
-    global_key_provided = bool(global_api_key) or bool(global_api_secret)
-    if not organization_id and not global_key_provided and auth != "oauth":
-        raise InterfaceError("Organization ID is required")
-
-    if not endpoint:
-        if not cloud_provider:
-            raise InterfaceError("Cloud provider is required when endpoint is not provided")
-
-        if not cloud_region:
-            raise InterfaceError("Cloud region is required when endpoint is not provided")
-
+    # All parameter validation now lives in Connection.__init__() (#213), the single source of
+    # truth: connect() just forwards. Connection is directly constructible without going through
+    # connect(), so centralizing there keeps both entry points validating identically -- including
+    # _resolve_oauth_config's oauth-vs-api-key mutual-exclusion checks, which run there before any
+    # interactive login can pop a browser.
     return Connection(
         environment_id,
         cloud_provider,
@@ -596,7 +551,7 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
-    def __init__(  # noqa: PLR0913, PLR0915
+    def __init__(  # noqa: PLR0913, PLR0915, PLR0912
         self,
         environment_id: str,
         cloud_provider: str | None,
@@ -674,13 +629,10 @@ class Connection:
                 If your Kafka clusters / Flink tables require private networking, supply the base
                 endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for
                 example, but cases and private networking technologies vary).
-            organization_id: Organization ID. Defaults to "" (omitted). May be omitted -- left as
-                "" or simply not passed -- with a global key present, in which case it's resolved
-                lazily from the `organization_id` property (see there) rather than here; under
-                `auth="oauth"` it's instead discovered from the interactive login's session (or,
-                if supplied, scopes that login to this organization). Otherwise this constructor
-                leaves an omitted value empty rather than raising -- connect() is what enforces
-                its presence for that case.
+            organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
+                interactive login's session) or with a global_api_key/global_api_secret pair
+                (inferred on first use). Required with a Flink-only API key, which has no reach to
+                determine it; omitting it there raises `InterfaceError`.
             compute_pool_id: Optional compute pool ID for SQL execution. If omitted (None) or
                 empty, statements created on this connection name no pool and Confluent Cloud
                 Flink runs them in the environment+region default compute pool.
@@ -723,7 +675,27 @@ class Connection:
         )
         self._reauth_policy = reauth
 
+        # Validated here (not only in connect()) so direct Connection() construction fails fast
+        # too (#213): an empty environment_id interpolates into request paths and would otherwise
+        # only surface later as a confusing server-side 404 rather than a clear InterfaceError.
+        if not environment_id:
+            raise InterfaceError("Environment ID is required")
         self.environment_id = environment_id
+
+        # Validated here (the single source of truth since #213; connect() no longer duplicates
+        # it). Without this gate an empty organization_id with no global key would be silently
+        # accepted -- the organization_id property used to fall back to "" when it had no global
+        # key to infer from -- and only surface later as a malformed request path / confusing 404
+        # (organization_id is interpolated into the Flink base URL). Any global key material (even
+        # a half-supplied pair) defers this gate to the more specific "must be provided together"
+        # credential error _resolve_*_credentials raises below, otherwise a half-supplied pair plus
+        # an omitted organization_id would be misdiagnosed as a missing org id instead of the actual
+        # credential mistake (#144 review). auth="oauth" is exempt for a different reason: it has
+        # its own reach to discover organization_id (the interactive login's session), so the
+        # omission is never an error for that mode.
+        global_key_provided = bool(global_api_key) or bool(global_api_secret)
+        if not organization_id and not global_key_provided and auth != "oauth":
+            raise InterfaceError("Organization ID is required")
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
         self.compute_pool_id = compute_pool_id or None
@@ -764,16 +736,20 @@ class Connection:
             raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
         self._http_timeout_secs = http_timeout_secs
 
+        # Single source of truth for the endpoint-vs-cloud-info gate (#213): connect() no longer
+        # duplicates this, so direct Connection() construction and connect() report the same
+        # per-field errors. Per-field wording (rather than one combined message) gives the caller
+        # the more specific complaint.
         if endpoint:
             if cloud_provider or cloud_region:
                 logger.warning(
                     "No need to provide cloud_provider or cloud_region when also providing "
                     "endpoint. Only using endpoint."
                 )
-        elif not (cloud_provider and cloud_region):
-            raise InterfaceError(
-                "cloud_provider and cloud_region are required when endpoint is not provided"
-            )
+        elif not cloud_provider:
+            raise InterfaceError("Cloud provider is required when endpoint is not provided")
+        elif not cloud_region:
+            raise InterfaceError("Cloud region is required when endpoint is not provided")
 
         # Create httpx client for making API calls
         if not endpoint:
@@ -1558,16 +1534,20 @@ class Connection:
         Returned as supplied to connect()/Connection() if given. If omitted under `auth="oauth"`,
         the organization the interactive login's session resolved (see `_oauth_provider`) -- no
         network call here, since `oauth.acquire()` already settled it synchronously in __init__.
-        If omitted and a global API key was supplied, inferred once via GET /org/v2/organizations
-        on first access and cached thereafter -- see _resolve_organization_id(). Otherwise "".
+        If omitted under an API-key mode, it must have been omitted alongside a global API key
+        (Connection.__init__ rejects an omitted organization_id with no global key outside oauth,
+        #213), so it is inferred once via GET /org/v2/organizations on first access and cached
+        thereafter -- see _resolve_organization_id().
         """
         if self._organization_id_value is None:
             if self._oauth_provider is not None:
                 self._organization_id_value = self._oauth_provider.organization_id or ""
             else:
-                self._organization_id_value = (
-                    self._resolve_organization_id() if self._global_credentials is not None else ""
-                )
+                # Reaching here (non-oauth, org omitted) means __init__'s gate guaranteed a global
+                # key is present, so _global_credentials is not None and inference can proceed
+                # (#213). The old "no global key -> return ''" fallback is now unreachable and has
+                # been removed.
+                self._organization_id_value = self._resolve_organization_id()
         return self._organization_id_value
 
     @property
