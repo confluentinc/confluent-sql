@@ -105,7 +105,10 @@ class TestSuccessfulRedirect:
         with _running_server() as server:
             response = _get(server, state=EXPECTED_STATE, code=AUTH_CODE)
 
-        assert '<a href="https://confluent.cloud">Confluent Cloud</a>' in response.text
+        assert (
+            '<a href="https://confluent.cloud" referrerpolicy="no-referrer">Confluent Cloud</a>'
+            in response.text
+        )
 
     def test_the_code_can_be_read_repeatedly(self):
         """wait_for_code is not a one-shot consume: #153's login() reads the code once, but a
