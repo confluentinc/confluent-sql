@@ -38,7 +38,7 @@ Changelog = "https://github.com/confluentinc/confluent-sql/blob/main/CHANGELOG.m
 
 [tool.ruff]
 line-length = 100
-include = ["src/**", "tests/**", "examples/**"]
+include = ["src/**/*.py", "tests/**/*.py", "examples/**/*.py"]
 lint.ignore = [
     "PLR2004", # stop complaining about inlined constants, mostly in test cases
 ]
