@@ -5,6 +5,7 @@ This module provides a DB-API v2 compliant interface for connecting to and
 executing SQL queries against Confluent SQL services.
 """
 
+from .__version__ import __version__
 from .changelog_compressor import ChangelogCompressor
 from .connection import Connection, connect
 from .connectors import (
@@ -72,6 +73,7 @@ threadsafety = 1  # Threads may share the module but not connections
 paramstyle = "pyformat"  # Use question mark style parameters
 
 __all__ = [
+    "__version__",
     "connect",
     "Connection",
     "Cursor",
