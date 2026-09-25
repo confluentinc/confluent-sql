@@ -5,12 +5,13 @@ The auth service's domain, API host, and client_id vary per Confluent Cloud envi
 environment as such, but until every environment has its own dedicated client they track
 whichever client that environment's row currently borrows or owns.
 
-`PROD` and `STAG`'s client_id/port/path are still **borrowed** from mcp-confluent's
-already-registered public client (`oauth/auth0-config.ts`), pending this driver getting its own
-dedicated registration in those environments (see oauth-research-and-plan.md decision 1).
-`DEVEL` has its own dedicated client as of identity-login-static#977 ("Confluent SQL Python
-Driver"), closing #177 for that one environment; PROD/STAG get the same treatment -- a one-row
-edit here, nothing downstream depends on whose client_id it is -- once they're registered too.
+`PROD`'s client_id/port/path is still **borrowed** from mcp-confluent's already-registered public
+client (`oauth/auth0-config.ts`), pending this driver getting its own dedicated registration in
+that environment (see oauth-research-and-plan.md decision 1). `DEVEL` and `STAG` each have their
+own dedicated client -- identity-login-static#977 ("Confluent SQL Python Driver") for DEVEL,
+identity-login-static#984 for STAG -- closing #177 for those two environments; PROD gets the same
+treatment -- a one-row edit here, nothing downstream depends on whose client_id it is -- once it's
+registered too.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ class CCloudOAuthConfig:
     service and API host."""
 
     auth_service_domain: str
+    # Also doubles as the top-level URL that invites logins for this lane -- what the callback
+    # server's success page links "Confluent Cloud" to.
     api_host: str
     client_id: str
     callback_host: str
@@ -47,9 +50,9 @@ class CCloudOAuthConfig:
 _CALLBACK_HOST = "127.0.0.1"
 
 # This port, callback path, and client_id are baked into mcp-confluent's public client
-# registration in the auth service and are still temporarily borrowed here for PROD/STAG. Once
-# each environment gets its own dedicated client registration (issue #177), that row's
-# port/path/client_id moves off these shared constants, same as DEVEL already has below.
+# registration in the auth service and are still temporarily borrowed here for PROD. Once it gets
+# its own dedicated client registration (issue #177), that row's port/path/client_id moves off
+# these shared constants, same as DEVEL/STAG already have below.
 _BORROWED_CALLBACK_PORT = 26640
 _BORROWED_CALLBACK_PATH = "/gateway/v1/callback-local-mcp-docs"
 
@@ -65,17 +68,20 @@ _ENVIRONMENTS: dict[str, CCloudOAuthConfig] = {
     "stag": CCloudOAuthConfig(
         auth_service_domain="login-stag.confluent-dev.io",
         api_host="https://stag.cpdev.cloud",
-        client_id="adtjckxmHbjddhNK36PvcXIDDbrJUMDH",
+        # Dedicated "Confluent SQL Python Driver" client (identity-login-static#984), not
+        # borrowed -- registered with the same callback port/path as DEVEL's dedicated client
+        # below (this environment's login is never run concurrently with DEVEL's).
+        client_id="kBIUXUKdg1RiEtg4cJjTCF58MEexw8EO",
         callback_host=_CALLBACK_HOST,
-        callback_port=_BORROWED_CALLBACK_PORT,
-        callback_path=_BORROWED_CALLBACK_PATH,
+        callback_port=26642,
+        callback_path="/callback-confluent-sql-docs",
     ),
     "devel": CCloudOAuthConfig(
         auth_service_domain="login.confluent-dev.io",
         api_host="https://devel.cpdev.cloud",
         # Dedicated "Confluent SQL Python Driver" client (identity-login-static#977), not
         # borrowed -- own port/callback path too, avoiding any collision with a borrowed-client
-        # login (PROD/STAG above, or mcp-confluent itself) running at the same time.
+        # login (PROD above, or mcp-confluent itself) running at the same time.
         client_id="txYV6dvI8PWu6OEoADXv9PVs1nyMrbCr",
         callback_host=_CALLBACK_HOST,
         callback_port=26642,
@@ -87,4 +93,5 @@ though only PROD ships in this epic's first pass -- exposing STAG/DEVEL later is
 export, not new machinery."""
 
 PROD = _ENVIRONMENTS["prod"]
+STAG = _ENVIRONMENTS["stag"]
 DEVEL = _ENVIRONMENTS["devel"]

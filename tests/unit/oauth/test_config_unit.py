@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from confluent_sql.oauth.config import DEVEL, PROD, CCloudOAuthConfig
+from confluent_sql.oauth.config import DEVEL, PROD, STAG, CCloudOAuthConfig
 
 pytestmark = pytest.mark.unit
 
@@ -30,6 +30,18 @@ def test_devel_config_values():
     assert DEVEL.callback_port == 26642
     assert DEVEL.callback_path == "/callback-confluent-sql-docs"
     assert DEVEL.scopes == ("email", "openid", "offline_access")
+
+
+def test_stag_config_values():
+    """STAG has its own dedicated Auth0 client (identity-login-static#984), not a borrowed one --
+    pinning it here catches accidental drift the same way test_prod_config_values does for PROD."""
+    assert STAG.auth_service_domain == "login-stag.confluent-dev.io"
+    assert STAG.api_host == "https://stag.cpdev.cloud"
+    assert STAG.client_id == "kBIUXUKdg1RiEtg4cJjTCF58MEexw8EO"
+    assert STAG.callback_host == "127.0.0.1"
+    assert STAG.callback_port == 26642
+    assert STAG.callback_path == "/callback-confluent-sql-docs"
+    assert STAG.scopes == ("email", "openid", "offline_access")
 
 
 def test_authorize_url():
