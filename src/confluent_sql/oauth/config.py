@@ -68,9 +68,6 @@ _ENVIRONMENTS: dict[str, CCloudOAuthConfig] = {
     "stag": CCloudOAuthConfig(
         auth_service_domain="login-stag.confluent-dev.io",
         api_host="https://stag.cpdev.cloud",
-        # Dedicated "Confluent SQL Python Driver" client (identity-login-static#984), not
-        # borrowed -- registered with the same callback port/path as DEVEL's dedicated client
-        # below (this environment's login is never run concurrently with DEVEL's).
         client_id="kBIUXUKdg1RiEtg4cJjTCF58MEexw8EO",
         callback_host=_CALLBACK_HOST,
         callback_port=26642,
@@ -79,9 +76,6 @@ _ENVIRONMENTS: dict[str, CCloudOAuthConfig] = {
     "devel": CCloudOAuthConfig(
         auth_service_domain="login.confluent-dev.io",
         api_host="https://devel.cpdev.cloud",
-        # Dedicated "Confluent SQL Python Driver" client (identity-login-static#977), not
-        # borrowed -- own port/callback path too, avoiding any collision with a borrowed-client
-        # login (PROD above, or mcp-confluent itself) running at the same time.
         client_id="txYV6dvI8PWu6OEoADXv9PVs1nyMrbCr",
         callback_host=_CALLBACK_HOST,
         callback_port=26642,
