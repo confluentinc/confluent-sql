@@ -25,6 +25,8 @@ class CCloudOAuthConfig:
     service and API host."""
 
     auth_service_domain: str
+    # Also doubles as the top-level URL that invites logins for this lane -- what the callback
+    # server's success page links "Confluent Cloud" to.
     api_host: str
     client_id: str
     callback_host: str
