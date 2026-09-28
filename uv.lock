@@ -36,7 +36,6 @@ wheels = [
 
 [[package]]
 name = "confluent-sql"
-version = "0.6.0rc0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

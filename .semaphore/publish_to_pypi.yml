@@ -17,7 +17,7 @@ blocks:
       jobs:
         - name: Publish `confluent_sql` to PyPi
           commands:
-            - export VERSION=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+            - export VERSION=$(grep '^__version__' src/confluent_sql/__version__.py | cut -d'"' -f2)
             - echo "Publishing confluent-sql $VERSION to PyPi"
             - uv build
             - . vault-get-secret --secret-key=pypi_token --export-as=CONFLUENT_SQL_KEY pypi/confluent-sql
