@@ -2158,8 +2158,8 @@ class Connection:
             table_formats: Which format(s) to materialize to. A single TableFormat (e.g.
                 TableFormat.ICEBERG) for the common case, or a collection for both
                 ({TableFormat.ICEBERG, TableFormat.DELTA}). Required; at least one.
-            storage: The storage backend -- ManagedStorage() (zero-config), ByobAwsStorage, or
-                AzureAdlsStorage. Required.
+            storage: The storage backend -- ManagedStorage() (zero-config), ByobAwsStorage,
+                AzureAdlsStorage, or GcsStorage. Required.
             config: Optional topic-level config (retention, error-handling), shared across all
                 enabled formats.
             wait_for_running: If True (default), poll until the topic reaches RUNNING, raising on
