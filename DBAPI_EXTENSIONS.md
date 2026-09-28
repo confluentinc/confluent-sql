@@ -620,6 +620,8 @@ assert set(topic.spec.table_formats) == {TableFormat.ICEBERG, TableFormat.DELTA}
 - `ByobAwsStorage(bucket_name=..., provider_integration_id=...)` — bring-your-own AWS S3 bucket.
 - `AzureAdlsStorage(storage_account_name=..., container_name=..., provider_integration_id=...)` —
   customer-owned Azure Data Lake Storage Gen2.
+- `GcsStorage(bucket_name=..., provider_integration_id=...)` — customer-owned Google Cloud Storage
+  bucket.
 
 ### Cluster-id resolution
 

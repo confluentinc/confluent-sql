@@ -11,6 +11,7 @@ from confluent_sql.tableflow import (
     AzureAdlsStorage,
     ByobAwsStorage,
     FailingTableFormat,
+    GcsStorage,
     ManagedStorage,
     TableflowErrorHandlingLog,
     TableflowErrorHandlingSkip,
@@ -118,6 +119,17 @@ class TestStorageToSpec:
             "provider_integration_id": "cspi-xyz",
         }
 
+    def test_gcs(self) -> None:
+        storage = GcsStorage(
+            bucket_name="my-gcs-bucket",
+            provider_integration_id="cspi-stgce89r7",
+        )
+        assert storage.to_spec() == {
+            "kind": "GoogleCloudStorage",
+            "bucket_name": "my-gcs-bucket",
+            "provider_integration_id": "cspi-stgce89r7",
+        }
+
     def test_storage_is_frozen(self) -> None:
         storage = ByobAwsStorage(bucket_name="b", provider_integration_id="cspi-1")
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -157,6 +169,21 @@ class TestStorageFromSpec:
             storage_account_name="acct1",
             container_name="container1",
             provider_integration_id="cspi-xyz",
+        )
+
+    def test_gcs_drops_readonly_fields(self) -> None:
+        parsed = storage_from_spec(
+            {
+                "kind": "GoogleCloudStorage",
+                "bucket_name": "my-gcs-bucket",
+                "provider_integration_id": "cspi-stgce89r7",
+                "bucket_region": "us-central1",
+                "table_path": "gs://my-gcs-bucket/10011010/11101100/org-1/env-2/lkc-3/v1/tableId",
+            }
+        )
+        assert parsed == GcsStorage(
+            bucket_name="my-gcs-bucket",
+            provider_integration_id="cspi-stgce89r7",
         )
 
     def test_unknown_kind_falls_back_to_unknown(self) -> None:

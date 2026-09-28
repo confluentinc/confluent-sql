@@ -203,6 +203,28 @@ class AzureAdlsStorage(TableflowStorage):
 
 
 @dataclass(frozen=True)
+class GcsStorage(TableflowStorage):
+    """Customer-owned Google Cloud Storage.
+
+    Named for the informal abbreviation (mirroring `AzureAdlsStorage`) rather than the API
+    schema name `GoogleCloudStorageSpec`, which would stutter to `GoogleCloudStorageStorage`.
+    The `kind` ClassVar still carries the exact wire discriminator (`"GoogleCloudStorage"`).
+    """
+
+    kind: ClassVar[str] = "GoogleCloudStorage"
+
+    bucket_name: str
+    provider_integration_id: str
+
+    def to_spec(self) -> StrAnyDict:
+        return {
+            Fields.KIND: self.kind,
+            Fields.BUCKET_NAME: self.bucket_name,
+            Fields.PROVIDER_INTEGRATION_ID: self.provider_integration_id,
+        }
+
+
+@dataclass(frozen=True)
 class TableflowStorageUnknown(TableflowStorage):
     """An unrecognized `spec.storage.kind` -- mirrors `TableflowPhase`'s `UNKNOWN` fallback so a
     future server-side storage kind doesn't break response parsing for an otherwise-healthy
@@ -247,6 +269,11 @@ def storage_from_spec(data: StrAnyDict) -> TableflowStorage:
         return AzureAdlsStorage(
             storage_account_name=data[Fields.STORAGE_ACCOUNT_NAME],
             container_name=data[Fields.CONTAINER_NAME],
+            provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
+        )
+    if kind == GcsStorage.kind:
+        return GcsStorage(
+            bucket_name=data[Fields.BUCKET_NAME],
             provider_integration_id=data[Fields.PROVIDER_INTEGRATION_ID],
         )
     return TableflowStorageUnknown(raw=data)
