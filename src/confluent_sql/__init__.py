@@ -56,6 +56,7 @@ from .statement_properties import (
 from .tableflow import (
     AzureAdlsStorage,
     ByobAwsStorage,
+    GcsStorage,
     ManagedStorage,
     TableflowErrorHandling,
     TableflowErrorHandlingLog,
@@ -123,6 +124,7 @@ __all__ = [
     "ManagedStorage",
     "ByobAwsStorage",
     "AzureAdlsStorage",
+    "GcsStorage",
     "TableflowStorageUnknown",
     "TableflowErrorHandling",
     "TableflowErrorHandlingSuspend",
