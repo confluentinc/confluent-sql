@@ -1,15 +1,18 @@
 import re
 import types
+import warnings
+from typing import Any
 
 import pytest
 
-from confluent_sql import Cursor, InterfaceError
+from confluent_sql import Cursor, InterfaceError, PropertiesDict, Property
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import (
     ComputePoolExhaustedError,
     NotSupportedError,
     OperationalError,
     ProgrammingError,
+    StatementNotFoundError,
 )
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
@@ -47,6 +50,7 @@ class TestExecute:
         mock_connection_cursor._statement = prior_statement = mocker.Mock()
         prior_statement.is_deletable = True
         prior_statement.is_deleted = False
+        prior_statement.is_dry_run = False
 
         delete_statement_spy = mocker.spy(mock_connection_cursor, "delete_statement")
 
@@ -62,6 +66,7 @@ class TestExecute:
         mock_connection_cursor._statement = mocker.Mock()
         mock_connection_cursor._statement.is_deleted = False  # type: ignore
         mock_connection_cursor._statement.is_deletable = False  # type: ignore
+        mock_connection_cursor._statement.is_dry_run = False  # type: ignore
 
         with pytest.warns(
             UserWarning,
@@ -1737,6 +1742,7 @@ class TestMayHaveResults:
         """Test condition 2: returns False when has_schema() is False (DDL statement)."""
         # Mock a DDL statement
         mock_statement = mocker.Mock()
+        mock_statement.is_dry_run = False
         mock_statement.has_schema.return_value = False  # DDL
         mock_connection_cursor._statement = mock_statement
 
@@ -1780,6 +1786,7 @@ class TestMayHaveResults:
         mock_statement = mocker.Mock()
         mock_statement.has_schema.return_value = True
         mock_statement.schema = mocker.Mock()  # Non-None schema
+        mock_statement.is_dry_run = False
         mock_connection_cursor._statement = mock_statement
 
         # Mock result reader that reports no more results
@@ -1798,6 +1805,7 @@ class TestMayHaveResults:
         mock_statement = mocker.Mock()
         mock_statement.has_schema.return_value = True
         mock_statement.schema = mocker.Mock()  # Non-None schema
+        mock_statement.is_dry_run = False
         mock_connection_cursor._statement = mock_statement
 
         # Mock result reader that reports results available
@@ -1822,6 +1830,7 @@ class TestMayHaveResults:
 
         # Now set statement but make has_schema False
         mock_statement = mocker.Mock()
+        mock_statement.is_dry_run = False
         mock_statement.has_schema.return_value = False
         mock_connection_cursor._statement = mock_statement
 
@@ -1956,3 +1965,175 @@ class TestStopStatement:
         mock_connection_cursor._statement = None
         with pytest.raises(InterfaceError, match="No active statement to stop"):
             mock_connection_cursor.stop_statement()
+
+
+def _dry_run_response(
+    statement_response_factory: StatementResponseFactory, **kwargs: Any
+) -> dict[str, Any]:
+    """A statement response shaped like a live `sql.dry-run` POST reply (dbt-confluent GH-118
+    probe run 995e2382): terminal phase and traits, the flag echoed in spec.properties, and an
+    empty uid."""
+    response = statement_response_factory(**kwargs)
+    response["spec"]["properties"]["sql.dry-run"] = "true"
+    response["metadata"]["uid"] = ""
+    response["metadata"]["resource_version"] = ""
+    return response
+
+
+DRY_RUN: PropertiesDict = {Property.DRY_RUN: "true"}
+
+
+def _never_stored(
+    mock_connection_factory: MockConnectionFactory, response: dict[str, Any]
+) -> Connection:
+    """A mock connection that answers submission with `response` and, like the live server for
+    every dry-run, 404s the readiness poll's GET because the statement was never stored.
+    (Connection.delete_statement already swallows a 404, so tests assert it is never called
+    rather than simulating one.)"""
+    connection = mock_connection_factory(response, None)
+    connection._get_statement.side_effect = StatementNotFoundError(  # type: ignore
+        "Statement not found", statement_name=response["name"]
+    )
+    return connection
+
+
+@pytest.mark.unit
+class TestDryRun:
+    """The server answers a dry-run in the POST response and never stores it, so a readiness
+    poll (GET) for it 404s. The cursor must never poll, delete or stop it."""
+
+    @pytest.fixture
+    def dry_run_connection(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ) -> Connection:
+        response = _dry_run_response(
+            statement_response_factory,
+            is_bounded=False,
+            is_append_only=False,
+            schema_columns=[
+                {"name": "id", "type": {"nullable": False, "type": "BIGINT"}},
+                {
+                    "name": "price",
+                    "type": {"nullable": True, "type": "DECIMAL", "precision": 10, "scale": 2},
+                },
+            ],
+        )
+        return _never_stored(mock_connection_factory, response)
+
+    def test_execute_returns_post_response_without_polling(self, dry_run_connection: Connection):
+        cursor = dry_run_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        dry_run_connection._get_statement.assert_not_called()  # type: ignore
+        assert cursor.statement.is_dry_run
+        assert cursor.statement.statement_id == ""
+        schema = cursor.statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id", "price"]
+        description = cursor.description
+        assert description is not None
+        assert description[1][:2] == ("price", "DECIMAL")
+
+    def test_close_does_not_delete(self, dry_run_connection: Connection):
+        cursor = dry_run_connection.cursor()
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        cursor.close()
+
+        dry_run_connection.delete_statement.assert_not_called()  # type: ignore
+
+    def test_execute_after_dry_run_neither_deletes_nor_warns(self, dry_run_connection: Connection):
+        cursor = dry_run_connection.cursor()
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # the "existing active statement" warning would raise
+            cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        dry_run_connection.delete_statement.assert_not_called()  # type: ignore
+
+    def test_delete_statement_is_a_noop(self, dry_run_connection: Connection):
+        cursor = dry_run_connection.cursor()
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        cursor.delete_statement()
+
+        dry_run_connection.delete_statement.assert_not_called()  # type: ignore
+
+    def test_stop_statement_is_a_noop(self, dry_run_connection: Connection):
+        """There is nothing server-side to stop; a PATCH would 404 with StatementNotFoundError."""
+        cursor = dry_run_connection.cursor()
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+        statement = cursor.statement
+
+        assert cursor.stop_statement() is statement
+
+        dry_run_connection.stop_statement.assert_not_called()  # type: ignore
+
+    def test_may_have_results_is_false(self, dry_run_connection: Connection):
+        """dbt-confluent's fetch helpers consult may_have_results; a dry-run has no rows."""
+        cursor = dry_run_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        assert cursor.may_have_results is False
+
+    def test_fetch_raises_dry_run_specific_error(self, dry_run_connection: Connection):
+        cursor = dry_run_connection.cursor()
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        with pytest.raises(InterfaceError, match="dry-run"):
+            cursor.fetchone()
+
+    def test_ddl_dry_run_has_no_schema(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """A CTAS dry-run comes back with traits but `schema: {}` (probe run 995e2382)."""
+        response = _dry_run_response(statement_response_factory, sql_kind="CREATE_TABLE_AS")
+        response["status"]["traits"]["schema"] = {}
+        connection = _never_stored(mock_connection_factory, response)
+        cursor = connection.cursor()
+
+        cursor.execute("CREATE TABLE t AS SELECT 1 AS x", properties=DRY_RUN)
+
+        connection._get_statement.assert_not_called()  # type: ignore
+        assert cursor.statement.sql_kind == "CREATE_TABLE_AS"
+        assert cursor.statement.schema is None
+        assert cursor.description is None
+
+    def test_failed_dry_run_still_raises_submission_failed(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Regression guard: invalid SQL already FAILs in the POST response, and must keep
+        raising OperationalError with the server's detail rather than returning quietly."""
+        response = _dry_run_response(
+            statement_response_factory,
+            phase="FAILED",
+            status_detail="SQL validation failed. Column 'nope' not found in any table",
+        )
+        cursor = _never_stored(mock_connection_factory, response).cursor()
+
+        with pytest.raises(OperationalError, match="submission failed: SQL validation failed"):
+            cursor.execute("SELECT nope FROM t", properties=DRY_RUN)
+
+    def test_non_terminal_dry_run_raises(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Every probed dry-run came back COMPLETED or FAILED. If the server ever answers with a
+        non-terminal phase, fail loudly instead of treating a partial response as final."""
+        response = _dry_run_response(statement_response_factory, phase="PENDING")
+        connection = _never_stored(mock_connection_factory, response)
+        cursor = connection.cursor()
+
+        with pytest.raises(OperationalError, match="non-terminal phase PENDING"):
+            cursor.execute("SELECT id FROM t", properties=DRY_RUN)
+
+        connection._get_statement.assert_not_called()  # type: ignore
