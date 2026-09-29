@@ -9,7 +9,7 @@ from confluent_sql.exceptions import InterfaceError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op, Phase, Schema, Statement, StatementWarning, WarningSeverity
 from confluent_sql.types import StatementTypeConverter
-from tests.unit.conftest import StatementResponseFactory
+from tests.unit.conftest import StatementFactory, StatementResponseFactory
 
 """Unit tests over Statement class."""
 
@@ -1475,3 +1475,70 @@ class TestStatementCanFetchResults:
 
         statement = Statement.from_response(mock_connection, response)
         assert not statement.can_fetch_results(execution_mode)
+
+
+def _as_dry_run(response: dict[str, Any], value: Any = "true") -> dict[str, Any]:
+    """Reshape a statement response like a live `sql.dry-run` POST reply (dbt-confluent GH-118
+    probe run 995e2382): the server echoes the flag in spec.properties, and metadata.uid and
+    resource_version are empty because the statement is never stored."""
+    response["spec"]["properties"]["sql.dry-run"] = value
+    response["metadata"]["uid"] = ""
+    response["metadata"]["resource_version"] = ""
+    return response
+
+
+@pytest.mark.unit
+class TestStatementDryRun:
+    """A dry-run statement is validated and answered in the POST response, never stored."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("true", True), ("TRUE", True), (True, True), ("false", False), (False, False)],
+    )
+    def test_is_dry_run_reads_echoed_property(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        value: Any,
+        expected: bool,
+    ):
+        response = _as_dry_run(statement_response_factory(), value)
+        assert Statement.from_response(mock_connection, response).is_dry_run is expected
+
+    def test_is_dry_run_false_without_property(self, statement_factory: StatementFactory):
+        assert statement_factory().is_dry_run is False
+
+    def test_is_dry_run_false_when_properties_is_null(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """`spec.properties` may come back as JSON null. is_deletable consults is_dry_run for
+        every statement (and Cursor.close() calls is_deletable), so this must not raise."""
+        response = statement_response_factory()
+        response["spec"]["properties"] = None
+        statement = Statement.from_response(mock_connection, response)
+        assert statement.is_dry_run is False
+        assert statement.is_deletable is True
+
+    @pytest.mark.parametrize("phase", ["COMPLETED", "FAILED"])
+    def test_dry_run_is_never_deletable(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        phase: str,
+    ):
+        """COMPLETED and FAILED are normally deletable, but a dry-run was never stored, so
+        there is nothing to delete."""
+        response = _as_dry_run(statement_response_factory(phase=phase))
+        assert Statement.from_response(mock_connection, response).is_deletable is False
+
+    def test_from_response_accepts_empty_uid(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        response = _as_dry_run(statement_response_factory(name="dry-1"))
+        statement = Statement.from_response(mock_connection, response)
+        assert statement.statement_id == ""
+        assert statement.name == "dry-1"
