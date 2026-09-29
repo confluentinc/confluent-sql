@@ -4,17 +4,19 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+## 0.6.0 2026-09-29 
+
 ### Changed - Breaking
 
-- `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. `tableflow_formats` was never a real Tableflow API concept -- the wire schema only ever names `table_formats` (`spec.table_formats`, `status.failing_table_formats`) -- and the misnomer was inconsistent with the new `Connection.update_tableflow()`, which already used `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
+- `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
 - `TableflowTopicSpec.config`: Now parsed as a typed `TableflowTopicConfig` instead of being left as a raw mapping. If you need unmodeled wire fields, read `topic.spec.raw.get("config")` instead. (#214)
 
 ### Added
 
 - Support for enabling TableFlow against GCP/GCS. Use kind=`"GoogleCloudStorage"` and new related class `GcsStorage`, peer to ByobAwsStorage/AzureAdlsStorage/ManagedStorage. See new example `examples/tableflow_gcs_example.py` for more details. (#239)
+- Ability to adjust an existing TableFlow configuration: `Connection.update_tableflow(table_name, *, table_formats=None, config=None, wait_for_running=True, timeout=300)` updates an already-enabled Tableflow topic's `table_formats`/`config` in place via `PATCH /tableflow/v1/tableflow-topics/{display_name}`, avoiding the disable/re-enable cycle `enable_tableflow` would otherwise require. `None` (the default) means "leave unchanged," for both of this method's own arguments and for each of `config`'s own sub-fields. `storage`/`display_name` remain immutable and have no in-place path; a caller needing to change either must recreate the topic. By default blocks until the topic returns to `RUNNING`; pass `wait_for_running=False` to return as soon as the update is accepted. Raises `TableflowTopicNotFoundError` if Tableflow isn't enabled for the table. (#214)
+- Support for the new VARIANT type: VARIANT result columns are now decoded into typed Python values instead of raising `NotImplementedError`. An OBJECT becomes a `dict`, an ARRAY a `list`, and each scalar its matching Python type (`bool`, `int`, `float`, `Decimal`, `str`, `date`, `time`, `datetime`, `bytes`). Nanosecond-precision timestamps are truncated to microseconds. An undecodable node is returned as the new `UndecodableVariant`. VARIANT is not yet supported as a statement parameter (Flink has no VARIANT literal syntax).
 - `Statement.warnings` exposes non-fatal warnings (`severity`, `created_at`, `reason`, `message`) reported by the server for a statement, parsed from `status.warnings` into a list of `StatementWarning`. `Cursor.warnings` is a convenience that delegates to `cursor.statement.warnings`, returning an empty list before a statement has been executed; unlike most cursor state, it remains readable after `Cursor.close()`. (#234)
-- `Connection.update_tableflow(table_name, *, table_formats=None, config=None, wait_for_running=True, timeout=300)` updates an already-enabled Tableflow topic's `table_formats`/`config` in place via `PATCH /tableflow/v1/tableflow-topics/{display_name}`, avoiding the disable/re-enable cycle `enable_tableflow` would otherwise require. `None` (the default) means "leave unchanged," for both of this method's own arguments and for each of `config`'s own sub-fields. `storage`/`display_name` remain immutable and have no in-place path; a caller needing to change either must recreate the topic. By default blocks until the topic returns to `RUNNING`; pass `wait_for_running=False` to return as soon as the update is accepted. Raises `TableflowTopicNotFoundError` if Tableflow isn't enabled for the table. (#214)
-- VARIANT result columns are now decoded into typed Python values instead of raising `NotImplementedError`. An OBJECT becomes a `dict`, an ARRAY a `list`, and each scalar its matching Python type (`bool`, `int`, `float`, `Decimal`, `str`, `date`, `time`, `datetime`, `bytes`). Nanosecond-precision timestamps are truncated to microseconds. An undecodable node is returned as the new `UndecodableVariant`. VARIANT is not yet supported as a statement parameter (Flink has no VARIANT literal syntax).
 
 ### Fixed
 
