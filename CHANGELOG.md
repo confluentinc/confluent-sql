@@ -4,7 +4,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
-## 2026-09-29 0.6.0
+## 0.6.0 2026-09-29 
 
 ### Changed - Breaking
 
