@@ -1478,9 +1478,9 @@ class TestStatementCanFetchResults:
 
 
 def _as_dry_run(response: dict[str, Any], value: Any = "true") -> dict[str, Any]:
-    """Reshape a statement response like a live `sql.dry-run` POST reply (dbt-confluent GH-118
-    probe run 995e2382): the server echoes the flag in spec.properties, and metadata.uid and
-    resource_version are empty because the statement is never stored."""
+    """Reshape a statement response like a live `sql.dry-run` POST reply: the server echoes the
+    flag in spec.properties, and metadata.uid and resource_version are empty because the
+    statement is never stored."""
     response["spec"]["properties"]["sql.dry-run"] = value
     response["metadata"]["uid"] = ""
     response["metadata"]["resource_version"] = ""

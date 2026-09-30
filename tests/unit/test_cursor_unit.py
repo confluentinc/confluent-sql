@@ -1970,9 +1970,8 @@ class TestStopStatement:
 def _dry_run_response(
     statement_response_factory: StatementResponseFactory, **kwargs: Any
 ) -> dict[str, Any]:
-    """A statement response shaped like a live `sql.dry-run` POST reply (dbt-confluent GH-118
-    probe run 995e2382): terminal phase and traits, the flag echoed in spec.properties, and an
-    empty uid."""
+    """A statement response shaped like a live `sql.dry-run` POST reply: terminal phase and
+    traits, the flag echoed in spec.properties, and an empty uid."""
     response = statement_response_factory(**kwargs)
     response["spec"]["properties"]["sql.dry-run"] = "true"
     response["metadata"]["uid"] = ""
@@ -2074,7 +2073,7 @@ class TestDryRun:
         dry_run_connection.stop_statement.assert_not_called()  # type: ignore
 
     def test_may_have_results_is_false(self, dry_run_connection: Connection):
-        """dbt-confluent's fetch helpers consult may_have_results; a dry-run has no rows."""
+        """Callers consult may_have_results before fetching; a dry-run has no rows."""
         cursor = dry_run_connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
         cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
 
