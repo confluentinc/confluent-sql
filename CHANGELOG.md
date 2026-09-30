@@ -4,6 +4,14 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. A dry-run statement is never `is_deletable`, since the server never stores it. (#245)
+
+### Fixed
+
+- `Cursor.execute()` with the `sql.dry-run` statement property no longer raises `StatementNotFoundError` for valid SQL. The server answers a dry-run synchronously in the POST response and never stores the statement, so the cursor now treats that response as final: it skips the readiness poll (which always 404'd) and exposes the result schema through `cursor.description` / `cursor.statement.schema`. It also avoids pointless server calls for the never-stored statement: no DELETE on `close()`, a later `execute()`, or `delete_statement()`, and no stop request from `stop_statement()`. `cursor.may_have_results` is `False` for a dry-run, and fetching rows from one raises `InterfaceError` saying so. Invalid SQL still raises `OperationalError` with the server's validation detail; a dry-run answered in a non-terminal phase raises `OperationalError` naming the phase. (#245)
+
 ## 0.6.0, 2026-09-29
 
 ### Changed - Breaking
