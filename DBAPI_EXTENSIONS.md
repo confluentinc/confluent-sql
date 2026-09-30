@@ -820,6 +820,7 @@ The `cursor.statement` property provides detailed metadata about the executed qu
 | `is_append_only` | `bool`           | Query produces only inserts (vs changelog with updates/deletes)         |
 | `is_bounded`     | `bool`           | Query has finite result set (snapshot) vs unbounded (streaming)         |
 | `is_deletable`   | `bool`           | Statement can be deleted                                                |
+| `is_dry_run`     | `bool`           | Statement was submitted with `sql.dry-run` (validated, never stored)    |
 | `schema`         | `Schema`         | Result schema with column names and types                               |
 | `sql_kind`       | `str`            | Query type: `SELECT`, `INSERT`, `CREATE`, etc.                          |
 
@@ -837,6 +838,36 @@ print(f"Schema: {stmt.schema}")
 print(f"Append-only: {stmt.is_append_only}")
 print(f"Bounded: {stmt.is_bounded}")
 ```
+
+#### Dry-run statements (`sql.dry-run`)
+
+Setting the `sql.dry-run` statement property asks Flink to validate a statement without running
+it. The server answers synchronously in the submission response and never stores the statement,
+so `execute()` returns as soon as that response arrives, with no readiness polling:
+
+```python
+from confluent_sql import Property
+
+cursor.execute("SELECT id, price FROM orders", properties={Property.DRY_RUN: "true"})
+
+stmt = cursor.statement
+assert stmt.is_dry_run
+print(cursor.description)  # result columns for a query; None for DDL
+print(stmt.schema)  # the same columns as a Schema
+```
+
+- A query's result schema is available through `cursor.description` and `cursor.statement.schema`.
+  A DDL statement (e.g. `CREATE TABLE ... AS SELECT`) has no schema: both are `None`.
+- A dry-run produces no rows: `cursor.may_have_results` is `False`, and `fetchone()`,
+  `fetchmany()`, `fetchall()` and iteration raise `InterfaceError`. On a DDL-mode cursor, fetching
+  raises the DDL-mode `InterfaceError` first. `cursor.metrics` raises "No result reader
+  initialized".
+- The statement never exists server-side, so `close()`, a later `execute()`,
+  `delete_statement()` and `stop_statement()` never contact the server about it.
+  `statement_id` is `""`.
+- Invalid SQL still raises `OperationalError` with the server's validation detail. The
+  degraded/pool-exhaustion checks that a normal statement gets while it is polled don't apply: a
+  dry-run never runs.
 
 ---
 

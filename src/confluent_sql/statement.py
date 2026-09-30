@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from .exceptions import InterfaceError, OperationalError
 from .execution_mode import ExecutionMode
+from .statement_properties import Property
 from .types import (
     ColumnTypeDefinition,
     FromResponseTypes,
@@ -384,8 +385,26 @@ class Statement:
 
     @property
     def is_deletable(self) -> bool:
-        """Check if the statement can be deleted safely."""
+        """Check if the statement can be deleted safely.
+
+        A dry-run statement never is: the server never stored it, so there is nothing to delete.
+        """
+        if self.is_dry_run:
+            return False
         return self.phase in {Phase.COMPLETED, Phase.FAILED, Phase.STOPPED}
+
+    @property
+    def is_dry_run(self) -> bool:
+        """Was this statement submitted with `sql.dry-run` enabled?
+
+        The server validates a dry-run statement and answers synchronously in the POST response
+        -- a terminal phase (COMPLETED or FAILED) and, unless FAILED, full traits, including the
+        result schema for a query -- but never stores it: the response's `metadata.uid` is
+        empty (so `statement_id` is `""`), and a follow-up GET for it returns 404. Read from the
+        properties the server echoes back in `spec.properties`.
+        """
+        value = (self.spec.get("properties") or {}).get(Property.DRY_RUN)
+        return str(value).lower() == "true"
 
     @property
     def is_degraded(self) -> bool:

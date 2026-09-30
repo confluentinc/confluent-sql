@@ -241,8 +241,13 @@ class Cursor:
         if not statement_text.strip():
             raise ProgrammingError("SQL statement cannot be empty")
 
-        # Delete any previous statement if present and in a deletable state
-        if self._statement is not None and not self._statement.is_deleted:
+        # Delete any previous statement if present and in a deletable state. A dry-run was never
+        # stored server-side, so there is nothing to delete and nothing to warn about.
+        if (
+            self._statement is not None
+            and not self._statement.is_deleted
+            and not self._statement.is_dry_run
+        ):
             if self._statement.is_deletable:
                 self.delete_statement()
             else:
@@ -276,6 +281,20 @@ class Cursor:
                 f" {self._statement.status.get('detail', '')}"
             )
 
+        if self._statement.is_dry_run:
+            # The server answers a dry-run synchronously in the POST response -- terminal phase
+            # and traits, including any result schema -- and never stores it, so that response
+            # is final: polling for readiness would 404. (This also skips
+            # _raise_if_statement_is_broken: a dry-run never runs, so it can't be DEGRADED or
+            # pool-exhausted.)
+            if not self._statement.phase.is_terminal:
+                raise OperationalError(
+                    f"Dry-run statement '{self._statement.name}' came back in non-terminal phase"
+                    f" {self._statement.phase.value}; a dry-run is expected to be answered in"
+                    " full by the submission response."
+                )
+            return
+
         # ... and wait for it to be "ready" (either in a terminal state or running) based on
         # execution mode and statement type.
         self._wait_for_statement_ready(timeout)
@@ -298,6 +317,11 @@ class Cursor:
         """Raise if result reader is not initialized, which should be the case if the
         statement is not append-only or if we haven't successfully waited for the statement to
         be ready."""
+        if self._statement is not None and self._statement.is_dry_run:
+            raise InterfaceError(
+                "Cannot fetch results from a dry-run statement: it produces no rows. Read the"
+                " result schema from cursor.description or cursor.statement.schema instead."
+            )
         if self._result_reader is None:
             raise InterfaceError(
                 "Result reader not initialized. This likely means the statement"
@@ -478,7 +502,8 @@ class Cursor:
         Delete any possible CCloud Flink-side statement to prevent orphaned jobs / statement
         records.
 
-        If no statement was executed, or if the statement was already deleted, this is a no-op.
+        If no statement was executed, the statement was already deleted, or it was a dry-run
+        (never stored server-side), this is a no-op.
 
         Raises:
             OperationalError: If statement deletion fails.
@@ -486,7 +511,7 @@ class Cursor:
         """
         self._raise_if_closed()
 
-        if self._statement is None or self._statement.is_deleted:
+        if self._statement is None or self._statement.is_deleted or self._statement.is_dry_run:
             return
 
         self._connection.delete_statement(self._statement.name)
@@ -498,7 +523,9 @@ class Cursor:
 
         Delegates to Connection.stop_statement and reassigns the cursor's tracked statement to the
         returned Statement. Unlike delete_statement(), stopping with no active statement
-        is an error -- there is no statement to stop and no sensible Statement to return.
+        is an error -- there is no statement to stop and no sensible Statement to return. A
+        dry-run statement was never stored server-side, so there is nothing to stop: the tracked
+        statement is returned unchanged without contacting the server.
 
         Args:
             wait_for_stopped: If True (default), block until the statement reaches a terminal phase
@@ -520,6 +547,9 @@ class Cursor:
 
         if self._statement is None:
             raise InterfaceError("No active statement to stop")
+
+        if self._statement.is_dry_run:
+            return self._statement
 
         self._statement = self._connection.stop_statement(
             self._statement.name, wait_for_stopped=wait_for_stopped, timeout=timeout
@@ -549,7 +579,8 @@ class Cursor:
 
         Returns:
             True if the statement can produce results and more data may be available.
-            False if the statement cannot produce results or results are exhausted.
+            False if the statement cannot produce results or results are exhausted, or if it
+            was a dry-run (which produces no rows).
 
         Raises:
             InterfaceError: If statement.has_schema() raises (e.g., FAILED statements
@@ -559,6 +590,7 @@ class Cursor:
             self._statement is not None
             and self._statement.has_schema()
             and self._statement.schema is not None
+            and not self._statement.is_dry_run
             and self._get_result_reader().may_have_results
         )
 
