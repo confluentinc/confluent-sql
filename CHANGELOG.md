@@ -4,6 +4,14 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. (#NNN)
+
+### Fixed
+
+- `Cursor.execute()` with the `sql.dry-run` statement property no longer raises `StatementNotFoundError` for valid SQL. The server answers a dry-run in the POST response and never stores it, so the cursor now returns after that response instead of polling for it. Invalid SQL still raises `OperationalError` with the server's detail. (#NNN)
+
 ## 0.6.0, 2026-09-29
 
 ### Changed - Breaking

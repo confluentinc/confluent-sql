@@ -276,6 +276,11 @@ class Cursor:
                 f" {self._statement.status.get('detail', '')}"
             )
 
+        if self._statement.is_dry_run:
+            # The server answers a dry-run in the POST response and never stores it, so polling
+            # for readiness would 404. Connection.dry_run_statement is the dedicated API.
+            return
+
         # ... and wait for it to be "ready" (either in a terminal state or running) based on
         # execution mode and statement type.
         self._wait_for_statement_ready(timeout)
