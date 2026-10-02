@@ -12,10 +12,12 @@ from confluent_sql import (
     Cursor,
     InterfaceError,
     StatementDeletedError,
+    StatementNotFoundError,
     StatementProperties,
 )
 from confluent_sql.exceptions import NotSupportedError
 from confluent_sql.statement import Op, Phase, Statement, StatementWarning
+from confluent_sql.statement_properties import Property
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,26 @@ class TestCursor:
         assert cursor._statement.description is not None
         assert len(cursor._statement.description) == 1
         assert cursor._statement.description[0][0] == "answer"
+
+    def test_dry_run_select_returns_schema_without_storing_statement(
+        self, cursor: Cursor, connection: Connection
+    ):
+        """sql.dry-run is answered in the POST response and never stored: execute() must hand
+        back the result schema instead of 404ing on the readiness poll."""
+        cursor.execute(
+            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price",
+            properties={Property.DRY_RUN: "true"},
+        )
+
+        statement = cursor.statement
+        assert statement.is_dry_run
+        assert statement.statement_id == ""
+        assert statement.phase == Phase.COMPLETED
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id", "price"]
+        with pytest.raises(StatementNotFoundError):
+            connection.get_statement(statement.name)
 
     def test_cursor_execute_and_find_with_label(self, cursor: Cursor, connection: Connection):
         """Test over submitting and finding statements via end-user-provided label."""

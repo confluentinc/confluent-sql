@@ -9,7 +9,7 @@ from confluent_sql.exceptions import InterfaceError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import Op, Phase, Schema, Statement, StatementWarning, WarningSeverity
 from confluent_sql.types import StatementTypeConverter
-from tests.unit.conftest import StatementResponseFactory
+from tests.unit.conftest import StatementFactory, StatementResponseFactory, as_dry_run
 
 """Unit tests over Statement class."""
 
@@ -1475,3 +1475,45 @@ class TestStatementCanFetchResults:
 
         statement = Statement.from_response(mock_connection, response)
         assert not statement.can_fetch_results(execution_mode)
+
+
+@pytest.mark.unit
+class TestStatementDryRun:
+    """A dry-run statement is validated and answered in the POST response, never stored."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("true", True), ("TRUE", True), (True, True), ("false", False), (False, False)],
+    )
+    def test_is_dry_run_reads_echoed_property(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        value: Any,
+        expected: bool,
+    ):
+        response = as_dry_run(statement_response_factory(), value)
+        assert Statement.from_response(mock_connection, response).is_dry_run is expected
+
+    def test_is_dry_run_false_without_property(self, statement_factory: StatementFactory):
+        assert statement_factory().is_dry_run is False
+
+    def test_is_dry_run_false_when_properties_is_null(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """`spec.properties` may come back as JSON null; is_dry_run must not raise."""
+        response = statement_response_factory()
+        response["spec"]["properties"] = None
+        assert Statement.from_response(mock_connection, response).is_dry_run is False
+
+    def test_from_response_accepts_empty_uid(
+        self,
+        mock_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        response = as_dry_run(statement_response_factory(name="dry-1"))
+        statement = Statement.from_response(mock_connection, response)
+        assert statement.statement_id == ""
+        assert statement.name == "dry-1"

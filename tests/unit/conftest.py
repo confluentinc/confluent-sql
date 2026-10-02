@@ -52,6 +52,16 @@ StatementResponseFactory: TypeAlias = Callable[..., StatementResponse]
 """A factory type alias for creating statement v1 JSON dictionaries."""
 
 
+def as_dry_run(response: dict[str, Any], value: Any = "true") -> dict[str, Any]:
+    """Reshape a statement response like a live `sql.dry-run` POST reply: the server echoes the
+    flag in spec.properties, and metadata.uid and resource_version are empty because the
+    statement is never stored."""
+    response["spec"]["properties"]["sql.dry-run"] = value
+    response["metadata"]["uid"] = ""
+    response["metadata"]["resource_version"] = ""
+    return response
+
+
 @pytest.fixture()
 def statement_response_factory() -> StatementResponseFactory:
     """A fixture that returns a factory function to create statement v1 JSON dictionaries

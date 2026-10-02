@@ -1,15 +1,17 @@
 import re
 import types
+from typing import Any
 
 import pytest
 
-from confluent_sql import Cursor, InterfaceError
+from confluent_sql import Cursor, InterfaceError, PropertiesDict, Property
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import (
     ComputePoolExhaustedError,
     NotSupportedError,
     OperationalError,
     ProgrammingError,
+    StatementNotFoundError,
 )
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
@@ -19,6 +21,7 @@ from tests.unit.conftest import (
     MockConnectionFactory,
     ResultRowFactory,
     StatementResponseFactory,
+    as_dry_run,
 )
 
 
@@ -1956,3 +1959,74 @@ class TestStopStatement:
         mock_connection_cursor._statement = None
         with pytest.raises(InterfaceError, match="No active statement to stop"):
             mock_connection_cursor.stop_statement()
+
+
+DRY_RUN: PropertiesDict = {Property.DRY_RUN: "true"}
+
+
+def _never_stored(
+    mock_connection_factory: MockConnectionFactory, response: dict[str, Any]
+) -> Connection:
+    """A mock connection that answers submission with `response` and, like the live server for
+    every dry-run, 404s the readiness poll's GET because the statement was never stored."""
+    connection = mock_connection_factory(response, None)
+    connection._get_statement.side_effect = StatementNotFoundError(  # type: ignore
+        "Statement not found", statement_name=response["name"]
+    )
+    return connection
+
+
+@pytest.mark.unit
+class TestDryRun:
+    """The server answers a dry-run in the POST response and never stores it, so a readiness
+    poll (GET) for it 404s. execute() must return after the POST instead."""
+
+    def test_execute_returns_post_response_without_polling(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        response = as_dry_run(
+            statement_response_factory(
+                is_bounded=False,
+                is_append_only=False,
+                schema_columns=[
+                    {"name": "id", "type": {"nullable": False, "type": "BIGINT"}},
+                    {
+                        "name": "price",
+                        "type": {"nullable": True, "type": "DECIMAL", "precision": 10, "scale": 2},
+                    },
+                ],
+            )
+        )
+        connection = _never_stored(mock_connection_factory, response)
+        cursor = connection.cursor(mode=ExecutionMode.STREAMING_QUERY)
+
+        cursor.execute("SELECT id, price FROM t", properties=DRY_RUN)
+
+        connection._get_statement.assert_not_called()  # type: ignore
+        assert cursor.statement.is_dry_run
+        schema = cursor.statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id", "price"]
+        description = cursor.description
+        assert description is not None
+        assert description[1][:2] == ("price", "DECIMAL")
+
+    def test_failed_dry_run_still_raises_submission_failed(
+        self,
+        mock_connection_factory: MockConnectionFactory,
+        statement_response_factory: StatementResponseFactory,
+    ):
+        """Invalid SQL already FAILs in the POST response, and must keep raising
+        OperationalError with the server's detail rather than returning quietly."""
+        response = as_dry_run(
+            statement_response_factory(
+                phase="FAILED",
+                status_detail="SQL validation failed. Column 'nope' not found in any table",
+            )
+        )
+        cursor = _never_stored(mock_connection_factory, response).cursor()
+
+        with pytest.raises(OperationalError, match="submission failed: SQL validation failed"):
+            cursor.execute("SELECT nope FROM t", properties=DRY_RUN)
