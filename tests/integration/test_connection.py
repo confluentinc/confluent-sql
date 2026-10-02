@@ -7,6 +7,7 @@ Credentials must be provided via environment variables.
 
 import os
 import time
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -15,7 +16,7 @@ import confluent_sql
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import OperationalError, StatementNotFoundError
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import Statement
+from confluent_sql.statement import Phase, Statement
 
 
 def _start_running_streaming_statement(connection, table_name, statement_name):
@@ -278,6 +279,55 @@ class TestConnection:
 
         # Verify exception has statement name
         assert exc_info.value.statement_name == "non-existent-statement-name"
+
+    @pytest.mark.parametrize("mode", [ExecutionMode.SNAPSHOT, ExecutionMode.STREAMING_QUERY])
+    def test_dry_run_statement_returns_schema_without_storing(
+        self, connection: Connection, mode: ExecutionMode
+    ):
+        """sql.dry-run is answered in the POST response and never stored."""
+        statement = connection.dry_run_statement(
+            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price", mode=mode
+        )
+
+        assert statement.is_dry_run
+        assert statement.statement_id == ""
+        assert statement.phase == Phase.COMPLETED
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id", "price"]
+        with pytest.raises(StatementNotFoundError):
+            connection.get_statement(statement.name)
+
+    def test_dry_run_statement_invalid_sql_raises(self, connection: Connection):
+        with pytest.raises(OperationalError, match="Dry-run of statement") as excinfo:
+            connection.dry_run_statement("SELECT no_such_column FROM `INFORMATION_SCHEMA`.`TABLES`")
+        assert "no_such_column" in str(excinfo.value)
+
+    def test_dry_run_statement_with_name_and_properties(self, connection: Connection):
+        """The server echoes the name, and accepts caller properties alongside sql.dry-run."""
+        name = f"dry-run-{uuid4()}"
+        statement = connection.dry_run_statement(
+            "SELECT CAST(1 AS BIGINT) AS id",
+            statement_name=name,
+            properties={"sql.local-time-zone": "UTC"},
+        )
+
+        assert statement.name == name
+        assert statement.is_dry_run
+        assert statement.phase == Phase.COMPLETED
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id"]
+
+    def test_dry_run_statement_in_default_pool(self, poolless_connection: Connection):
+        """With no compute pool on the connection, the dry-run goes to the environment's
+        default pool."""
+        statement = poolless_connection.dry_run_statement("SELECT CAST(1 AS BIGINT) AS id")
+
+        assert statement.phase == Phase.COMPLETED
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id"]
 
 
 @pytest.mark.integration

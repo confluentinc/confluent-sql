@@ -33,7 +33,7 @@ For comprehensive details on streaming queries, polling patterns, and changelog 
 
 - [Result Format Extensions](#result-format-extensions) - Dictionary rows, custom types
 - [Streaming Query Support](#streaming-query-support) - Comprehensive streaming guide
-- [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, naming, stopping, deletion
+- [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, dry-run, naming, stopping, deletion
 - [Tableflow Lifecycle](#tableflow-lifecycle) - Enable, read, and disable Iceberg/Delta sinks
 - [Introspection and Metadata](#introspection-and-metadata) - Properties for query state
 - [Performance Monitoring](#performance-monitoring) - Fetch metrics
@@ -401,6 +401,38 @@ statements = connection.list_statements(label="data-pipelines")
 ```
 
 For more details on managing named and labeled statements, see the [Statement Naming and Labeling](#statement-naming-and-labeling) section.
+
+---
+
+### Dry-Run Validation (`dry_run_statement()`)
+
+Validate a statement without running it, using Flink's `sql.dry-run`. Flink validates and plans
+the statement and answers in the submission response, without storing it, so this is a single
+request with nothing to clean up:
+
+```python
+statement = connection.dry_run_statement(
+    "SELECT id, price FROM orders", mode=ExecutionMode.STREAMING_QUERY
+)
+print(statement.schema)  # the query's result columns; None for DDL
+```
+
+- `mode` (default `ExecutionMode.SNAPSHOT`) sets `sql.snapshot.mode` as a cursor in that mode
+  would. It can change whether Flink accepts the statement, so dry-run in the mode the
+  statement will really run in.
+- Invalid SQL raises `OperationalError` with the server's detail.
+- The returned `Statement` has `is_dry_run` true and `statement_id` `""`. It was never stored,
+  so `get_statement()` for it raises `StatementNotFoundError`.
+- The statement text is sent as-is (no parameter interpolation).
+- `statement_name`, `properties` and `compute_pool_id` work as in `execute_snapshot_ddl()`. The
+  server echoes the name, but the dry-run is never stored, so the name can't be used to find it
+  later.
+- `sql.dry-run` is added to `properties` as true; passing it with any other value raises
+  `InterfaceError`.
+
+Passing `sql.dry-run` to `cursor.execute()` also works: `execute()` returns after the
+submission response instead of polling. Prefer `dry_run_statement()`, since a dry-run has no
+rows to fetch and no server-side statement to manage.
 
 ---
 
@@ -820,6 +852,7 @@ The `cursor.statement` property provides detailed metadata about the executed qu
 | `is_append_only` | `bool`           | Query produces only inserts (vs changelog with updates/deletes)         |
 | `is_bounded`     | `bool`           | Query has finite result set (snapshot) vs unbounded (streaming)         |
 | `is_deletable`   | `bool`           | Statement can be deleted                                                |
+| `is_dry_run`     | `bool`           | Statement was submitted with `sql.dry-run` (validated, never stored)    |
 | `schema`         | `Schema`         | Result schema with column names and types                               |
 | `sql_kind`       | `str`            | Query type: `SELECT`, `INSERT`, `CREATE`, etc.                          |
 
