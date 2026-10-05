@@ -14,7 +14,6 @@ from confluent_sql import (
     OperationalError,
     ProgrammingError,
     StatementNotFoundError,
-    StatementProperties,
 )
 from confluent_sql.__version__ import __version__
 from confluent_sql.connection import (
@@ -3170,74 +3169,6 @@ class TestDryRunStatement:
         self._submitted_spec(request_mock)
         sent_name = request_mock.call_args.kwargs["json"]["name"]
         assert re.fullmatch(r"dbapi-[0-9a-f-]{36}", sent_name)
-
-    @pytest.mark.parametrize(
-        ("properties", "expected_key", "expected_value"),
-        [
-            ({"sql.state-ttl": "1 h"}, "sql.state-ttl", "1 h"),
-            (StatementProperties(local_time_zone="UTC"), "sql.local-time-zone", "UTC"),
-        ],
-        ids=["dict", "statement-properties"],
-    )
-    def test_caller_properties_are_sent_with_dry_run(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        request_mock,
-        properties: Any,
-        expected_key: str,
-        expected_value: str,
-    ):
-        request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        properties_before = copy.copy(properties)
-        invalid_credential_connection.dry_run_statement("SELECT 1", properties=properties)
-        sent = self._submitted_spec(request_mock)["properties"]
-        assert sent[expected_key] == expected_value
-        assert sent["sql.dry-run"] == "true"
-        assert properties == properties_before  # the caller's properties are untouched
-
-    @pytest.mark.parametrize("value", ["true", "TRUE", True])
-    def test_explicit_dry_run_true_is_accepted(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        request_mock,
-        value: Any,
-    ):
-        request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement(
-            "SELECT 1", properties={"sql.dry-run": value}
-        )
-        assert self._submitted_spec(request_mock)["properties"]["sql.dry-run"] == "true"
-
-    @pytest.mark.parametrize(
-        "properties",
-        [
-            {"sql.dry-run": "false"},
-            {"sql.dry-run": False},
-            {"sql.dry-run": "yes"},
-            StatementProperties(extra={"sql.dry-run": "false"}),
-        ],
-        ids=["string-false", "bool-false", "not-a-boolean", "statement-properties-extra"],
-    )
-    def test_dry_run_not_true_raises_without_a_request(
-        self, invalid_credential_connection: Connection, request_mock, properties: Any
-    ):
-        with pytest.raises(InterfaceError, match="requires 'sql.dry-run' to be true"):
-            invalid_credential_connection.dry_run_statement("SELECT 1", properties=properties)
-        request_mock.assert_not_called()
-
-    @pytest.mark.parametrize(
-        "properties",
-        [{"sql.state-ttl": 1.5}, {"sql.snapshot.mode": "now"}, "sql.dry-run=true"],
-        ids=["bad-value-type", "driver-owned-key", "not-a-dict"],
-    )
-    def test_invalid_properties_raise_without_a_request(
-        self, invalid_credential_connection: Connection, request_mock, properties: Any
-    ):
-        with pytest.raises(InterfaceError):
-            invalid_credential_connection.dry_run_statement("SELECT 1", properties=properties)
-        request_mock.assert_not_called()
 
     def test_options_are_keyword_only(self, invalid_credential_connection: Connection):
         with pytest.raises(TypeError):

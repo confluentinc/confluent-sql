@@ -332,18 +332,6 @@ class TestDryRunStatement:
             connection.dry_run_statement("SELECT no_such_column FROM `INFORMATION_SCHEMA`.`TABLES`")
         assert "no_such_column" in str(excinfo.value)
 
-    def test_caller_properties(self, connection: Connection):
-        """The server accepts caller properties alongside sql.dry-run."""
-        statement = connection.dry_run_statement(
-            "SELECT CAST(1 AS BIGINT) AS id", properties={"sql.local-time-zone": "UTC"}
-        )
-
-        assert statement.is_dry_run
-        assert statement.phase == Phase.COMPLETED
-        schema = statement.schema
-        assert schema is not None
-        assert [column.name for column in schema] == ["id"]
-
     def test_default_compute_pool(self, poolless_connection: Connection):
         """With no compute pool on the connection, the dry-run goes to the environment's
         default pool."""

@@ -933,7 +933,6 @@ class Connection:
         self,
         statement_text: str,
         *,
-        properties: PropertiesDict | StatementProperties | None = None,
         mode: ExecutionMode = ExecutionMode.SNAPSHOT,
         compute_pool_id: str | None = None,
     ) -> Statement:
@@ -948,10 +947,6 @@ class Connection:
         Args:
             statement_text: The statement to validate. It's sent as-is: there's no parameter
                 interpolation.
-            properties: Optional statement properties to validate the statement with -- a raw
-                dict or a `StatementProperties`, validated as in `execute_snapshot_ddl()`.
-                `sql.dry-run` is added as true; passing it with any other value raises
-                InterfaceError.
             mode: The execution mode to validate the statement in. It sets `sql.snapshot.mode`
                 the same way a cursor in that mode would. The result schema is the same in
                 either mode, but the statement's traits are not: `is_bounded` and
@@ -969,27 +964,18 @@ class Connection:
 
         Raises:
             ProgrammingError: If the statement text is empty.
-            InterfaceError: If the connection is closed, or properties or compute_pool_id are
-                invalid, including `sql.dry-run` set to anything but true.
+            InterfaceError: If the connection is closed or compute_pool_id is invalid.
             OperationalError: If Flink rejects the statement (for example, invalid SQL), with
                 the server's detail, or if the response isn't in a terminal phase.
         """
         if not statement_text.strip():
             raise ProgrammingError("SQL statement cannot be empty")
 
-        dry_run_properties = validate_properties_dict(properties)
-        if str(dry_run_properties.get(Property.DRY_RUN, "true")).lower() != "true":
-            raise InterfaceError(
-                f"dry_run_statement() requires '{Property.DRY_RUN}' to be true, got"
-                f" {dry_run_properties[Property.DRY_RUN]!r}"
-            )
-        dry_run_properties[Property.DRY_RUN] = "true"
-
         response = self._execute_statement(
             statement_text,
             mode,
             None,
-            properties=dry_run_properties,
+            properties={Property.DRY_RUN: "true"},
             compute_pool_id=compute_pool_id,
         )
         statement = Statement.from_response(self, response)
