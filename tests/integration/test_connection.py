@@ -285,11 +285,10 @@ class TestConnection:
 class TestDryRunStatement:
     """Integration tests for Connection.dry_run_statement against a real environment."""
 
-    @pytest.mark.parametrize("mode", [ExecutionMode.SNAPSHOT, ExecutionMode.STREAMING_QUERY])
-    def test_schema_and_not_stored(self, connection: Connection, mode: ExecutionMode):
+    def test_schema_and_not_stored(self, connection: Connection):
         """sql.dry-run is answered in the POST response and never stored."""
         statement = connection.dry_run_statement(
-            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price", mode=mode
+            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price"
         )
 
         assert statement.is_dry_run
@@ -297,7 +296,12 @@ class TestDryRunStatement:
         assert statement.phase == Phase.COMPLETED
         schema = statement.schema
         assert schema is not None
-        assert [column.name for column in schema] == ["id", "price"]
+        id_column, price_column = schema.columns
+        assert id_column.name == "id"
+        assert id_column.type.type_name == "BIGINT"
+        assert price_column.name == "price"
+        assert price_column.type.type_name == "DECIMAL"
+        assert (price_column.type.precision, price_column.type.scale) == (10, 2)
         with pytest.raises(StatementNotFoundError):
             connection.get_statement(statement.name)
 
