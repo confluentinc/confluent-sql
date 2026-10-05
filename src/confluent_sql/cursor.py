@@ -31,7 +31,7 @@ from .result_readers import (
     ResultTupleOrDict,
 )
 from .statement import Statement, StatementWarning
-from .statement_properties import StatementProperties
+from .statement_properties import Property, StatementProperties, validate_properties_dict
 from .types import PropertiesDict, convert_statement_parameters
 
 if TYPE_CHECKING:
@@ -232,7 +232,8 @@ class Cursor:
                             by Confluent Cloud Flink.
 
         Raises:
-            InterfaceError: If the cursor is closed, or if invalid properties are provided.
+            InterfaceError: If the cursor is closed, if invalid properties are provided, or if
+                `properties` sets `sql.dry-run` to true (use `Connection.dry_run_statement()`).
             ProgrammingError: If the SQL statement is invalid
             OperationalError: If the statement cannot be executed
         """
@@ -240,6 +241,15 @@ class Cursor:
 
         if not statement_text.strip():
             raise ProgrammingError("SQL statement cannot be empty")
+
+        # A dry-run is answered in the POST response and never stored server-side, which doesn't
+        # fit the cursor's submit / poll / fetch / delete lifecycle.
+        dry_run = validate_properties_dict(properties).get(Property.DRY_RUN, False)
+        if str(dry_run).lower() == "true":
+            raise InterfaceError(
+                f"Cursor.execute() does not support '{Property.DRY_RUN}'; use"
+                " Connection.dry_run_statement() to validate a statement without running it"
+            )
 
         # Delete any previous statement if present and in a deletable state
         if self._statement is not None and not self._statement.is_deleted:
@@ -275,11 +285,6 @@ class Cursor:
                 f"Statement '{self._statement.name}' submission failed:"
                 f" {self._statement.status.get('detail', '')}"
             )
-
-        if self._statement.is_dry_run:
-            # The server answers a dry-run in the POST response and never stores it, so polling
-            # for readiness would 404. Connection.dry_run_statement is the dedicated API.
-            return
 
         # ... and wait for it to be "ready" (either in a terminal state or running) based on
         # execution mode and statement type.

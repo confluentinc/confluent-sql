@@ -433,9 +433,9 @@ print(statement.schema)  # the query's result columns; None for DDL
 - `sql.dry-run` is added to `properties` as true; passing it with any other value raises
   `InterfaceError`.
 
-Passing `sql.dry-run` to `cursor.execute()` also works: `execute()` returns after the
-submission response instead of polling. Prefer `dry_run_statement()`, since a dry-run has no
-rows to fetch and no server-side statement to manage.
+`cursor.execute()` does not accept `sql.dry-run`: a dry-run has no rows to fetch and no
+server-side statement to manage, so it doesn't fit the cursor lifecycle. Passing it as true raises
+`InterfaceError` pointing here.
 
 ---
 

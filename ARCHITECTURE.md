@@ -235,9 +235,9 @@ print(f"Bounded: {stmt.is_bounded}")          # False for streaming queries, tru
 print(f"Append-only: {stmt.is_append_only}")  # True if statement results changelog is simple -- no UPDATE/DELETE operations
 ```
 
-A dry-run statement (`Connection.dry_run_statement()`, or the `sql.dry-run` property on
-`cursor.execute()`; `stmt.is_dry_run` is true) is answered in full by the submission response and
-never stored server-side, so its `statement_id` is `""` and nothing polls it.
+A dry-run statement (`Connection.dry_run_statement()`; `stmt.is_dry_run` is true) is answered in
+full by the submission response and never stored server-side, so its `statement_id` is `""` and
+nothing polls it. `cursor.execute()` rejects the `sql.dry-run` property for this reason.
 
 ## Performance Implications
 
