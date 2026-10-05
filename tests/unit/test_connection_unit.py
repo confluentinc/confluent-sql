@@ -3113,11 +3113,10 @@ class TestDryRunStatement:
         [
             (
                 {
-                    "name": "dry-1",
                     "phase": "FAILED",
                     "status_detail": "SQL validation failed. Column 'nope' not found in any table",
                 },
-                "Dry-run of statement 'dry-1' failed: SQL validation failed",
+                "Dry-run failed: SQL validation failed",
             ),
             ({"phase": "PENDING"}, "non-terminal phase PENDING"),
         ],
@@ -3160,24 +3159,17 @@ class TestDryRunStatement:
         invalid_credential_connection.dry_run_statement("SELECT 1", compute_pool_id="lfcp-2")
         assert self._submitted_spec(request_mock)["compute_pool_id"] == "lfcp-2"
 
-    @pytest.mark.parametrize(
-        ("statement_name", "expected_name_pattern"),
-        [("my-dry-run", r"my-dry-run"), (None, r"dbapi-[0-9a-f-]{36}")],
-        ids=["explicit", "default-dbapi-uuid"],
-    )
-    def test_name_is_sent(
+    def test_default_name_is_dbapi_uuid(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         request_mock,
-        statement_name: str | None,
-        expected_name_pattern: str,
     ):
         request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement("SELECT 1", statement_name=statement_name)
+        invalid_credential_connection.dry_run_statement("SELECT 1")
         self._submitted_spec(request_mock)
         sent_name = request_mock.call_args.kwargs["json"]["name"]
-        assert re.fullmatch(expected_name_pattern, sent_name)
+        assert re.fullmatch(r"dbapi-[0-9a-f-]{36}", sent_name)
 
     @pytest.mark.parametrize(
         ("properties", "expected_key", "expected_value"),

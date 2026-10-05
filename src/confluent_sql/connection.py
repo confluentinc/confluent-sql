@@ -933,7 +933,6 @@ class Connection:
         self,
         statement_text: str,
         *,
-        statement_name: str | None = None,
         properties: PropertiesDict | StatementProperties | None = None,
         mode: ExecutionMode = ExecutionMode.SNAPSHOT,
         compute_pool_id: str | None = None,
@@ -949,9 +948,6 @@ class Connection:
         Args:
             statement_text: The statement to validate. It's sent as-is: there's no parameter
                 interpolation.
-            statement_name: Optional name for the statement (defaults to 'dbapi-{uuid}'). The
-                server echoes it in the response, but never stores the statement, so the name
-                can't be used to find it later and doesn't need to be unique.
             properties: Optional statement properties to validate the statement with -- a raw
                 dict or a `StatementProperties`, validated as in `execute_snapshot_ddl()`.
                 `sql.dry-run` is added as true; passing it with any other value raises
@@ -992,22 +988,18 @@ class Connection:
         response = self._execute_statement(
             statement_text,
             mode,
-            statement_name,
+            None,
             properties=dry_run_properties,
             compute_pool_id=compute_pool_id,
         )
         statement = Statement.from_response(self, response)
 
         if statement.is_failed:
-            raise OperationalError(
-                f"Dry-run of statement '{statement.name}' failed:"
-                f" {statement.status.get('detail', '')}"
-            )
+            raise OperationalError(f"Dry-run failed: {statement.status.get('detail', '')}")
         if not statement.phase.is_terminal:
             raise OperationalError(
-                f"Dry-run of statement '{statement.name}' came back in non-terminal phase"
-                f" {statement.phase.value}; a dry-run is expected to be answered in full by the"
-                " submission response."
+                f"Dry-run came back in non-terminal phase {statement.phase.value}; a dry-run is"
+                " expected to be answered in full by the submission response."
             )
         return statement
 

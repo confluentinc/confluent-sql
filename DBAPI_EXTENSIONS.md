@@ -427,9 +427,7 @@ print(statement.schema)  # the query's result columns; None for DDL
 - The returned `Statement` has `is_dry_run` true and `statement_id` `""`. It was never stored,
   so `get_statement()` for it raises `StatementNotFoundError`.
 - The statement text is sent as-is (no parameter interpolation).
-- `statement_name`, `properties` and `compute_pool_id` work as in `execute_snapshot_ddl()`. The
-  server echoes the name, but the dry-run is never stored, so the name can't be used to find it
-  later.
+- `properties` and `compute_pool_id` work as in `execute_snapshot_ddl()`.
 - `sql.dry-run` is added to `properties` as true; passing it with any other value raises
   `InterfaceError`.
 

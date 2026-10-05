@@ -7,7 +7,6 @@ Credentials must be provided via environment variables.
 
 import os
 import time
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -329,20 +328,16 @@ class TestDryRunStatement:
         assert statement.is_bounded is (mode is ExecutionMode.SNAPSHOT)
 
     def test_invalid_sql_raises(self, connection: Connection):
-        with pytest.raises(OperationalError, match="Dry-run of statement") as excinfo:
+        with pytest.raises(OperationalError, match="Dry-run failed") as excinfo:
             connection.dry_run_statement("SELECT no_such_column FROM `INFORMATION_SCHEMA`.`TABLES`")
         assert "no_such_column" in str(excinfo.value)
 
-    def test_name_and_properties(self, connection: Connection):
-        """The server echoes the name, and accepts caller properties alongside sql.dry-run."""
-        name = f"dry-run-{uuid4()}"
+    def test_caller_properties(self, connection: Connection):
+        """The server accepts caller properties alongside sql.dry-run."""
         statement = connection.dry_run_statement(
-            "SELECT CAST(1 AS BIGINT) AS id",
-            statement_name=name,
-            properties={"sql.local-time-zone": "UTC"},
+            "SELECT CAST(1 AS BIGINT) AS id", properties={"sql.local-time-zone": "UTC"}
         )
 
-        assert statement.name == name
         assert statement.is_dry_run
         assert statement.phase == Phase.COMPLETED
         schema = statement.schema
