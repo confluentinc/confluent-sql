@@ -427,11 +427,10 @@ print(statement.schema)  # the query's result columns; None for DDL
 - The returned `Statement` has `is_dry_run` true and `statement_id` `""`. It was never stored,
   so `get_statement()` for it raises `StatementNotFoundError`.
 - The statement text is sent as-is (no parameter interpolation).
-- `compute_pool_id` works as in `execute_snapshot_ddl()`.
 
-`cursor.execute()` does not accept `sql.dry-run`: a dry-run has no rows to fetch and no
+`Cursor.execute()` does not accept property `sql.dry-run`: a dry-run has no rows to fetch and no
 server-side statement to manage, so it doesn't fit the cursor lifecycle. Passing it as true raises
-`InterfaceError` pointing here.
+`InterfaceError`, pointing to use this `Connection`-level method instead.
 
 ---
 

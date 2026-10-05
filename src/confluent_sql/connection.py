@@ -956,8 +956,7 @@ class Connection:
                 append-only.
             compute_pool_id: Optional compute pool ID to submit the dry-run to. If not
                 provided, uses the Connection's default compute_pool_id, if any; otherwise
-                Confluent Cloud Flink uses the environment+region default compute pool, which
-                an organization admin can disable.
+                Confluent Cloud Flink uses the environment+region default compute pool.
 
         Returns:
             The dry-run Statement from the submission response.

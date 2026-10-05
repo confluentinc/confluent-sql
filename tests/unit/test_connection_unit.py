@@ -3012,10 +3012,7 @@ class TestComputePoolIdParameter:
         assert call_kwargs["compute_pool_id"] == "lfcp-streaming-pool"
 
 
-TWO_COLUMNS = [
-    {"name": "id", "type": {"nullable": False, "type": "BIGINT"}},
-    {"name": "price", "type": {"nullable": True, "type": "DECIMAL", "precision": 10, "scale": 2}},
-]
+
 
 
 @pytest.mark.unit
@@ -3039,6 +3036,11 @@ class TestDryRunStatement:
         statement_response_factory: StatementResponseFactory,
         request_mock,
     ):
+        TWO_COLUMNS = [
+            {"name": "id", "type": {"nullable": False, "type": "BIGINT"}},
+            {"name": "price", "type": {"nullable": True, "type": "DECIMAL", "precision": 10,
+                                       "scale": 2}},
+        ]
         request_mock.return_value = _ok_response(
             as_dry_run(statement_response_factory(schema_columns=TWO_COLUMNS))
         )
