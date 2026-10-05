@@ -3012,9 +3012,6 @@ class TestComputePoolIdParameter:
         assert call_kwargs["compute_pool_id"] == "lfcp-streaming-pool"
 
 
-
-
-
 @pytest.mark.unit
 class TestDryRunStatement:
     """Tests for Connection.dry_run_statement: one POST, no polling, the Statement is final."""
@@ -3038,8 +3035,10 @@ class TestDryRunStatement:
     ):
         TWO_COLUMNS = [
             {"name": "id", "type": {"nullable": False, "type": "BIGINT"}},
-            {"name": "price", "type": {"nullable": True, "type": "DECIMAL", "precision": 10,
-                                       "scale": 2}},
+            {
+                "name": "price",
+                "type": {"nullable": True, "type": "DECIMAL", "precision": 10, "scale": 2},
+            },
         ]
         request_mock.return_value = _ok_response(
             as_dry_run(statement_response_factory(schema_columns=TWO_COLUMNS))
