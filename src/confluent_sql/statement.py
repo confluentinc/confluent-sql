@@ -392,11 +392,7 @@ class Statement:
     def is_dry_run(self) -> bool:
         """Was this statement submitted with `sql.dry-run` enabled?
 
-        The server validates a dry-run statement and answers synchronously in the POST response
-        -- a terminal phase (COMPLETED or FAILED) and, unless FAILED, full traits, including the
-        result schema for a query -- but never stores it: the response's `metadata.uid` is
-        empty (so `statement_id` is `""`), and a follow-up GET for it returns 404. Read from the
-        properties the server echoes back in `spec.properties`.
+        See `Connection.dry_run_statement` for details.
         """
         value = (self.spec.get("properties") or {}).get(Property.DRY_RUN)
         return str(value).lower() == "true"

@@ -418,21 +418,19 @@ print(statement.schema)  # the query's result columns; None for DDL
 ```
 
 - `mode` (default `ExecutionMode.SNAPSHOT`) sets `sql.snapshot.mode` as a cursor in that mode
-  would. It can change whether Flink accepts the statement, so dry-run in the mode the
-  statement will really run in.
+  would. The result schema is the same in either mode, but the statement's traits are not:
+  `is_bounded` and `is_append_only` describe a run in the mode you validated in. To learn whether
+  a streaming submission would be append-only (e.g. an unbounded aggregation is not), pass
+  `ExecutionMode.STREAMING_QUERY`; under the default, a snapshot's bounded result always reports
+  append-only.
 - Invalid SQL raises `OperationalError` with the server's detail.
 - The returned `Statement` has `is_dry_run` true and `statement_id` `""`. It was never stored,
   so `get_statement()` for it raises `StatementNotFoundError`.
 - The statement text is sent as-is (no parameter interpolation).
-- `statement_name`, `properties` and `compute_pool_id` work as in `execute_snapshot_ddl()`. The
-  server echoes the name, but the dry-run is never stored, so the name can't be used to find it
-  later.
-- `sql.dry-run` is added to `properties` as true; passing it with any other value raises
-  `InterfaceError`.
 
-Passing `sql.dry-run` to `cursor.execute()` also works: `execute()` returns after the
-submission response instead of polling. Prefer `dry_run_statement()`, since a dry-run has no
-rows to fetch and no server-side statement to manage.
+`Cursor.execute()` does not accept property `sql.dry-run`: a dry-run has no rows to fetch and no
+server-side statement to manage, so it doesn't fit the cursor lifecycle. Passing it as true raises
+`InterfaceError`, pointing to use this `Connection`-level method instead.
 
 ---
 
