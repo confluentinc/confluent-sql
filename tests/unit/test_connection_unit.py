@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import Any, NamedTuple
@@ -3054,27 +3055,28 @@ class TestDryRunStatement:
         assert schema is not None
         assert [column.name for column in schema] == ["id", "price"]
 
-    def test_snapshot_mode_by_default(
+    @pytest.mark.parametrize(
+        ("kwargs", "expected_snapshot_mode"),
+        [
+            ({}, "now"),
+            ({"mode": ExecutionMode.SNAPSHOT}, "now"),
+            ({"mode": ExecutionMode.STREAMING_QUERY}, None),
+        ],
+        ids=["default", "snapshot", "streaming"],
+    )
+    def test_mode_sets_snapshot_mode_property(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         request_mock,
+        kwargs: dict[str, Any],
+        expected_snapshot_mode: str | None,
     ):
+        """Snapshot mode (the default) sends sql.snapshot.mode=now; streaming sends none."""
         request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement("SELECT 1")
-        assert self._submitted_spec(request_mock)["properties"]["sql.snapshot.mode"] == "now"
-
-    def test_streaming_mode_sets_no_snapshot_mode(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        request_mock,
-    ):
-        request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement(
-            "SELECT 1", mode=ExecutionMode.STREAMING_QUERY
-        )
-        assert "sql.snapshot.mode" not in self._submitted_spec(request_mock)["properties"]
+        invalid_credential_connection.dry_run_statement("SELECT 1", **kwargs)
+        properties = self._submitted_spec(request_mock)["properties"]
+        assert properties.get("sql.snapshot.mode") == expected_snapshot_mode
 
     def test_statement_text_is_sent_verbatim(
         self,
@@ -3106,36 +3108,33 @@ class TestDryRunStatement:
         assert statement.sql_kind == "CREATE_TABLE_AS"
         assert statement.schema is None
 
-    def test_failed_dry_run_raises_with_server_detail(
+    @pytest.mark.parametrize(
+        ("response_kwargs", "match"),
+        [
+            (
+                {
+                    "name": "dry-1",
+                    "phase": "FAILED",
+                    "status_detail": "SQL validation failed. Column 'nope' not found in any table",
+                },
+                "Dry-run of statement 'dry-1' failed: SQL validation failed",
+            ),
+            ({"phase": "PENDING"}, "non-terminal phase PENDING"),
+        ],
+        ids=["failed-with-server-detail", "non-terminal"],
+    )
+    def test_unusable_response_raises(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         request_mock,
+        response_kwargs: dict[str, Any],
+        match: str,
     ):
         request_mock.return_value = _ok_response(
-            as_dry_run(
-                statement_response_factory(
-                    name="dry-1",
-                    phase="FAILED",
-                    status_detail="SQL validation failed. Column 'nope' not found in any table",
-                )
-            )
+            as_dry_run(statement_response_factory(**response_kwargs))
         )
-        with pytest.raises(
-            OperationalError, match="Dry-run of statement 'dry-1' failed: SQL validation failed"
-        ):
-            invalid_credential_connection.dry_run_statement("SELECT nope FROM t")
-
-    def test_non_terminal_response_raises(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        request_mock,
-    ):
-        request_mock.return_value = _ok_response(
-            as_dry_run(statement_response_factory(phase="PENDING"))
-        )
-        with pytest.raises(OperationalError, match="non-terminal phase PENDING"):
+        with pytest.raises(OperationalError, match=match):
             invalid_credential_connection.dry_run_statement("SELECT 1")
 
     @pytest.mark.parametrize("sql", ["", "   \n"])
@@ -3161,55 +3160,49 @@ class TestDryRunStatement:
         invalid_credential_connection.dry_run_statement("SELECT 1", compute_pool_id="lfcp-2")
         assert self._submitted_spec(request_mock)["compute_pool_id"] == "lfcp-2"
 
+    @pytest.mark.parametrize(
+        ("statement_name", "expected_name_pattern"),
+        [("my-dry-run", r"my-dry-run"), (None, r"dbapi-[0-9a-f-]{36}")],
+        ids=["explicit", "default-dbapi-uuid"],
+    )
     def test_name_is_sent(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         request_mock,
+        statement_name: str | None,
+        expected_name_pattern: str,
     ):
         request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement("SELECT 1", statement_name="my-dry-run")
+        invalid_credential_connection.dry_run_statement("SELECT 1", statement_name=statement_name)
         self._submitted_spec(request_mock)
-        assert request_mock.call_args.kwargs["json"]["name"] == "my-dry-run"
+        sent_name = request_mock.call_args.kwargs["json"]["name"]
+        assert re.fullmatch(expected_name_pattern, sent_name)
 
-    def test_name_defaults_to_dbapi_uuid(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        request_mock,
-    ):
-        request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement("SELECT 1")
-        self._submitted_spec(request_mock)
-        assert request_mock.call_args.kwargs["json"]["name"].startswith("dbapi-")
-
+    @pytest.mark.parametrize(
+        ("properties", "expected_key", "expected_value"),
+        [
+            ({"sql.state-ttl": "1 h"}, "sql.state-ttl", "1 h"),
+            (StatementProperties(local_time_zone="UTC"), "sql.local-time-zone", "UTC"),
+        ],
+        ids=["dict", "statement-properties"],
+    )
     def test_caller_properties_are_sent_with_dry_run(
         self,
         invalid_credential_connection: Connection,
         statement_response_factory: StatementResponseFactory,
         request_mock,
+        properties: Any,
+        expected_key: str,
+        expected_value: str,
     ):
         request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        caller_properties: dict[str, Any] = {"sql.state-ttl": "1 h"}
-        invalid_credential_connection.dry_run_statement("SELECT 1", properties=caller_properties)
-        properties = self._submitted_spec(request_mock)["properties"]
-        assert properties["sql.state-ttl"] == "1 h"
-        assert properties["sql.dry-run"] == "true"
-        assert caller_properties == {"sql.state-ttl": "1 h"}  # the caller's dict is untouched
-
-    def test_statement_properties_are_sent_with_dry_run(
-        self,
-        invalid_credential_connection: Connection,
-        statement_response_factory: StatementResponseFactory,
-        request_mock,
-    ):
-        request_mock.return_value = _ok_response(as_dry_run(statement_response_factory()))
-        invalid_credential_connection.dry_run_statement(
-            "SELECT 1", properties=StatementProperties(local_time_zone="UTC")
-        )
-        properties = self._submitted_spec(request_mock)["properties"]
-        assert properties["sql.local-time-zone"] == "UTC"
-        assert properties["sql.dry-run"] == "true"
+        properties_before = copy.copy(properties)
+        invalid_credential_connection.dry_run_statement("SELECT 1", properties=properties)
+        sent = self._submitted_spec(request_mock)["properties"]
+        assert sent[expected_key] == expected_value
+        assert sent["sql.dry-run"] == "true"
+        assert properties == properties_before  # the caller's properties are untouched
 
     @pytest.mark.parametrize("value", ["true", "TRUE", True])
     def test_explicit_dry_run_true_is_accepted(
