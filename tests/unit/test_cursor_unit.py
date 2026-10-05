@@ -49,11 +49,11 @@ class TestExecute:
     ):
         with pytest.raises(InterfaceError, match="Connection.dry_run_statement"):
             mock_connection_cursor.execute("SELECT 1", properties=properties)
-        mock_connection_cursor._connection._execute_statement.assert_not_called()
+        mock_connection_cursor._connection._execute_statement.assert_not_called()  # type: ignore
 
     def test_dry_run_false_is_not_rejected(self, mock_connection_cursor: Cursor):
         mock_connection_cursor.execute("SELECT 1", properties={Property.DRY_RUN: "false"})
-        mock_connection_cursor._connection._execute_statement.assert_called_once()
+        mock_connection_cursor._connection._execute_statement.assert_called_once()  # type: ignore
 
     def test_executemany_throws(self, mock_connection_cursor: Cursor):
         """Test that executemany raises NotImplementedError (at this time)."""
