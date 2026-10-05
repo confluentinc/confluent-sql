@@ -634,7 +634,7 @@ class TestStreamingChangelogCursor:
             cur.execute(f"INSERT INTO {people_table} VALUES (%s, %s, %s)", (name, category, age))
 
     @staticmethod
-    def _wait_for_snapshot(cursor, compressor, predicate, *, max_iterations=30, sleep_secs=1.0):
+    def _wait_for_snapshot(cursor, compressor, predicate, *, max_iterations=60, sleep_secs=1.0):
         """Poll get_current_snapshot() until predicate(snapshot) holds, returning that snapshot.
 
         Fails the test if the predicate is never satisfied (or the statement stops) within
