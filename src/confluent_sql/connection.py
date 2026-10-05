@@ -957,9 +957,12 @@ class Connection:
                 `sql.dry-run` is added as true; passing it with any other value raises
                 InterfaceError.
             mode: The execution mode to validate the statement in. It sets `sql.snapshot.mode`
-                the same way a cursor in that mode would, which can change whether Flink
-                accepts the statement (for example, a query that only works as a streaming
-                query).
+                the same way a cursor in that mode would. The result schema is the same in
+                either mode, but the statement's traits are not: `is_bounded` and
+                `is_append_only` describe a run in this mode. Pass `STREAMING_QUERY` to learn
+                whether a streaming submission would be append-only (an unbounded aggregation
+                is not); under the default SNAPSHOT, a bounded result always reports
+                append-only.
             compute_pool_id: Optional compute pool ID to submit the dry-run to. If not
                 provided, uses the Connection's default compute_pool_id, if any; otherwise
                 Confluent Cloud Flink uses the environment+region default compute pool, which

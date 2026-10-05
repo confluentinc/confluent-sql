@@ -418,8 +418,11 @@ print(statement.schema)  # the query's result columns; None for DDL
 ```
 
 - `mode` (default `ExecutionMode.SNAPSHOT`) sets `sql.snapshot.mode` as a cursor in that mode
-  would. It can change whether Flink accepts the statement, so dry-run in the mode the
-  statement will really run in.
+  would. The result schema is the same in either mode, but the statement's traits are not:
+  `is_bounded` and `is_append_only` describe a run in the mode you validated in. To learn whether
+  a streaming submission would be append-only (e.g. an unbounded aggregation is not), pass
+  `ExecutionMode.STREAMING_QUERY`; under the default, a snapshot's bounded result always reports
+  append-only.
 - Invalid SQL raises `OperationalError` with the server's detail.
 - The returned `Statement` has `is_dry_run` true and `statement_id` `""`. It was never stored,
   so `get_statement()` for it raises `StatementNotFoundError`.
