@@ -973,7 +973,6 @@ class Connection:
         response = self._execute_statement(
             statement_text,
             mode,
-            None,
             properties={Property.DRY_RUN: "true"},
             compute_pool_id=compute_pool_id,
         )
