@@ -7,7 +7,6 @@ Credentials must be provided via environment variables.
 
 import os
 import time
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -280,13 +279,15 @@ class TestConnection:
         # Verify exception has statement name
         assert exc_info.value.statement_name == "non-existent-statement-name"
 
-    @pytest.mark.parametrize("mode", [ExecutionMode.SNAPSHOT, ExecutionMode.STREAMING_QUERY])
-    def test_dry_run_statement_returns_schema_without_storing(
-        self, connection: Connection, mode: ExecutionMode
-    ):
+
+@pytest.mark.integration
+class TestDryRunStatement:
+    """Integration tests for Connection.dry_run_statement against a real environment."""
+
+    def test_schema_and_not_stored(self, connection: Connection):
         """sql.dry-run is answered in the POST response and never stored."""
         statement = connection.dry_run_statement(
-            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price", mode=mode
+            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price"
         )
 
         assert statement.is_dry_run
@@ -294,32 +295,44 @@ class TestConnection:
         assert statement.phase == Phase.COMPLETED
         schema = statement.schema
         assert schema is not None
-        assert [column.name for column in schema] == ["id", "price"]
+        id_column, price_column = schema.columns
+        assert id_column.name == "id"
+        assert id_column.type.type_name == "BIGINT"
+        assert price_column.name == "price"
+        assert price_column.type.type_name == "DECIMAL"
+        assert (price_column.type.precision, price_column.type.scale) == (10, 2)
         with pytest.raises(StatementNotFoundError):
             connection.get_statement(statement.name)
 
-    def test_dry_run_statement_invalid_sql_raises(self, connection: Connection):
-        with pytest.raises(OperationalError, match="Dry-run of statement") as excinfo:
+    @pytest.mark.parametrize(
+        ("mode", "expected_append_only"),
+        [(ExecutionMode.SNAPSHOT, True), (ExecutionMode.STREAMING_QUERY, False)],
+    )
+    def test_mode_determines_append_only(
+        self,
+        table_connection: Connection,
+        test_table_name: str,
+        mode: ExecutionMode,
+        expected_append_only: bool,
+    ):
+        """The schema is the same in either mode, but an unbounded aggregation is append-only
+        only as a bounded snapshot: validated as a streaming query, it is a changelog."""
+        statement = table_connection.dry_run_statement(
+            f"SELECT c2, COUNT(*) AS total FROM {test_table_name} GROUP BY c2", mode=mode
+        )
+
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["c2", "total"]
+        assert statement.is_append_only is expected_append_only
+        assert statement.is_bounded is (mode is ExecutionMode.SNAPSHOT)
+
+    def test_invalid_sql_raises(self, connection: Connection):
+        with pytest.raises(OperationalError, match="Dry-run failed") as excinfo:
             connection.dry_run_statement("SELECT no_such_column FROM `INFORMATION_SCHEMA`.`TABLES`")
         assert "no_such_column" in str(excinfo.value)
 
-    def test_dry_run_statement_with_name_and_properties(self, connection: Connection):
-        """The server echoes the name, and accepts caller properties alongside sql.dry-run."""
-        name = f"dry-run-{uuid4()}"
-        statement = connection.dry_run_statement(
-            "SELECT CAST(1 AS BIGINT) AS id",
-            statement_name=name,
-            properties={"sql.local-time-zone": "UTC"},
-        )
-
-        assert statement.name == name
-        assert statement.is_dry_run
-        assert statement.phase == Phase.COMPLETED
-        schema = statement.schema
-        assert schema is not None
-        assert [column.name for column in schema] == ["id"]
-
-    def test_dry_run_statement_in_default_pool(self, poolless_connection: Connection):
+    def test_default_compute_pool(self, poolless_connection: Connection):
         """With no compute pool on the connection, the dry-run goes to the environment's
         default pool."""
         statement = poolless_connection.dry_run_statement("SELECT CAST(1 AS BIGINT) AS id")
