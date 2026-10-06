@@ -3,7 +3,7 @@ import types
 
 import pytest
 
-from confluent_sql import Cursor, InterfaceError
+from confluent_sql import Cursor, InterfaceError, Property, StatementProperties
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import (
     ComputePoolExhaustedError,
@@ -33,6 +33,27 @@ def mock_connection_cursor(mock_connection_factory: MockConnectionFactory):
 @pytest.mark.unit
 class TestExecute:
     """Unit tests over cusor.execute*()."""
+
+    @pytest.mark.parametrize(
+        "properties",
+        [
+            {Property.DRY_RUN: "true"},
+            {Property.DRY_RUN: "TRUE"},
+            {Property.DRY_RUN: True},
+            StatementProperties(extra={Property.DRY_RUN: "true"}),
+        ],
+        ids=["string", "uppercase", "bool", "statement-properties"],
+    )
+    def test_dry_run_property_points_to_connection_method(
+        self, mock_connection_cursor: Cursor, properties
+    ):
+        with pytest.raises(InterfaceError, match="Connection.dry_run_statement"):
+            mock_connection_cursor.execute("SELECT 1", properties=properties)
+        mock_connection_cursor._connection._execute_statement.assert_not_called()  # type: ignore
+
+    def test_dry_run_false_is_not_rejected(self, mock_connection_cursor: Cursor):
+        mock_connection_cursor.execute("SELECT 1", properties={Property.DRY_RUN: "false"})
+        mock_connection_cursor._connection._execute_statement.assert_called_once()  # type: ignore
 
     def test_executemany_throws(self, mock_connection_cursor: Cursor):
         """Test that executemany raises NotImplementedError (at this time)."""
