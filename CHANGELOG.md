@@ -4,6 +4,15 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `Connection.dry_run_statement(statement_text, *, mode=ExecutionMode.SNAPSHOT, compute_pool_id=None)`: validate a statement with Flink's `sql.dry-run` in a single request, without running or storing it, and return the resulting `Statement`. The returned `Statement`'s `schema` and `is_append_only` may then be of interest to the caller. Raises `OperationalError` with the server's detail if Flink rejects the statement. (#246)
+- New property `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. (#246)
+
+### Changed
+
+- `Cursor.execute()` rejects `sql.dry-run` property being supplied as True with an `InterfaceError` pointing to use `Connection.dry_run_statement()` instead. Previously, valid SQL raised `StatementNotFoundError` (the cursor polled for a statement the server never stores) and invalid SQL raised `OperationalError`. (#246)
+
 ## 0.6.0, 2026-09-29
 
 ### Changed - Breaking

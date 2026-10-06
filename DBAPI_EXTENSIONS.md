@@ -33,7 +33,7 @@ For comprehensive details on streaming queries, polling patterns, and changelog 
 
 - [Result Format Extensions](#result-format-extensions) - Dictionary rows, custom types
 - [Streaming Query Support](#streaming-query-support) - Comprehensive streaming guide
-- [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, naming, stopping, deletion
+- [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, dry-run, naming, stopping, deletion
 - [Tableflow Lifecycle](#tableflow-lifecycle) - Enable, read, and disable Iceberg/Delta sinks
 - [Introspection and Metadata](#introspection-and-metadata) - Properties for query state
 - [Performance Monitoring](#performance-monitoring) - Fetch metrics
@@ -401,6 +401,36 @@ statements = connection.list_statements(label="data-pipelines")
 ```
 
 For more details on managing named and labeled statements, see the [Statement Naming and Labeling](#statement-naming-and-labeling) section.
+
+---
+
+### Dry-Run Validation (`dry_run_statement()`)
+
+Validate a statement without running it, using Flink's `sql.dry-run`. Flink validates and plans
+the statement and answers in the submission response, without storing it, so this is a single
+request with nothing to clean up:
+
+```python
+statement = connection.dry_run_statement(
+    "SELECT id, price FROM orders", mode=ExecutionMode.STREAMING_QUERY
+)
+print(statement.schema)  # the query's result columns; None for DDL
+```
+
+- `mode` (default `ExecutionMode.SNAPSHOT`) sets `sql.snapshot.mode` as a cursor in that mode
+  would. The result schema is the same in either mode, but the statement's traits are not:
+  `is_bounded` and `is_append_only` describe a run in the mode you validated in. To learn whether
+  a streaming submission would be append-only (e.g. an unbounded aggregation is not), pass
+  `ExecutionMode.STREAMING_QUERY`; under the default, a snapshot's bounded result always reports
+  append-only.
+- Invalid SQL raises `OperationalError` with the server's detail.
+- The returned `Statement` has `is_dry_run` true and `statement_id` `""`. It was never stored,
+  so `get_statement()` for it raises `StatementNotFoundError`.
+- The statement text is sent as-is (no parameter interpolation).
+
+`Cursor.execute()` does not accept property `sql.dry-run`: a dry-run has no rows to fetch and no
+server-side statement to manage, so it doesn't fit the cursor lifecycle. Passing it as true raises
+`InterfaceError`, pointing to use this `Connection`-level method instead.
 
 ---
 
@@ -820,6 +850,7 @@ The `cursor.statement` property provides detailed metadata about the executed qu
 | `is_append_only` | `bool`           | Query produces only inserts (vs changelog with updates/deletes)         |
 | `is_bounded`     | `bool`           | Query has finite result set (snapshot) vs unbounded (streaming)         |
 | `is_deletable`   | `bool`           | Statement can be deleted                                                |
+| `is_dry_run`     | `bool`           | Statement was submitted with `sql.dry-run` (validated, never stored)    |
 | `schema`         | `Schema`         | Result schema with column names and types                               |
 | `sql_kind`       | `str`            | Query type: `SELECT`, `INSERT`, `CREATE`, etc.                          |
 
