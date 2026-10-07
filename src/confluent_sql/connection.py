@@ -1062,6 +1062,64 @@ class Connection:
         with self.closing_cursor(as_dict=as_dict, mode=ExecutionMode.STREAMING_QUERY) as cursor:
             yield cursor
 
+    def dry_run_statement(
+        self,
+        statement_text: str,
+        *,
+        mode: ExecutionMode = ExecutionMode.SNAPSHOT,
+        compute_pool_id: str | None = None,
+    ) -> Statement:
+        """Validate a statement with Flink's `sql.dry-run`, without running it.
+
+        Flink validates and plans a dry-run statement, then answers synchronously in the
+        submission response and never stores it. So this makes one request (no cursor, no
+        polling, nothing to delete), and the returned Statement is final: for a query,
+        `statement.schema` holds the result columns; for DDL it is None. Its `statement_id` is
+        `""`, and it can't be fetched, stopped or deleted later.
+
+        Args:
+            statement_text: The statement to validate. It's sent as-is: there's no parameter
+                interpolation.
+            mode: The execution mode to validate the statement in. It sets `sql.snapshot.mode`
+                the same way a cursor in that mode would. The result schema is the same in
+                either mode, but the statement's traits are not: `is_bounded` and
+                `is_append_only` describe a run in this mode. Pass `STREAMING_QUERY` to learn
+                whether a streaming submission would be append-only (an unbounded aggregation
+                is not); under the default SNAPSHOT, a bounded result always reports
+                append-only.
+            compute_pool_id: Optional compute pool ID to submit the dry-run to. If not
+                provided, uses the Connection's default compute_pool_id, if any; otherwise
+                Confluent Cloud Flink uses the environment+region default compute pool.
+
+        Returns:
+            The dry-run Statement from the submission response.
+
+        Raises:
+            ProgrammingError: If the statement text is empty.
+            InterfaceError: If the connection is closed or compute_pool_id is invalid.
+            OperationalError: If Flink rejects the statement (for example, invalid SQL), with
+                the server's detail, or if the response isn't in a terminal phase.
+        """
+        if not statement_text.strip():
+            raise ProgrammingError("SQL statement cannot be empty")
+
+        response = self._execute_statement(
+            statement_text,
+            mode,
+            properties={Property.DRY_RUN: "true"},
+            compute_pool_id=compute_pool_id,
+        )
+        statement = Statement.from_response(self, response)
+
+        if statement.is_failed:
+            raise OperationalError(f"Dry-run failed: {statement.status.get('detail', '')}")
+        if not statement.phase.is_terminal:
+            raise OperationalError(
+                f"Dry-run came back in non-terminal phase {statement.phase.value}; a dry-run is"
+                " expected to be answered in full by the submission response."
+            )
+        return statement
+
     def execute_snapshot_ddl(
         self,
         statement_text: str,

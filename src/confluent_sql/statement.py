@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from .exceptions import InterfaceError, OperationalError
 from .execution_mode import ExecutionMode
+from .statement_properties import Property
 from .types import (
     ColumnTypeDefinition,
     FromResponseTypes,
@@ -386,6 +387,15 @@ class Statement:
     def is_deletable(self) -> bool:
         """Check if the statement can be deleted safely."""
         return self.phase in {Phase.COMPLETED, Phase.FAILED, Phase.STOPPED}
+
+    @property
+    def is_dry_run(self) -> bool:
+        """Was this statement submitted with `sql.dry-run` enabled?
+
+        See `Connection.dry_run_statement` for details.
+        """
+        value = (self.spec.get("properties") or {}).get(Property.DRY_RUN)
+        return str(value).lower() == "true"
 
     @property
     def is_degraded(self) -> bool:

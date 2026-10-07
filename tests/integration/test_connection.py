@@ -15,7 +15,7 @@ import confluent_sql
 from confluent_sql.connection import Connection
 from confluent_sql.exceptions import OperationalError, StatementNotFoundError
 from confluent_sql.execution_mode import ExecutionMode
-from confluent_sql.statement import Statement
+from confluent_sql.statement import Phase, Statement
 
 
 def _start_running_streaming_statement(connection, table_name, statement_name):
@@ -278,6 +278,69 @@ class TestConnection:
 
         # Verify exception has statement name
         assert exc_info.value.statement_name == "non-existent-statement-name"
+
+
+@pytest.mark.integration
+class TestDryRunStatement:
+    """Integration tests for Connection.dry_run_statement against a real environment."""
+
+    def test_schema_and_not_stored(self, connection: Connection):
+        """sql.dry-run is answered in the POST response and never stored."""
+        statement = connection.dry_run_statement(
+            "SELECT CAST(1 AS BIGINT) AS id, CAST(2.5 AS DECIMAL(10, 2)) AS price"
+        )
+
+        assert statement.is_dry_run
+        assert statement.statement_id == ""
+        assert statement.phase == Phase.COMPLETED
+        schema = statement.schema
+        assert schema is not None
+        id_column, price_column = schema.columns
+        assert id_column.name == "id"
+        assert id_column.type.type_name == "BIGINT"
+        assert price_column.name == "price"
+        assert price_column.type.type_name == "DECIMAL"
+        assert (price_column.type.precision, price_column.type.scale) == (10, 2)
+        with pytest.raises(StatementNotFoundError):
+            connection.get_statement(statement.name)
+
+    @pytest.mark.parametrize(
+        ("mode", "expected_append_only"),
+        [(ExecutionMode.SNAPSHOT, True), (ExecutionMode.STREAMING_QUERY, False)],
+    )
+    def test_mode_determines_append_only(
+        self,
+        table_connection: Connection,
+        test_table_name: str,
+        mode: ExecutionMode,
+        expected_append_only: bool,
+    ):
+        """The schema is the same in either mode, but an unbounded aggregation is append-only
+        only as a bounded snapshot: validated as a streaming query, it is a changelog."""
+        statement = table_connection.dry_run_statement(
+            f"SELECT c2, COUNT(*) AS total FROM {test_table_name} GROUP BY c2", mode=mode
+        )
+
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["c2", "total"]
+        assert statement.is_append_only is expected_append_only
+        assert statement.is_bounded is (mode is ExecutionMode.SNAPSHOT)
+
+    def test_invalid_sql_raises(self, connection: Connection):
+        with pytest.raises(OperationalError, match="Dry-run failed") as excinfo:
+            connection.dry_run_statement("SELECT no_such_column FROM `INFORMATION_SCHEMA`.`TABLES`")
+        assert "no_such_column" in str(excinfo.value)
+
+    def test_default_compute_pool(self, poolless_connection: Connection):
+        """With no compute pool on the connection, the dry-run goes to the environment's
+        default pool."""
+        statement = poolless_connection.dry_run_statement("SELECT CAST(1 AS BIGINT) AS id")
+
+        assert statement.phase == Phase.COMPLETED
+        schema = statement.schema
+        assert schema is not None
+        assert [column.name for column in schema] == ["id"]
 
 
 @pytest.mark.integration
