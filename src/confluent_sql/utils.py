@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 from confluent_sql.exceptions import DataError
 
 
@@ -33,3 +35,28 @@ def decode_sql_hex_literal(encoded: Any) -> bytes:
         return bytes.fromhex(encoded[2:-1])
     except ValueError as e:
         raise DataError(f"Invalid hex digits in x'..' byte string {encoded!r}: {e}") from e
+
+
+def extract_error_detail(response: httpx.Response) -> str:
+    """Extract server-provided error detail from an error response body.
+
+    Falls back to "no more details" both when the body doesn't parse or carries
+    no non-empty detail (an `errors` list that's empty, or whose entries omit `detail`).
+    """
+    try:
+        errors = response.json().get("errors", [])
+        details = "; ".join(err["detail"] for err in errors if err.get("detail"))
+    except Exception:
+        details = ""
+    return details or "no more details"
+
+
+def next_page_token(next_url: str | None) -> str | None:
+    """Extract the `page_token` from a response's `metadata.next` URL, if present.
+
+    An empty/absent token collapses to None: pagination loops terminate on `is None`, so an empty
+    string would spin them forever.
+    """
+    if next_url is None:
+        return None
+    return httpx.URL(next_url).params.get("page_token") or None

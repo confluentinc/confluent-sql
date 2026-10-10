@@ -8,6 +8,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - `Connection.dry_run_statement(statement_text, *, mode=ExecutionMode.SNAPSHOT, compute_pool_id=None)`: validate a statement with Flink's `sql.dry-run` in a single request, without running or storing it, and return the resulting `Statement`. The returned `Statement`'s `schema` and `is_append_only` may then be of interest to the caller. Raises `OperationalError` with the server's detail if Flink rejects the statement. (#246)
 - New property `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. (#246)
+- Support for the Flink Artifact API (`/artifact/v1/flink-artifacts` and `/presigned-upload-url`), for uploading UDF packages (a JAR, or for Python a ZIP) to Confluent Cloud.
+  See `examples/artifact_upload_example.py` for a full example of packaging, uploading and calling a Python UDF artifacts end to end.
 
 ### Changed
 
