@@ -35,6 +35,7 @@ For comprehensive details on streaming queries, polling patterns, and changelog 
 - [Streaming Query Support](#streaming-query-support) - Comprehensive streaming guide
 - [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, dry-run, naming, stopping, deletion
 - [Tableflow Lifecycle](#tableflow-lifecycle) - Enable, read, and disable Iceberg/Delta sinks
+- [Flink Artifacts](#flink-artifacts) - Upload and manage UDF packages
 - [Introspection and Metadata](#introspection-and-metadata) - Properties for query state
 - [Performance Monitoring](#performance-monitoring) - Fetch metrics
 - [Type System Extensions](#type-system-extensions) - Flink type support
@@ -768,6 +769,59 @@ for table in ("orders", "shipments", "returns"):
         config=config,
     )
 ```
+
+---
+
+## Flink Artifacts
+
+Flink artifacts are how user code -- a UDF packaged as a JAR (Java) or a ZIP (Python) -- gets into
+Confluent Cloud Flink. Upload one, then register a function from it with
+`CREATE FUNCTION ... USING JAR 'confluent-artifact://<artifact id>'`. Artifacts are scoped to the
+connection's cloud, region and environment (from `connect()`'s `cloud_provider`/`cloud_region`, or a
+standard `https://flink.<region>.<cloud>.confluent.cloud` `endpoint`).
+
+A runnable end-to-end example -- build a Python UDF, upload it, call it from SQL, clean up -- is in
+[examples/artifact_upload_example.py](examples/artifact_upload_example.py).
+
+> **Not available under BYOIDC.** Like Tableflow, artifacts are a control-plane surface; use an
+> API-key connection (a global key).
+
+```python
+from confluent_sql import ArtifactRuntimeLanguage
+
+artifact = connection.create_artifact(
+    "my-udf",
+    file="dist/my_udf-0.1.0.zip",              # path, open binary file, or bytes
+    runtime_language=ArtifactRuntimeLanguage.PYTHON,
+    description="T-shirt size comparisons",
+)
+connection.get_artifact(artifact.id).versions   # versions appear on a read, not on create/list
+connection.list_artifacts(runtime_language="PYTHON")
+connection.update_artifact(artifact.id, description="new text")  # None = unchanged, "" = clear
+connection.delete_artifact(artifact.id)         # blocks until gone; wait_for_removal=False to opt out
+```
+
+`create_artifact` infers `content_format` from a `.jar`/`.zip` path (required otherwise). To control
+the upload yourself, the three steps are available individually:
+
+```python
+target = connection.get_artifact_upload_url("ZIP")      # presigned, valid for one hour
+connection.upload_artifact_file(target, "my_udf.zip")   # plain form POST to the object store
+connection.create_artifact("my-udf", upload_id=target.upload_id, content_format="ZIP")
+```
+
+Uploads retry failures to *connect* (nothing sent yet) three times by default, but not failures
+mid-transfer, which would re-send the whole archive. Tune with an `UploadRetry` on
+`create_artifact(upload_retry=...)` / `upload_artifact_file(retry=...)`:
+`UploadRetry(connect_retries=3, transfer_retries=0)`. Mid-transfer retries need a seekable file
+(a path, bytes, or a seekable file object).
+
+The Cloud API doesn't currently support adding versions to an existing artifact: each artifact has
+a single server-assigned version, and its `display_name` is immutable. To ship new code, create a
+new artifact rather than updating.
+
+Errors: `ArtifactNotFoundError` (404 on get/update/delete), `ArtifactAlreadyExistsError` (display
+name taken). Python UDFs run only in streaming mode.
 
 ---
 

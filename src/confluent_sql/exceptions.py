@@ -264,6 +264,39 @@ class ConnectorAlreadyExistsError(OperationalError):
         self.connector_name = connector_name
 
 
+class ArtifactNotFoundError(OperationalError):
+    """
+    Exception raised when a Flink artifact does not exist.
+
+    Raised on an HTTP 404 from get_artifact(), update_artifact() or delete_artifact() -- i.e. the
+    artifact was never created (or has already been removed). delete_artifact(wait_for_removal=True)
+    polls against this 404 to confirm teardown.
+
+    Attributes:
+        artifact_id: The id of the artifact that was not found.
+    """
+
+    def __init__(self, message: str, artifact_id: str):
+        super().__init__(message)
+        self.artifact_id = artifact_id
+
+
+class ArtifactAlreadyExistsError(OperationalError):
+    """
+    Exception raised when creating a Flink artifact whose display name is already taken.
+
+    Raised on an HTTP 409 from create_artifact() (display names are unique per cloud, region and
+    environment).
+
+    Attributes:
+        display_name: The display name of the artifact that already existed.
+    """
+
+    def __init__(self, message: str, display_name: str):
+        super().__init__(message)
+        self.display_name = display_name
+
+
 class IntegrityError(DatabaseError):
     """
     Exception raised when the relational integrity of the database is affected.

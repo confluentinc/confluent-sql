@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections import namedtuple
 from collections.abc import Collection, Generator
@@ -19,6 +20,15 @@ from typing import Any, NoReturn
 import httpx
 
 from .__version__ import __version__
+from .artifacts import (
+    ArtifactApi,
+    ArtifactContentFormat,
+    ArtifactFile,
+    ArtifactRuntimeLanguage,
+    FlinkArtifact,
+    PresignedUploadUrl,
+    UploadRetry,
+)
 from .auth import FlinkBearerAuth
 from .connectors import Connector, ConnectorApi
 from .cursor import Cursor
@@ -58,6 +68,8 @@ from .tableflow import (
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
+from .utils import extract_error_detail
+from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
 
@@ -480,6 +492,12 @@ class Connection:
     `_organization_lookup_request`; None until then."""
     _connect_controlplane_client: httpx.Client | None
     """Lazily created on first Connect control-plane request; None until then."""
+    _artifact_api: ArtifactApi | None
+    """Lazily composed on first artifact method call; None until then."""
+    _cloud_provider: str | None
+    _cloud_region: str | None
+    """Cloud/region as passed to connect() (None when only an endpoint was given) -- see
+    artifact_scope()."""
     _connector_api: ConnectorApi | None
     """Lazily composed on first connector method call; None until then."""
     _resolved_kafka_cluster_id: str | None
@@ -700,6 +718,9 @@ class Connection:
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
         )
         self._connector_api = None
+        self._artifact_api = None
+        self._cloud_provider = cloud_provider or None
+        self._cloud_region = cloud_region or None
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
         # Tableflow work with only a tableflow key pair (no global key needed for CMK).
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
@@ -1921,6 +1942,14 @@ class Connection:
             self._get_controlplane_client(), url, method, raise_for_status, **kwargs
         )
 
+    def _artifact_request(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        """Request against a `/artifact/v1` route; shares `_tableflow_request`'s client."""
+        return self._send_request(
+            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
+        )
+
     def _cmk_request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         """Issue a request against a CMK (Cluster Management for Kafka) route.
 
@@ -1952,17 +1981,8 @@ class Connection:
 
     @staticmethod
     def _extract_error_detail(response: httpx.Response) -> str:
-        """Extract server-provided error detail from an error response body.
-
-        Falls back to "no more details" both when the body doesn't parse or carries
-        no non-empty detail (an `errors` list that's empty, or whose entries omit `detail`).
-        """
-        try:
-            errors = response.json().get("errors", [])
-            details = "; ".join(err["detail"] for err in errors if err.get("detail"))
-        except Exception:
-            details = ""
-        return details or "no more details"
+        """Server-provided error detail from an error response body; see `utils`."""
+        return extract_error_detail(response)
 
     def _raise_for_status_as_operational_error(
         self, response: httpx.Response, *, prefix: str = "error sending request"
@@ -2147,6 +2167,189 @@ class Connection:
     def resolve_kafka_cluster_id(self) -> str:
         """Public ControlPlaneContext hook -- delegates to the cached CMK resolution."""
         return self._resolve_kafka_cluster_id()
+
+    def artifact_controlplane_request(
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
+    ) -> httpx.Response:
+        """ArtifactContext hook."""
+        return self._artifact_request(url, method, raise_for_status, **kwargs)
+
+    _FLINK_ENDPOINT_CLOUD_RE = re.compile(
+        r"^https://flink\.([^.]+)\.([^.]+)\.(?:private\.)?confluent\.cloud"
+    )
+
+    def artifact_scope(self) -> tuple[str, str]:
+        """(cloud, region) for artifact calls, cloud upper-cased as the API spells it. From
+        `connect()`'s arguments, else parsed from a standard Flink `endpoint`; ProgrammingError if
+        neither works."""
+        cloud, region = self._cloud_provider, self._cloud_region
+        if not (cloud and region):
+            match = self._FLINK_ENDPOINT_CLOUD_RE.match(self._flink_endpoint)
+            if match:
+                region, cloud = match.groups()
+        if not (cloud and region):
+            raise ProgrammingError(
+                "Artifacts are scoped to a cloud and region, which can't be determined from this "
+                "connection's endpoint; pass cloud_provider and cloud_region to connect()."
+            )
+        return cloud.upper(), region
+
+    def _get_artifact_api(self) -> ArtifactApi:
+        """Compose the ArtifactApi on first use."""
+        if self._artifact_api is None:
+            self._artifact_api = ArtifactApi(self)
+        return self._artifact_api
+
+    def get_artifact_upload_url(
+        self, content_format: ArtifactContentFormat | str
+    ) -> PresignedUploadUrl:
+        """Request a presigned URL to upload an artifact archive to (valid for one hour).
+
+        `POST /artifact/v1/presigned-upload-url`. Upload to it with `upload_artifact_file`, then
+        pass its `upload_id` to `create_artifact`. Most callers can skip all of that and hand
+        `create_artifact` a file directly.
+
+        Raises:
+            InterfaceError: If `content_format` is not JAR or ZIP.
+            ProgrammingError: If no control-plane credential is available, or the cloud/region
+                can't be determined (see `artifact_scope`).
+            OperationalError: On API errors.
+        """
+        return self._get_artifact_api().get_upload_url(content_format)
+
+    def upload_artifact_file(
+        self,
+        target: PresignedUploadUrl,
+        file: ArtifactFile,
+        *,
+        upload_timeout: float = 300,
+        retry: UploadRetry = UploadRetry(),  # noqa: B008 - frozen, safe to share
+    ) -> None:
+        """Upload an archive (path, open binary file, or bytes) to a presigned upload target.
+
+        Args:
+            upload_timeout: Seconds allowed for the upload request.
+            retry: Retry policy for transient transport errors. By default only failures to
+                connect (nothing sent yet) are retried; see `UploadRetry`.
+
+        Raises:
+            InterfaceError: If `file` is a path that can't be read.
+            OperationalError: If the upload is rejected, or fails after retries are exhausted.
+        """
+        self._get_artifact_api().upload(target, file, upload_timeout=upload_timeout, retry=retry)
+
+    def create_artifact(
+        self,
+        display_name: str,
+        *,
+        file: ArtifactFile | None = None,
+        upload_id: str | None = None,
+        content_format: ArtifactContentFormat | str | None = None,
+        runtime_language: ArtifactRuntimeLanguage | str | None = None,
+        description: str | None = None,
+        documentation_link: str | None = None,
+        class_name: str | None = None,
+        upload_timeout: float = 300,
+        upload_retry: UploadRetry = UploadRetry(),  # noqa: B008 - frozen, safe to share
+    ) -> FlinkArtifact:
+        """Create a Flink artifact (e.g. a UDF package) in this connection's cloud/region/
+        environment.
+
+        `POST /artifact/v1/flink-artifacts`. Pass either `file` -- a path, open binary file or
+        bytes, uploaded for you via a fresh presigned URL -- or the `upload_id` of an archive you
+        already uploaded with `get_artifact_upload_url`/`upload_artifact_file`.
+
+        Args:
+            display_name: Unique (per cloud/region/environment) name, up to 60 characters.
+            file: The archive to upload. Mutually exclusive with `upload_id`.
+            upload_id: A prior presigned upload's id. Mutually exclusive with `file`.
+            content_format: JAR or ZIP. Inferred from a `.jar`/`.zip` file path; otherwise
+                required with `file`.
+            runtime_language: JAVA or PYTHON; the server defaults to JAVA when omitted.
+            description: Up to 256 characters.
+            documentation_link: An http(s) URL.
+            class_name: Deprecated by the API; the Java class or alias of the function.
+            upload_timeout: Seconds allowed for the archive upload when `file` is given.
+            upload_retry: Retry policy for that upload; see `upload_artifact_file`.
+
+        Raises:
+            InterfaceError: On a bad argument combination (see above).
+            ProgrammingError: If no control-plane credential is available, or the cloud/region
+                can't be determined (see `artifact_scope`).
+            ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409).
+            OperationalError: On other API errors, or if the upload fails.
+        """
+        return self._get_artifact_api().create(
+            display_name,
+            file=file,
+            upload_id=upload_id,
+            content_format=content_format,
+            runtime_language=runtime_language,
+            description=description,
+            documentation_link=documentation_link,
+            class_name=class_name,
+            upload_timeout=upload_timeout,
+            upload_retry=upload_retry,
+        )
+
+    def get_artifact(self, artifact_id: str) -> FlinkArtifact:
+        """Read a Flink artifact by id (`GET /artifact/v1/flink-artifacts/{id}`).
+
+        Raises:
+            ArtifactNotFoundError: If no such artifact exists (HTTP 404).
+            OperationalError: On other API errors.
+        """
+        return self._get_artifact_api().get(artifact_id)
+
+    def list_artifacts(
+        self,
+        *,
+        runtime_language: ArtifactRuntimeLanguage | str | None = None,
+        page_size: int = 100,
+    ) -> list[FlinkArtifact]:
+        """List every Flink artifact in this connection's cloud/region/environment, optionally
+        only those of one `runtime_language` (`GET /artifact/v1/flink-artifacts`)."""
+        return self._get_artifact_api().list_artifacts(
+            runtime_language=runtime_language, page_size=page_size
+        )
+
+    def update_artifact(
+        self,
+        artifact_id: str,
+        *,
+        description: str | None = None,
+        documentation_link: str | None = None,
+    ) -> FlinkArtifact:
+        """Update a Flink artifact's mutable metadata in place
+        (`PATCH /artifact/v1/flink-artifacts/{id}`). `None` leaves a field unchanged; an empty
+        string clears it.
+
+        Raises:
+            InterfaceError: If neither field is given.
+            ArtifactNotFoundError: If no such artifact exists (HTTP 404).
+            OperationalError: On other API errors.
+        """
+        return self._get_artifact_api().update(
+            artifact_id, description=description, documentation_link=documentation_link
+        )
+
+    def delete_artifact(
+        self, artifact_id: str, *, wait_for_removal: bool = True, timeout: float = 300
+    ) -> None:
+        """Delete a Flink artifact (`DELETE /artifact/v1/flink-artifacts/{id}`).
+
+        Args:
+            artifact_id: The artifact's id (e.g. `cfa-...`).
+            wait_for_removal: If True (default), poll until a read 404s, confirming the deletion.
+            timeout: Maximum seconds to wait when wait_for_removal is True.
+
+        Raises:
+            ArtifactNotFoundError: If no such artifact exists (HTTP 404).
+            OperationalError: On other API errors, or on wait timeout.
+        """
+        self._get_artifact_api().delete(
+            artifact_id, wait_for_removal=wait_for_removal, timeout=timeout
+        )
 
     def _get_connector_api(self) -> ConnectorApi:
         """Return the ConnectorApi, composing it (with this Connection as context) on first use."""
@@ -2580,17 +2783,8 @@ class Connection:
         return ids
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
-        """Extract the next page token from the next_url, if present."""
-        if next_url is None:
-            return None
-
-        # The next_url is expected to be a full URL with a query parameter like '?page_token=abc123'
-        # We can parse it to extract the page_token value.
-        parsed = httpx.URL(next_url)
-        page_token = parsed.params.get("page_token")
-        # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
-        # `next_page_token is not None`, so an empty string would spin it forever.
-        return page_token or None
+        """Extract the next page token from the next_url, if present; see `utils`."""
+        return parse_next_page_token(next_url)
 
 
 class RowTypeRegistry:
