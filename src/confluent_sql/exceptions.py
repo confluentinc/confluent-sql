@@ -285,8 +285,8 @@ class ArtifactAlreadyExistsError(OperationalError):
     """
     Exception raised when creating a Flink artifact whose display name is already taken.
 
-    Raised on an HTTP 409 from create_artifact() (display names are unique per cloud, region and
-    environment).
+    Raised on an HTTP 409, or an HTTP 400 "name should be unique", from create_artifact() (display
+    names are unique per cloud, region and environment).
 
     Attributes:
         display_name: The display name of the artifact that already existed.

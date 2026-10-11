@@ -674,6 +674,8 @@ class Connection:
         elif not cloud_region:
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
+        endpoint_arg = endpoint
+
         # Create httpx client for making API calls
         if not endpoint:
             # Construct the endpoint URL based on cloud provider and region.
@@ -719,8 +721,11 @@ class Connection:
         )
         self._connector_api = None
         self._artifact_api = None
-        self._cloud_provider = cloud_provider or None
-        self._cloud_region = cloud_region or None
+        # An explicit endpoint wins over cloud arguments (see the gate above), so drop them then;
+        # artifact_scope() will parse the endpoint instead of using stale cloud/region values.
+        explicit_endpoint = bool(endpoint_arg)
+        self._cloud_provider = None if explicit_endpoint else (cloud_provider or None)
+        self._cloud_region = None if explicit_endpoint else (cloud_region or None)
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
         # Tableflow work with only a tableflow key pair (no global key needed for CMK).
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
@@ -1947,7 +1952,7 @@ class Connection:
     ) -> httpx.Response:
         """Request against a `/artifact/v1` route; shares `_tableflow_request`'s client."""
         return self._send_request(
-            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
+            self._get_controlplane_client("Artifacts"), url, method, raise_for_status, **kwargs
         )
 
     def _cmk_request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
@@ -2086,7 +2091,7 @@ class Connection:
             )
         return self._flink_client
 
-    def _get_controlplane_client(self) -> httpx.Client:
+    def _get_controlplane_client(self, service: str = "Tableflow") -> httpx.Client:
         """Return the shared control-plane httpx client, creating it on first use.
 
         Shared by `_tableflow_request`, `_cmk_request`, and `_organization_lookup_request` (one
@@ -2096,6 +2101,10 @@ class Connection:
         (`_resolve_kafka_cluster_id`, the `organization_id` property) already require
         `_global_credentials` to be set before they ever reach this method, which guarantees
         `_controlplane_auth` is the global pair (not None) by the time they get here.
+
+        Args:
+            service: Name of the requesting service ("Tableflow" or "Artifacts"), used only to
+                word the missing-credential errors. Artifacts share Tableflow's credential.
 
         Raises:
             InterfaceError: If the connection is closed.
@@ -2107,13 +2116,13 @@ class Connection:
         if self._controlplane_auth is None:
             if self._byoidc:
                 raise ProgrammingError(
-                    "Tableflow is not reachable with a BYOIDC bearer token: Confluent's "
+                    f"{service} is not reachable with a BYOIDC bearer token: Confluent's "
                     "authorization model accepts only API keys on the control plane. Use an "
                     "API-key connection (global or tableflow_api_key/tableflow_api_secret) for "
-                    "Tableflow."
+                    f"{service}."
                 )
             raise ProgrammingError(
-                "Tableflow requires a global API key or a tableflow_api_key/tableflow_api_secret "
+                f"{service} requires a global API key or a tableflow_api_key/tableflow_api_secret "
                 "pair; neither was supplied to connect()."
             )
         if self._controlplane_client is None:
@@ -2175,7 +2184,7 @@ class Connection:
         return self._artifact_request(url, method, raise_for_status, **kwargs)
 
     _FLINK_ENDPOINT_CLOUD_RE = re.compile(
-        r"^https://flink\.([^.]+)\.([^.]+)\.(?:private\.)?confluent\.cloud"
+        r"^https://flink\.([^.]+)\.([^.]+)\.(?:private\.)?confluent\.cloud$"
     )
 
     def artifact_scope(self) -> tuple[str, str]:
@@ -2276,7 +2285,8 @@ class Connection:
             InterfaceError: On a bad argument combination (see above).
             ProgrammingError: If no control-plane credential is available, or the cloud/region
                 can't be determined (see `artifact_scope`).
-            ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409).
+            ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409, or the API's HTTP 400
+                "name should be unique").
             OperationalError: On other API errors, or if the upload fails.
         """
         return self._get_artifact_api().create(

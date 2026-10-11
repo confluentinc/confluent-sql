@@ -47,13 +47,26 @@ class TestArtifactScope:
         with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
             conn.artifact_scope()
 
+    def test_explicit_endpoint_wins_over_cloud_arguments(self) -> None:
+        conn = _connect(endpoint="https://flink.eu-west-1.gcp.confluent.cloud")
+        assert conn.artifact_scope() == ("GCP", "eu-west-1")
+
+    def test_endpoint_with_extra_host_suffix_is_not_parsed(self) -> None:
+        conn = _connect(
+            cloud_provider="",
+            cloud_region="",
+            endpoint="https://flink.us-east-2.aws.confluent.cloud.example.com",
+        )
+        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
+            conn.artifact_scope()
+
 
 class TestControlplaneAccess:
     def test_requires_a_controlplane_credential(self) -> None:
         conn = _connect(
             global_api_key="", global_api_secret="", flink_api_key="fk", flink_api_secret="fs"
         )
-        with pytest.raises(ProgrammingError, match="global API key"):
+        with pytest.raises(ProgrammingError, match="Artifacts requires a global API key"):
             conn.list_artifacts()
 
     def test_closed_connection_raises(self) -> None:
