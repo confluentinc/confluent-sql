@@ -268,7 +268,7 @@ class TestUpload:
     def test_text_mode_file_object_is_interface_error(self) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
         with pytest.raises(InterfaceError, match="binary mode"):
-            ArtifactApi(FakeContext()).upload(target, io.StringIO("text"))
+            ArtifactApi(FakeContext()).upload(target, io.StringIO("text"))  # pyright: ignore[reportArgumentType]
 
     def test_unreadable_path_is_interface_error(self, tmp_path: Path) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
@@ -548,6 +548,18 @@ class TestMalformedResponses:
         with pytest.raises(OperationalError, match="Error parsing") as exc:
             operation(ArtifactApi(FakeContext(bad_response)))
         assert exc.value.http_status_code == 200
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"data": "x"}, {"data": None}, {"metadata": "x"}, {"metadata": None}, {"data": {"a": 1}}],
+    )
+    def test_list_with_malformed_data_or_metadata_is_operational_error(self, body: dict) -> None:
+        api = ArtifactApi(FakeContext(_response(body)))
+        with pytest.raises(OperationalError, match="Error parsing artifact list"):
+            api.list_artifacts()
+
+    def test_list_tolerates_absent_data_and_metadata(self) -> None:
+        assert ArtifactApi(FakeContext(_response({}))).list_artifacts() == []
 
 
 class TestGetListUpdateDelete:
