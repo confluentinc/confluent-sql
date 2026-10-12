@@ -400,7 +400,7 @@ def connect(  # noqa: PLR0913
             endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for example,
             but cases and private networking technologies vary).
         controlplane_endpoint: Base URL for the Confluent Cloud control plane (Tableflow, Connect,
-            and CMK routes), distinct from the Flink gateway `endpoint`. Defaults to
+            Artifact, and CMK routes), distinct from the Flink gateway `endpoint`. Defaults to
             "https://api.confluent.cloud". A trailing slash is stripped if provided.
         result_page_fetch_pause_millis: Maximum milliseconds to wait between fetching pages of
             statement results (per statement). Defaults to 100ms. Prevents tight loops of requests
@@ -480,8 +480,9 @@ class Connection:
         f"Confluent-SQL-Dbapi/v{__version__} (https://confluent.io; support@confluent.io)"
     )
 
+    # Also the host for artifact routes (`/artifact/v1`); `controlplane_endpoint` redirects them.
     _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
-    """Control-plane host (Tableflow, Connect, CMK) -- distinct from the Flink gateway."""
+    """Control-plane host (Tableflow, Connect, Artifact, CMK) -- distinct from the Flink gateway."""
 
     _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
     """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
@@ -525,7 +526,8 @@ class Connection:
     _http_timeout_secs: float
 
     _controlplane_endpoint: str
-    """Base URL for the control plane (Tableflow, Connect, CMK), distinct from the Flink gateway."""
+    """Base URL for the control plane (Tableflow, Connect, Artifact, CMK), distinct from the Flink
+    gateway."""
     _controlplane_auth: tuple[str, str] | None
     """(key, secret) shared by `_tableflow_request`, `_cmk_request`, and
     `_organization_lookup_request` -- a global key, or (Tableflow calls only) a Tableflow-scoped
@@ -645,8 +647,9 @@ class Connection:
                 global key).
             local_time_zone: Seeds the read/write `local_time_zone` property (optional). See the
                 property's docstring for the precedence rules and mutation semantics.
-            controlplane_endpoint: Base URL for the control plane (Tableflow, Connect, CMK).
-                Defaults to "https://api.confluent.cloud". Trailing slash stripped if provided.
+            controlplane_endpoint: Base URL for the control plane (Tableflow, Connect, Artifact,
+                CMK). Defaults to "https://api.confluent.cloud". Trailing slash stripped if
+                provided.
             result_page_fetch_pause_millis: Milliseconds to possibly wait between fetching pages of
                 statement results. Defaults to 100ms. If most recent fetch of results for a
                 statement was more than this long ago, then no delay will happen when fetching
