@@ -425,8 +425,10 @@ class ArtifactApi:
         """Create an artifact, uploading `file` first unless an `upload_id` is supplied."""
         if (file is None) == (upload_id is None):
             raise InterfaceError("create_artifact requires exactly one of file/upload_id")
-        fmt = _normalize_content_format(content_format) if content_format else None
-        lang = _normalize_runtime_language(runtime_language) if runtime_language else None
+        fmt = _normalize_content_format(content_format) if content_format is not None else None
+        lang = (
+            _normalize_runtime_language(runtime_language) if runtime_language is not None else None
+        )
 
         if file is not None:
             fmt = fmt or infer_content_format(file)

@@ -381,6 +381,20 @@ class TestUploadRetry:
 
 
 class TestCreate:
+    @pytest.mark.parametrize("field", ["content_format", "runtime_language"])
+    def test_empty_enum_string_is_rejected_not_treated_as_unset(self, field: str) -> None:
+        ctx = FakeContext()
+        content_format = "" if field == "content_format" else None
+        runtime_language = "" if field == "runtime_language" else None
+        with pytest.raises(InterfaceError, match=f"unknown {field}"):
+            ArtifactApi(ctx).create(
+                "my-udf",
+                upload_id="u-1",
+                content_format=content_format,
+                runtime_language=runtime_language,
+            )
+        assert ctx.requests == []
+
     def test_file_flow_presigns_uploads_then_creates(
         self, upload_transport: list[httpx.Request], tmp_path: Path
     ) -> None:
