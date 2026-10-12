@@ -49,6 +49,8 @@ class TestByoidcValidation:
             "tableflow_api_secret",
             "connect_api_key",
             "connect_api_secret",
+            "cloud_api_key",
+            "cloud_api_secret",
         ],
     )
     def test_external_access_token_mutually_exclusive_with_each_api_key_param(self, key_param):
