@@ -397,7 +397,7 @@ class ArtifactApi:
                 )
             except httpx.RequestError as e:
                 raise OperationalError(f"error uploading artifact: {type(e).__name__}: {e}") from e
-        if response.status_code >= 400:
+        if not response.is_success:
             raise OperationalError(
                 f"Error uploading artifact '{response.status_code}' - {response.text[:500]}",
                 http_status_code=response.status_code,
@@ -552,7 +552,7 @@ class ArtifactApi:
 
     @staticmethod
     def _raise_for_status(response: httpx.Response, *, prefix: str) -> None:
-        if response.status_code >= 400:
+        if not response.is_success:
             raise OperationalError(
                 f"{prefix} '{response.status_code}' - {extract_error_detail(response)}",
                 http_status_code=response.status_code,
