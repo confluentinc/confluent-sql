@@ -26,13 +26,11 @@ ARTIFACT_NAME = "confluent_sql_artifact_example"
 conn = confluent_sql.connect(
     global_api_key=os.environ["CONFLUENT_GLOBAL_API_KEY"],
     global_api_secret=os.environ["CONFLUENT_GLOBAL_API_SECRET"],
-
     ## API-specific keys can be used instead of global API keys:
     # cloud_api_key=os.environ["CONFLUENT_CLOUD_API_KEY"],
     # cloud_api_secret=os.environ["CONFLUENT_CLOUD_API_SECRET"],
     # flink_api_key=os.environ["CONFLUENT_FLINK_API_KEY"],
     # flink_api_secret=os.environ["CONFLUENT_FLINK_API_SECRET"],
-
     environment_id=os.environ["CONFLUENT_ENV_ID"],
     organization_id=os.environ["CONFLUENT_ORG_ID"],
     cloud_provider=os.environ["CONFLUENT_CLOUD_PROVIDER"],
