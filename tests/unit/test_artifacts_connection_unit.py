@@ -29,6 +29,19 @@ def _connect(**overrides: Any) -> Connection:
     return connect(**kwargs)
 
 
+def _basic_authorization(key: str, secret: str) -> str:
+    request = httpx.Request("GET", "https://example.invalid")
+    return next(httpx.BasicAuth(key, secret).auth_flow(request)).headers["Authorization"]
+
+
+def _artifact_authorization(conn: Connection) -> str:
+    """The Authorization header the artifact client would send."""
+    auth = conn._get_cloud_controlplane_client().auth
+    assert auth is not None
+    request = httpx.Request("GET", "https://example.invalid")
+    return next(auth.auth_flow(request)).headers["Authorization"]
+
+
 class TestArtifactScope:
     def test_cloud_is_uppercased_for_the_api(self) -> None:
         assert _connect().artifact_scope() == ("AWS", "us-east-2")
@@ -91,12 +104,10 @@ class TestControlplaneAccess:
             cloud_api_key="ck",
             cloud_api_secret="cs",
         )
-        client = conn._get_cloud_controlplane_client()
-        assert client.auth._auth_header == httpx.BasicAuth("ck", "cs")._auth_header
+        assert _artifact_authorization(conn) == _basic_authorization("ck", "cs")
 
     def test_global_key_alone_authenticates_artifact_requests(self) -> None:
-        client = _connect()._get_cloud_controlplane_client()
-        assert client.auth._auth_header == httpx.BasicAuth("gk", "gs")._auth_header
+        assert _artifact_authorization(_connect()) == _basic_authorization("gk", "gs")
 
     def test_global_key_wins_over_cloud_key(self) -> None:
         conn = _connect(cloud_api_key="ck", cloud_api_secret="cs")
