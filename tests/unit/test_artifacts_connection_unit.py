@@ -206,3 +206,16 @@ class TestArtifactRequestRetries:
         response = conn.artifact_controlplane_request("/x", method=method, raise_for_status=False)
         assert response.status_code == 503
         assert client.request.call_count == 1
+
+
+class TestArtifactResponseLogging:
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_presigned_secrets_are_not_debug_logged(self, method: str, caplog) -> None:
+        secret = "X-Amz-Signature=deadbeef"
+        conn = _connect()
+        client = Mock()
+        client.request.return_value = Mock(status_code=200, content=secret.encode())
+        conn._get_cloud_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        with caplog.at_level("DEBUG", logger="confluent_sql"):
+            conn.artifact_controlplane_request("/artifact/v1/x", method=method)
+        assert secret not in caplog.text

@@ -456,6 +456,9 @@ def connect(  # noqa: PLR0913
     )
 
 
+_BODY_NOT_LOGGED = "<body not logged>"
+
+
 class _RetryableStatusError(Exception):
     """Wraps a response carrying a retryable HTTP status (#140) so call_with_retries' existing
     exception-based retry loop drives status-code retries too. Never escapes _request_get."""
@@ -2028,13 +2031,20 @@ class Connection:
         """Request against a `/artifact/v1` route, on the artifact (global or cloud-key) client.
 
         GETs are idempotent and so retried (see `_request_get`); mutating methods are sent once.
+        Response bodies are never DEBUG-logged: the presign response carries a live upload URL and
+        its signed form fields, which would let anyone with the log replace the archive.
         """
         if method.upper() == "GET":
             return self._get_with_retries(
                 self._artifact_request_raw, url, raise_for_status, **kwargs
             )
         return self._send_request(
-            self._get_cloud_controlplane_client(), url, method, raise_for_status, **kwargs
+            self._get_cloud_controlplane_client(),
+            url,
+            method,
+            raise_for_status,
+            log_body=False,
+            **kwargs,
         )
 
     def _artifact_request_raw(
@@ -2043,7 +2053,7 @@ class Connection:
         """Artifact counterpart of `_request_raw`: no httpx.RequestError translation, for
         `_get_with_retries`."""
         response = self._get_cloud_controlplane_client().request(method, url, **kwargs)
-        logger.debug("Response: %s", response.content)
+        logger.debug("Response: %s", _BODY_NOT_LOGGED)
         if raise_for_status:
             self._raise_for_status_as_operational_error(response)
         return response
@@ -2125,7 +2135,7 @@ class Connection:
         return response
 
     def _send_request(
-        self, client: httpx.Client, url, method, raise_for_status, **kwargs
+        self, client: httpx.Client, url, method, raise_for_status, *, log_body: Any = True, **kwargs
     ) -> httpx.Response:
         """Shared request/response handling for the control-plane clients (Tableflow, Connect).
 
@@ -2133,10 +2143,13 @@ class Connection:
         OperationalError via `_wrap_request_error`. Unlike `_request_get`, there's no retry loop
         here to worry about preserving raw-exception visibility for -- see `_request_raw`'s
         docstring for the one place that still needs it.
+
+        `log_body=False` keeps the response body out of the DEBUG log, for responses carrying
+        secrets (see `_artifact_request`).
         """
         try:
             response = client.request(method, url, **kwargs)
-            logger.debug("Response: %s", response.content)
+            logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
             if raise_for_status:
                 self._raise_for_status_as_operational_error(response)
             return response
