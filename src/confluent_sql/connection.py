@@ -2317,8 +2317,10 @@ class Connection:
         """ArtifactContext hook."""
         return self._artifact_request(url, method, raise_for_status, **kwargs)
 
+    # Both captured labels are plain DNS labels; hosts are case-insensitive.
     _FLINK_ENDPOINT_CLOUD_RE = re.compile(
-        r"^https://flink\.([^.]+)\.([^.]+)\.(?:private\.)?confluent\.cloud$"
+        r"^https://flink\.([a-z0-9-]+)\.([a-z0-9-]+)\.(?:private\.)?confluent\.cloud$",
+        re.IGNORECASE,
     )
 
     def artifact_scope(self) -> tuple[str, str]:
@@ -2329,7 +2331,7 @@ class Connection:
         if not (cloud and region):
             match = self._FLINK_ENDPOINT_CLOUD_RE.match(self._flink_endpoint)
             if match:
-                region, cloud = match.groups()
+                region, cloud = (label.lower() for label in match.groups())
         if not (cloud and region):
             raise ProgrammingError(
                 "Artifacts are scoped to a cloud and region, which can't be determined from this "

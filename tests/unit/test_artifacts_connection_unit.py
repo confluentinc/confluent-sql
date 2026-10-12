@@ -65,6 +65,28 @@ class TestArtifactScope:
         conn = _connect(endpoint="https://flink.eu-west-1.gcp.confluent.cloud")
         assert conn.artifact_scope() == ("GCP", "eu-west-1")
 
+    def test_endpoint_host_is_matched_case_insensitively(self) -> None:
+        conn = _connect(
+            cloud_provider="",
+            cloud_region="",
+            endpoint="https://FLINK.EU-West-1.GCP.confluent.cloud",
+        )
+        assert conn.artifact_scope() == ("GCP", "eu-west-1")
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://flink.us/east.aws.confluent.cloud",
+            "https://flink.us-east-2.aws.confluent.cloud?x=y",
+            "https://flink.us-east-2.aws.confluent.cloud/path",
+            "https://flink.us_east.aws.confluent.cloud",
+        ],
+    )
+    def test_endpoint_with_non_hostname_characters_is_not_parsed(self, endpoint: str) -> None:
+        conn = _connect(cloud_provider="", cloud_region="", endpoint=endpoint)
+        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
+            conn.artifact_scope()
+
     def test_endpoint_with_extra_host_suffix_is_not_parsed(self) -> None:
         conn = _connect(
             cloud_provider="",
