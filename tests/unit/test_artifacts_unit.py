@@ -295,9 +295,10 @@ class TestUpload:
 
 class TestUploadRetryPolicy:
     @pytest.mark.parametrize("field", ["connect_retries", "transfer_retries"])
-    def test_negative_counts_are_rejected(self, field: str) -> None:
-        with pytest.raises(InterfaceError, match=f"{field} must be non-negative"):
-            UploadRetry(**{field: -1})
+    @pytest.mark.parametrize("bad", [-1, True, 1.5, float("inf"), float("nan"), "3"])
+    def test_non_integer_or_negative_counts_are_rejected(self, field: str, bad: object) -> None:
+        with pytest.raises(InterfaceError, match=f"{field} must be a non-negative integer"):
+            UploadRetry(**{field: bad})  # type: ignore[arg-type]
 
 
 class TestUploadRetry:
