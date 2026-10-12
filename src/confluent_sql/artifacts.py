@@ -148,11 +148,12 @@ class PresignedUploadUrl:
 
     Valid for one hour. `upload_form_data` holds the form fields that must accompany the file. The
     echoed content_format/cloud/region/environment aren't reliably returned, so may be None.
+    `upload_url` and `upload_form_data` are a live signed capability, so they're left out of `repr`.
     """
 
     upload_id: str
-    upload_url: str
-    upload_form_data: dict[str, str]
+    upload_url: str = field(repr=False)
+    upload_form_data: dict[str, str] = field(repr=False)
     content_format: ArtifactContentFormat | None
     cloud: str | None
     region: str | None

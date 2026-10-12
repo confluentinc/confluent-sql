@@ -114,6 +114,13 @@ def upload_transport(mocker) -> list[httpx.Request]:
 
 
 class TestModels:
+    def test_presigned_upload_url_repr_hides_signed_capability(self) -> None:
+        target = PresignedUploadUrl.from_response(_presign_body())
+        shown = repr(target)
+        assert UPLOAD_URL not in shown
+        assert not any(field_name in shown for field_name in FORM_DATA)
+        assert UPLOAD_ID in shown
+
     def test_artifact_from_response(self) -> None:
         artifact = FlinkArtifact.from_response(_artifact_body())
         assert artifact.id == ARTIFACT_ID
