@@ -2342,7 +2342,10 @@ class Connection:
         return cloud.upper(), region
 
     def _get_artifact_api(self) -> ArtifactApi:
-        """Compose the ArtifactApi on first use."""
+        """Compose the ArtifactApi on first use. Guards `_closed` here too, since the
+        credential-free upload path never touches a guarded client."""
+        if self._closed:
+            raise InterfaceError("Connection is closed")
         if self._artifact_api is None:
             self._artifact_api = ArtifactApi(self)
         return self._artifact_api

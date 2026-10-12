@@ -151,6 +151,13 @@ class TestControlplaneAccess:
         with pytest.raises(InterfaceError, match="Connection is closed"):
             conn.list_artifacts()
 
+    def test_upload_on_closed_connection_raises_before_any_network_use(self) -> None:
+        conn = _connect()
+        target = Mock()
+        conn.close()
+        with pytest.raises(InterfaceError, match="Connection is closed"):
+            conn.upload_artifact_file(target, b"payload")
+
 
 class TestDelegation:
     @pytest.mark.parametrize(
