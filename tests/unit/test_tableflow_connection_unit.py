@@ -147,7 +147,8 @@ class TestControlplaneClient:
 
 
 @pytest.mark.parametrize(
-    "method_name", ["_tableflow_request", "_cmk_request", "_organization_lookup_request"]
+    "method_name",
+    ["_tableflow_request", "_artifact_request", "_cmk_request", "_organization_lookup_request"],
 )
 class TestControlplaneRequestWrappers:
     """_tableflow_request / _cmk_request / _organization_lookup_request are structurally
