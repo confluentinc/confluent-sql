@@ -2335,7 +2335,9 @@ class Connection:
         if not (cloud and region):
             raise ProgrammingError(
                 "Artifacts are scoped to a cloud and region, which can't be determined from this "
-                "connection's endpoint; pass cloud_provider and cloud_region to connect()."
+                "connection's endpoint. Use a standard "
+                "https://flink.<region>.<cloud>.confluent.cloud endpoint, or omit endpoint and "
+                "pass cloud_provider and cloud_region to connect()."
             )
         return cloud.upper(), region
 

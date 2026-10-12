@@ -99,9 +99,11 @@ try:
         print(f"dropping function {UDF_NAME}...")
         cursor.execute(f"DROP FUNCTION {UDF_NAME}")
 finally:
-    # wait_for_removal=True is the default: blocks until a read 404s.
-    if artifact is not None:
-        print(f"deleting artifact {artifact.id} (waits until it's gone)...")
-        conn.delete_artifact(artifact.id)
-        print(f"deleted artifact {artifact.id}")
-    conn.close()
+    try:
+        # wait_for_removal=True is the default: blocks until a read 404s.
+        if artifact is not None:
+            print(f"deleting artifact {artifact.id} (waits until it's gone)...")
+            conn.delete_artifact(artifact.id)
+            print(f"deleted artifact {artifact.id}")
+    finally:
+        conn.close()
