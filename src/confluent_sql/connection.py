@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections import namedtuple
 from collections.abc import Collection, Generator
@@ -19,6 +20,15 @@ from typing import Any, NoReturn
 import httpx
 
 from .__version__ import __version__
+from .artifacts import (
+    ArtifactApi,
+    ArtifactContentFormat,
+    ArtifactFile,
+    ArtifactRuntimeLanguage,
+    FlinkArtifact,
+    PresignedUploadUrl,
+    UploadRetry,
+)
 from .auth import FlinkBearerAuth
 from .connectors import Connector, ConnectorApi
 from .cursor import Cursor
@@ -58,6 +68,8 @@ from .tableflow import (
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
+from .utils import extract_error_detail
+from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +191,39 @@ def _resolve_connect_credentials(
     return None
 
 
-def _resolve_flink_auth(  # noqa: PLR0913
+def _resolve_cloud_credentials(
+    global_api_key: str | None,
+    global_api_secret: str | None,
+    cloud_api_key: str | None,
+    cloud_api_secret: str | None,
+) -> tuple[str, str] | None:
+    """Pick the (key, secret) pair the Artifact routes authenticate with.
+
+    A global key covers every route, so it wins. Otherwise the Artifact routes use the dedicated
+    Cloud resource management pair (symmetric with the Tableflow and Connect pairs -- see
+    _resolve_tableflow_credentials). Returns None when neither is available, so the error can be
+    deferred to the first actual artifact use rather than raised at connect() time.
+
+    Raises:
+        InterfaceError: If no global key is supplied and the cloud pair is half-supplied (key
+            without secret, or vice versa).
+    """
+    global_key, global_secret = global_api_key or "", global_api_secret or ""
+    cloud_key, cloud_secret = cloud_api_key or "", cloud_api_secret or ""
+
+    # As in _resolve_connect_credentials: a usable global key short-circuits validation of the
+    # cloud pair.
+    if global_key:
+        return (global_key, global_secret)
+
+    if bool(cloud_key) != bool(cloud_secret):
+        raise InterfaceError("cloud_api_key and cloud_api_secret must be provided together")
+    if cloud_key:
+        return (cloud_key, cloud_secret)
+    return None
+
+
+def _resolve_flink_auth(  # noqa: PLR0913, PLR0917
     external_access_token: str | None,
     identity_pool_id: str | None,
     global_api_key: str | None,
@@ -190,6 +234,8 @@ def _resolve_flink_auth(  # noqa: PLR0913
     tableflow_api_secret: str | None,
     connect_api_key: str | None,
     connect_api_secret: str | None,
+    cloud_api_key: str | None,
+    cloud_api_secret: str | None,
 ) -> tuple[httpx.Auth, bool]:
     """Select the Flink data-plane auth, and report whether the connection is in BYOIDC mode.
 
@@ -224,12 +270,14 @@ def _resolve_flink_auth(  # noqa: PLR0913
                 tableflow_api_secret,
                 connect_api_key,
                 connect_api_secret,
+                cloud_api_key,
+                cloud_api_secret,
             )
         ):
             raise InterfaceError(
                 "external_access_token cannot be combined with API key credentials "
-                "(global/flink/tableflow/connect); BYOIDC bearer-token auth and API-key auth are "
-                "mutually exclusive."
+                "(global/flink/tableflow/connect/cloud); BYOIDC bearer-token auth and API-key auth "
+                "are mutually exclusive."
             )
         return FlinkBearerAuth(bearer_token=token, identity_pool_id=pool), True
 
@@ -249,6 +297,8 @@ def connect(  # noqa: PLR0913
     tableflow_api_secret: str | None = None,
     connect_api_key: str | None = None,
     connect_api_secret: str | None = None,
+    cloud_api_key: str | None = None,
+    cloud_api_secret: str | None = None,
     external_access_token: str | None = None,
     identity_pool_id: str | None = None,
     environment_id: str,
@@ -284,6 +334,11 @@ def connect(  # noqa: PLR0913
             connectors). Only consulted when no global key is supplied; a global key already
             covers Connect. Must be supplied together with connect_api_secret.
         connect_api_secret: Secret paired with connect_api_key.
+        cloud_api_key: A "Cloud resource management" API key for the Artifact routes (create/get/
+            list/update/delete Flink artifacts). Only consulted when no global key is supplied; a
+            global key already covers artifacts. Must be supplied together with cloud_api_secret.
+            Not accepted by Flink SQL routes, so it is not a substitute for a global or Flink key.
+        cloud_api_secret: Secret paired with cloud_api_key.
         external_access_token: A BYOIDC bearer token minted by the caller's own OAuth/OIDC
             identity provider (an "external" token, in Confluent's authorization vocabulary --
             the parameter mirrors the Table API plugin's `client.oauth.external-access-token`).
@@ -386,6 +441,8 @@ def connect(  # noqa: PLR0913
         tableflow_api_secret=tableflow_api_secret,
         connect_api_key=connect_api_key,
         connect_api_secret=connect_api_secret,
+        cloud_api_key=cloud_api_key,
+        cloud_api_secret=cloud_api_secret,
         external_access_token=external_access_token,
         identity_pool_id=identity_pool_id,
         compute_pool_id=compute_pool_id,
@@ -397,6 +454,9 @@ def connect(  # noqa: PLR0913
         http_user_agent=http_user_agent,
         http_timeout_secs=http_timeout_secs,
     )
+
+
+_BODY_NOT_LOGGED = "<body not logged>"
 
 
 class _RetryableStatusError(Exception):
@@ -473,6 +533,8 @@ class Connection:
     own separate credential slot."""
     _connect_auth: tuple[str, str] | None
     """(key, secret) for Connect routes, or None if no usable credential exists."""
+    _cloud_auth: tuple[str, str] | None
+    """(key, secret) for Artifact routes, or None if no usable credential exists."""
     _global_credentials: tuple[str, str] | None
     """(key, secret) of the global API key if one was supplied -- the only credential CMK takes."""
     _controlplane_client: httpx.Client | None
@@ -480,6 +542,14 @@ class Connection:
     `_organization_lookup_request`; None until then."""
     _connect_controlplane_client: httpx.Client | None
     """Lazily created on first Connect control-plane request; None until then."""
+    _cloud_controlplane_client: httpx.Client | None
+    """Lazily created on first Artifact request; None until then."""
+    _artifact_api: ArtifactApi | None
+    """Lazily composed on first artifact method call; None until then."""
+    _cloud_provider: str | None
+    _cloud_region: str | None
+    """Cloud/region as passed to connect() (None when only an endpoint was given) -- see
+    artifact_scope()."""
     _connector_api: ConnectorApi | None
     """Lazily composed on first connector method call; None until then."""
     _resolved_kafka_cluster_id: str | None
@@ -488,7 +558,7 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         environment_id: str,
         organization_id: str,
@@ -504,6 +574,8 @@ class Connection:
         tableflow_api_secret: str | None = None,
         connect_api_key: str | None = None,
         connect_api_secret: str | None = None,
+        cloud_api_key: str | None = None,
+        cloud_api_secret: str | None = None,
         external_access_token: str | None = None,
         identity_pool_id: str | None = None,
         compute_pool_id: str | None = None,
@@ -533,6 +605,10 @@ class Connection:
             connect_api_key: API key for the Connect control-plane routes. Only consulted when no
                 global key is supplied. Must be supplied together with connect_api_secret.
             connect_api_secret: Secret paired with connect_api_key.
+            cloud_api_key: A "Cloud resource management" API key for the Artifact routes. Only
+                consulted when no global key is supplied. Must be supplied together with
+                cloud_api_secret.
+            cloud_api_secret: Secret paired with cloud_api_key.
             external_access_token: A BYOIDC bearer token (external OAuth/OIDC token) stamped on
                 every Flink request as `Authorization: Bearer <token>`. Selects BYOIDC mode; must
                 be supplied with identity_pool_id and is mutually exclusive with every API-key
@@ -625,6 +701,7 @@ class Connection:
         self._flink_client = None
         self._controlplane_client = None
         self._connect_controlplane_client = None
+        self._cloud_controlplane_client = None
 
         # Set user agent (validation happens in setter, default if None)
         self.http_user_agent = (
@@ -656,6 +733,8 @@ class Connection:
         elif not cloud_region:
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
+        endpoint_arg = endpoint
+
         # Create httpx client for making API calls
         if not endpoint:
             # Construct the endpoint URL based on cloud provider and region.
@@ -680,6 +759,8 @@ class Connection:
             tableflow_api_secret,
             connect_api_key,
             connect_api_secret,
+            cloud_api_key,
+            cloud_api_secret,
         )
         self._flink_endpoint = endpoint
 
@@ -696,10 +777,19 @@ class Connection:
         self._connect_auth = _resolve_connect_credentials(
             global_api_key, global_api_secret, connect_api_key, connect_api_secret
         )
+        self._cloud_auth = _resolve_cloud_credentials(
+            global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
+        )
         self._global_credentials = (
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
         )
         self._connector_api = None
+        self._artifact_api = None
+        # An explicit endpoint wins over cloud arguments (see the gate above), so drop them then;
+        # artifact_scope() will parse the endpoint instead of using stale cloud/region values.
+        explicit_endpoint = bool(endpoint_arg)
+        self._cloud_provider = None if explicit_endpoint else (cloud_provider or None)
+        self._cloud_region = None if explicit_endpoint else (cloud_region or None)
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
         # Tableflow work with only a tableflow key pair (no global key needed for CMK).
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
@@ -718,6 +808,8 @@ class Connection:
                 self._controlplane_client.close()
             if self._connect_controlplane_client is not None:
                 self._connect_controlplane_client.close()
+            if self._cloud_controlplane_client is not None:
+                self._cloud_controlplane_client.close()
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
@@ -1564,6 +1656,7 @@ class Connection:
             self._flink_client,
             self._controlplane_client,
             self._connect_controlplane_client,
+            self._cloud_controlplane_client,
         )
         for client in lazily_built_clients:
             if client is not None:
@@ -1880,9 +1973,19 @@ class Connection:
         """
         kwargs["method"] = "GET"
         kwargs.pop("raise_for_status", None)
+        return self._get_with_retries(self._request_raw, url, True, **kwargs)
+
+    def _get_with_retries(self, send_raw, url, raise_for_status: bool, **kwargs) -> httpx.Response:
+        """Retry loop shared by `_request_get` (Flink gateway) and artifact GETs (control plane).
+
+        `send_raw(url, raise_for_status=False, **kwargs)` must issue the request without
+        translating httpx exceptions, so `call_with_retries` can see their types. Once retries are
+        exhausted, transport errors become OperationalError; the final response is returned as-is
+        when `raise_for_status` is False (callers that map specific codes, e.g. 404).
+        """
 
         def _get_or_flag_retryable_status() -> httpx.Response:
-            response = self._request_raw(url, raise_for_status=False, **kwargs)
+            response = send_raw(url, raise_for_status=False, **kwargs)
             if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
                 raise _RetryableStatusError(response)
             return response
@@ -1898,7 +2001,8 @@ class Connection:
         except httpx.RequestError as e:
             self._wrap_request_error(e)
 
-        self._raise_for_status_as_operational_error(response)
+        if raise_for_status:
+            self._raise_for_status_as_operational_error(response)
         return response
 
     def _tableflow_request(
@@ -1920,6 +2024,39 @@ class Connection:
         return self._send_request(
             self._get_controlplane_client(), url, method, raise_for_status, **kwargs
         )
+
+    def _artifact_request(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        """Request against a `/artifact/v1` route, on the artifact (global or cloud-key) client.
+
+        GETs are idempotent and so retried (see `_request_get`); mutating methods are sent once.
+        Response bodies are never DEBUG-logged: the presign response carries a live upload URL and
+        its signed form fields, which would let anyone with the log replace the archive.
+        """
+        if method.upper() == "GET":
+            return self._get_with_retries(
+                self._artifact_request_raw, url, raise_for_status, **kwargs
+            )
+        return self._send_request(
+            self._get_cloud_controlplane_client(),
+            url,
+            method,
+            raise_for_status,
+            log_body=False,
+            **kwargs,
+        )
+
+    def _artifact_request_raw(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        """Artifact counterpart of `_request_raw`: no httpx.RequestError translation, for
+        `_get_with_retries`."""
+        response = self._get_cloud_controlplane_client().request(method, url, **kwargs)
+        logger.debug("Response: %s", _BODY_NOT_LOGGED)
+        if raise_for_status:
+            self._raise_for_status_as_operational_error(response)
+        return response
 
     def _cmk_request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         """Issue a request against a CMK (Cluster Management for Kafka) route.
@@ -1952,17 +2089,8 @@ class Connection:
 
     @staticmethod
     def _extract_error_detail(response: httpx.Response) -> str:
-        """Extract server-provided error detail from an error response body.
-
-        Falls back to "no more details" both when the body doesn't parse or carries
-        no non-empty detail (an `errors` list that's empty, or whose entries omit `detail`).
-        """
-        try:
-            errors = response.json().get("errors", [])
-            details = "; ".join(err["detail"] for err in errors if err.get("detail"))
-        except Exception:
-            details = ""
-        return details or "no more details"
+        """Server-provided error detail from an error response body; see `utils`."""
+        return extract_error_detail(response)
 
     def _raise_for_status_as_operational_error(
         self, response: httpx.Response, *, prefix: str = "error sending request"
@@ -2007,7 +2135,7 @@ class Connection:
         return response
 
     def _send_request(
-        self, client: httpx.Client, url, method, raise_for_status, **kwargs
+        self, client: httpx.Client, url, method, raise_for_status, *, log_body: Any = True, **kwargs
     ) -> httpx.Response:
         """Shared request/response handling for the control-plane clients (Tableflow, Connect).
 
@@ -2015,10 +2143,13 @@ class Connection:
         OperationalError via `_wrap_request_error`. Unlike `_request_get`, there's no retry loop
         here to worry about preserving raw-exception visibility for -- see `_request_raw`'s
         docstring for the one place that still needs it.
+
+        `log_body=False` keeps the response body out of the DEBUG log, for responses carrying
+        secrets (see `_artifact_request`).
         """
         try:
             response = client.request(method, url, **kwargs)
-            logger.debug("Response: %s", response.content)
+            logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
             if raise_for_status:
                 self._raise_for_status_as_operational_error(response)
             return response
@@ -2129,6 +2260,35 @@ class Connection:
             self._connect_controlplane_client = self._make_controlplane_client(self._connect_auth)
         return self._connect_controlplane_client
 
+    def _get_cloud_controlplane_client(self) -> httpx.Client:
+        """Return the Artifact control-plane httpx client, creating it on first use.
+
+        Distinct from the Tableflow client: a Tableflow-scoped key isn't valid for artifact
+        routes, so a dedicated cloud_api_key (when no global key is supplied) targets them.
+
+        Raises:
+            InterfaceError: If the connection is closed.
+            ProgrammingError: If no global key and no cloud key pair were supplied, so no
+                credential can authenticate the Artifact routes.
+        """
+        if self._closed:
+            raise InterfaceError("Connection is closed")
+        if self._cloud_auth is None:
+            if self._byoidc:
+                raise ProgrammingError(
+                    "Artifacts are not reachable with a BYOIDC bearer token: Confluent's "
+                    "authorization model accepts only API keys on the control plane. Use an "
+                    "API-key connection (global or cloud_api_key/cloud_api_secret) for "
+                    "Artifacts."
+                )
+            raise ProgrammingError(
+                "Artifacts require a global API key or a cloud_api_key/cloud_api_secret "
+                "pair; neither was supplied to connect()."
+            )
+        if self._cloud_controlplane_client is None:
+            self._cloud_controlplane_client = self._make_controlplane_client(self._cloud_auth)
+        return self._cloud_controlplane_client
+
     def connect_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
     ) -> httpx.Response:
@@ -2147,6 +2307,190 @@ class Connection:
     def resolve_kafka_cluster_id(self) -> str:
         """Public ControlPlaneContext hook -- delegates to the cached CMK resolution."""
         return self._resolve_kafka_cluster_id()
+
+    def artifact_controlplane_request(
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
+    ) -> httpx.Response:
+        """ArtifactContext hook."""
+        return self._artifact_request(url, method, raise_for_status, **kwargs)
+
+    _FLINK_ENDPOINT_CLOUD_RE = re.compile(
+        r"^https://flink\.([^.]+)\.([^.]+)\.(?:private\.)?confluent\.cloud$"
+    )
+
+    def artifact_scope(self) -> tuple[str, str]:
+        """(cloud, region) for artifact calls, cloud upper-cased as the API spells it. From
+        `connect()`'s arguments, else parsed from a standard Flink `endpoint`; ProgrammingError if
+        neither works."""
+        cloud, region = self._cloud_provider, self._cloud_region
+        if not (cloud and region):
+            match = self._FLINK_ENDPOINT_CLOUD_RE.match(self._flink_endpoint)
+            if match:
+                region, cloud = match.groups()
+        if not (cloud and region):
+            raise ProgrammingError(
+                "Artifacts are scoped to a cloud and region, which can't be determined from this "
+                "connection's endpoint; pass cloud_provider and cloud_region to connect()."
+            )
+        return cloud.upper(), region
+
+    def _get_artifact_api(self) -> ArtifactApi:
+        """Compose the ArtifactApi on first use."""
+        if self._artifact_api is None:
+            self._artifact_api = ArtifactApi(self)
+        return self._artifact_api
+
+    def get_artifact_upload_url(
+        self, content_format: ArtifactContentFormat | str
+    ) -> PresignedUploadUrl:
+        """Request a presigned URL to upload an artifact archive to (valid for one hour).
+
+        `POST /artifact/v1/presigned-upload-url`. Upload to it with `upload_artifact_file`, then
+        pass its `upload_id` to `create_artifact`. Most callers can skip all of that and hand
+        `create_artifact` a file directly.
+
+        Raises:
+            InterfaceError: If `content_format` is not JAR or ZIP.
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
+                can't be determined (see `artifact_scope`).
+            OperationalError: On API errors.
+        """
+        return self._get_artifact_api().get_upload_url(content_format)
+
+    def upload_artifact_file(
+        self,
+        target: PresignedUploadUrl,
+        file: ArtifactFile,
+        *,
+        upload_timeout: float = 300,
+        retry: UploadRetry = UploadRetry(),  # noqa: B008 - frozen, safe to share
+    ) -> None:
+        """Upload an archive (path, open binary file, or bytes) to a presigned upload target.
+
+        Args:
+            upload_timeout: Seconds allowed for the upload request.
+            retry: Retry policy for transient transport errors. By default only failures to
+                connect (nothing sent yet) are retried; see `UploadRetry`.
+
+        Raises:
+            InterfaceError: If `file` is a path that can't be read.
+            OperationalError: If the upload is rejected, or fails after retries are exhausted.
+        """
+        self._get_artifact_api().upload(target, file, upload_timeout=upload_timeout, retry=retry)
+
+    def create_artifact(
+        self,
+        display_name: str,
+        *,
+        file: ArtifactFile | None = None,
+        upload_id: str | None = None,
+        content_format: ArtifactContentFormat | str | None = None,
+        runtime_language: ArtifactRuntimeLanguage | str | None = None,
+        description: str | None = None,
+        documentation_link: str | None = None,
+        class_name: str | None = None,
+        upload_timeout: float = 300,
+        upload_retry: UploadRetry = UploadRetry(),  # noqa: B008 - frozen, safe to share
+    ) -> FlinkArtifact:
+        """Create a Flink artifact (e.g. a UDF package) in this connection's cloud/region/
+        environment.
+
+        `POST /artifact/v1/flink-artifacts`. Pass either `file` -- a path, open binary file or
+        bytes, uploaded for you via a fresh presigned URL -- or the `upload_id` of an archive you
+        already uploaded with `get_artifact_upload_url`/`upload_artifact_file`.
+
+        Args:
+            display_name: Unique (per cloud/region/environment) name, up to 60 characters.
+            file: The archive to upload. Mutually exclusive with `upload_id`.
+            upload_id: A prior presigned upload's id. Mutually exclusive with `file`.
+            content_format: JAR or ZIP. Inferred from a `.jar`/`.zip` file path; otherwise
+                required with `file`.
+            runtime_language: JAVA or PYTHON; the server defaults to JAVA when omitted.
+            description: Up to 256 characters.
+            documentation_link: An http(s) URL.
+            class_name: Deprecated by the API; the Java class or alias of the function.
+            upload_timeout: Seconds allowed for the archive upload when `file` is given.
+            upload_retry: Retry policy for that upload; see `upload_artifact_file`.
+
+        Raises:
+            InterfaceError: On a bad argument combination (see above).
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
+                can't be determined (see `artifact_scope`).
+            ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409, or the API's HTTP 400
+                "name should be unique").
+            OperationalError: On other API errors, or if the upload fails.
+        """
+        return self._get_artifact_api().create(
+            display_name,
+            file=file,
+            upload_id=upload_id,
+            content_format=content_format,
+            runtime_language=runtime_language,
+            description=description,
+            documentation_link=documentation_link,
+            class_name=class_name,
+            upload_timeout=upload_timeout,
+            upload_retry=upload_retry,
+        )
+
+    def get_artifact(self, artifact_id: str) -> FlinkArtifact:
+        """Read a Flink artifact by id (`GET /artifact/v1/flink-artifacts/{id}`).
+
+        Raises:
+            ArtifactNotFoundError: If no such artifact exists (HTTP 404).
+            OperationalError: On other API errors.
+        """
+        return self._get_artifact_api().get(artifact_id)
+
+    def list_artifacts(
+        self,
+        *,
+        runtime_language: ArtifactRuntimeLanguage | str | None = None,
+        page_size: int = 100,
+    ) -> list[FlinkArtifact]:
+        """List every Flink artifact in this connection's cloud/region/environment, optionally
+        only those of one `runtime_language` (`GET /artifact/v1/flink-artifacts`)."""
+        return self._get_artifact_api().list_artifacts(
+            runtime_language=runtime_language, page_size=page_size
+        )
+
+    def update_artifact(
+        self,
+        artifact_id: str,
+        *,
+        description: str | None = None,
+        documentation_link: str | None = None,
+    ) -> FlinkArtifact:
+        """Update a Flink artifact's mutable metadata in place
+        (`PATCH /artifact/v1/flink-artifacts/{id}`). `None` leaves a field unchanged; an empty
+        string clears it.
+
+        Raises:
+            InterfaceError: If neither field is given.
+            ArtifactNotFoundError: If no such artifact exists (HTTP 404).
+            OperationalError: On other API errors.
+        """
+        return self._get_artifact_api().update(
+            artifact_id, description=description, documentation_link=documentation_link
+        )
+
+    def delete_artifact(
+        self, artifact_id: str, *, wait_for_removal: bool = True, timeout: float = 300
+    ) -> None:
+        """Delete a Flink artifact (`DELETE /artifact/v1/flink-artifacts/{id}`).
+
+        Args:
+            artifact_id: The artifact's id (e.g. `cfa-...`).
+            wait_for_removal: If True (default), poll until a read 404s, confirming the deletion.
+            timeout: Maximum seconds to wait when wait_for_removal is True.
+
+        Raises:
+            ArtifactNotFoundError: If no such artifact exists (HTTP 404).
+            OperationalError: On other API errors, or on wait timeout.
+        """
+        self._get_artifact_api().delete(
+            artifact_id, wait_for_removal=wait_for_removal, timeout=timeout
+        )
 
     def _get_connector_api(self) -> ConnectorApi:
         """Return the ConnectorApi, composing it (with this Connection as context) on first use."""
@@ -2580,17 +2924,8 @@ class Connection:
         return ids
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
-        """Extract the next page token from the next_url, if present."""
-        if next_url is None:
-            return None
-
-        # The next_url is expected to be a full URL with a query parameter like '?page_token=abc123'
-        # We can parse it to extract the page_token value.
-        parsed = httpx.URL(next_url)
-        page_token = parsed.params.get("page_token")
-        # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
-        # `next_page_token is not None`, so an empty string would spin it forever.
-        return page_token or None
+        """Extract the next page token from the next_url, if present; see `utils`."""
+        return parse_next_page_token(next_url)
 
 
 class RowTypeRegistry:
