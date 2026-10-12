@@ -1,6 +1,6 @@
 """Integration test for the Flink artifact lifecycle against a live environment.
 
-Needs a control-plane credential (a global API key) and the usual environment/cloud/region vars.
+Needs a global or Cloud resource management API key and the usual environment/cloud/region vars.
 Uses a tiny throwaway ZIP: artifact create does not validate the archive's contents, and nothing
 here registers a function from it (the artifact UDF example covers that).
 """

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
@@ -66,8 +67,50 @@ class TestControlplaneAccess:
         conn = _connect(
             global_api_key="", global_api_secret="", flink_api_key="fk", flink_api_secret="fs"
         )
-        with pytest.raises(ProgrammingError, match="Artifacts requires a global API key"):
+        with pytest.raises(ProgrammingError, match="Artifacts require a global API key"):
             conn.list_artifacts()
+
+    def test_tableflow_only_key_is_refused_locally(self) -> None:
+        conn = _connect(
+            global_api_key="",
+            global_api_secret="",
+            flink_api_key="fk",
+            flink_api_secret="fs",
+            tableflow_api_key="tk",
+            tableflow_api_secret="ts",
+        )
+        with pytest.raises(ProgrammingError, match="cloud_api_key"):
+            conn.list_artifacts()
+
+    def test_cloud_key_alone_authenticates_artifact_requests(self) -> None:
+        conn = _connect(
+            global_api_key="",
+            global_api_secret="",
+            flink_api_key="fk",
+            flink_api_secret="fs",
+            cloud_api_key="ck",
+            cloud_api_secret="cs",
+        )
+        client = conn._get_cloud_controlplane_client()
+        assert client.auth._auth_header == httpx.BasicAuth("ck", "cs")._auth_header
+
+    def test_global_key_alone_authenticates_artifact_requests(self) -> None:
+        client = _connect()._get_cloud_controlplane_client()
+        assert client.auth._auth_header == httpx.BasicAuth("gk", "gs")._auth_header
+
+    def test_global_key_wins_over_cloud_key(self) -> None:
+        conn = _connect(cloud_api_key="ck", cloud_api_secret="cs")
+        assert conn._cloud_auth == ("gk", "gs")
+
+    def test_half_supplied_cloud_key_is_rejected(self) -> None:
+        with pytest.raises(InterfaceError, match="cloud_api_key and cloud_api_secret"):
+            _connect(
+                global_api_key="",
+                global_api_secret="",
+                flink_api_key="fk",
+                flink_api_secret="fs",
+                cloud_api_key="ck",
+            )
 
     def test_closed_connection_raises(self) -> None:
         conn = _connect()
@@ -103,12 +146,52 @@ class TestDelegation:
         conn.delete_artifact("cfa-1")
         spy.assert_called_once_with("cfa-1", wait_for_removal=True, timeout=300)
 
-    def test_requests_use_the_shared_controlplane_client(self) -> None:
+    def test_requests_use_the_artifact_client(self) -> None:
         conn = _connect()
         client = Mock()
         client.request.return_value = Mock(status_code=200, raise_for_status=Mock())
-        conn._get_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        conn._get_cloud_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
         conn.artifact_controlplane_request("/artifact/v1/flink-artifacts", params={"a": "b"})
         client.request.assert_called_once_with(
             "GET", "/artifact/v1/flink-artifacts", params={"a": "b"}
         )
+
+
+class TestArtifactRequestRetries:
+    @staticmethod
+    def _conn_with_client(*responses: Any) -> tuple[Connection, Mock]:
+        conn = _connect()
+        client = Mock()
+        client.request.side_effect = list(responses)
+        conn._get_cloud_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        return conn, client
+
+    @staticmethod
+    def _response(status: int) -> Mock:
+        return Mock(status_code=status, content=b"")
+
+    def test_get_retries_transient_status(self, mocker) -> None:
+        mocker.patch("confluent_sql.retry.time.sleep")
+        conn, client = self._conn_with_client(self._response(503), self._response(200))
+        response = conn.artifact_controlplane_request("/x", raise_for_status=False)
+        assert response.status_code == 200
+        assert client.request.call_count == 2
+
+    def test_get_retries_transport_error(self, mocker) -> None:
+        mocker.patch("confluent_sql.retry.time.sleep")
+        conn, client = self._conn_with_client(httpx.NetworkError("reset"), self._response(200))
+        assert conn.artifact_controlplane_request("/x").status_code == 200
+        assert client.request.call_count == 2
+
+    def test_non_retryable_status_is_returned_for_caller_mapping(self) -> None:
+        conn, client = self._conn_with_client(self._response(404))
+        response = conn.artifact_controlplane_request("/x", raise_for_status=False)
+        assert response.status_code == 404
+        assert client.request.call_count == 1
+
+    @pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+    def test_mutating_requests_are_not_retried(self, method: str) -> None:
+        conn, client = self._conn_with_client(self._response(503))
+        response = conn.artifact_controlplane_request("/x", method=method, raise_for_status=False)
+        assert response.status_code == 503
+        assert client.request.call_count == 1

@@ -45,6 +45,11 @@ class UploadRetry:
     connect_retries: int = 3
     transfer_retries: int = 0
 
+    def __post_init__(self) -> None:
+        for name in ("connect_retries", "transfer_retries"):
+            if getattr(self, name) < 0:
+                raise InterfaceError(f"{name} must be non-negative, got {getattr(self, name)}")
+
 
 _CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 _TRANSFER_ERRORS = (

@@ -191,7 +191,39 @@ def _resolve_connect_credentials(
     return None
 
 
-def _resolve_flink_auth(  # noqa: PLR0913
+def _resolve_cloud_credentials(
+    global_api_key: str | None,
+    global_api_secret: str | None,
+    cloud_api_key: str | None,
+    cloud_api_secret: str | None,
+) -> tuple[str, str] | None:
+    """Pick the (key, secret) pair the Artifact routes authenticate with.
+
+    A global key covers every route, so it wins. Otherwise the Artifact routes use the dedicated
+    Cloud resource management pair (symmetric with the Tableflow and Connect pairs -- see
+    _resolve_tableflow_credentials). Returns None when neither is available, so the error can be
+    deferred to the first actual artifact use rather than raised at connect() time.
+
+    Raises:
+        InterfaceError: If no global key is supplied and the cloud pair is half-supplied (key
+            without secret, or vice versa).
+    """
+    global_key, global_secret = global_api_key or "", global_api_secret or ""
+    cloud_key, cloud_secret = cloud_api_key or "", cloud_api_secret or ""
+
+    # As in _resolve_connect_credentials: a usable global key short-circuits validation of the
+    # cloud pair.
+    if global_key:
+        return (global_key, global_secret)
+
+    if bool(cloud_key) != bool(cloud_secret):
+        raise InterfaceError("cloud_api_key and cloud_api_secret must be provided together")
+    if cloud_key:
+        return (cloud_key, cloud_secret)
+    return None
+
+
+def _resolve_flink_auth(  # noqa: PLR0913, PLR0917
     external_access_token: str | None,
     identity_pool_id: str | None,
     global_api_key: str | None,
@@ -202,6 +234,8 @@ def _resolve_flink_auth(  # noqa: PLR0913
     tableflow_api_secret: str | None,
     connect_api_key: str | None,
     connect_api_secret: str | None,
+    cloud_api_key: str | None,
+    cloud_api_secret: str | None,
 ) -> tuple[httpx.Auth, bool]:
     """Select the Flink data-plane auth, and report whether the connection is in BYOIDC mode.
 
@@ -236,12 +270,14 @@ def _resolve_flink_auth(  # noqa: PLR0913
                 tableflow_api_secret,
                 connect_api_key,
                 connect_api_secret,
+                cloud_api_key,
+                cloud_api_secret,
             )
         ):
             raise InterfaceError(
                 "external_access_token cannot be combined with API key credentials "
-                "(global/flink/tableflow/connect); BYOIDC bearer-token auth and API-key auth are "
-                "mutually exclusive."
+                "(global/flink/tableflow/connect/cloud); BYOIDC bearer-token auth and API-key auth "
+                "are mutually exclusive."
             )
         return FlinkBearerAuth(bearer_token=token, identity_pool_id=pool), True
 
@@ -261,6 +297,8 @@ def connect(  # noqa: PLR0913
     tableflow_api_secret: str | None = None,
     connect_api_key: str | None = None,
     connect_api_secret: str | None = None,
+    cloud_api_key: str | None = None,
+    cloud_api_secret: str | None = None,
     external_access_token: str | None = None,
     identity_pool_id: str | None = None,
     environment_id: str,
@@ -296,6 +334,11 @@ def connect(  # noqa: PLR0913
             connectors). Only consulted when no global key is supplied; a global key already
             covers Connect. Must be supplied together with connect_api_secret.
         connect_api_secret: Secret paired with connect_api_key.
+        cloud_api_key: A "Cloud resource management" API key for the Artifact routes (create/get/
+            list/update/delete Flink artifacts). Only consulted when no global key is supplied; a
+            global key already covers artifacts. Must be supplied together with cloud_api_secret.
+            Not accepted by Flink SQL routes, so it is not a substitute for a global or Flink key.
+        cloud_api_secret: Secret paired with cloud_api_key.
         external_access_token: A BYOIDC bearer token minted by the caller's own OAuth/OIDC
             identity provider (an "external" token, in Confluent's authorization vocabulary --
             the parameter mirrors the Table API plugin's `client.oauth.external-access-token`).
@@ -398,6 +441,8 @@ def connect(  # noqa: PLR0913
         tableflow_api_secret=tableflow_api_secret,
         connect_api_key=connect_api_key,
         connect_api_secret=connect_api_secret,
+        cloud_api_key=cloud_api_key,
+        cloud_api_secret=cloud_api_secret,
         external_access_token=external_access_token,
         identity_pool_id=identity_pool_id,
         compute_pool_id=compute_pool_id,
@@ -485,6 +530,8 @@ class Connection:
     own separate credential slot."""
     _connect_auth: tuple[str, str] | None
     """(key, secret) for Connect routes, or None if no usable credential exists."""
+    _cloud_auth: tuple[str, str] | None
+    """(key, secret) for Artifact routes, or None if no usable credential exists."""
     _global_credentials: tuple[str, str] | None
     """(key, secret) of the global API key if one was supplied -- the only credential CMK takes."""
     _controlplane_client: httpx.Client | None
@@ -492,6 +539,8 @@ class Connection:
     `_organization_lookup_request`; None until then."""
     _connect_controlplane_client: httpx.Client | None
     """Lazily created on first Connect control-plane request; None until then."""
+    _cloud_controlplane_client: httpx.Client | None
+    """Lazily created on first Artifact request; None until then."""
     _artifact_api: ArtifactApi | None
     """Lazily composed on first artifact method call; None until then."""
     _cloud_provider: str | None
@@ -506,7 +555,7 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         environment_id: str,
         organization_id: str,
@@ -522,6 +571,8 @@ class Connection:
         tableflow_api_secret: str | None = None,
         connect_api_key: str | None = None,
         connect_api_secret: str | None = None,
+        cloud_api_key: str | None = None,
+        cloud_api_secret: str | None = None,
         external_access_token: str | None = None,
         identity_pool_id: str | None = None,
         compute_pool_id: str | None = None,
@@ -551,6 +602,10 @@ class Connection:
             connect_api_key: API key for the Connect control-plane routes. Only consulted when no
                 global key is supplied. Must be supplied together with connect_api_secret.
             connect_api_secret: Secret paired with connect_api_key.
+            cloud_api_key: A "Cloud resource management" API key for the Artifact routes. Only
+                consulted when no global key is supplied. Must be supplied together with
+                cloud_api_secret.
+            cloud_api_secret: Secret paired with cloud_api_key.
             external_access_token: A BYOIDC bearer token (external OAuth/OIDC token) stamped on
                 every Flink request as `Authorization: Bearer <token>`. Selects BYOIDC mode; must
                 be supplied with identity_pool_id and is mutually exclusive with every API-key
@@ -643,6 +698,7 @@ class Connection:
         self._flink_client = None
         self._controlplane_client = None
         self._connect_controlplane_client = None
+        self._cloud_controlplane_client = None
 
         # Set user agent (validation happens in setter, default if None)
         self.http_user_agent = (
@@ -700,6 +756,8 @@ class Connection:
             tableflow_api_secret,
             connect_api_key,
             connect_api_secret,
+            cloud_api_key,
+            cloud_api_secret,
         )
         self._flink_endpoint = endpoint
 
@@ -715,6 +773,9 @@ class Connection:
         )
         self._connect_auth = _resolve_connect_credentials(
             global_api_key, global_api_secret, connect_api_key, connect_api_secret
+        )
+        self._cloud_auth = _resolve_cloud_credentials(
+            global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
         )
         self._global_credentials = (
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
@@ -744,6 +805,8 @@ class Connection:
                 self._controlplane_client.close()
             if self._connect_controlplane_client is not None:
                 self._connect_controlplane_client.close()
+            if self._cloud_controlplane_client is not None:
+                self._cloud_controlplane_client.close()
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
@@ -1590,6 +1653,7 @@ class Connection:
             self._flink_client,
             self._controlplane_client,
             self._connect_controlplane_client,
+            self._cloud_controlplane_client,
         )
         for client in lazily_built_clients:
             if client is not None:
@@ -1906,9 +1970,19 @@ class Connection:
         """
         kwargs["method"] = "GET"
         kwargs.pop("raise_for_status", None)
+        return self._get_with_retries(self._request_raw, url, True, **kwargs)
+
+    def _get_with_retries(self, send_raw, url, raise_for_status: bool, **kwargs) -> httpx.Response:
+        """Retry loop shared by `_request_get` (Flink gateway) and artifact GETs (control plane).
+
+        `send_raw(url, raise_for_status=False, **kwargs)` must issue the request without
+        translating httpx exceptions, so `call_with_retries` can see their types. Once retries are
+        exhausted, transport errors become OperationalError; the final response is returned as-is
+        when `raise_for_status` is False (callers that map specific codes, e.g. 404).
+        """
 
         def _get_or_flag_retryable_status() -> httpx.Response:
-            response = self._request_raw(url, raise_for_status=False, **kwargs)
+            response = send_raw(url, raise_for_status=False, **kwargs)
             if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
                 raise _RetryableStatusError(response)
             return response
@@ -1924,7 +1998,8 @@ class Connection:
         except httpx.RequestError as e:
             self._wrap_request_error(e)
 
-        self._raise_for_status_as_operational_error(response)
+        if raise_for_status:
+            self._raise_for_status_as_operational_error(response)
         return response
 
     def _tableflow_request(
@@ -1950,10 +2025,28 @@ class Connection:
     def _artifact_request(
         self, url, method="GET", raise_for_status=True, **kwargs
     ) -> httpx.Response:
-        """Request against a `/artifact/v1` route; shares `_tableflow_request`'s client."""
+        """Request against a `/artifact/v1` route, on the artifact (global or cloud-key) client.
+
+        GETs are idempotent and so retried (see `_request_get`); mutating methods are sent once.
+        """
+        if method.upper() == "GET":
+            return self._get_with_retries(
+                self._artifact_request_raw, url, raise_for_status, **kwargs
+            )
         return self._send_request(
-            self._get_controlplane_client("Artifacts"), url, method, raise_for_status, **kwargs
+            self._get_cloud_controlplane_client(), url, method, raise_for_status, **kwargs
         )
+
+    def _artifact_request_raw(
+        self, url, method="GET", raise_for_status=True, **kwargs
+    ) -> httpx.Response:
+        """Artifact counterpart of `_request_raw`: no httpx.RequestError translation, for
+        `_get_with_retries`."""
+        response = self._get_cloud_controlplane_client().request(method, url, **kwargs)
+        logger.debug("Response: %s", response.content)
+        if raise_for_status:
+            self._raise_for_status_as_operational_error(response)
+        return response
 
     def _cmk_request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
         """Issue a request against a CMK (Cluster Management for Kafka) route.
@@ -2091,7 +2184,7 @@ class Connection:
             )
         return self._flink_client
 
-    def _get_controlplane_client(self, service: str = "Tableflow") -> httpx.Client:
+    def _get_controlplane_client(self) -> httpx.Client:
         """Return the shared control-plane httpx client, creating it on first use.
 
         Shared by `_tableflow_request`, `_cmk_request`, and `_organization_lookup_request` (one
@@ -2101,10 +2194,6 @@ class Connection:
         (`_resolve_kafka_cluster_id`, the `organization_id` property) already require
         `_global_credentials` to be set before they ever reach this method, which guarantees
         `_controlplane_auth` is the global pair (not None) by the time they get here.
-
-        Args:
-            service: Name of the requesting service ("Tableflow" or "Artifacts"), used only to
-                word the missing-credential errors. Artifacts share Tableflow's credential.
 
         Raises:
             InterfaceError: If the connection is closed.
@@ -2116,13 +2205,13 @@ class Connection:
         if self._controlplane_auth is None:
             if self._byoidc:
                 raise ProgrammingError(
-                    f"{service} is not reachable with a BYOIDC bearer token: Confluent's "
+                    "Tableflow is not reachable with a BYOIDC bearer token: Confluent's "
                     "authorization model accepts only API keys on the control plane. Use an "
                     "API-key connection (global or tableflow_api_key/tableflow_api_secret) for "
-                    f"{service}."
+                    "Tableflow."
                 )
             raise ProgrammingError(
-                f"{service} requires a global API key or a tableflow_api_key/tableflow_api_secret "
+                "Tableflow requires a global API key or a tableflow_api_key/tableflow_api_secret "
                 "pair; neither was supplied to connect()."
             )
         if self._controlplane_client is None:
@@ -2157,6 +2246,35 @@ class Connection:
         if self._connect_controlplane_client is None:
             self._connect_controlplane_client = self._make_controlplane_client(self._connect_auth)
         return self._connect_controlplane_client
+
+    def _get_cloud_controlplane_client(self) -> httpx.Client:
+        """Return the Artifact control-plane httpx client, creating it on first use.
+
+        Distinct from the Tableflow client: a Tableflow-scoped key isn't valid for artifact
+        routes, so a dedicated cloud_api_key (when no global key is supplied) targets them.
+
+        Raises:
+            InterfaceError: If the connection is closed.
+            ProgrammingError: If no global key and no cloud key pair were supplied, so no
+                credential can authenticate the Artifact routes.
+        """
+        if self._closed:
+            raise InterfaceError("Connection is closed")
+        if self._cloud_auth is None:
+            if self._byoidc:
+                raise ProgrammingError(
+                    "Artifacts are not reachable with a BYOIDC bearer token: Confluent's "
+                    "authorization model accepts only API keys on the control plane. Use an "
+                    "API-key connection (global or cloud_api_key/cloud_api_secret) for "
+                    "Artifacts."
+                )
+            raise ProgrammingError(
+                "Artifacts require a global API key or a cloud_api_key/cloud_api_secret "
+                "pair; neither was supplied to connect()."
+            )
+        if self._cloud_controlplane_client is None:
+            self._cloud_controlplane_client = self._make_controlplane_client(self._cloud_auth)
+        return self._cloud_controlplane_client
 
     def connect_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
@@ -2220,7 +2338,7 @@ class Connection:
 
         Raises:
             InterfaceError: If `content_format` is not JAR or ZIP.
-            ProgrammingError: If no control-plane credential is available, or the cloud/region
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
                 can't be determined (see `artifact_scope`).
             OperationalError: On API errors.
         """
@@ -2283,7 +2401,7 @@ class Connection:
 
         Raises:
             InterfaceError: On a bad argument combination (see above).
-            ProgrammingError: If no control-plane credential is available, or the cloud/region
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
                 can't be determined (see `artifact_scope`).
             ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409, or the API's HTTP 400
                 "name should be unique").

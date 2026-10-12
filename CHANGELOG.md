@@ -10,6 +10,7 @@ All notable changes to this dbapi driver will be documented in this file.
 - New property `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. (#246)
 - Support for the Flink Artifact API (`/artifact/v1/flink-artifacts` and `/presigned-upload-url`), for uploading UDF packages (a JAR, or for Python a ZIP) to Confluent Cloud.
   See `examples/artifact_upload_example.py` for a full example of packaging, uploading and calling a Python UDF artifact end to end.
+  Artifact calls authenticate with a global key, or a dedicated Cloud resource management key via the new `cloud_api_key`/`cloud_api_secret` parameters of `connect()`.
 
 ### Changed
 

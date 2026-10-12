@@ -783,8 +783,9 @@ standard `https://flink.<region>.<cloud>.confluent.cloud` `endpoint`).
 A runnable end-to-end example -- build a Python UDF, upload it, call it from SQL, clean up -- is in
 [examples/artifact_upload_example.py](examples/artifact_upload_example.py).
 
-> **Not available under BYOIDC.** Like Tableflow, artifacts are a control-plane surface; use an
-> API-key connection (a global key).
+> **Credentials.** Artifacts need a global API key, or a "Cloud resource management" key passed as
+> `cloud_api_key`/`cloud_api_secret` (used only when no global key is given). A Tableflow or Flink
+> key won't work, and neither will BYOIDC -- like Tableflow, artifacts are a control-plane surface.
 
 ```python
 from confluent_sql import ArtifactRuntimeLanguage

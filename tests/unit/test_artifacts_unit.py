@@ -293,6 +293,13 @@ class TestUpload:
             ArtifactApi(FakeContext()).upload(target, b"x")
 
 
+class TestUploadRetryPolicy:
+    @pytest.mark.parametrize("field", ["connect_retries", "transfer_retries"])
+    def test_negative_counts_are_rejected(self, field: str) -> None:
+        with pytest.raises(InterfaceError, match=f"{field} must be non-negative"):
+            UploadRetry(**{field: -1})
+
+
 class TestUploadRetry:
     """Connect failures (nothing sent) retry by default; mid-transfer failures re-send the whole
     archive, so they retry only when asked."""
