@@ -553,8 +553,17 @@ class ArtifactApi:
             )
             self._raise_for_status(response, prefix="Error listing artifacts")
             body = _json_body(response, what="artifact list")
-            artifacts.extend(FlinkArtifact.from_response(a) for a in body.get("data", []))
-            token = next_page_token(body.get("metadata", {}).get("next"))
+            try:
+                data = body.get("data", [])
+                metadata = body.get("metadata", {})
+                if not isinstance(data, list):
+                    raise TypeError(f"'data' must be a list, got {type(data).__name__}")
+                if not isinstance(metadata, dict):
+                    raise TypeError(f"'metadata' must be an object, got {type(metadata).__name__}")
+                artifacts.extend(FlinkArtifact.from_response(a) for a in data)
+                token = next_page_token(metadata.get("next"))
+            except _PARSE_ERRORS as e:
+                raise _parse_error("artifact list", e) from e
             if token is None:
                 return artifacts
             params[Fields.PAGE_TOKEN] = token
