@@ -91,14 +91,15 @@ def tableflow_connection(load_env_file) -> Generator[Connection, None, None]:
 
 @pytest.fixture()
 def tableflow_table_name(
-    tableflow_connection: Connection, filtered_username: str
+    tableflow_connection: Connection, filtered_username: str, worker_id: str
 ) -> Generator[str, None, None]:
     """A unique table name, dropped on teardown via the still-open tableflow_connection.
 
     Depends on tableflow_connection so it tears down first (reverse setup order), keeping the
     connection alive for the DROP.
     """
-    name = f"confluentsql_pytest_{filtered_username}_tableflow_{datetime.now():%Y%m%d_%H%M%S}"
+    stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
+    name = f"confluentsql_pytest_{filtered_username}_{worker_id}_tableflow_{stamp}"
     yield name
     with tableflow_connection.closing_cursor() as cursor:
         try:
