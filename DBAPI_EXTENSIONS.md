@@ -787,34 +787,32 @@ A runnable end-to-end example -- build a Python UDF, upload it, call it from SQL
 > `cloud_api_key`/`cloud_api_secret` (used only when no global key is given). A Tableflow or Flink
 > key won't work, and neither will BYOIDC -- like Tableflow, artifacts are a control-plane surface.
 
+The artifact operations live on an `ArtifactsApi` object, returned by
+`Connection.get_artifacts_api()` (composed on first call, then cached):
+
 ```python
 from confluent_sql import ArtifactRuntimeLanguage
 
-artifact = connection.create_artifact(
+artifacts = connection.get_artifacts_api()
+
+artifact = artifacts.create(
     "my-udf",
-    file="dist/my_udf-0.1.0.zip",              # path, open binary file, or bytes
+    "dist/my_udf-0.1.0.zip",                   # path, open binary file, or bytes
     runtime_language=ArtifactRuntimeLanguage.PYTHON,
     description="T-shirt size comparisons",
 )
-connection.get_artifact(artifact.id).versions   # versions appear on a read, not on create/list
-connection.list_artifacts(runtime_language="PYTHON")
-connection.update_artifact(artifact.id, description="new text")  # None = unchanged, "" = clear
-connection.delete_artifact(artifact.id)         # blocks until gone; wait_for_removal=False to opt out
+artifacts.get(artifact.id).versions            # versions appear on a read, not on create/list
+artifacts.list_artifacts(runtime_language="PYTHON")
+artifacts.update(artifact.id, description="new text")  # None = unchanged, "" = clear
+artifacts.delete(artifact.id)                  # blocks until gone; wait_for_removal=False to opt out
 ```
 
-`create_artifact` infers `content_format` from a `.jar`/`.zip` path (required otherwise). To control
-the upload yourself, the three steps are available individually:
-
-```python
-target = connection.get_artifact_upload_url("ZIP")      # presigned, valid for one hour
-connection.upload_artifact_file(target, "my_udf.zip")   # plain form POST to the object store
-connection.create_artifact("my-udf", upload_id=target.upload_id, content_format="ZIP")
-```
+`create` requests a presigned URL, uploads the file to it and registers the artifact. It infers
+`content_format` from a `.jar`/`.zip` path (required for bytes or a file object).
 
 Uploads retry failures to *connect* (nothing sent yet) three times by default, but not failures
-mid-transfer, which would re-send the whole archive. Tune with an `UploadRetry` on
-`create_artifact(upload_retry=...)` / `upload_artifact_file(retry=...)`:
-`UploadRetry(connect_retries=3, transfer_retries=0)`.
+mid-transfer, which would re-send the whole archive. Tune with an `UploadRetry` via
+`create(upload_retry=...)`: `UploadRetry(connect_retries=3, transfer_retries=0)`.
 
 A path is streamed from disk. A file object (opened in binary mode) is read fully into memory from
 its current position, so it uploads only the remaining bytes and, like bytes, can be retried even

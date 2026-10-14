@@ -23,6 +23,7 @@ from confluent_sql import (
     ArtifactContentFormat,
     ArtifactNotFoundError,
     ArtifactRuntimeLanguage,
+    ArtifactsApi,
     Connection,
 )
 
@@ -95,26 +96,31 @@ def artifact_connection(load_env_file) -> Generator[Connection, None, None]:
 
 
 @pytest.fixture()
+def artifacts(artifact_connection: Connection) -> ArtifactsApi:
+    return artifact_connection.get_artifacts_api()
+
+
+@pytest.fixture()
 def artifact_name(filtered_username: str) -> str:
     return f"confluentsql_pytest_{filtered_username}_{datetime.now():%Y%m%d_%H%M%S}"[:60]
 
 
 @pytest.fixture()
-def created_artifact_ids(artifact_connection: Connection) -> Generator[list[str], None, None]:
+def created_artifact_ids(artifacts: ArtifactsApi) -> Generator[list[str], None, None]:
     """Collects ids of artifacts a test creates, deleting any still present on teardown."""
     ids: list[str] = []
     yield ids
     for artifact_id in ids:
         with contextlib.suppress(ArtifactNotFoundError):
-            artifact_connection.delete_artifact(artifact_id)
+            artifacts.delete(artifact_id)
 
 
 @pytest.mark.integration
 class TestArtifactLifecycle:
     def test_create_read_list_update_delete_arc(
-        self, artifact_connection: Connection, artifact_name: str, created_artifact_ids: list[str]
+        self, artifacts: ArtifactsApi, artifact_name: str, created_artifact_ids: list[str]
     ) -> None:
-        artifact = artifact_connection.create_artifact(
+        artifact = artifacts.create(
             artifact_name,
             file=_tiny_zip(),
             content_format=ArtifactContentFormat.ZIP,
@@ -125,43 +131,26 @@ class TestArtifactLifecycle:
         assert artifact.display_name == artifact_name
         assert artifact.content_format is ArtifactContentFormat.ZIP
 
-        read_back = artifact_connection.get_artifact(artifact.id)
+        read_back = artifacts.get(artifact.id)
         assert read_back.description == ORIGINAL_DESCRIPTION
         assert read_back.latest_version is not None
 
-        assert artifact.id in {a.id for a in artifact_connection.list_artifacts()}
+        assert artifact.id in {a.id for a in artifacts.list_artifacts()}
         assert artifact.id in {
-            a.id
-            for a in artifact_connection.list_artifacts(
-                runtime_language=ArtifactRuntimeLanguage.PYTHON
-            )
+            a.id for a in artifacts.list_artifacts(runtime_language=ArtifactRuntimeLanguage.PYTHON)
         }
 
-        updated = artifact_connection.update_artifact(artifact.id, description=UPDATED_DESCRIPTION)
+        updated = artifacts.update(artifact.id, description=UPDATED_DESCRIPTION)
         assert updated.description == UPDATED_DESCRIPTION
 
-        artifact_connection.delete_artifact(artifact.id)  # blocks until gone
+        artifacts.delete(artifact.id)  # blocks until gone
         with pytest.raises(ArtifactNotFoundError):
-            artifact_connection.get_artifact(artifact.id)
-
-    def test_two_step_upload_via_presigned_url(
-        self, artifact_connection: Connection, artifact_name: str, created_artifact_ids: list[str]
-    ) -> None:
-        target = artifact_connection.get_artifact_upload_url(ArtifactContentFormat.ZIP)
-        artifact_connection.upload_artifact_file(target, _tiny_zip())
-        artifact = artifact_connection.create_artifact(
-            artifact_name,
-            upload_id=target.upload_id,
-            content_format=ArtifactContentFormat.ZIP,
-            runtime_language=ArtifactRuntimeLanguage.PYTHON,
-        )
-        created_artifact_ids.append(artifact.id)
-        assert artifact_connection.get_artifact(artifact.id).display_name == artifact_name
+            artifacts.get(artifact.id)
 
     def test_duplicate_display_name_is_rejected(
-        self, artifact_connection: Connection, artifact_name: str, created_artifact_ids: list[str]
+        self, artifacts: ArtifactsApi, artifact_name: str, created_artifact_ids: list[str]
     ) -> None:
-        first = artifact_connection.create_artifact(
+        first = artifacts.create(
             artifact_name,
             file=_tiny_zip(),
             content_format=ArtifactContentFormat.ZIP,
@@ -169,13 +158,13 @@ class TestArtifactLifecycle:
         )
         created_artifact_ids.append(first.id)
         with pytest.raises(ArtifactAlreadyExistsError):
-            artifact_connection.create_artifact(
+            artifacts.create(
                 artifact_name,
                 file=_tiny_zip(),
                 content_format=ArtifactContentFormat.ZIP,
                 runtime_language=ArtifactRuntimeLanguage.PYTHON,
             )
 
-    def test_get_missing_artifact_raises_not_found(self, artifact_connection: Connection) -> None:
+    def test_get_missing_artifact_raises_not_found(self, artifacts: ArtifactsApi) -> None:
         with pytest.raises(ArtifactNotFoundError):
-            artifact_connection.get_artifact("cfa-doesnotexist")
+            artifacts.get("cfa-doesnotexist")

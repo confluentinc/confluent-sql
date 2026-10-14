@@ -38,6 +38,7 @@ conn = confluent_sql.connect(
     compute_pool_id=os.getenv("CONFLUENT_COMPUTE_POOL_ID"),  # optional; None -> default pool
     database=os.getenv("CONFLUENT_DATABASE", os.getenv("CONFLUENT_TEST_DBNAME", "")),
 )
+artifacts = conn.get_artifacts_api()
 
 
 def build_udf_zip(workdir: Path) -> Path:
@@ -59,7 +60,7 @@ try:
         udf_zip = build_udf_zip(Path(tmp))
         # Requests a presigned URL, uploads the file to it, then creates the artifact. The .zip
         # extension gives content_format=ZIP; Python UDFs must say runtime_language=PYTHON.
-        artifact = conn.create_artifact(
+        artifact = artifacts.create(
             ARTIFACT_NAME,
             file=udf_zip,
             runtime_language=ArtifactRuntimeLanguage.PYTHON,
@@ -67,15 +68,15 @@ try:
         )
     print(f"created artifact {artifact.id} ({artifact.display_name})")
 
-    artifact = conn.update_artifact(artifact.id, description="Updated by the example")
+    artifact = artifacts.update(artifact.id, description="Updated by the example")
     print(f"updated description: {artifact.description!r}")
 
     print("artifacts in this environment/region:")
-    for a in conn.list_artifacts(runtime_language=ArtifactRuntimeLanguage.PYTHON):
+    for a in artifacts.list_artifacts(runtime_language=ArtifactRuntimeLanguage.PYTHON):
         print(f"  {a.id}  {a.display_name}  {a.content_format}")
 
     # Versions only show up on a read of the artifact (not in the create response or a list).
-    artifact = conn.get_artifact(artifact.id)
+    artifact = artifacts.get(artifact.id)
     print(f"versions: {[v.version for v in artifact.versions]}")
 
     print(f"registering function {UDF_NAME} from the artifact (can take a while)...")
@@ -103,7 +104,7 @@ finally:
         # wait_for_removal=True is the default: blocks until a read 404s.
         if artifact is not None:
             print(f"deleting artifact {artifact.id} (waits until it's gone)...")
-            conn.delete_artifact(artifact.id)
+            artifacts.delete(artifact.id)
             print(f"deleted artifact {artifact.id}")
     finally:
         conn.close()
