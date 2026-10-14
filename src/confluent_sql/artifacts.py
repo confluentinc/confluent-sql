@@ -2,9 +2,10 @@
 Flink artifact types, request builders and lifecycle orchestration (`/artifact/v1`).
 
 Uploading is three steps -- request a presigned URL, POST the file to it (a plain object-store form
-post, so no Confluent credentials), create the artifact with the resulting `upload_id` -- each
-reachable from `Connection`; `ArtifactApi.create` runs all three. `ArtifactApi` depends on the
-narrow `ArtifactContext` protocol rather than `Connection`, as `connectors.py` does.
+post, so no Confluent credentials), create the artifact with the resulting `upload_id`.
+`ArtifactsApi.create` runs all three; the first two are private. `ArtifactsApi` is reached through
+`Connection.get_artifacts_api()` and depends on the narrow `ArtifactsContext` protocol rather than
+`Connection`.
 """
 
 from __future__ import annotations
@@ -362,8 +363,8 @@ def build_update_payload(
     return payload
 
 
-class ArtifactContext(Protocol):
-    """What `ArtifactApi` needs from its host connection."""
+class ArtifactsContext(Protocol):
+    """What `ArtifactsApi` needs from its host connection."""
 
     environment_id: str
 
@@ -374,14 +375,14 @@ class ArtifactContext(Protocol):
     ) -> httpx.Response: ...
 
 
-class ArtifactApi:
-    """Artifact lifecycle behind `Connection`'s passthroughs. Create and update are synchronous;
-    delete blocks by default (`wait_for_removal`)."""
+class ArtifactsApi:
+    """Artifact lifecycle, obtained from `Connection.get_artifacts_api()`. Create and update are
+    synchronous; delete blocks by default (`wait_for_removal`)."""
 
     _ARTIFACTS_PATH = "/artifact/v1/flink-artifacts"
     _PRESIGN_PATH = "/artifact/v1/presigned-upload-url"
 
-    def __init__(self, context: ArtifactContext) -> None:
+    def __init__(self, context: ArtifactsContext) -> None:
         self._context = context
 
     def _artifact_path(self, artifact_id: str) -> str:
@@ -398,7 +399,7 @@ class ArtifactApi:
             params[Fields.ENVIRONMENT] = self._context.environment_id
         return params
 
-    def get_upload_url(self, content_format: ArtifactContentFormat | str) -> PresignedUploadUrl:
+    def _get_upload_url(self, content_format: ArtifactContentFormat | str) -> PresignedUploadUrl:
         """Request a presigned upload target."""
         cloud, region = self._context.artifact_scope()
         payload = build_presign_payload(
@@ -413,7 +414,7 @@ class ArtifactApi:
         self._raise_for_status(response, prefix="Error requesting artifact upload URL")
         return PresignedUploadUrl.from_response(_json_body(response, what="presigned upload URL"))
 
-    def upload(
+    def _upload(
         self,
         target: PresignedUploadUrl,
         file: ArtifactFile,
@@ -459,9 +460,8 @@ class ArtifactApi:
     def create(
         self,
         display_name: str,
+        file: ArtifactFile,
         *,
-        file: ArtifactFile | None = None,
-        upload_id: str | None = None,
         content_format: ArtifactContentFormat | str | None = None,
         runtime_language: ArtifactRuntimeLanguage | str | None = None,
         description: str | None = None,
@@ -470,30 +470,51 @@ class ArtifactApi:
         upload_timeout: float = 300,
         upload_retry: UploadRetry = UploadRetry(),  # noqa: B008 - frozen, safe to share
     ) -> FlinkArtifact:
-        """Create an artifact, uploading `file` first unless an `upload_id` is supplied."""
-        if (file is None) == (upload_id is None):
-            raise InterfaceError("create_artifact requires exactly one of file/upload_id")
+        """Create a Flink artifact (e.g. a UDF package) in the connection's cloud/region/
+        environment: request a presigned URL, upload `file` to it, then register the artifact.
+
+        `POST /artifact/v1/flink-artifacts`.
+
+        Args:
+            display_name: Unique (per cloud/region/environment) name, up to 60 characters.
+            file: The archive to upload -- a path, open binary file or bytes.
+            content_format: JAR or ZIP. Inferred from a `.jar`/`.zip` file path; otherwise
+                required.
+            runtime_language: JAVA or PYTHON; the server defaults to JAVA when omitted.
+            description: Up to 256 characters.
+            documentation_link: An http(s) URL.
+            class_name: Deprecated by the API; the Java class or alias of the function.
+            upload_timeout: Seconds allowed for the archive upload.
+            upload_retry: Retry policy for transient transport errors during the upload. By
+                default only failures to connect (nothing sent yet) are retried; see
+                `UploadRetry`.
+
+        Raises:
+            InterfaceError: On a bad argument, or if `file` is a path that can't be read.
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
+                can't be determined (see `Connection.artifact_scope`).
+            ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409, or the API's HTTP 400
+                "name should be unique").
+            OperationalError: On other API errors, or if the upload fails.
+        """
         _validate_display_name(display_name)
         fmt = _normalize_content_format(content_format) if content_format is not None else None
         lang = (
             _normalize_runtime_language(runtime_language) if runtime_language is not None else None
         )
 
-        if file is not None:
-            fmt = fmt or infer_content_format(file)
-            if fmt is None:
-                raise InterfaceError(
-                    "content_format is required when it can't be inferred from a .jar/.zip path"
-                )
-            target = self.get_upload_url(fmt)
-            self.upload(target, file, upload_timeout=upload_timeout, retry=upload_retry)
-            upload_id = target.upload_id
-        assert upload_id is not None
+        fmt = fmt or infer_content_format(file)
+        if fmt is None:
+            raise InterfaceError(
+                "content_format is required when it can't be inferred from a .jar/.zip path"
+            )
+        target = self._get_upload_url(fmt)
+        self._upload(target, file, upload_timeout=upload_timeout, retry=upload_retry)
 
         cloud, region = self._context.artifact_scope()
         payload = build_create_payload(
             display_name=display_name,
-            upload_id=upload_id,
+            upload_id=target.upload_id,
             cloud=cloud,
             region=region,
             environment=self._context.environment_id,

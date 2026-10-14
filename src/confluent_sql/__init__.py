@@ -9,6 +9,7 @@ from .__version__ import __version__
 from .artifacts import (
     ArtifactContentFormat,
     ArtifactRuntimeLanguage,
+    ArtifactsApi,
     FlinkArtifact,
     FlinkArtifactVersion,
     PresignedUploadUrl,
@@ -111,6 +112,7 @@ __all__ = [
     "TableflowTopicAlreadyExistsError",
     "ArtifactNotFoundError",
     "ArtifactAlreadyExistsError",
+    "ArtifactsApi",
     "ArtifactContentFormat",
     "ArtifactRuntimeLanguage",
     "FlinkArtifact",

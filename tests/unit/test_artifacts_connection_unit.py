@@ -1,4 +1,4 @@
-"""Unit tests for the Connection-level artifact plumbing: scope resolution and delegation."""
+"""Unit tests for the Connection-level artifact plumbing: scope resolution, credentials, retries."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
-from confluent_sql.artifacts import ArtifactApi
 from confluent_sql.connection import Connection, connect
 
 pytestmark = pytest.mark.unit
@@ -116,7 +115,7 @@ class TestControlplaneAccess:
             global_api_key="", global_api_secret="", flink_api_key="fk", flink_api_secret="fs"
         )
         with pytest.raises(ProgrammingError, match="Artifacts require a global API key"):
-            conn.list_artifacts()
+            conn.get_artifacts_api().list_artifacts()
 
     def test_tableflow_only_key_is_refused_locally(self) -> None:
         conn = _connect(
@@ -128,7 +127,7 @@ class TestControlplaneAccess:
             tableflow_api_secret="ts",
         )
         with pytest.raises(ProgrammingError, match="cloud_api_key"):
-            conn.list_artifacts()
+            conn.get_artifacts_api().list_artifacts()
 
     def test_cloud_key_alone_authenticates_artifact_requests(self) -> None:
         conn = _connect(
@@ -162,52 +161,20 @@ class TestControlplaneAccess:
         conn = _connect()
         conn.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn.list_artifacts()
+            conn.get_artifacts_api().list_artifacts()
 
-    def test_upload_on_closed_connection_raises_before_any_network_use(self) -> None:
+
+class TestGetArtifactsApi:
+    def test_api_is_composed_once_and_cached(self) -> None:
         conn = _connect()
-        target = Mock()
-        conn.close()
-        with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn.upload_artifact_file(target, b"payload")
+        assert conn.get_artifacts_api() is conn.get_artifacts_api()
 
+    def test_api_is_composed_lazily(self) -> None:
+        assert _connect()._artifacts_api is None
 
-class TestDelegation:
-    @pytest.mark.parametrize(
-        ("method", "api_method", "args", "kwargs"),
-        [
-            ("get_artifact_upload_url", "get_upload_url", ("ZIP",), {}),
-            ("get_artifact", "get", ("cfa-1",), {}),
-            ("update_artifact", "update", ("cfa-1",), {"description": "d"}),
-        ],
-    )
-    def test_passes_through_to_artifact_api(
-        self, mocker, method: str, api_method: str, args: tuple, kwargs: dict
-    ) -> None:
+    def test_api_is_bound_to_the_connection(self) -> None:
         conn = _connect()
-        spy = mocker.patch.object(ArtifactApi, api_method, return_value="result")
-        assert getattr(conn, method)(*args, **kwargs) == "result"
-        spy.assert_called_once()
-
-    def test_artifact_api_is_composed_once(self) -> None:
-        conn = _connect()
-        assert conn._get_artifact_api() is conn._get_artifact_api()
-
-    def test_delete_defaults_to_waiting_for_removal(self, mocker) -> None:
-        conn = _connect()
-        spy = mocker.patch.object(ArtifactApi, "delete")
-        conn.delete_artifact("cfa-1")
-        spy.assert_called_once_with("cfa-1", wait_for_removal=True, timeout=300)
-
-    def test_requests_use_the_artifact_client(self) -> None:
-        conn = _connect()
-        client = Mock()
-        client.request.return_value = Mock(status_code=200, raise_for_status=Mock())
-        conn._get_cloud_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
-        conn.artifact_controlplane_request("/artifact/v1/flink-artifacts", params={"a": "b"})
-        client.request.assert_called_once_with(
-            "GET", "/artifact/v1/flink-artifacts", params={"a": "b"}
-        )
+        assert conn.get_artifacts_api()._context is conn
 
 
 class TestArtifactRequestRetries:
