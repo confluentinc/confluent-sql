@@ -1,4 +1,4 @@
-"""Unit tests for Flink artifact models, request builders, and the ArtifactApi orchestration."""
+"""Unit tests for Flink artifact models, request builders, and the ArtifactsApi orchestration."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from confluent_sql import (
     UploadRetry,
 )
 from confluent_sql.artifacts import (
-    ArtifactApi,
+    ArtifactsApi,
     build_create_payload,
     build_presign_payload,
     build_update_payload,
@@ -237,7 +237,7 @@ class TestUpload:
         archive.write_bytes(b"zipbytes")
         target = PresignedUploadUrl.from_response(_presign_body())
 
-        ArtifactApi(FakeContext()).upload(target, archive)
+        ArtifactsApi(FakeContext())._upload(target, archive)
 
         (request,) = upload_transport
         assert request.method == "POST"
@@ -253,7 +253,7 @@ class TestUpload:
         self, upload_transport: list[httpx.Request], payload: Any
     ) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
-        ArtifactApi(FakeContext()).upload(target, payload)
+        ArtifactsApi(FakeContext())._upload(target, payload)
         assert b"raw" in upload_transport[0].read()
         if isinstance(payload, io.BytesIO):
             assert not payload.closed  # a caller-owned file object is left open
@@ -262,18 +262,18 @@ class TestUpload:
         client_cls = mocker.patch("confluent_sql.artifacts.httpx.Client")
         client_cls.return_value.__enter__.return_value.post.return_value = httpx.Response(204)
         target = PresignedUploadUrl.from_response(_presign_body())
-        ArtifactApi(FakeContext()).upload(target, b"x", upload_timeout=42)
+        ArtifactsApi(FakeContext())._upload(target, b"x", upload_timeout=42)
         client_cls.assert_called_once_with(timeout=42)
 
     def test_text_mode_file_object_is_interface_error(self) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
         with pytest.raises(InterfaceError, match="binary mode"):
-            ArtifactApi(FakeContext()).upload(target, io.StringIO("text"))  # pyright: ignore[reportArgumentType]
+            ArtifactsApi(FakeContext())._upload(target, io.StringIO("text"))  # pyright: ignore[reportArgumentType]
 
     def test_unreadable_path_is_interface_error(self, tmp_path: Path) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
         with pytest.raises(InterfaceError, match="can't read artifact file"):
-            ArtifactApi(FakeContext()).upload(target, tmp_path / "missing.zip")
+            ArtifactsApi(FakeContext())._upload(target, tmp_path / "missing.zip")
 
     def test_rejected_upload_is_operational_error_with_status(self, mocker) -> None:
         real_client = httpx.Client
@@ -286,7 +286,7 @@ class TestUpload:
         )
         target = PresignedUploadUrl.from_response(_presign_body())
         with pytest.raises(OperationalError, match="AccessDenied") as exc:
-            ArtifactApi(FakeContext()).upload(target, b"x")
+            ArtifactsApi(FakeContext())._upload(target, b"x")
         assert exc.value.http_status_code == 403
 
     def test_transport_failure_is_operational_error(self, mocker) -> None:
@@ -302,7 +302,7 @@ class TestUpload:
         )
         target = PresignedUploadUrl.from_response(_presign_body())
         with pytest.raises(OperationalError, match="ConnectError"):
-            ArtifactApi(FakeContext()).upload(target, b"x")
+            ArtifactsApi(FakeContext())._upload(target, b"x")
 
 
 class TestUploadRetryPolicy:
@@ -338,7 +338,7 @@ class TestUploadRetry:
 
     def _upload(self, data: Any = b"payload", **kwargs: Any) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
-        ArtifactApi(FakeContext()).upload(target, data, **kwargs)
+        ArtifactsApi(FakeContext())._upload(target, data, **kwargs)
 
     def test_connect_errors_are_retried_by_default(self, mocker) -> None:
         bodies = self._flaky_transport(mocker, [httpx.ConnectError("ssl eof")] * 3)
@@ -411,9 +411,9 @@ class TestCreate:
         content_format = "" if field == "content_format" else None
         runtime_language = "" if field == "runtime_language" else None
         with pytest.raises(InterfaceError, match=f"unknown {field}"):
-            ArtifactApi(ctx).create(
+            ArtifactsApi(ctx).create(
                 "my-udf",
-                upload_id="u-1",
+                b"x",
                 content_format=content_format,
                 runtime_language=runtime_language,
             )
@@ -426,7 +426,7 @@ class TestCreate:
         archive.write_bytes(b"z")
         ctx = FakeContext(_response(_presign_body()), _response(_artifact_body(), 201))
 
-        artifact = ArtifactApi(ctx).create(
+        artifact = ArtifactsApi(ctx).create(
             "my-udf", file=archive, runtime_language=ArtifactRuntimeLanguage.PYTHON
         )
 
@@ -440,35 +440,27 @@ class TestCreate:
         assert create[2]["json"]["upload_source"]["upload_id"] == UPLOAD_ID
         assert create[2]["json"]["runtime_language"] == "PYTHON"
 
-    def test_upload_id_flow_skips_presign_and_upload(
-        self, upload_transport: list[httpx.Request]
-    ) -> None:
-        ctx = FakeContext(_response(_artifact_body(), 201))
-        ArtifactApi(ctx).create("my-udf", upload_id="prior-upload")
-        assert [r[1] for r in ctx.requests] == ["/artifact/v1/flink-artifacts"]
-        assert ctx.requests[0][2]["json"]["upload_source"]["upload_id"] == "prior-upload"
-        assert upload_transport == []
-
     @pytest.mark.parametrize(
         ("kwargs", "match"),
         [
-            ({}, "exactly one of file/upload_id"),
-            ({"file": b"x", "upload_id": "u"}, "exactly one of file/upload_id"),
             ({"file": b"x"}, "content_format is required"),
             ({"file": "a.tar.gz"}, "content_format is required"),
-            ({"upload_id": "u", "content_format": "TARBALL"}, "unknown content_format"),
-            ({"upload_id": "u", "runtime_language": "RUST"}, "unknown runtime_language"),
+            ({"file": b"x", "content_format": "TARBALL"}, "unknown content_format"),
+            (
+                {"file": b"x", "content_format": "JAR", "runtime_language": "RUST"},
+                "unknown runtime_language",
+            ),
         ],
     )
     def test_argument_validation_fails_before_any_request(self, kwargs: dict, match: str) -> None:
         ctx = FakeContext()
         with pytest.raises(InterfaceError, match=match):
-            ArtifactApi(ctx).create("n", **kwargs)
+            ArtifactsApi(ctx).create("n", **kwargs)
         assert ctx.requests == []
 
     def test_explicit_content_format_allows_bytes(self, upload_transport) -> None:
         ctx = FakeContext(_response(_presign_body()), _response(_artifact_body(), 201))
-        ArtifactApi(ctx).create("n", file=b"jar", content_format="JAR")
+        ArtifactsApi(ctx).create("n", file=b"jar", content_format="JAR")
         assert ctx.requests[0][2]["json"]["content_format"] == "JAR"
 
     @pytest.mark.parametrize(
@@ -484,19 +476,19 @@ class TestCreate:
         ids=["409", "400-name-should-be-unique"],
     )
     def test_duplicate_name_is_already_exists_error(
-        self, duplicate_response: httpx.Response
+        self, duplicate_response: httpx.Response, upload_transport
     ) -> None:
-        ctx = FakeContext(duplicate_response)
+        ctx = FakeContext(_response(_presign_body()), duplicate_response)
         with pytest.raises(ArtifactAlreadyExistsError) as exc:
-            ArtifactApi(ctx).create("dup", upload_id="u")
+            ArtifactsApi(ctx).create("dup", b"x", content_format="JAR")
         assert exc.value.display_name == "dup"
         assert exc.value.http_status_code == duplicate_response.status_code
 
     @pytest.mark.parametrize("status", [400, 422])
-    def test_other_error_is_operational_error(self, status: int) -> None:
-        ctx = FakeContext(_response(status=status))
+    def test_other_error_is_operational_error(self, status: int, upload_transport) -> None:
+        ctx = FakeContext(_response(_presign_body()), _response(status=status))
         with pytest.raises(OperationalError) as exc:
-            ArtifactApi(ctx).create("n", upload_id="u")
+            ArtifactsApi(ctx).create("n", b"x", content_format="JAR")
         assert exc.value.http_status_code == status
 
     @pytest.mark.parametrize("bad_name", ["", "   ", "x" * 61])
@@ -505,7 +497,7 @@ class TestCreate:
     ) -> None:
         ctx = FakeContext()
         with pytest.raises(InterfaceError, match="display_name"):
-            ArtifactApi(ctx).create(bad_name, file=b"x", content_format="JAR")
+            ArtifactsApi(ctx).create(bad_name, file=b"x", content_format="JAR")
         assert ctx.requests == []
         assert upload_transport == []
 
@@ -532,10 +524,9 @@ class TestMalformedResponses:
             lambda api: api.get(ARTIFACT_ID),
             lambda api: api.list_artifacts(),
             lambda api: api.update(ARTIFACT_ID, description="x"),
-            lambda api: api.create("n", upload_id="u"),
-            lambda api: api.get_upload_url("JAR"),
+            lambda api: api._get_upload_url("JAR"),
         ],
-        ids=["get", "list", "update", "create", "presign"],
+        ids=["get", "list", "update", "presign"],
     )
     @pytest.mark.parametrize(
         "bad_response",
@@ -546,7 +537,7 @@ class TestMalformedResponses:
         self, operation: Any, bad_response: httpx.Response
     ) -> None:
         with pytest.raises(OperationalError, match="Error parsing") as exc:
-            operation(ArtifactApi(FakeContext(bad_response)))
+            operation(ArtifactsApi(FakeContext(bad_response)))
         assert exc.value.http_status_code == 200
 
     @pytest.mark.parametrize(
@@ -554,18 +545,18 @@ class TestMalformedResponses:
         [{"data": "x"}, {"data": None}, {"metadata": "x"}, {"metadata": None}, {"data": {"a": 1}}],
     )
     def test_list_with_malformed_data_or_metadata_is_operational_error(self, body: dict) -> None:
-        api = ArtifactApi(FakeContext(_response(body)))
+        api = ArtifactsApi(FakeContext(_response(body)))
         with pytest.raises(OperationalError, match="Error parsing artifact list"):
             api.list_artifacts()
 
     def test_list_tolerates_absent_data_and_metadata(self) -> None:
-        assert ArtifactApi(FakeContext(_response({}))).list_artifacts() == []
+        assert ArtifactsApi(FakeContext(_response({}))).list_artifacts() == []
 
 
 class TestGetListUpdateDelete:
     def test_get_scopes_by_cloud_region_environment(self) -> None:
         ctx = FakeContext(_response(_artifact_body()))
-        artifact = ArtifactApi(ctx).get(ARTIFACT_ID)
+        artifact = ArtifactsApi(ctx).get(ARTIFACT_ID)
         assert artifact.display_name == "my-udf"
         assert ctx.requests == [
             (
@@ -581,7 +572,7 @@ class TestGetListUpdateDelete:
     @pytest.mark.parametrize("bad_id", ["", ".", ".."])
     def test_unusable_artifact_id_makes_no_request(self, operation: str, bad_id: str) -> None:
         ctx = FakeContext()
-        api = ArtifactApi(ctx)
+        api = ArtifactsApi(ctx)
         call = {
             "get": lambda: api.get(bad_id),
             "update": lambda: api.update(bad_id, description="x"),
@@ -595,7 +586,7 @@ class TestGetListUpdateDelete:
     def test_artifact_id_is_percent_encoded_in_the_path(self, operation: str) -> None:
         hostile_id = "../x?y#z"
         ctx = FakeContext(_response(_artifact_body()))
-        api = ArtifactApi(ctx)
+        api = ArtifactsApi(ctx)
         {
             "get": lambda: api.get(hostile_id),
             "update": lambda: api.update(hostile_id, description="x"),
@@ -605,7 +596,7 @@ class TestGetListUpdateDelete:
 
     @pytest.mark.parametrize("operation", ["get", "update", "delete"])
     def test_404_is_artifact_not_found(self, operation: str) -> None:
-        api = ArtifactApi(FakeContext(_response(status=404)))
+        api = ArtifactsApi(FakeContext(_response(status=404)))
         call = {
             "get": lambda: api.get(ARTIFACT_ID),
             "update": lambda: api.update(ARTIFACT_ID, description="x"),
@@ -624,7 +615,7 @@ class TestGetListUpdateDelete:
         page2 = {"data": [_artifact_body(id="cfa-2")], "metadata": {}}
         ctx = FakeContext(_response(page1), _response(page2))
 
-        artifacts = ArtifactApi(ctx).list_artifacts(runtime_language="PYTHON", page_size=1)
+        artifacts = ArtifactsApi(ctx).list_artifacts(runtime_language="PYTHON", page_size=1)
 
         assert [a.id for a in artifacts] == ["cfa-1", "cfa-2"]
         first, second = (r[2]["params"] for r in ctx.requests)
@@ -634,7 +625,7 @@ class TestGetListUpdateDelete:
 
     def test_update_sends_patch_with_only_given_fields(self) -> None:
         ctx = FakeContext(_response(_artifact_body(description="new")))
-        artifact = ArtifactApi(ctx).update(ARTIFACT_ID, description="new")
+        artifact = ArtifactsApi(ctx).update(ARTIFACT_ID, description="new")
         assert artifact.description == "new"
         method, url, kwargs = ctx.requests[0]
         assert (method, url) == ("PATCH", f"/artifact/v1/flink-artifacts/{ARTIFACT_ID}")
@@ -643,18 +634,18 @@ class TestGetListUpdateDelete:
     def test_update_with_nothing_to_change_makes_no_request(self) -> None:
         ctx = FakeContext()
         with pytest.raises(InterfaceError):
-            ArtifactApi(ctx).update(ARTIFACT_ID)
+            ArtifactsApi(ctx).update(ARTIFACT_ID)
         assert ctx.requests == []
 
     def test_delete_without_wait_returns_after_delete(self) -> None:
         ctx = FakeContext(_response(status=204))
-        ArtifactApi(ctx).delete(ARTIFACT_ID, wait_for_removal=False)
+        ArtifactsApi(ctx).delete(ARTIFACT_ID, wait_for_removal=False)
         assert [r[0] for r in ctx.requests] == ["DELETE"]
 
     def test_delete_waits_until_read_404s(self, mocker) -> None:
         mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None] * 3))
         ctx = FakeContext(_response(status=204), _response(_artifact_body()), _response(status=404))
-        ArtifactApi(ctx).delete(ARTIFACT_ID)
+        ArtifactsApi(ctx).delete(ARTIFACT_ID)
         assert [r[0] for r in ctx.requests] == ["DELETE", "GET", "GET"]
 
     def test_delete_wait_timeout_raises(self, mocker) -> None:
@@ -663,11 +654,11 @@ class TestGetListUpdateDelete:
             _response(status=204), _response(_artifact_body()), _response(_artifact_body())
         )
         with pytest.raises(OperationalError, match="was not removed within 5 seconds"):
-            ArtifactApi(ctx).delete(ARTIFACT_ID, timeout=5)
+            ArtifactsApi(ctx).delete(ARTIFACT_ID, timeout=5)
 
     def test_get_upload_url_returns_typed_target(self) -> None:
         ctx = FakeContext(_response(_presign_body()))
-        target = ArtifactApi(ctx).get_upload_url("ZIP")
+        target = ArtifactsApi(ctx)._get_upload_url("ZIP")
         assert target.upload_id == UPLOAD_ID
         assert ctx.requests[0][2]["json"] == {
             "content_format": "ZIP",
@@ -678,4 +669,4 @@ class TestGetListUpdateDelete:
 
     def test_get_upload_url_rejects_unknown_format(self) -> None:
         with pytest.raises(InterfaceError, match="unknown content_format"):
-            ArtifactApi(FakeContext()).get_upload_url("TARBALL")
+            ArtifactsApi(FakeContext())._get_upload_url("TARBALL")
