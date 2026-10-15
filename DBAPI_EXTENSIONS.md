@@ -797,32 +797,28 @@ artifacts = connection.get_artifacts_api()
 
 artifact = artifacts.create(
     "my-udf",
-    "dist/my_udf-0.1.0.zip",                   # path, open binary file, or bytes
+    "dist/my_udf-0.1.0.zip",                   # path of the archive to upload
     runtime_language=ArtifactRuntimeLanguage.PYTHON,
     description="T-shirt size comparisons",
 )
 artifacts.get(artifact.id).versions            # versions appear on a read, not on create/list
-artifacts.list_artifacts(runtime_language="PYTHON")
-artifacts.update(artifact.id, description="new text")  # None = unchanged, "" = clear
+artifacts.list(runtime_language="PYTHON")
 artifacts.delete(artifact.id)                  # blocks until gone; wait_for_removal=False to opt out
 ```
 
 `create` requests a presigned URL, uploads the file to it and registers the artifact. It infers
-`content_format` from a `.jar`/`.zip` path (required for bytes or a file object).
+`content_format` from the `.jar`/`.zip` extension when you don't pass one. The file is streamed
+from disk.
 
 Uploads retry failures to *connect* (nothing sent yet) three times by default, but not failures
 mid-transfer, which would re-send the whole archive. Tune with an `UploadRetry` via
 `create(upload_retry=...)`: `UploadRetry(connect_retries=3, transfer_retries=0)`.
 
-A path is streamed from disk. A file object (opened in binary mode) is read fully into memory from
-its current position, so it uploads only the remaining bytes and, like bytes, can be retried even
-if it isn't seekable.
-
 The Cloud API doesn't currently support adding versions to an existing artifact: each artifact has
 a single server-assigned version, and its `display_name` is immutable. To ship new code, create a
 new artifact rather than updating.
 
-Errors: `ArtifactNotFoundError` (404 on get/update/delete), `ArtifactAlreadyExistsError` (display
+Errors: `ArtifactNotFoundError` (404 on get/delete), `ArtifactAlreadyExistsError` (display
 name taken). Python UDFs run only in streaming mode.
 
 ---

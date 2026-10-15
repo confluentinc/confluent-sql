@@ -12,7 +12,6 @@ from .artifacts import (
     ArtifactsApi,
     FlinkArtifact,
     FlinkArtifactVersion,
-    PresignedUploadUrl,
     UploadRetry,
 )
 from .changelog_compressor import ChangelogCompressor
@@ -117,7 +116,6 @@ __all__ = [
     "ArtifactRuntimeLanguage",
     "FlinkArtifact",
     "FlinkArtifactVersion",
-    "PresignedUploadUrl",
     "UploadRetry",
     "ConnectorNotFoundError",
     "ConnectorAlreadyExistsError",

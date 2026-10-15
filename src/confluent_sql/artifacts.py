@@ -10,12 +10,11 @@ post, so no Confluent credentials), create the artifact with the resulting `uplo
 
 from __future__ import annotations
 
-import io
 import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePath
-from typing import BinaryIO, Protocol, Union
+from typing import Protocol, Union
 from urllib.parse import quote
 
 import httpx
@@ -31,8 +30,8 @@ from .retry import call_with_retries
 from .types import StrAnyDict
 from .utils import extract_error_detail, next_page_token
 
-ArtifactFile = Union[str, "os.PathLike[str]", BinaryIO, bytes]
-"""A path, an open binary file, or the raw bytes."""
+ArtifactFile = Union[str, "os.PathLike[str]"]
+"""Path of the archive to upload."""
 
 _PRESIGNED_URL_LOCATION = "PRESIGNED_URL_LOCATION"
 _MAX_DISPLAY_NAME_LENGTH = 60
@@ -150,9 +149,7 @@ _EXTENSION_FORMATS = {".jar": ArtifactContentFormat.JAR, ".zip": ArtifactContent
 
 def infer_content_format(file: ArtifactFile) -> ArtifactContentFormat | None:
     """The format implied by a path's `.jar`/`.zip` extension, else None."""
-    if isinstance(file, (str, os.PathLike)):
-        return _EXTENSION_FORMATS.get(PurePath(os.fspath(file)).suffix.lower())
-    return None
+    return _EXTENSION_FORMATS.get(PurePath(os.fspath(file)).suffix.lower())
 
 
 def _validate_display_name(display_name: str) -> None:
@@ -343,26 +340,6 @@ def build_create_payload(
     return payload
 
 
-def build_update_payload(
-    *, description: str | None = None, documentation_link: str | None = None
-) -> StrAnyDict:
-    """None leaves a field unchanged; an empty string clears it. Raises InterfaceError if nothing
-    is being changed."""
-    payload = {
-        k: v
-        for k, v in {
-            Fields.DESCRIPTION: description,
-            Fields.DOCUMENTATION_LINK: documentation_link,
-        }.items()
-        if v is not None
-    }
-    if not payload:
-        raise InterfaceError(
-            "update_artifact requires at least one of description/documentation_link"
-        )
-    return payload
-
-
 class ArtifactsContext(Protocol):
     """What `ArtifactsApi` needs from its host connection."""
 
@@ -376,7 +353,7 @@ class ArtifactsContext(Protocol):
 
 
 class ArtifactsApi:
-    """Artifact lifecycle, obtained from `Connection.get_artifacts_api()`. Create and update are
+    """Artifact lifecycle, obtained from `Connection.get_artifacts_api()`. Create is
     synchronous; delete blocks by default (`wait_for_removal`)."""
 
     _ARTIFACTS_PATH = "/artifact/v1/flink-artifacts"
@@ -424,11 +401,14 @@ class ArtifactsApi:
     ) -> None:
         """POST the archive to the object store with a credential-free client, so the Confluent API
         key is never sent there."""
-        with _open_file(file) as (fileobj, filename):
+        try:
+            fileobj = open(file, "rb")  # noqa: SIM115 - closed by the `with` below
+        except OSError as e:
+            raise InterfaceError(f"can't read artifact file {file!r}: {e}") from e
+        with fileobj:
+            filename = PurePath(os.fspath(file)).name
 
             def post_once() -> httpx.Response:
-                # httpx itself rewinds to 0 when building the body; `_open_file` guarantees 0 is
-                # the start of the archive.
                 fileobj.seek(0)
                 with httpx.Client(timeout=upload_timeout) as client:
                     # Form fields before the file, as S3 requires.
@@ -477,9 +457,8 @@ class ArtifactsApi:
 
         Args:
             display_name: Unique (per cloud/region/environment) name, up to 60 characters.
-            file: The archive to upload -- a path, open binary file or bytes.
-            content_format: JAR or ZIP. Inferred from a `.jar`/`.zip` file path; otherwise
-                required.
+            file: Path of the archive to upload.
+            content_format: JAR or ZIP. Inferred from the `.jar`/`.zip` extension when omitted.
             runtime_language: JAVA or PYTHON; the server defaults to JAVA when omitted.
             description: Up to 256 characters.
             documentation_link: An http(s) URL.
@@ -490,7 +469,7 @@ class ArtifactsApi:
                 `UploadRetry`.
 
         Raises:
-            InterfaceError: On a bad argument, or if `file` is a path that can't be read.
+            InterfaceError: On a bad argument, or if `file` can't be read.
             ProgrammingError: If no global or cloud API key is available, or the cloud/region
                 can't be determined (see `Connection.artifact_scope`).
             ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409, or the API's HTTP 400
@@ -555,7 +534,7 @@ class ArtifactsApi:
         self._raise_for_status(response, prefix="Error reading artifact")
         return FlinkArtifact.from_response(_json_body(response, what="artifact response"))
 
-    def list_artifacts(
+    def list(
         self,
         *,
         runtime_language: ArtifactRuntimeLanguage | str | None = None,
@@ -588,28 +567,6 @@ class ArtifactsApi:
             if token is None:
                 return artifacts
             params[Fields.PAGE_TOKEN] = token
-
-    def update(
-        self,
-        artifact_id: str,
-        *,
-        description: str | None = None,
-        documentation_link: str | None = None,
-    ) -> FlinkArtifact:
-        """Change mutable metadata in place."""
-        payload = build_update_payload(
-            description=description, documentation_link=documentation_link
-        )
-        response = self._context.artifact_controlplane_request(
-            self._artifact_path(artifact_id),
-            method="PATCH",
-            params=self._scope_params(),
-            json=payload,
-            raise_for_status=False,
-        )
-        self._raise_if_not_found(response, artifact_id)
-        self._raise_for_status(response, prefix="Error updating artifact")
-        return FlinkArtifact.from_response(_json_body(response, what="artifact response"))
 
     def delete(
         self, artifact_id: str, *, wait_for_removal: bool = True, timeout: float = 300
@@ -654,40 +611,3 @@ class ArtifactsApi:
                 artifact_id=artifact_id,
                 http_status_code=response.status_code,
             )
-
-
-class _open_file:
-    """Yields `(binary file, filename)` for any `ArtifactFile`, always seekable with the archive
-    starting at offset 0; closes only files it opened.
-
-    A caller-supplied file object is read from its *current position* to the end into memory.
-    httpx rewinds file objects to 0 and sizes the body from the whole file, so a mid-stream
-    position would otherwise upload the wrong bytes, and a non-seekable stream (pipe, gzip reader)
-    would have no known length, which presigned object-store POSTs reject."""
-
-    def __init__(self, file: ArtifactFile) -> None:
-        self._file = file
-        self._opened: BinaryIO | None = None
-
-    def __enter__(self) -> tuple[BinaryIO, str]:
-        file = self._file
-        if isinstance(file, (str, os.PathLike)):
-            try:
-                self._opened = open(file, "rb")  # noqa: SIM115 - closed in __exit__
-            except OSError as e:
-                raise InterfaceError(f"can't read artifact file {file!r}: {e}") from e
-            return self._opened, PurePath(os.fspath(file)).name
-        if isinstance(file, (bytes, bytearray)):
-            return io.BytesIO(file), "artifact"
-        name = getattr(file, "name", None)
-        try:
-            data = file.read()
-        except (OSError, ValueError) as e:
-            raise InterfaceError(f"can't read artifact file object: {e}") from e
-        if not isinstance(data, (bytes, bytearray)):
-            raise InterfaceError("artifact file object must be opened in binary mode")
-        return io.BytesIO(data), PurePath(name).name if isinstance(name, str) else "artifact"
-
-    def __exit__(self, *exc_info: object) -> None:
-        if self._opened is not None:
-            self._opened.close()

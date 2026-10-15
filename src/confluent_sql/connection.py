@@ -327,7 +327,7 @@ def connect(  # noqa: PLR0913
             covers Connect. Must be supplied together with connect_api_secret.
         connect_api_secret: Secret paired with connect_api_key.
         cloud_api_key: A "Cloud resource management" API key for the Artifact routes (create/get/
-            list/update/delete Flink artifacts). Only consulted when no global key is supplied; a
+            list/delete Flink artifacts). Only consulted when no global key is supplied; a
             global key already covers artifacts. Must be supplied together with cloud_api_secret.
             Not accepted by Flink SQL routes, so it is not a substitute for a global or Flink key.
         cloud_api_secret: Secret paired with cloud_api_key.

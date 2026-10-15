@@ -115,7 +115,7 @@ class TestControlplaneAccess:
             global_api_key="", global_api_secret="", flink_api_key="fk", flink_api_secret="fs"
         )
         with pytest.raises(ProgrammingError, match="Artifacts require a global API key"):
-            conn.get_artifacts_api().list_artifacts()
+            conn.get_artifacts_api().list()
 
     def test_tableflow_only_key_is_refused_locally(self) -> None:
         conn = _connect(
@@ -127,7 +127,7 @@ class TestControlplaneAccess:
             tableflow_api_secret="ts",
         )
         with pytest.raises(ProgrammingError, match="cloud_api_key"):
-            conn.get_artifacts_api().list_artifacts()
+            conn.get_artifacts_api().list()
 
     def test_cloud_key_alone_authenticates_artifact_requests(self) -> None:
         conn = _connect(
@@ -161,7 +161,7 @@ class TestControlplaneAccess:
         conn = _connect()
         conn.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn.get_artifacts_api().list_artifacts()
+            conn.get_artifacts_api().list()
 
 
 class TestGetArtifactsApi:
