@@ -19,7 +19,7 @@ from confluent_sql import (
     TableflowTopicNotFoundError,
     TableFormat,
 )
-from confluent_sql.connection import Connection, _resolve_tableflow_credentials, connect
+from confluent_sql.connection import Connection, connect
 from confluent_sql.tableflow import TableflowTopic
 
 pytestmark = pytest.mark.unit
@@ -80,28 +80,6 @@ def _topic_body(*, display_name: str = "orders", phase: str = "PENDING") -> dict
     }
 
 
-class TestResolveTableflowCredentials:
-    """The control-plane credential pick: global wins, else the tableflow pair, else None."""
-
-    def test_global_wins_over_tableflow(self) -> None:
-        assert _resolve_tableflow_credentials("gk", "gs", "tk", "ts") == ("gk", "gs")
-
-    def test_tableflow_pair_when_no_global(self) -> None:
-        assert _resolve_tableflow_credentials("", "", "tk", "ts") == ("tk", "ts")
-
-    def test_none_when_neither(self) -> None:
-        assert _resolve_tableflow_credentials("", "", "", "") is None
-
-    def test_half_tableflow_pair_raises(self) -> None:
-        with pytest.raises(InterfaceError, match="tableflow_api_key and tableflow_api_secret"):
-            _resolve_tableflow_credentials("", "", "tk", "")
-
-    def test_global_short_circuits_half_tableflow_pair(self) -> None:
-        # A usable global key wins and must not be tripped up by an incidental half-supplied
-        # Tableflow pair (e.g. one leaked in from the environment).
-        assert _resolve_tableflow_credentials("gk", "gs", "tk", "") == ("gk", "gs")
-
-
 class TestControlplaneClient:
     """Lazy control-plane client creation and the no-credentials failure path."""
 
@@ -147,7 +125,8 @@ class TestControlplaneClient:
 
 
 @pytest.mark.parametrize(
-    "method_name", ["_tableflow_request", "_cmk_request", "_organization_lookup_request"]
+    "method_name",
+    ["_tableflow_request", "_cmk_request", "_organization_lookup_request"],
 )
 class TestControlplaneRequestWrappers:
     """_tableflow_request / _cmk_request / _organization_lookup_request are structurally

@@ -35,6 +35,7 @@ For comprehensive details on streaming queries, polling patterns, and changelog 
 - [Streaming Query Support](#streaming-query-support) - Comprehensive streaming guide
 - [Statement Lifecycle Management](#statement-lifecycle-management) - DDL, dry-run, naming, stopping, deletion
 - [Tableflow Lifecycle](#tableflow-lifecycle) - Enable, read, and disable Iceberg/Delta sinks
+- [Flink Artifacts](#flink-artifacts) - Upload and manage UDF packages
 - [Introspection and Metadata](#introspection-and-metadata) - Properties for query state
 - [Performance Monitoring](#performance-monitoring) - Fetch metrics
 - [Type System Extensions](#type-system-extensions) - Flink type support
@@ -768,6 +769,59 @@ for table in ("orders", "shipments", "returns"):
         config=config,
     )
 ```
+
+---
+
+## Flink Artifacts
+
+Flink artifacts are how user code -- a UDF packaged as a JAR (Java) or a ZIP (Python) -- gets into
+Confluent Cloud Flink. Upload one, then register a function from it with
+`CREATE FUNCTION ... USING JAR 'confluent-artifact://<artifact id>'`. Artifacts are scoped to the
+connection's cloud, region and environment (from `connect()`'s `cloud_provider`/`cloud_region`, or a
+standard `https://flink.<region>.<cloud>.confluent.cloud` `endpoint`).
+
+A runnable end-to-end example -- build a Python UDF, upload it, call it from SQL, clean up -- is in
+[examples/artifact_upload_example.py](examples/artifact_upload_example.py).
+
+> **Credentials.** Artifacts need a global API key, or a "Cloud resource management" key passed as
+> `cloud_api_key`/`cloud_api_secret` (used only when no global key is given). A Tableflow or Flink
+> key won't work, and neither will BYOIDC -- like Tableflow, artifacts are a control-plane surface.
+
+The artifact operations live on an `ArtifactsApi` object, returned by
+`Connection.get_artifacts_api()` (composed on first call, then cached):
+
+```python
+from confluent_sql import ArtifactRuntimeLanguage
+
+artifacts = connection.get_artifacts_api()
+
+artifact = artifacts.create(
+    "my-udf",
+    "dist/my_udf-0.1.0.zip",                   # path of the archive to upload
+    runtime_language=ArtifactRuntimeLanguage.PYTHON,
+    description="T-shirt size comparisons",
+)
+artifacts.get(artifact.id).versions            # versions appear on a read, not on create/list
+artifacts.list(runtime_language="PYTHON")
+artifacts.delete(artifact.id)                  # blocks until gone; wait_for_removal=False to opt out
+```
+
+`create` requests a presigned URL, uploads the file to it and registers the artifact. It infers
+`content_format` from the `.jar`/`.zip` extension when you don't pass one. Only JAVA with JAR and PYTHON
+with ZIP are accepted; anything else raises `InterfaceError` before the upload. `runtime_language`
+defaults to JAVA, so a ZIP needs `runtime_language=PYTHON`. The file is streamed
+from disk.
+
+Uploads retry failures to *connect* (nothing sent yet) three times by default, but not failures
+mid-transfer, which would re-send the whole archive. Tune with an `UploadRetry` via
+`create(upload_retry=...)`: `UploadRetry(connect_retries=3, transfer_retries=0)`.
+
+The Cloud API doesn't currently support adding versions to an existing artifact: each artifact has
+a single server-assigned version, and its `display_name` is immutable. To ship new code, create a
+new artifact rather than updating.
+
+Errors: `ArtifactNotFoundError` (404 on get/delete), `ArtifactAlreadyExistsError` (display
+name taken). Python UDFs run only in streaming mode.
 
 ---
 
