@@ -604,7 +604,8 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             InterfaceError: If `runtime_language` is unknown, or the connection is closed.
             ProgrammingError: If no global or cloud API key is available, or the cloud/region
                 can't be determined (see `Connection.artifact_scope`).
-            OperationalError: On API errors, a network failure, or an unparseable response.
+            OperationalError: On API errors, a network failure, an unparseable response, or a
+                server that repeats the previous page token.
         """
         params = self._scope_params()
         params[Fields.PAGE_SIZE] = str(page_size)
@@ -612,6 +613,7 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             params[Fields.RUNTIME_LANGUAGE] = _normalize_runtime_language(runtime_language).value
 
         artifacts: list[FlinkArtifact] = []
+        last_token: str | None = None
         while True:
             response = self.get_context().artifact_controlplane_request(
                 self._ARTIFACTS_PATH, params=params, raise_for_status=False
@@ -631,6 +633,12 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
                 raise _parse_error("artifact list", e) from e
             if token is None:
                 return artifacts
+            # A server that hands back the token we just followed would loop forever.
+            if token == last_token:
+                raise OperationalError(
+                    f"Error listing artifacts: server repeated page token {token!r}"
+                )
+            last_token = token
             params[Fields.PAGE_TOKEN] = token
 
     def delete(

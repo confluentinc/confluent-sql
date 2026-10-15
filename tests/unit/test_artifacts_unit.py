@@ -361,6 +361,9 @@ class TestUploadRetry:
         assert len(calls) == 1
 
 
+REPEATED_TOKEN = "tok-a"
+
+
 class TestCreate:
     @pytest.mark.parametrize("field", ["content_format", "runtime_language"])
     def test_empty_enum_string_is_rejected_not_treated_as_unset(self, field: str) -> None:
@@ -598,6 +601,33 @@ class TestGetListUpdateDelete:
         assert first["runtime_language"] == "PYTHON" and first["page_size"] == "1"
         assert "page_token" not in first
         assert second["page_token"] == "tok2"
+
+    def test_list_stops_on_empty_page_token(self) -> None:
+        page = {
+            "data": [_artifact_body(id="cfa-1")],
+            "metadata": {"next": "https://api/x?page_token="},
+        }
+        ctx = FakeContext(_response(page))
+
+        assert [a.id for a in ArtifactsApi(ctx).list()] == ["cfa-1"]
+        assert len(ctx.requests) == 1
+
+    def test_list_raises_on_repeated_page_token(self) -> None:
+        # The second page hands back the same token that led to it.
+        pages = [
+            _response(
+                {
+                    "data": [_artifact_body(id=f"cfa-{i}")],
+                    "metadata": {"next": f"https://api/x?page_token={REPEATED_TOKEN}"},
+                }
+            )
+            for i in range(2)
+        ]
+        ctx = FakeContext(*pages)
+
+        with pytest.raises(OperationalError, match=f"repeated page token .{REPEATED_TOKEN}."):
+            ArtifactsApi(ctx).list()
+        assert len(ctx.requests) == 2
 
     def test_delete_without_wait_returns_after_delete(self) -> None:
         ctx = FakeContext(_response(status=204))
