@@ -50,7 +50,7 @@ from confluent_sql.exceptions import (
     ReauthenticationRequired,
 )
 from confluent_sql.oauth.callback_server import CallbackServer
-from confluent_sql.oauth.config import CCloudOAuthConfig
+from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 from confluent_sql.oauth.pkce import challenge_for
 from confluent_sql.oauth.provider import CCloudOAuth
 from confluent_sql.oauth.token_set import ABSOLUTE_LIFETIME, TokenSet
@@ -60,7 +60,7 @@ pytestmark = pytest.mark.unit
 AUTH_SERVICE_DOMAIN = "login.confluent.io"
 API_HOST = "https://confluent.cloud"
 CLIENT_ID = "test-client-id"
-CALLBACK_PATH = "/gateway/v1/callback-local-mcp-docs"
+CALLBACK_PATH = PROD.callback_path
 
 AUTH_CODE = "the-authorization-code"
 INITIAL_REFRESH_TOKEN = "refresh-token-0"
@@ -91,8 +91,8 @@ def _free_port() -> int:
     The callback port is fixed in production (it is baked into the client registration), so
     unlike `CallbackServer`'s own tests -- which bind port 0 and read the port back -- these
     tests need the number *before* the login starts: the provider builds `redirect_uri` from
-    config, and the fake browser drives that exact URL. Never binds the real 26640, which a
-    developer's live mcp-confluent login legitimately holds.
+    config, and the fake browser drives that exact URL. Never binds the real callback port, which a
+    developer's live login legitimately holds.
     """
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
         probe.bind(("127.0.0.1", 0))
@@ -104,9 +104,7 @@ def _config(port: int) -> CCloudOAuthConfig:
         auth_service_domain=AUTH_SERVICE_DOMAIN,
         api_host=API_HOST,
         client_id=CLIENT_ID,
-        callback_host="127.0.0.1",
         callback_port=port,
-        callback_path=CALLBACK_PATH,
     )
 
 

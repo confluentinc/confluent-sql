@@ -7,7 +7,7 @@ reference read its fields with zero locking and zero risk of a torn read mid-upd
 lives on the provider's reference slot, not on this object. All three `*_valid` helpers are pure
 arithmetic over fields that never change after construction -- no lock, no I/O.
 
-The *idle* (4h) refresh-token cap from oauth-research-and-plan.md is deliberately not modeled
+The auth service's *idle* (4h) refresh-token cap is deliberately not modeled
 here: it requires tracking last-use time, which only matters once something actually refreshes
 (#153) or proactively re-auths ahead of the wall (#158). This snapshot only carries the
 *absolute* (8h) wall, computed by the caller at mint time and passed in as
@@ -27,7 +27,7 @@ regardless of activity. The caller minting a TokenSet computes refresh_token_exp
 EXPIRY_SKEW = timedelta(seconds=30)
 """Subtracted from every expiry before comparing against `now`, so a token is never treated as
 live for a request that lands a moment before its real expiry. Matches the 30s skew the Flink
-Table API plugin's OAuthCredentialsProvider uses (see oauth-research-and-plan.md)."""
+Table API plugin's OAuthCredentialsProvider uses."""
 
 
 @dataclass(frozen=True)

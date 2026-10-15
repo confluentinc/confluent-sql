@@ -7,8 +7,8 @@ provider landing in #153) decides the client's lifetime, and this module never t
 
 Hop 1 (`exchange_code_for_tokens`) and the refresh exchange (`exchange_refresh_token`) both hit
 the auth service's token endpoint and differ only in `grant_type`, so they share one result type,
-`CodeExchangeResult`. Per oauth-research-and-plan.md, the auth service's
-`access_token`/`expires_in` in that response are unused downstream and dropped.
+`CodeExchangeResult`. The auth service's `access_token`/`expires_in` in that response are unused
+downstream and dropped.
 
 Hops 2 and 3 (`exchange_id_token_for_cp_token`, `exchange_cp_for_dp_token`) hit Confluent Cloud's
 `/api/sessions` and `/api/access_tokens`. Neither response documents an `expires_in` field, so
@@ -116,8 +116,8 @@ def exchange_refresh_token(
     """The refresh leg: POST config.token_url with grant_type=refresh_token. The auth service's
     refresh tokens are single-use and rotating -- the returned refresh_token is a *different*
     string that must replace the one just spent. This function performs the exchange only;
-    persisting the rotated token before anything else is the caller's responsibility (see
-    oauth-research-and-plan.md §2's persist-before-exchange ordering, landing with #153)."""
+    persisting the rotated token before anything else is the caller's responsibility (the
+    persist-before-exchange ordering, landing with #153)."""
     body = post_json(
         client,
         config.token_url,
@@ -181,9 +181,8 @@ def exchange_cp_for_dp_token(
 ) -> DataPlaneTokenResult:
     """Hop 3: POST {api_host}/api/access_tokens, bearing the control-plane token, minting a
     data-plane token. The response's regional_token is unused -- Flink, like every other
-    data-plane consumer, wants the plain token (see oauth-research-and-plan.md). `now` is the
-    fallback-expiry anchor (see `_jwt_exp`); defaults to the real clock, overridable so tests can
-    pin exact expiry math."""
+    data-plane consumer, wants the plain token. `now` is the fallback-expiry anchor (see
+    `_jwt_exp`); defaults to the real clock, overridable so tests can pin exact expiry math."""
     payload = post_json(
         client,
         f"{config.api_host}/api/access_tokens",

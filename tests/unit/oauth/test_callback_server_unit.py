@@ -5,10 +5,10 @@ synthesizing `BaseHTTPRequestHandler` internals: the whole point of this class i
 redirected by the auth service can reach it, so the socket is the interesting part and mocking it
 away would test nothing.
 
-Every server here binds port **0** (an ephemeral port the OS picks), never the real 26640 from
-`CCloudOAuthConfig`. A developer running a live mcp-confluent login legitimately holds 26640, and
-so does a parallel run of this same suite; binding it would make this file flaky for reasons
-having nothing to do with the code under test. `TestLifecycle.test_port_already_bound_...` is the
+Every server here binds port **0** (an ephemeral port the OS picks), never the real callback port
+from `CCloudOAuthConfig`. A developer's live login legitimately holds it, and so does a parallel run
+of this same suite; binding it would make this file flaky for reasons having nothing to do with
+the code under test. `TestLifecycle.test_port_already_bound_...` is the
 one case that needs a known-taken port, and it makes one for itself.
 """
 
@@ -27,13 +27,13 @@ import pytest
 
 from confluent_sql.exceptions import OAuthLoginError, OAuthLoginFailure, ProgrammingError
 from confluent_sql.oauth.callback_server import CallbackServer
-from confluent_sql.oauth.config import CCloudOAuthConfig
+from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 
 pytestmark = pytest.mark.unit
 
 EXPECTED_STATE = "the-state-this-login-generated"
 AUTH_CODE = "the-authorization-code"
-CALLBACK_PATH = "/gateway/v1/callback-local-mcp-docs"
+CALLBACK_PATH = PROD.callback_path
 LOGGER_NAME = "confluent_sql.oauth.callback_server"
 
 BRIEF_TIMEOUT = 5.0
@@ -52,7 +52,6 @@ def _config(port: int = 0, host: str = "127.0.0.1") -> CCloudOAuthConfig:
         client_id="test-client-id",
         callback_host=host,
         callback_port=port,
-        callback_path=CALLBACK_PATH,
     )
 
 

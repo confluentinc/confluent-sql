@@ -61,7 +61,7 @@ conn = confluent_sql.connect(
 )
 ```
 
-The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. The driver listens on `127.0.0.1:26642` for the redirect, so that port must be free. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py).
+The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. The driver listens on `127.0.0.1:26642` for the redirect, so that port must be free. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py). The resulting tokens grant access to every Confluent Cloud feature / resource that your user account can access, then enabling all of the functionality of the driver, including TableFlow, Connectors, Artifacts, etc.
 
 ### BYOIDC bearer-token authentication
 

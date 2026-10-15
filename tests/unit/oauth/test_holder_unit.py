@@ -46,18 +46,12 @@ CONFIG = CCloudOAuthConfig(
     auth_service_domain="login.confluent.io",
     api_host="https://confluent.cloud",
     client_id="test-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 
 OTHER_ENV_CONFIG = CCloudOAuthConfig(
     auth_service_domain="login-stag.confluent-dev.io",
     api_host="https://stag.cpdev.cloud",
     client_id="stag-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 """A *different* Confluent Cloud environment -- different issuer, API host, and client -- for
 pinning that the holder refuses to hand one environment's provider to a connection asking for

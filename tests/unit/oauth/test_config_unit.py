@@ -21,8 +21,8 @@ def test_prod_config_values():
 
 
 def test_devel_config_values():
-    """DEVEL has its own dedicated Auth0 client (identity-login-static#977), not a borrowed one --
-    pinning it here catches accidental drift the same way test_prod_config_values does for PROD."""
+    """DEVEL has its own dedicated Auth0 client (identity-login-static#977) -- pinning it here
+    catches accidental drift the same way test_prod_config_values does for PROD."""
     assert DEVEL.auth_service_domain == "login.confluent-dev.io"
     assert DEVEL.api_host == "https://devel.cpdev.cloud"
     assert DEVEL.client_id == "txYV6dvI8PWu6OEoADXv9PVs1nyMrbCr"
@@ -33,8 +33,8 @@ def test_devel_config_values():
 
 
 def test_stag_config_values():
-    """STAG has its own dedicated Auth0 client (identity-login-static#984), not a borrowed one --
-    pinning it here catches accidental drift the same way test_prod_config_values does for PROD."""
+    """STAG has its own dedicated Auth0 client (identity-login-static#984) -- pinning it here
+    catches accidental drift the same way test_prod_config_values does for PROD."""
     assert STAG.auth_service_domain == "login-stag.confluent-dev.io"
     assert STAG.api_host == "https://stag.cpdev.cloud"
     assert STAG.client_id == "kBIUXUKdg1RiEtg4cJjTCF58MEexw8EO"

@@ -6,7 +6,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Added
 
-- Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. See the README and `examples/interactive_oauth_login.py`.
+- Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. See the README and `examples/interactive_oauth_login.py` (#150).
 - `Connection.dry_run_statement(statement_text, *, mode=ExecutionMode.SNAPSHOT, compute_pool_id=None)`: validate a statement with Flink's `sql.dry-run` in a single request, without running or storing it, and return the resulting `Statement`. The returned `Statement`'s `schema` and `is_append_only` may then be of interest to the caller. Raises `OperationalError` with the server's detail if Flink rejects the statement. (#246)
 - New property `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. (#246)
 
