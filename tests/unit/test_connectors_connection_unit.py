@@ -350,6 +350,24 @@ class TestConnectorApiDelete:
         with pytest.raises(OperationalError, match="was not removed"):
             api.delete("MyDatagen", timeout=5)
 
+    def test_removal_budget_includes_the_first_read(self, mocker) -> None:
+        # The timeout is measured from before the first (possibly slow, retried) read.
+        before_first_read, after_first_read = 100.0, 160.0
+        mocker.patch(
+            "confluent_sql.connectors.time.monotonic",
+            side_effect=[before_first_read, after_first_read],
+        )
+        sleeper = mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        ctx = FakeControlPlane()
+        ctx.queue("delete", _ok_response())
+        ctx.queue("read", _ok_response(_read_body()))
+        ctx.queue("status", _ok_response(_status_body("RUNNING")))
+
+        with pytest.raises(OperationalError):
+            ConnectorApi(ctx).delete("MyDatagen", timeout=5)
+
+        sleeper.assert_called_once_with(5, started_at=before_first_read)
+
 
 # Each action: the HTTP verb + path suffix it hits, the state it settles at, a transient state to
 # poll through, and the keyword that names its wait. Both are PUT; pause settles at PAUSED and

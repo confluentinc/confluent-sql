@@ -31,6 +31,7 @@ the base read. So building a complete `Connector` always merges a config read wi
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -477,12 +478,13 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         Raises:
             OperationalError: If the connector is not removed within timeout.
         """
+        started_at = time.monotonic()
         try:
             self._read_spec(name)
         except ConnectorNotFoundError:
             return
 
-        for _ in sleep_with_backoff(timeout):
+        for _ in sleep_with_backoff(timeout, started_at=started_at):
             try:
                 self._read_spec(name)
             except ConnectorNotFoundError:

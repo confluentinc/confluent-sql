@@ -603,6 +603,19 @@ class TestGetListUpdateDelete:
         with pytest.raises(OperationalError, match="was not removed within 5 seconds"):
             ArtifactsApi(ctx).delete(ARTIFACT_ID, timeout=5)
 
+    def test_delete_wait_budget_includes_the_first_read(self, mocker) -> None:
+        # The timeout is measured from before the first (possibly slow, retried) read.
+        before_first_read, after_first_read = 100.0, 160.0
+        mocker.patch(
+            "confluent_sql.artifacts.time.monotonic",
+            side_effect=[before_first_read, after_first_read],
+        )
+        sleeper = mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([]))
+        ctx = FakeContext(_response(status=204), _response(_artifact_body()))
+        with pytest.raises(OperationalError):
+            ArtifactsApi(ctx).delete(ARTIFACT_ID, timeout=5)
+        sleeper.assert_called_once_with(5, started_at=before_first_read)
+
     def test_get_upload_url_returns_typed_target(self) -> None:
         ctx = FakeContext(_response(_presign_body()))
         target = ArtifactsApi(ctx)._get_upload_url("ZIP")
