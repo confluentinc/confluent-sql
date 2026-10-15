@@ -16,15 +16,15 @@ rather than hardcode a guessed lifetime constant, `_jwt_exp` decodes the **unver
 claim out of the returned token itself -- standard client-side practice for reading a token's own
 stated lifetime (no signature verification needed; we are not authorizing anything with the
 decode), and it self-corrects if Confluent ever changes the server-side lifetime. This assumes CP
-and DP are three-segment JWTs rather than opaque bearer strings -- flagged as unconfirmed in PR
-#178 review, since the mcp-confluent prior art models both as opaque with a separate `expires_at`.
+and DP are three-segment JWTs rather than opaque bearer strings -- the mcp-confluent prior art
+models both as opaque with a separate `expires_at`.
 **Confirmed empirically against production** (2026-08-11, via a one-off diagnostic making raw
 requests independent of this module's own code): both tokens are genuine JWTs carrying `exp`
 (CP payload keys: `aud, exp, iat, iss, jti, may_act, orgResourceId, organizationId, scope, sub,
 userId, userResourceId`; DP adds `authenticated_identity, clusters` in place of `aud`/`scope`). If
 a token ever isn't a decodable JWT (or has no usable numeric `exp`), `_jwt_exp` falls back to a
 fixed lifetime (`FALLBACK_CP_LIFETIME`/`FALLBACK_DP_LIFETIME`, matching mcp-confluent's
-`token-lifetimes.ts`) rather than hard-failing the login/refresh (#179).
+`token-lifetimes.ts`) rather than hard-failing the login/refresh.
 
 Every exchange funnels its request through `http_json.post_json`, which is what keeps this
 module's DB-API promise: only `Error` subclasses ever escape to a caller -- `OperationalError`,
@@ -70,7 +70,7 @@ class ControlPlaneTokenResult:
     """The outcome of exchanging an id_token for a Confluent Cloud control-plane token.
 
     organization_resource_id is None only when the /api/sessions response omits an organization
-    block; callers that need an org (every caller in this epic) should treat that as unexpected.
+    block; callers that need an org (every caller in this driver) should treat that as unexpected.
     """
 
     token: str
@@ -206,7 +206,7 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
     `now + fallback_lifetime` if the token isn't a decodable JWT, its payload isn't an object,
     its `exp` claim is missing or non-numeric, or `exp` is out of datetime's representable range
     -- an opaque bearer token should degrade the caller's expiry tracking, not hard-fail the
-    login/refresh (#179). The fromtimestamp conversion is deliberately inside the try: an
+    login/refresh. The fromtimestamp conversion is deliberately inside the try: an
     out-of-range exp raises OverflowError/OSError there, which must be caught same as a decode
     failure. `now` is anchored to UTC before use in the fallback so this always returns tz-aware
     UTC, same as the JWT-decode path, regardless of whether the caller's `now` was naive."""

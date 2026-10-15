@@ -5,7 +5,7 @@ deliberate:
 
 - **`FakeCCloud`** backs the provider's *own* private `httpx.Client` through a `MockTransport`,
   answering the auth service's token endpoint and Confluent Cloud's `/api/sessions` +
-  `/api/access_tokens`. It enforces the property that makes this whole child's locking
+  `/api/access_tokens`. It enforces the property that makes this provider's locking
   load-bearing: **a refresh token is single-use**, and presenting a spent one earns a
   `403 invalid_grant`, exactly as production would.
 - **`FakeResource`** backs a *separate* client whose `auth=` is one of the provider's two
@@ -68,7 +68,7 @@ ORG_RESOURCE_ID = "org-resolved-from-the-session"
 
 PII_EMAIL = "someone@example.com"
 """Planted in the fake `/api/sessions` response so a test can prove the body never reaches a log
-record. The real response is large and PII-laden; the epic (#150) calls this out explicitly."""
+record. The real response is large and PII-laden (#150)."""
 
 LONG_LIFETIME = timedelta(minutes=5)
 """Comfortably past `EXPIRY_SKEW`, so a token minted with it is usable."""
@@ -435,7 +435,7 @@ class TestLogin:
         assert fake.sessions_requests[0]["org_resource_id"] == supplied
 
     def test_session_without_an_organization_raises(self):
-        """Every caller in this epic needs an org -- `connect()` fills the Flink path from it --
+        """Every caller needs an org -- `connect()` fills the Flink path from it --
         so a session that resolves none is a failure now rather than a None that surfaces later."""
         fake = FakeCCloud()
         fake.organization = None
@@ -1279,7 +1279,7 @@ class TestReauthenticate:
         discovers the refresh token itself is dead. A joiner must not be fobbed off with that
         refresh's `ReauthenticationRequired`: it explicitly asked to reauthenticate, so it must
         retry and actually run a fresh login rather than just re-raise the problem it came to
-        fix (jbreeden's #197 review comment)."""
+        fix."""
         fake = FakeCCloud()
         fake.dp_lifetime = BORN_STALE_LIFETIME
         with _logged_in(fake) as provider:

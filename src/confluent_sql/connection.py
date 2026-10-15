@@ -330,9 +330,10 @@ def connect(  # noqa: PLR0913
             API-key parameter above and with the BYOIDC pair; organization_id becomes optional
             (see below). `oauth_config` and `oauth_provider_factory` are only meaningful with
             `auth="oauth"`.
-        oauth_config: Advanced/internal -- the Confluent Cloud environment to authenticate
-            against under `auth="oauth"`. Defaults to `confluent_sql.oauth.PROD`. Only valid when
-            `auth="oauth"`.
+        oauth_config: Deliberately **not** a public API: only Confluent-internal developers
+            ever need it, to sign in against a non-production Confluent Cloud environment
+            (`confluent_sql.oauth.config.STAG` / `DEVEL`). Defaults to `confluent_sql.oauth.PROD`.
+            Only valid when `auth="oauth"`. Subject to change without notice.
         oauth_provider_factory: Internal testing hook for `auth="oauth"`; production callers
             should never need to pass this. Forwarded to `confluent_sql.oauth.acquire()`.
         reauth: How to recover once an `auth="oauth"` session can no longer be refreshed (the
@@ -612,7 +613,8 @@ class Connection:
             auth: Selects the authentication mode -- see `connect()`'s docstring for the full
                 description. `"oauth"` is mutually exclusive with every API-key parameter and
                 with the BYOIDC pair.
-            oauth_config: Advanced/internal; only valid with `auth="oauth"`. See `connect()`.
+            oauth_config: Not a public API (Confluent-internal use); only valid with
+                `auth="oauth"`. See `connect()`.
             oauth_provider_factory: Internal testing hook for `auth="oauth"`. See `connect()`.
             reauth: How to recover an `auth="oauth"` session that can no longer be refreshed.
                 See `connect()`.

@@ -292,7 +292,7 @@ class TestWaitingAfterStop:
             server.wait_for_code(timeout=BRIEF_TIMEOUT)
 
     def test_a_stop_while_already_waiting_wakes_the_wait_promptly(self):
-        """The race a reviewer flagged: the up-front "stopped without settling" check only ran
+        """The race: the up-front "stopped without settling" check only ran
         once, before the wait started, so a `stop()` landing after a wait was already blocked in
         `_settled.wait()` had no way to wake it -- the wait rode out its entire `timeout` before
         reaching the same verdict. `stop()` now sets `_settled` itself, so this must resolve almost

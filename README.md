@@ -26,8 +26,8 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
   - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`, or
   - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `external_access_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
 
-  The simplest path to start using the driver is to use oauth, however it requires an interactive browser session bounce for each Connection-using process. A Global key works against every route this driver touches. A Flink Region key only works against the coremost Flink SQL routes (the core dbapi functionality, and not other portions such as TableFlow, Connectors, Artifacts, etc.)
-- **Organization ID** — required if using a Flink API key. Inferrable if using any of the other mechanisms.
+  The interactive browser login is the simplest way to get started, at the cost of one browser sign-in per process. A Global key works against every route this driver touches. A Flink Region key only works against the core Flink SQL routes (the main DB-API functionality), not other features such as Tableflow, Connectors, or Artifacts.
+- **Organization ID** — required with a Flink Region API key or a BYOIDC bearer token, neither of which can discover it. With a Global API key it may be omitted if the key can see exactly one organization, in which case it's inferred automatically on first use of the connection. With `auth="oauth"` it may always be omitted and defaults to your login's organization.
 
 ### How to Obtain a Flink Region API Key
 
@@ -61,7 +61,14 @@ conn = confluent_sql.connect(
 )
 ```
 
-The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. The driver listens on `127.0.0.1:26642` for the redirect, so that port must be free. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py). The resulting tokens grant access to every Confluent Cloud feature / resource that your user account can access, then enabling all of the functionality of the driver, including TableFlow, Connectors, Artifacts, etc.
+The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py). The resulting login can reach everything your user account can, so all of the driver's functionality, including Tableflow, Connectors, and Artifacts, is available.
+
+**Callback port.** To catch the browser's redirect after you sign in, the driver listens on `127.0.0.1:26642` (path `/callback-confluent-sql-docs`) while the login is in progress. This port is fixed by the driver's registered OAuth client and cannot be changed, so it must be free; if something else holds it, `connect()` raises `OAuthLoginError` with reason `PORT_IN_USE`. Only one login can be in progress per machine at a time. If you don't finish signing in within two minutes, it raises `OAuthLoginError` with reason `TIMED_OUT`.
+
+**Session lifetime and re-authentication.** A login's refresh token has a hard ~8 hour absolute lifetime (and expires sooner if idle for too long or revoked), after which the session can no longer be silently refreshed. What happens next is controlled by the `reauth` argument to `connect()`:
+
+- `reauth="auto"` (the default): the driver opens the browser for a fresh sign-in and retries the failed request. Every connection in the process shares the new login. This suits interactive use such as notebooks and scripts run by a person.
+- `reauth="raise"`: the request raises `confluent_sql.ReauthenticationRequired` instead. Use this for unattended runs (a long batch job or dbt run started and left running), where nobody would be at the browser. Its `reason` is `ABSOLUTE_EXPIRY` (the ~8 hour wall) or `REFRESH_REJECTED` (idle expiry or revocation); catch it to abort or restart the job cleanly.
 
 ### BYOIDC bearer-token authentication
 
