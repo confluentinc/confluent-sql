@@ -268,8 +268,8 @@ class ArtifactNotFoundError(OperationalError):
     """
     Exception raised when a Flink artifact does not exist.
 
-    Raised on an HTTP 404 from get_artifact() or delete_artifact() -- i.e. the
-    artifact was never created (or has already been removed). delete_artifact(wait_for_removal=True)
+    Raised on an HTTP 404 from get() or delete() on the ArtifactsApi -- i.e. the
+    artifact was never created (or has already been removed). delete(wait_for_removal=True)
     polls against this 404 to confirm teardown.
 
     Attributes:
@@ -285,7 +285,7 @@ class ArtifactAlreadyExistsError(OperationalError):
     """
     Exception raised when creating a Flink artifact whose display name is already taken.
 
-    Raised on an HTTP 409, or an HTTP 400 "name should be unique", from create_artifact() (display
+    Raised on an HTTP 409, or an HTTP 400 "name should be unique", from create() (display
     names are unique per cloud, region and environment).
 
     Attributes:
