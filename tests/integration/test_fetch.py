@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from os import environ
 from typing import NamedTuple
+from uuid import uuid4
 
 import pytest
 
@@ -595,7 +596,7 @@ class TestCursorFetch:
 
 
 @pytest.fixture(scope="session")
-def auto_dropped_table_name_factory(connection):
+def auto_dropped_table_name_factory(connection, worker_id: str):
     """Fixture factory that returns a callable that returns table names to use in tests.
     All the generated named tables will be dropped at the end of the test session.
     """
@@ -606,8 +607,8 @@ def auto_dropped_table_name_factory(connection):
 
     def _table_name_generator() -> str:
         """Generate a unique table name for testing."""
-        extension = f"{today.day}_{len(tables_to_drop) + 1}"
-        tname = f"confluentsql_pytest_{username}_test_auto_drop_table_{extension}"
+        extension = f"{today.day}_{len(tables_to_drop) + 1}_{uuid4().hex[:8]}"
+        tname = f"confluentsql_pytest_{username}_test_auto_drop_table_{worker_id}_{extension}"
         tables_to_drop.append(tname)
         return tname
 
