@@ -21,12 +21,13 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
 - **Confluent Cloud account** with Flink environment
 - **Existing Flink Database** (Confluent Cloud Kafka cluster)
 - **API credentials**, one of:
+  - an **interactive browser login**, with `auth="oauth"` (see [Interactive login](#interactive-browser-login) below), or
   - a **"Global" Confluent Cloud API key** and secret, passed as `global_api_key` / `global_api_secret`, or
   - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`, or
   - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `external_access_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
 
-  A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Provide at least one pair. If you supply both, the Global pair is used and the Flink pair is ignored. A half-supplied pair (a key without its secret, or vice versa) is rejected.
-- **Organization ID** — required, *unless* you're using a Global API key and it can see exactly one organization, in which case you can omit `organization_id` and it's inferred automatically on first use of the connection. A Flink Region key has no way to discover it, so it always requires `organization_id` explicitly.
+  The interactive browser login is the simplest way to get started, at the cost of one browser sign-in per process. A Global key works against every route this driver touches. A Flink Region key only works against the core Flink SQL routes (the main DB-API functionality), not other features such as Tableflow, Connectors, or Artifacts.
+- **Organization ID** — required with a Flink Region API key or a BYOIDC bearer token, neither of which can discover it. With a Global API key it may be omitted if the key can see exactly one organization, in which case it's inferred automatically on first use of the connection. With `auth="oauth"` it may always be omitted and defaults to your login's organization.
 
 ### How to Obtain a Flink Region API Key
 
@@ -46,6 +47,30 @@ To create or find a Flink Region API key:
 6. Use these credentials as the `flink_api_key` and `flink_api_secret` parameters in the `connect()` function
 
 API keys may also be generated using the Confluent CLI or by API access, outside the scope of this document.
+
+### Interactive browser login
+
+Instead of API keys, sign in once through your browser:
+
+```python
+conn = confluent_sql.connect(
+    auth="oauth",
+    environment_id="env-...",
+    cloud_provider="aws",
+    cloud_region="us-east-1",
+)
+```
+
+The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py). The resulting login can reach everything your user account can, so all of the driver's functionality, including Tableflow, Connectors, and Artifacts, is available.
+
+**Callback port.** To catch the browser's redirect after you sign in, the driver listens on `127.0.0.1:26642` (path `/callback-confluent-sql-docs`) while the login is in progress. This port is fixed by the driver's registered OAuth client and cannot be changed, so it must be free; if something else holds it, `connect()` raises `OAuthLoginError` with reason `PORT_IN_USE`. Only one login can be in progress per machine at a time. If you don't finish signing in within two minutes, it raises `OAuthLoginError` with reason `TIMED_OUT`.
+
+**Login lifetime and signing out.** The login is held for the life of the process: closing a `Connection` does not sign you out, and a later `connect(auth="oauth", ...)` in the same process reuses it without another browser bounce. To explicitly discard the login (and its tokens), for example in a long-lived notebook kernel or server, call `confluent_sql.oauth_shutdown_all()`. The next `connect(auth="oauth", ...)` will then open the browser again. Connections that are still open keep working until their tokens can no longer be refreshed, so close them first.
+
+**Session lifetime and re-authentication.** A login's refresh token has a hard ~8 hour absolute lifetime (and expires sooner if idle for too long or revoked), after which the session can no longer be silently refreshed. What happens next is controlled by the `reauth` argument to `connect()`:
+
+- `reauth="auto"` (the default): the driver opens the browser for a fresh sign-in and retries the failed request. Every connection in the process shares the new login. This suits interactive use such as notebooks and scripts run by a person.
+- `reauth="raise"`: the request raises `confluent_sql.ReauthenticationRequired` instead. Use this for unattended runs (a long batch job or dbt run started and left running), where nobody would be at the browser. Its `reason` is `ABSOLUTE_EXPIRY` (the ~8 hour wall) or `REFRESH_REJECTED` (idle expiry or revocation); catch it to abort or restart the job cleanly.
 
 ### BYOIDC bearer-token authentication
 

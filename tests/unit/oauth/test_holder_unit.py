@@ -1,4 +1,4 @@
-"""Unit tests for `ProcessOAuthHolder`, the one-identity-per-process OAuth holder (#154).
+"""Unit tests for `ProcessOAuthHolder`, the one-identity-per-process OAuth holder.
 
 The holder's whole job is *coordination*, not login mechanics: one browser bounce shared by
 every `Connection` in the process, one identity guarded across them, and a clean teardown. So
@@ -10,8 +10,8 @@ seam, never a real `CCloudOAuth`. That is deliberate, not a shortcut:
   the *holder*, independent of what a real login does over the network. A fake provider whose
   `login()` we can make slow, make fail, or block mid-flight isolates exactly that logic.
 - `CCloudOAuth`'s own end-to-end login (PKCE, the callback port, the token chain) is already
-  pinned by `test_provider_unit.py`; re-driving it through the holder would retest #153 and add a
-  real socket bind to every concurrency case here for nothing.
+  pinned by `test_provider_unit.py`; re-driving it through the holder would retest
+  `CCloudOAuth` and add a real socket bind to every concurrency case here for nothing.
 
 `FakeProvider.login()` optionally runs a caller-supplied `gate` -- an arbitrary callable -- which
 is how a test makes the login block until other threads have piled onto the in-flight `Future`, or
@@ -46,18 +46,12 @@ CONFIG = CCloudOAuthConfig(
     auth_service_domain="login.confluent.io",
     api_host="https://confluent.cloud",
     client_id="test-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 
 OTHER_ENV_CONFIG = CCloudOAuthConfig(
     auth_service_domain="login-stag.confluent-dev.io",
     api_host="https://stag.cpdev.cloud",
     client_id="stag-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 """A *different* Confluent Cloud environment -- different issuer, API host, and client -- for
 pinning that the holder refuses to hand one environment's provider to a connection asking for
@@ -120,7 +114,7 @@ class FakeProvider:
     @property
     def control_plane_auth(self) -> httpx.Auth:
         # Part of the OAuthProvider surface but never exercised here -- the holder shares the
-        # provider out untouched; #155's connect() wiring is what stamps requests with these.
+        # provider out untouched; `connect()`'s wiring is what stamps requests with these.
         raise NotImplementedError
 
     @property
@@ -130,7 +124,7 @@ class FakeProvider:
     @property
     def metrics(self) -> OAuthMetrics:
         # Part of the OAuthProvider surface but never exercised here -- the holder never reads
-        # refresh-chain metrics, only the connect() wiring (#155) does.
+        # refresh-chain metrics, only the connect() wiring does.
         raise NotImplementedError
 
     def close(self) -> None:
@@ -629,7 +623,7 @@ class TestLockNotHeldAcrossLogin:
 
 
 class TestReauthenticate:
-    """#156: `holder.reauthenticate()` delegates to the established provider -- the provider's
+    """`holder.reauthenticate()` delegates to the established provider -- the provider's
     own single-flight gate (pinned in `test_provider_unit.py`) is what collapses concurrent
     callers, so the holder itself needs no single-flight of its own, just the same "never hold
     the module lock across a login-shaped call" discipline `acquire()` already has."""
