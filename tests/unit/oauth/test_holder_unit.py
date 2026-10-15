@@ -102,7 +102,9 @@ class FakeProvider:
             self._gate()
         self._organization_id = org_resource_id if org_resource_id is not None else DEFAULT_ORG
 
-    def reauthenticate(self, *, timeout: float = 0.0) -> None:
+    session_generation = 0
+
+    def reauthenticate(self, *, timeout: float = 0.0, stale_generation: int | None = None) -> None:
         self.reauthenticate_calls += 1
         if self._reauth_gate is not None:
             self._reauth_gate()

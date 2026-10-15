@@ -1222,6 +1222,37 @@ class TestReauthenticate:
             # Exactly one fresh login ran: the original login's code grant, plus this one.
             assert len(fake.code_grants) == 2
 
+    def test_a_reauthenticate_whose_session_was_already_replaced_runs_no_login(self):
+        """A caller that failed on session generation N but only reaches `reauthenticate()` after
+        another caller's reauthentication already installed generation N+1 must not start a
+        second browser login -- fresh tokens are already in place, so it just returns and lets
+        the caller retry its request."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            failed_generation = provider.session_generation
+
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+            assert provider.session_generation == failed_generation + 1
+            assert len(fake.code_grants) == 2
+
+            # The late arrival: same stale generation, flight slot long since free.
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT, stale_generation=failed_generation)
+
+            assert len(fake.code_grants) == 2
+            assert provider.session_generation == failed_generation + 1
+
+    def test_a_reauthenticate_whose_session_is_still_current_runs_a_login(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+
+            provider.reauthenticate(
+                timeout=BRIEF_TIMEOUT, stale_generation=provider.session_generation
+            )
+
+            assert len(fake.code_grants) == 2
+
     def test_a_joiner_receives_the_winners_reauthentication_failure(self):
         """A failed reauthentication must cost one attempt, shared by every waiter -- not one
         doomed login per thread."""
@@ -1322,8 +1353,8 @@ class TestReauthenticate:
             joined = threading.Event()
             real_enter_reauth_flight = provider._enter_reauth_flight  # noqa: SLF001
 
-            def enter_reauth_flight_and_signal() -> tuple[Future, bool]:
-                result = real_enter_reauth_flight()
+            def enter_reauth_flight_and_signal(*args) -> tuple[Future | None, bool]:
+                result = real_enter_reauth_flight(*args)
                 joined.set()
                 return result
 
