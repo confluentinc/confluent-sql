@@ -7,7 +7,7 @@ loopback `CallbackServer` that catches the auth service's redirect, `CCloudOAuth
 that drives a login end to end, keeps the tokens current by synchronous on-request refresh, and
 vends two `httpx.Auth` views over the one shared snapshot), and `ProcessOAuthHolder` (the
 module-level holder that makes the login singular across a process -- one browser bounce shared
-by every `Connection`). `connect(auth="oauth")` wires `acquire()` and `release()` in, and
+by every `Connection`). `connect(auth="oauth")` wires `acquire()` in, and
 `reauthenticate()` recovers a session in place once its refresh token can no longer be used (the
 ~8h absolute wall, idle expiry, or revocation) without opening a new `Connection`.
 """
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import PROD, CCloudOAuthConfig
-from .holder import ProcessOAuthHolder, acquire, reauthenticate, release, shutdown_all
+from .holder import ProcessOAuthHolder, acquire, reauthenticate, shutdown_all
 from .pkce import challenge_for, generate_state, generate_verifier
 from .provider import CCloudOAuth, OAuthMetrics, OAuthProvider
 from .token_chain import (
@@ -52,6 +52,5 @@ __all__ = [
     "generate_state",
     "generate_verifier",
     "reauthenticate",
-    "release",
     "shutdown_all",
 ]

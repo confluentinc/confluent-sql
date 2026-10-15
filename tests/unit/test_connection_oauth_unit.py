@@ -373,19 +373,15 @@ class TestOauthOrganizationId:
 
 
 class TestOauthClose:
-    """Connection.close() under auth="oauth" releases the holder's hold, never the shared
-    provider itself -- the provider is process-shared, so tearing it down here could break
-    another live Connection."""
+    """Connection.close() under auth="oauth" never closes the shared provider -- it is
+    process-shared, so tearing it down here could break another live Connection."""
 
-    def test_close_calls_holder_release_not_provider_close(self, monkeypatch):
+    def test_close_does_not_close_the_shared_provider(self):
         conn = _oauth_connect()
         provider = _provider(conn)
-        release_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.release", release_mock)
 
         conn.close()
 
-        release_mock.assert_called_once_with()
         assert provider.closed is False
 
     def test_close_is_idempotent(self):
@@ -393,22 +389,6 @@ class TestOauthClose:
         conn.close()
         conn.close()
         assert conn.is_closed
-
-    def test_non_oauth_close_does_not_touch_oauth_release(self, monkeypatch):
-        release_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.release", release_mock)
-        conn = connect(
-            global_api_key="gk",
-            global_api_secret="gs",
-            environment_id="env-1",
-            organization_id="org-1",
-            cloud_provider="aws",
-            cloud_region="us-east-1",
-        )
-
-        conn.close()
-
-        release_mock.assert_not_called()
 
 
 class _FlakyReauthAuth(httpx.Auth):

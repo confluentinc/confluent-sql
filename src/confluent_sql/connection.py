@@ -40,7 +40,6 @@ from .oauth import (
     OAuthMetrics,
     OAuthProvider,
     acquire,
-    release,
 )
 from .oauth import reauthenticate as oauth_reauthenticate
 from .polling import sleep_with_backoff
@@ -837,14 +836,12 @@ class Connection:
         """
         Close the connection.
 
-        Under `auth="oauth"`, releases this Connection's hold on the process-wide shared OAuth
-        login (`oauth.release()`) -- never `self._oauth_provider.close()` directly, since other
-        Connections in the process may still be using the same shared provider.
+        Under `auth="oauth"` this never closes the shared OAuth provider -- other Connections in
+        the process may still be using it; it lives for the life of the process unless
+        `oauth.shutdown_all()` is called.
         """
         if not self._closed:
             self._closed = True
-            if self._oauth:
-                release()
             if self._flink_client is not None:
                 self._flink_client.close()
             if self._controlplane_client is not None:
@@ -1615,9 +1612,9 @@ class Connection:
 
         **Not per-connection telemetry.** `oauth.acquire()` hands out one process-wide shared
         provider (`ProcessOAuthHolder`) -- every `Connection` in the process that logs in
-        under the same identity gets the *same* provider, and `Connection.close()`'s
-        `oauth.release()` is a no-op, so the shared
-        provider and its accumulated metrics outlive any one connection. A newly opened
+        under the same identity gets the *same* provider, and `Connection.close()` never
+        tears it down, so the shared provider and its accumulated metrics outlive any one
+        connection. A newly opened
         `Connection` reusing that provider can observe a nonzero `refresh_chain_count` from
         refreshes triggered by another connection's requests, or from before this one existed.
 

@@ -30,14 +30,17 @@ identity per process" are the same statement. The holder does three things:
 - **Teardown.** `shutdown_all()` retires the established provider and resets the holder. It leaves
   a login that is *in flight* alone -- with a fixed callback port only one login may run at a time,
   so it is left to settle rather than aborted mid-browser while a competitor starts. An escape
-  hatch for test isolation and tidy long-lived hosts, not a mechanism the request path relies on.
+  hatch for test isolation and for a host that wants to drop the credential explicitly, not a
+  mechanism the request path relies on.
 
 **The module lock is never held across `login()`.** It guards only the slot and the in-flight
 `Future` -- microseconds each -- so a waiter, a teardown, or a second `acquire()` never queues
 behind a human at a browser.
 
-**No refcounting.** The holder keeps the shared provider alive until `shutdown_all()` or interpreter
-exit; a `Connection` closing is a no-op on the holder (`release()`).
+**No refcounting, no exit hook.** The holder keeps the shared provider for the life of the process
+unless `shutdown_all()` is called; a `Connection` closing does not touch the holder. Nothing needs
+cleaning up at interpreter exit -- there is no background thread, and the OS closes the provider's
+sockets -- so no `atexit` hook is registered.
 """
 
 from __future__ import annotations
@@ -88,15 +91,6 @@ def shutdown_all() -> None:
     peer of `acquire()`.
     """
     ProcessOAuthHolder.instance().shutdown()
-
-
-def release() -> None:
-    """The `Connection.close()` counterpart to `acquire()`. A no-op.
-
-    The holder keeps the shared provider alive regardless of how many Connections have released
-    it -- see the module docstring.
-    """
-    ProcessOAuthHolder.instance().release()
 
 
 def reauthenticate(*, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
@@ -312,14 +306,6 @@ class ProcessOAuthHolder:
             if self._inflight is flight:
                 self._inflight = None
 
-    def release(self) -> None:
-        """No-op -- see the module docstring and `release()` above.
-
-        Not `shutdown()`: this must never tear down the shared provider, since other Connections
-        in the process may still be using it.
-        """
-        return None
-
     def reauthenticate(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
         """Re-authenticate the established provider, re-arming every `Connection` sharing
         this process's holder in one call.
@@ -352,7 +338,7 @@ class ProcessOAuthHolder:
         start a second, colliding login -- a `PORT_IN_USE`, or a stray second browser. An in-flight
         login is instead left to settle and install normally, and concurrent acquires join it;
         `shutdown()` retires an already-established provider, it does not abort an in-progress
-        login. Intended for test isolation and tidy teardown, not a mechanism the request path
+        login. Intended for test isolation and explicit teardown, not a mechanism the request path
         relies on.
         """
         with self._lock:
