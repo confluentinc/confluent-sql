@@ -180,11 +180,12 @@ def single_test_connection(
 
 
 @pytest.fixture(scope="session")
-def test_table_name(filtered_username: str):
-    """Returns a table name to use for the table to populate for testing."""
-    # Returns a fixed name for the test table, but if we have to adopt
-    # pytest-xdist, we could include the worker id in the name to avoid collisions.
-    suffix = f"_{filtered_username}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
+def test_table_name(filtered_username: str, worker_id: str):
+    """Returns a table name to use for the table to populate for testing.
+
+    Includes the pytest-xdist worker id so concurrent workers never share a table.
+    """
+    suffix = f"_{filtered_username}_{worker_id}_{datetime.now().strftime('%Y%m%d_%H_%M_%S')}"
     return "pytest_table" + suffix
 
 
@@ -360,6 +361,7 @@ def expected_nonstreaming_results_factory() -> Callable[
 def cleaned_up_statement_name_factory(
     connection: Connection,
     filtered_username: str,
+    worker_id: str,
 ) -> Generator[Callable[[], str], Any, None]:
     """
     A factory fixture that generates unique statement names and tracks them for cleanup.
@@ -386,7 +388,7 @@ def cleaned_up_statement_name_factory(
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         # Use filtered username (already sanitized to alphanumeric only)
         username = filtered_username.lower()
-        name = f"pytest-dbapi-stmt-{username}-{timestamp}-{counter}"
+        name = f"pytest-dbapi-stmt-{username}-{worker_id}-{timestamp}-{counter}"
         statement_names.append(name)
         return name
 
@@ -420,11 +422,12 @@ def cleaned_up_statement_name(
 
 
 @pytest.fixture(scope="session")
-def test_row_table_name():
-    """Returns a table name to use for the ROW-column table to populate for testing."""
-    # Returns a fixed name for the test table, but if we have to adopt
-    # pytest-xdist, we could include the worker id in the name to avoid collisions.
-    return "pytest_row_table"
+def test_row_table_name(worker_id: str):
+    """Returns a table name to use for the ROW-column table to populate for testing.
+
+    Includes the pytest-xdist worker id so concurrent workers never share a table.
+    """
+    return f"pytest_row_table_{worker_id}"
 
 
 @pytest.fixture(scope="session")

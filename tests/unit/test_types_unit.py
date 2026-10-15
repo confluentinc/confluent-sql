@@ -2089,7 +2089,9 @@ class TestRowConverter:
 
 @pytest.mark.unit
 @pytest.mark.typeconv
-@pytest.mark.parametrize("converter_cls", set(_flink_type_name_to_converter_map.values()))
+@pytest.mark.parametrize(
+    "converter_cls", list(dict.fromkeys(_flink_type_name_to_converter_map.values()))
+)
 def test_converter_wiring(converter_cls):
     """Ensure that the PRIMARY_FLINK_TYPE_NAME class attribute for the converter
     is one of the types it is registered to in _flink_type_name_to_converter_map."""
