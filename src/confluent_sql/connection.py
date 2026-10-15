@@ -2349,7 +2349,10 @@ class Connection:
         return self._artifacts_api
 
     def _get_connector_api(self) -> ConnectorApi:
-        """Return the ConnectorApi, composing it (with this Connection as context) on first use."""
+        """Return the ConnectorApi, composing it (with this Connection as context) on first use.
+        Raises `InterfaceError` if the connection is closed."""
+        if self._closed:
+            raise InterfaceError("Connection is closed")
         if self._connector_api is None:
             self._connector_api = ConnectorApi(self)
         return self._connector_api

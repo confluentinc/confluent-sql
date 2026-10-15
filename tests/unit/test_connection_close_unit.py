@@ -126,8 +126,19 @@ class TestConnectionCloseBreaksCycles:
         service_case.conn.close()
         assert getattr(service_case.conn, service_case.cache_attr) is None
 
-    def test_service_api_is_unreachable_through_connection_after_close(self) -> None:
+    @pytest.mark.parametrize("spec", SERVICE_API_SPECS, ids=lambda spec: spec.name)
+    def test_service_api_is_unreachable_through_connection_after_close(
+        self, spec: ServiceApiSpec
+    ) -> None:
         conn = _connect()
         conn.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn.get_artifacts_api()
+            spec.get_from(conn)
+        assert getattr(conn, spec.cache_attr) is None
+
+    def test_connector_call_after_close_does_not_recompose_the_api(self) -> None:
+        conn = _connect()
+        conn.close()
+        with pytest.raises(InterfaceError, match="Connection is closed"):
+            conn.get_connector("my-connector")
+        assert conn._connector_api is None
