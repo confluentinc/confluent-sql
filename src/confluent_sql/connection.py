@@ -114,104 +114,43 @@ def _resolve_api_credentials(
     )
 
 
-def _resolve_tableflow_credentials(
+def _resolve_service_credentials(
+    config_prefix: str,
     global_api_key: str | None,
     global_api_secret: str | None,
-    tableflow_api_key: str | None,
-    tableflow_api_secret: str | None,
+    service_api_key: str | None,
+    service_api_secret: str | None,
 ) -> tuple[str, str] | None:
-    """Pick the (key, secret) pair the control-plane routes (Tableflow, CMK) authenticate with.
+    """Pick the (key, secret) pair a control-plane service's routes authenticate with.
 
-    A global key covers every route, so it wins. Otherwise Tableflow routes use the dedicated
-    Tableflow pair (the CMK clusters route, by contrast, won't accept a Tableflow-scoped key --
-    see _resolve_kafka_cluster_id). Returns None when neither is available, so the error can be
-    deferred to the first actual Tableflow use rather than raised at connect() time.
+    `service` names the dedicated pair ("tableflow", "connect", "cloud") in error messages. A
+    complete global pair covers every route, so it wins. Otherwise the service's dedicated pair is
+    used. Returns None when neither is available, so the error can be deferred to the first actual
+    use of the service rather than raised at connect() time.
 
-    The global pair's half-supplied check is handled by _resolve_api_credentials (always called
-    for the Flink client); here we only validate the Tableflow pair.
+    A global key without its secret doesn't count as a global pair: it falls through to the
+    dedicated pair (the half-supplied global pair itself is rejected by _resolve_api_credentials,
+    which always runs for API-key connections).
 
     Raises:
-        InterfaceError: If no global key is supplied and the Tableflow pair is half-supplied (key
-            without secret, or vice versa).
+        InterfaceError: If no complete global pair is supplied and the dedicated pair is
+            half-supplied (key without secret, or vice versa).
     """
     global_key, global_secret = global_api_key or "", global_api_secret or ""
-    tableflow_key, tableflow_secret = tableflow_api_key or "", tableflow_api_secret or ""
+    key, secret = service_api_key or "", service_api_secret or ""
 
-    # A global key wins and covers everything, so short-circuit before validating the Tableflow
-    # pair: a caller who supplied a usable global key shouldn't be tripped up by an incidental
-    # half-supplied Tableflow pair (e.g. one leaked in from the environment).
-    if global_key:
+    # A complete global pair wins and covers everything, so short-circuit before validating the
+    # dedicated pair: a caller who supplied a usable global pair shouldn't be tripped up by an
+    # incidental half-supplied dedicated pair (e.g. one leaked in from the environment).
+    if global_key and global_secret:
         return (global_key, global_secret)
 
-    if bool(tableflow_key) != bool(tableflow_secret):
-        raise InterfaceError("tableflow_api_key and tableflow_api_secret must be provided together")
-    if tableflow_key:
-        return (tableflow_key, tableflow_secret)
-    return None
-
-
-def _resolve_connect_credentials(
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    connect_api_key: str | None,
-    connect_api_secret: str | None,
-) -> tuple[str, str] | None:
-    """Pick the (key, secret) pair the Connect control-plane routes authenticate with.
-
-    A global key covers every route, so it wins. Otherwise the Connect routes use the dedicated
-    connect pair (symmetric with the Tableflow pair -- see _resolve_tableflow_credentials). Returns
-    None when neither is available, so the error can be deferred to the first actual connector use
-    rather than raised at connect() time.
-
-    Raises:
-        InterfaceError: If no global key is supplied and the connect pair is half-supplied (key
-            without secret, or vice versa).
-    """
-    global_key, global_secret = global_api_key or "", global_api_secret or ""
-    connect_key, connect_secret = connect_api_key or "", connect_api_secret or ""
-
-    # A global key wins and covers everything, so short-circuit before validating the connect pair:
-    # a caller who supplied a usable global key shouldn't be tripped up by an incidental
-    # half-supplied connect pair (e.g. one leaked in from the environment).
-    if global_key:
-        return (global_key, global_secret)
-
-    if bool(connect_key) != bool(connect_secret):
-        raise InterfaceError("connect_api_key and connect_api_secret must be provided together")
-    if connect_key:
-        return (connect_key, connect_secret)
-    return None
-
-
-def _resolve_cloud_credentials(
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    cloud_api_key: str | None,
-    cloud_api_secret: str | None,
-) -> tuple[str, str] | None:
-    """Pick the (key, secret) pair the Artifact routes authenticate with.
-
-    A global key covers every route, so it wins. Otherwise the Artifact routes use the dedicated
-    Cloud resource management pair (symmetric with the Tableflow and Connect pairs -- see
-    _resolve_tableflow_credentials). Returns None when neither is available, so the error can be
-    deferred to the first actual artifact use rather than raised at connect() time.
-
-    Raises:
-        InterfaceError: If no global key is supplied and the cloud pair is half-supplied (key
-            without secret, or vice versa).
-    """
-    global_key, global_secret = global_api_key or "", global_api_secret or ""
-    cloud_key, cloud_secret = cloud_api_key or "", cloud_api_secret or ""
-
-    # As in _resolve_connect_credentials: a usable global key short-circuits validation of the
-    # cloud pair.
-    if global_key:
-        return (global_key, global_secret)
-
-    if bool(cloud_key) != bool(cloud_secret):
-        raise InterfaceError("cloud_api_key and cloud_api_secret must be provided together")
-    if cloud_key:
-        return (cloud_key, cloud_secret)
+    if bool(key) != bool(secret):
+        raise InterfaceError(
+            f"{config_prefix}_api_key and {config_prefix}_api_secret must be provided together"
+        )
+    if key:
+        return (key, secret)
     return None
 
 
@@ -765,14 +704,14 @@ class Connection:
         self._controlplane_endpoint = (
             controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
-        self._controlplane_auth = _resolve_tableflow_credentials(
-            global_api_key, global_api_secret, tableflow_api_key, tableflow_api_secret
+        self._controlplane_auth = _resolve_service_credentials(
+            "tableflow", global_api_key, global_api_secret, tableflow_api_key, tableflow_api_secret
         )
-        self._connect_auth = _resolve_connect_credentials(
-            global_api_key, global_api_secret, connect_api_key, connect_api_secret
+        self._connect_auth = _resolve_service_credentials(
+            "connect", global_api_key, global_api_secret, connect_api_key, connect_api_secret
         )
-        self._cloud_auth = _resolve_cloud_credentials(
-            global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
+        self._cloud_auth = _resolve_service_credentials(
+            "cloud", global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
         )
         self._global_credentials = (
             (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
