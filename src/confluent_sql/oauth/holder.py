@@ -97,7 +97,16 @@ def discard_login() -> None:
     ProcessOAuthHolder.instance().shutdown()
 
 
-def reauthenticate(*, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
+def session_generation() -> int | None:
+    """The established login's `session_generation` (see `CCloudOAuth.session_generation`), or
+    None if this process has no established login. Read before a request and passed back as
+    `reauthenticate(stale_generation=...)` after it fails, to avoid a redundant login."""
+    return ProcessOAuthHolder.instance().session_generation()
+
+
+def reauthenticate(
+    *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS, stale_generation: int | None = None
+) -> None:
     """Re-authenticate the process's established OAuth login.
 
     Module-level convenience over `ProcessOAuthHolder.instance().reauthenticate(...)`, the peer of
@@ -105,7 +114,7 @@ def reauthenticate(*, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
     absolute wall, or the token endpoint rejecting it as idle-expired/revoked/already-spent). See
     `ProcessOAuthHolder.reauthenticate` for the full contract.
     """
-    ProcessOAuthHolder.instance().reauthenticate(timeout=timeout)
+    ProcessOAuthHolder.instance().reauthenticate(timeout=timeout, stale_generation=stale_generation)
 
 
 class ProcessOAuthHolder:
@@ -310,7 +319,15 @@ class ProcessOAuthHolder:
             if self._inflight is flight:
                 self._inflight = None
 
-    def reauthenticate(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
+    def session_generation(self) -> int | None:
+        """The established provider's `session_generation`, or None when there is none."""
+        with self._lock:
+            provider = self._provider
+        return None if provider is None else provider.session_generation
+
+    def reauthenticate(
+        self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS, stale_generation: int | None = None
+    ) -> None:
         """Re-authenticate the established provider, re-arming every `Connection` sharing
         this process's holder in one call.
 
@@ -332,7 +349,7 @@ class ProcessOAuthHolder:
                 "This process has no established Confluent Cloud OAuth login to "
                 "re-authenticate -- acquire() must succeed at least once first."
             )
-        provider.reauthenticate(timeout=timeout)
+        provider.reauthenticate(timeout=timeout, stale_generation=stale_generation)
 
     def shutdown(self) -> None:
         """Retire the established shared provider and reset the holder toward pristine. Idempotent.
