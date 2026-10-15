@@ -43,6 +43,7 @@ from .exceptions import (
     Warning,
 )
 from .execution_mode import ExecutionMode
+from .oauth import shutdown_all as oauth_shutdown_all
 from .result_readers import ChangeloggedRow
 from .statement import HIDDEN_LABEL, Op, StatementWarning, WarningSeverity
 from .statement_properties import (
@@ -111,6 +112,7 @@ __all__ = [
     "OAuthTokenEndpointError",
     "ReauthenticationReason",
     "ReauthenticationRequired",
+    "oauth_shutdown_all",
     "Connector",
     "ConnectorSpec",
     "ConnectorStatus",
