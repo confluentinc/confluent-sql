@@ -27,7 +27,7 @@ identity per process" are the same statement. The holder does three things:
   Cloud as the user's default). The refusal fails only that caller -- the shared login is
   untouched.
 
-- **Teardown.** `shutdown_all()` retires the established provider and resets the holder. It leaves
+- **Teardown.** `discard_login()` retires the established provider and resets the holder. It leaves
   a login that is *in flight* alone -- with a fixed callback port only one login may run at a time,
   so it is left to settle rather than aborted mid-browser while a competitor starts. An escape
   hatch for test isolation and for a host that wants to drop the credential explicitly, not a
@@ -38,7 +38,7 @@ identity per process" are the same statement. The holder does three things:
 behind a human at a browser.
 
 **No refcounting, no exit hook.** The holder keeps the shared provider for the life of the process
-unless `shutdown_all()` is called; a `Connection` closing does not touch the holder. Nothing needs
+unless `discard_login()` is called; a `Connection` closing does not touch the holder. Nothing needs
 cleaning up at interpreter exit -- there is no background thread, and the OS closes the provider's
 sockets -- so no `atexit` hook is registered.
 """
@@ -74,7 +74,7 @@ def acquire(
     """Return the process's shared OAuth provider, running the browser login if needed.
 
     Module-level convenience over `ProcessOAuthHolder.instance().acquire(...)`, and the peer of
-    `shutdown_all()` -- so the everyday API is two free functions, not a singleton dance. See
+    `discard_login()` -- so the everyday API is two free functions, not a singleton dance. See
     `ProcessOAuthHolder.acquire` for the full contract (single-flight login, the one-identity
     guard, and what it raises).
     """
@@ -83,12 +83,16 @@ def acquire(
     )
 
 
-def shutdown_all() -> None:
+def discard_login() -> None:
     """Tear down the process's shared OAuth login, if any.
 
     The module-level escape hatch: for test isolation between cases, and
     for a long-lived host that wants to drop the credential explicitly. Idempotent. The teardown
     peer of `acquire()`.
+
+    This closes the shared provider's HTTP client immediately, so call it only after stopping all
+    OAuth activity and closing every OAuth `Connection`. Open connections (or a refresh in flight)
+    will otherwise fail at their next token refresh, even if the refresh token is still valid.
     """
     ProcessOAuthHolder.instance().shutdown()
 
@@ -109,7 +113,7 @@ class ProcessOAuthHolder:
 
     Reach it through `ProcessOAuthHolder.instance()`; there is one per process. Call `acquire()` to
     obtain the shared, logged-in provider (running the browser login the first time), and
-    `shutdown()` to tear it down. Most callers use the module-level `acquire()` / `shutdown_all()`
+    `shutdown()` to tear it down. Most callers use the module-level `acquire()` / `discard_login()`
     free functions instead, which delegate here.
     """
 
@@ -189,7 +193,7 @@ class ProcessOAuthHolder:
                 "This process already has an interactive OAuth login against Confluent Cloud "
                 f"environment {established_config.api_host!r}, and a single process supports only "
                 f"one OAuth identity. This connection asked for {config.api_host!r}; open it "
-                "against the established environment, or tear the login down with shutdown_all() "
+                "against the established environment, or tear the login down with discard_login() "
                 "first."
             )
         if organization_id is not None and organization_id != provider.organization_id:

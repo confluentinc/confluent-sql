@@ -840,7 +840,7 @@ class Connection:
 
         Under `auth="oauth"` this never closes the shared OAuth provider -- other Connections in
         the process may still be using it; it lives for the life of the process unless
-        `oauth.shutdown_all()` is called.
+        `oauth.discard_login()` is called.
         """
         if not self._closed:
             self._closed = True

@@ -37,7 +37,7 @@ from confluent_sql.exceptions import (
 )
 from confluent_sql.oauth import holder as holder_module
 from confluent_sql.oauth.config import CCloudOAuthConfig
-from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, reauthenticate, shutdown_all
+from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, discard_login, reauthenticate
 from confluent_sql.oauth.provider import OAuthMetrics, OAuthProvider
 
 pytestmark = pytest.mark.unit
@@ -163,11 +163,11 @@ def _reset_holder():
 
     The holder is module-global by design (one identity per process), so a provider leaked from
     one case into the next is exactly the cross-test contamination this guards -- and the reset
-    also exercises `shutdown_all()` as a side effect.
+    also exercises `discard_login()` as a side effect.
     """
-    shutdown_all()
+    discard_login()
     yield
-    shutdown_all()
+    discard_login()
 
 
 class TestSingleFlight:
@@ -675,12 +675,12 @@ class TestReauthenticate:
 
 
 class TestShutdown:
-    def test_shutdown_all_closes_the_provider_and_resets_to_pristine(self):
+    def test_discard_login_closes_the_provider_and_resets_to_pristine(self):
         first_factory = RecordingFactory()
         holder = ProcessOAuthHolder.instance()
         provider = holder.acquire(CONFIG, provider_factory=first_factory)
 
-        shutdown_all()
+        discard_login()
         assert first_factory.providers[0].closed
 
         # Pristine: a later acquire builds and logs in anew rather than handing back the closed one.
@@ -689,21 +689,21 @@ class TestShutdown:
         assert again is not provider
         assert again is second_factory.providers[0]
 
-    def test_shutdown_all_is_idempotent(self):
+    def test_discard_login_is_idempotent(self):
         factory = RecordingFactory()
         ProcessOAuthHolder.instance().acquire(CONFIG, provider_factory=factory)
-        shutdown_all()
-        shutdown_all()  # no provider left; must not raise
+        discard_login()
+        discard_login()  # no provider left; must not raise
 
-    def test_shutdown_all_on_a_fresh_holder_is_a_no_op(self):
-        shutdown_all()
+    def test_discard_login_on_a_fresh_holder_is_a_no_op(self):
+        discard_login()
 
     def test_instance_returns_the_one_singleton(self):
         assert ProcessOAuthHolder.instance() is ProcessOAuthHolder.instance()
 
 
 class TestModuleLevelFunctions:
-    """The `acquire()` / `shutdown_all()` free functions delegate to the one singleton -- the
+    """The `acquire()` / `discard_login()` free functions delegate to the one singleton -- the
     everyday API most callers use instead of `ProcessOAuthHolder.instance()`."""
 
     def test_module_acquire_delegates_to_the_singleton(self):
@@ -715,10 +715,10 @@ class TestModuleLevelFunctions:
         assert ProcessOAuthHolder.instance().acquire(CONFIG, provider_factory=factory) is provider
         assert len(factory.providers) == 1
 
-    def test_module_shutdown_all_tears_down_what_module_acquire_built(self):
+    def test_module_discard_login_tears_down_what_module_acquire_built(self):
         factory = RecordingFactory()
         acquire(CONFIG, provider_factory=factory)
-        shutdown_all()
+        discard_login()
         assert factory.providers[0].closed
 
     def test_module_reauthenticate_delegates_to_the_singleton(self):
