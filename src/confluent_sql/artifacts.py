@@ -524,7 +524,20 @@ class ArtifactsApi:
         return FlinkArtifact.from_response(_json_body(response, what="artifact response"))
 
     def get(self, artifact_id: str) -> FlinkArtifact:
-        """Read one artifact (the only call that returns its versions)."""
+        """Read one artifact (the only call that returns its versions).
+
+        `GET /artifact/v1/flink-artifacts/{id}`.
+
+        Args:
+            artifact_id: The artifact's id, e.g. `cfa-abc123`.
+
+        Raises:
+            InterfaceError: If `artifact_id` is unusable, or the connection is closed.
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
+                can't be determined (see `Connection.artifact_scope`).
+            ArtifactNotFoundError: If the artifact doesn't exist (HTTP 404).
+            OperationalError: On other API errors, a network failure, or an unparseable response.
+        """
         response = self._context.artifact_controlplane_request(
             self._artifact_path(artifact_id),
             params=self._scope_params(),
@@ -540,7 +553,20 @@ class ArtifactsApi:
         runtime_language: ArtifactRuntimeLanguage | str | None = None,
         page_size: int = 100,
     ) -> list[FlinkArtifact]:
-        """Every artifact in scope, following pagination."""
+        """Every artifact in scope, following pagination.
+
+        `GET /artifact/v1/flink-artifacts`.
+
+        Args:
+            runtime_language: Only list artifacts of this runtime, JAVA or PYTHON.
+            page_size: Artifacts requested per page; every page is fetched regardless.
+
+        Raises:
+            InterfaceError: If `runtime_language` is unknown, or the connection is closed.
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
+                can't be determined (see `Connection.artifact_scope`).
+            OperationalError: On API errors, a network failure, or an unparseable response.
+        """
         params = self._scope_params()
         params[Fields.PAGE_SIZE] = str(page_size)
         if runtime_language is not None:
@@ -571,7 +597,25 @@ class ArtifactsApi:
     def delete(
         self, artifact_id: str, *, wait_for_removal: bool = True, timeout: float = 300
     ) -> None:
-        """Delete, then by default poll until a read 404s."""
+        """Delete an artifact and, by default, block until it is gone.
+
+        `DELETE /artifact/v1/flink-artifacts/{id}`. With `wait_for_removal`, polls with `get`
+        until it reports the artifact missing.
+
+        Args:
+            artifact_id: The artifact's id, e.g. `cfa-abc123`.
+            wait_for_removal: Block until the artifact is gone. `False` returns as soon as the
+                delete is accepted.
+            timeout: Seconds to wait for removal; ignored when `wait_for_removal` is `False`.
+
+        Raises:
+            InterfaceError: If `artifact_id` is unusable, or the connection is closed.
+            ProgrammingError: If no global or cloud API key is available, or the cloud/region
+                can't be determined (see `Connection.artifact_scope`).
+            ArtifactNotFoundError: If the artifact doesn't exist (HTTP 404).
+            OperationalError: On other API errors or a network failure, or if the artifact is
+                still present after `timeout` seconds.
+        """
         response = self._context.artifact_controlplane_request(
             self._artifact_path(artifact_id),
             method="DELETE",
