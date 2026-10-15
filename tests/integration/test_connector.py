@@ -104,14 +104,14 @@ def connector_connection(load_env_file) -> Generator[Connection, None, None]:
 
 @pytest.fixture()
 def connector_names(
-    connector_connection: Connection, filtered_username: str
+    connector_connection: Connection, filtered_username: str, worker_id: str
 ) -> Generator[tuple[str, str], None, None]:
     """A unique (connector_name, topic_name) pair; the topic is best-effort dropped on teardown.
 
     Depends on connector_connection so it tears down first (reverse setup order), keeping the
     connection alive for the topic cleanup.
     """
-    stamp = f"{filtered_username}_{datetime.now():%Y%m%d_%H%M%S}"
+    stamp = f"{filtered_username}_{worker_id}_{datetime.now():%Y%m%d_%H%M%S}"
     connector_name = f"confluentsql_pytest_connector_{stamp}"
     topic_name = f"confluentsql_pytest_topic_{stamp}"
     yield connector_name, topic_name
