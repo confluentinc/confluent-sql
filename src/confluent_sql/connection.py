@@ -20,7 +20,7 @@ from typing import Any, NoReturn
 import httpx
 
 from .__version__ import __version__
-from .artifacts import ArtifactsApi
+from .artifacts import ArtifactsApi, ArtifactScope
 from .auth import FlinkBearerAuth
 from .connectors import Connector, ConnectorApi
 from .cursor import Cursor
@@ -796,6 +796,13 @@ class Connection:
         """
         if not self._closed:
             self._closed = True
+            # Break the connection <-> service API reference cycles.
+            if self._artifacts_api is not None:
+                self._artifacts_api._close()
+                self._artifacts_api = None
+            if self._connector_api is not None:
+                self._connector_api._close()
+                self._connector_api = None
             if self._flink_client is not None:
                 self._flink_client.close()
             if self._controlplane_client is not None:
@@ -2314,8 +2321,8 @@ class Connection:
         re.IGNORECASE,
     )
 
-    def artifact_scope(self) -> tuple[str, str]:
-        """(cloud, region) for artifact calls, cloud upper-cased as the API spells it. From
+    def artifact_scope(self) -> ArtifactScope:
+        """The `ArtifactScope` (cloud, region) for artifact calls. From
         `connect()`'s cloud_provider/cloud_region arguments (even alongside an explicit `endpoint`),
         else parsed from a standard Flink `endpoint`; ProgrammingError if neither works."""
         cloud, region = self._cloud_provider, self._cloud_region
@@ -2330,7 +2337,7 @@ class Connection:
                 "honored alongside endpoint, e.g. for private-link endpoints), or use a standard "
                 "https://flink.<region>.<cloud>.confluent.cloud endpoint."
             )
-        return cloud.upper(), region
+        return ArtifactScope(cloud.upper(), region)
 
     def get_artifacts_api(self) -> ArtifactsApi:
         """Return the ArtifactsApi for this connection's cloud/region/environment, composing it

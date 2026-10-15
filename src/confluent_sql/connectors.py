@@ -44,6 +44,7 @@ from .exceptions import (
     OperationalError,
 )
 from .polling import sleep_with_backoff
+from .service_api import ServiceApi
 from .types import StrAnyDict
 
 _REQUIRED_CONFIG_KEYS = ("connector.class", "kafka.api.key", "kafka.api.secret")
@@ -225,7 +226,7 @@ class ControlPlaneContext(Protocol):
         ...
 
 
-class ConnectorApi:
+class ConnectorApi(ServiceApi[ControlPlaneContext]):
     """Lifecycle choreography for managed connectors against the Connect v1 API.
 
     Covers create / read / delete plus the pause / resume actions. Holds the stateful
@@ -235,13 +236,11 @@ class ConnectorApi:
     pairs a config read with a status read.
     """
 
-    def __init__(self, context: ControlPlaneContext) -> None:
-        self._context = context
-
     def _connectors_path(self) -> str:
         """The base `/connect/v1/.../connectors` collection path for this connection's cluster."""
-        env = self._context.environment_id
-        cluster = self._context.resolve_kafka_cluster_id()
+        context = self.get_context()
+        env = context.environment_id
+        cluster = context.resolve_kafka_cluster_id()
         return f"/connect/v1/environments/{env}/clusters/{cluster}/connectors"
 
     def create(
@@ -267,7 +266,7 @@ class ConnectorApi:
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
         payload = build_create_payload(name=name, config=config)
-        response = self._context.connect_controlplane_request(
+        response = self.get_context().connect_controlplane_request(
             self._connectors_path(), method="POST", json=payload, raise_for_status=False
         )
         try:
@@ -311,7 +310,7 @@ class ConnectorApi:
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
-        response = self._context.connect_controlplane_request(
+        response = self.get_context().connect_controlplane_request(
             f"{self._connectors_path()}/{name}", method="DELETE", raise_for_status=False
         )
         try:
@@ -364,7 +363,7 @@ class ConnectorApi:
     def _connector_action(self, name: str, action: str) -> None:
         """Issue a `PUT` lifecycle action sub-request (`pause`/`resume`); 404 ->
         ConnectorNotFoundError, other HTTP errors -> OperationalError."""
-        response = self._context.connect_controlplane_request(
+        response = self.get_context().connect_controlplane_request(
             f"{self._connectors_path()}/{name}/{action}", method="PUT", raise_for_status=False
         )
         try:
@@ -396,7 +395,7 @@ class ConnectorApi:
     def _read_spec(self, name: str) -> ConnectorSpec:
         """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
         errors -> OperationalError."""
-        response = self._context.connect_controlplane_request(
+        response = self.get_context().connect_controlplane_request(
             f"{self._connectors_path()}/{name}", raise_for_status=False
         )
         try:
@@ -415,7 +414,7 @@ class ConnectorApi:
     def _fetch_status(self, name: str) -> ConnectorStatus:
         """`GET .../connectors/{name}/status` -> parsed status; 404 -> ConnectorNotFoundError, other
         HTTP errors -> OperationalError."""
-        response = self._context.connect_controlplane_request(
+        response = self.get_context().connect_controlplane_request(
             f"{self._connectors_path()}/{name}/status", raise_for_status=False
         )
         try:

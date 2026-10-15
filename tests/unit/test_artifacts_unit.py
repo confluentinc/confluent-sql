@@ -21,6 +21,7 @@ from confluent_sql import (
 )
 from confluent_sql.artifacts import (
     ArtifactsApi,
+    ArtifactScope,
     PresignedUploadUrl,
     build_create_payload,
     build_presign_payload,
@@ -82,8 +83,8 @@ class FakeContext:
         self.responses = list(responses)
         self.requests: list[tuple[str, str, dict]] = []
 
-    def artifact_scope(self) -> tuple[str, str]:
-        return CLOUD, REGION
+    def artifact_scope(self) -> ArtifactScope:
+        return ArtifactScope(CLOUD, REGION)
 
     def artifact_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
