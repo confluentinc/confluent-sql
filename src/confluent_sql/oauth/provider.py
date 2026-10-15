@@ -441,6 +441,11 @@ class CCloudOAuth:
                     "This CCloudOAuth provider has no tokens yet -- it must log in before it can "
                     "be re-authenticated."
                 )
+            # Join before any early return: a flight in progress -- possibly the newer session's own
+            # refresh, about to latch a failure -- must settle first. `reauthenticate()`'s loop
+            # then re-enters here and either finds the session recovered or runs the login.
+            if self._inflight_refresh is not None:
+                return self._inflight_refresh, False
             if stale_generation is not None:
                 # Both read together: a newer session only excuses the login if it is usable --
                 # one that has itself latched a failure still needs recovering.
@@ -450,8 +455,6 @@ class CCloudOAuth:
                     )
                 if superseded:
                     return None, False
-            if self._inflight_refresh is not None:
-                return self._inflight_refresh, False
             self._inflight_refresh = Future()
             return self._inflight_refresh, True
 

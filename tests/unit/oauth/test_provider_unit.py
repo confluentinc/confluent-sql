@@ -1411,6 +1411,84 @@ class TestReauthenticate:
             assert len(fake.code_grants) == 2
             assert provider.token_set is not None
 
+    def test_a_stale_generation_joins_a_pending_refresh_of_the_newer_session(self, monkeypatch):
+        """A newer generation with no latched failure *yet* is not proof the session is usable:
+        its own refresh may be in flight and about to die. The late
+        `reauthenticate(stale_generation=N)` must join that flight -- not return early -- so that
+        when the refresh latches `ReauthenticationRequired` it retries and runs a login, rather
+        than leaving the caller's single retry to hit the same wall."""
+        fake = FakeCCloud()
+        fake.dp_lifetime = BORN_STALE_LIFETIME
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            failed_generation = provider.session_generation
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)  # installs N+1, born stale
+
+            entered = threading.Event()
+            release = threading.Event()
+            answer_token_endpoint = fake._token_endpoint  # noqa: SLF001
+
+            def slow_then_invalid_grant(request: httpx.Request) -> httpx.Response:
+                form = dict(urllib.parse.parse_qsl(request.content.decode()))
+                if form["grant_type"] != "refresh_token":
+                    return answer_token_endpoint(request)
+                entered.set()
+                release.wait(timeout=BRIEF_TIMEOUT)
+                return httpx.Response(
+                    403, json={"error": "invalid_grant", "error_description": "died mid-flight"}
+                )
+
+            fake._token_endpoint = slow_then_invalid_grant  # noqa: SLF001
+
+            refresh_errors: list[BaseException] = []
+
+            def run_refresh() -> None:
+                try:
+                    with _resource_client(provider.data_plane_auth, FakeResource()) as client:
+                        client.get(RESOURCE_URL)
+                except BaseException as e:  # noqa: BLE001
+                    refresh_errors.append(e)
+
+            refresh_thread = threading.Thread(target=run_refresh)
+            refresh_thread.start()
+            assert entered.wait(timeout=BRIEF_TIMEOUT)  # N+1's refresh is in flight, no failure yet
+
+            joined = threading.Event()
+            real_enter_reauth_flight = provider._enter_reauth_flight  # noqa: SLF001
+
+            def enter_reauth_flight_and_signal(*args) -> tuple[Future | None, bool]:
+                result = real_enter_reauth_flight(*args)
+                joined.set()
+                return result
+
+            monkeypatch.setattr(provider, "_enter_reauth_flight", enter_reauth_flight_and_signal)
+
+            reauth_errors: list[BaseException] = []
+
+            def run_late_reauth() -> None:
+                try:
+                    provider.reauthenticate(
+                        timeout=BRIEF_TIMEOUT, stale_generation=failed_generation
+                    )
+                except BaseException as e:  # noqa: BLE001
+                    reauth_errors.append(e)
+
+            reauth_thread = threading.Thread(target=run_late_reauth)
+            reauth_thread.start()
+            assert joined.wait(timeout=BRIEF_TIMEOUT)
+
+            release.set()
+            refresh_thread.join(timeout=BRIEF_TIMEOUT * 2)
+            reauth_thread.join(timeout=BRIEF_TIMEOUT * 2)
+
+            assert not (refresh_thread.is_alive() or reauth_thread.is_alive())
+            assert len(refresh_errors) == 1
+            assert isinstance(refresh_errors[0], ReauthenticationRequired)
+            assert not reauth_errors
+            # Original login, the first reauthentication, and the late caller's own login.
+            assert len(fake.code_grants) == 3
+            assert provider.session_generation == failed_generation + 2
+
     def test_a_failed_reauthentication_clears_the_slot_so_a_later_attempt_retries(self):
         """A failed reauthenticate() must not leave a permanently-rejected `Future` sitting in
         `_inflight_refresh` -- that slot is shared with `_refresh()` (see the module docstring),
