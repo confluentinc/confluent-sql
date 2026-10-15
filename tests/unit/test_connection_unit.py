@@ -663,6 +663,25 @@ class TestConnectChecks:
         )
         assert connection.compute_pool_id is None
 
+    def test_connection_constructible_with_organization_id_omitted(self):
+        """Connection() is directly constructible with organization_id omitted entirely -- not
+        just passed as "" -- given a global key (#132 regression guard).
+
+        organization_id was reordered to sit just before Connection.__init__'s keyword-only
+        boundary specifically so it could gain a default without disturbing the (all keyword-
+        called, but positional-or-keyword-declared) environment_id/cloud_provider/cloud_region/
+        endpoint parameters ahead of it.
+        """
+        connection = Connection(
+            global_api_key="valid-key",
+            global_api_secret="valid-secret",
+            environment_id="env-id",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            endpoint=None,
+        )
+        assert connection._organization_id_value is None
+
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """A Flink-only key still requires organization_id (#132 regression guard): the
         relaxation for a global key must not leak into this path. global_api_key/secret are
@@ -681,8 +700,11 @@ class TestConnectChecks:
     def test_requires_organization_id_for_dedicated_tableflow_key(
         self, connection_factory: ConnectionFactory
     ):
-        """A dedicated Tableflow key (no global key) still requires organization_id (#132
-        regression guard): it has no /org/v2 reach, so the relaxation must not apply to it."""
+        """Tableflow key material present, but no global key, still requires organization_id (#132
+        regression guard): the global-key relaxation must not leak to a mere Tableflow key. This
+        isn't a constructible auth path on its own -- with no global and no Flink key,
+        _resolve_api_credentials would reject it anyway -- but the org gate fires first, so this
+        pins that a Tableflow key can't smuggle an omitted org past the gate."""
         with pytest.raises(InterfaceError, match="Organization ID is required"):
             connection_factory(
                 environment_id="foo_id",
@@ -1105,10 +1127,14 @@ class TestConnectAuthWiring:
         return basic_auth_spy
 
     def test_global_only_authenticates_with_global_creds(self):
+        # A global key also authenticates the (lazily-*built*, but eagerly *auth-wrapped*)
+        # control-plane and Connect clients, so BasicAuth is constructed three times here -- once
+        # per surface -- all with this same global pair; assert_any_call, not
+        # assert_called_once_with.
         spy = self._connect_spying_on_basic_auth(
             global_api_key="global-key", global_api_secret="global-secret"
         )
-        spy.assert_called_once_with(username="global-key", password="global-secret")
+        spy.assert_any_call(username="global-key", password="global-secret")
 
     def test_flink_only_authenticates_with_flink_creds(self):
         spy = self._connect_spying_on_basic_auth(
@@ -1117,13 +1143,15 @@ class TestConnectAuthWiring:
         spy.assert_called_once_with(username="flink-key", password="flink-secret")
 
     def test_both_pairs_authenticate_with_global_creds(self):
+        # See test_global_only_authenticates_with_global_creds: a global key wraps three
+        # BasicAuths (Flink, control-plane, Connect), all with the global pair.
         spy = self._connect_spying_on_basic_auth(
             global_api_key="global-key",
             global_api_secret="global-secret",
             flink_api_key="flink-key",
             flink_api_secret="flink-secret",
         )
-        spy.assert_called_once_with(username="global-key", password="global-secret")
+        spy.assert_any_call(username="global-key", password="global-secret")
 
 
 @pytest.mark.unit
