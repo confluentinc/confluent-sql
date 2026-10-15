@@ -1242,6 +1242,26 @@ class TestReauthenticate:
             assert len(fake.code_grants) == 2
             assert provider.session_generation == failed_generation + 1
 
+    def test_a_newer_session_that_is_itself_latched_dead_still_reauthenticates(self):
+        """A newer generation only excuses the login if that session is usable. If a worker read
+        generation N, paused while N+1 was installed, and N+1 then hit the wall itself, the
+        late `reauthenticate(stale_generation=N)` must still run a login -- skipping it would
+        leave the caller's single retry to raise `ReauthenticationRequired` again."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            failed_generation = provider.session_generation
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+            assert provider.session_generation == failed_generation + 1
+            assert len(fake.code_grants) == 2
+
+            _latch_a_dead_session(fake, provider)  # the newer session dies too
+
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT, stale_generation=failed_generation)
+
+            assert len(fake.code_grants) == 3
+            assert provider.session_generation == failed_generation + 2
+
     def test_a_reauthenticate_whose_session_is_still_current_runs_a_login(self):
         fake = FakeCCloud()
         with _logged_in(fake) as provider:

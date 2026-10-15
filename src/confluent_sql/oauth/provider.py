@@ -362,8 +362,9 @@ class CCloudOAuth:
         Args:
             stale_generation: the `session_generation` the caller observed before the request that
                 failed. If the session has since been replaced (another caller's reauthentication
-                finished first), no login runs and this returns immediately -- the caller should
-                just retry its request with the fresh tokens. Checked under the flight gate, so
+                finished first) and the newer session has not itself latched a failure, no login
+                runs and this returns immediately -- the caller should just retry its request
+                with the fresh tokens. Checked under the flight gate, so
                 it closes the window a plain single-flight leaves open for a caller arriving
                 *after* the winning flight has finished. None (the default) always
                 reauthenticates, or joins one in flight.
@@ -441,8 +442,12 @@ class CCloudOAuth:
                     "be re-authenticated."
                 )
             if stale_generation is not None:
+                # Both read together: a newer session only excuses the login if it is usable --
+                # one that has itself latched a failure still needs recovering.
                 with self._token_lock:
-                    superseded = self._session_generation != stale_generation
+                    superseded = (
+                        self._session_generation != stale_generation and self._failure is None
+                    )
                 if superseded:
                     return None, False
             if self._inflight_refresh is not None:
