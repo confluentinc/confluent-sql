@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import PROD, CCloudOAuthConfig
-from .holder import ProcessOAuthHolder, acquire, discard_login, reauthenticate
+from .holder import ProcessOAuthHolder, acquire, discard_login, reauthenticate, session_generation
 from .pkce import challenge_for, generate_state, generate_verifier
 from .provider import CCloudOAuth, OAuthMetrics, OAuthProvider
 from .token_chain import (
@@ -52,5 +52,6 @@ __all__ = [
     "generate_state",
     "generate_verifier",
     "reauthenticate",
+    "session_generation",
     "discard_login",
 ]

@@ -78,11 +78,13 @@ class FakeOAuthProvider:
     def login(self, org_resource_id: str | None = None, *, timeout: float = 0.0) -> None:
         self._organization_id = org_resource_id if org_resource_id is not None else DEFAULT_ORG
 
-    def reauthenticate(self, *, timeout: float = 0.0) -> None:
+    def reauthenticate(self, *, timeout: float = 0.0, stale_generation: int | None = None) -> None:
         # Never exercised here -- reauthenticate() tests live in
         # tests/unit/oauth/test_provider_unit.py and test_holder_unit.py; this fake only needs
         # the method to exist to satisfy the OAuthProvider protocol structurally.
         raise NotImplementedError
+
+    session_generation = 0
 
     @property
     def organization_id(self) -> str | None:
@@ -472,13 +474,18 @@ class TestReauthPolicy:
         conn, auth = _connection_with_flaky_flink_auth("auto")
         reauth_mock = Mock()
         monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr(
+            "confluent_sql.connection.oauth_session_generation", Mock(return_value=7)
+        )
         try:
             response = conn._request("/some/path")
         finally:
             conn.close()
 
         assert response.status_code == 200
-        reauth_mock.assert_called_once_with()
+        # The generation observed *before* the failing request is what the recovery is keyed to,
+        # so a worker that arrives late can tell a session someone else already replaced.
+        reauth_mock.assert_called_once_with(stale_generation=7)
         assert auth.calls == 2
 
     def test_raise_policy_leaves_the_exception_unhandled_and_unretried(self, monkeypatch):
