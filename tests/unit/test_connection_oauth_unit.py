@@ -1,8 +1,8 @@
-"""Unit tests for wiring interactive human-login OAuth through connect() (#155).
+"""Unit tests for wiring interactive human-login OAuth through connect() (#150).
 
-#150's OAuth machinery (PKCE primitives #151, callback server #152, the CCloudOAuth provider
-#153, the process-wide holder #154) is exercised end to end by the tests under tests/unit/oauth/.
-This file tests only the assembly #155 adds on top: auth="oauth" mode selection/validation on
+The OAuth machinery (PKCE primitives, callback server, the CCloudOAuth provider, the
+process-wide holder) is exercised end to end by the tests under tests/unit/oauth/.
+This file tests only the assembly on top: auth="oauth" mode selection/validation on
 connect()/Connection, and wiring the acquired provider's two httpx.Auth views onto the driver's
 three clients.
 
@@ -61,7 +61,7 @@ class FakeOAuthProvider:
     Implements the `OAuthProvider` protocol structurally. Unlike `test_holder_unit.py`'s
     `FakeProvider` (whose `control_plane_auth`/`data_plane_auth` deliberately raise
     NotImplementedError, since the holder never touches them), this fake needs those views to
-    actually work -- they're exactly what #155 wires onto the driver's clients.
+    actually work -- they're exactly what `connect()` wires onto the driver's clients.
     """
 
     def __init__(self, config: CCloudOAuthConfig) -> None:
@@ -79,7 +79,7 @@ class FakeOAuthProvider:
         self._organization_id = org_resource_id if org_resource_id is not None else DEFAULT_ORG
 
     def reauthenticate(self, *, timeout: float = 0.0) -> None:
-        # Never exercised here -- #156's reauthenticate() tests live in
+        # Never exercised here -- reauthenticate() tests live in
         # tests/unit/oauth/test_provider_unit.py and test_holder_unit.py; this fake only needs
         # the method to exist to satisfy the OAuthProvider protocol structurally.
         raise NotImplementedError
@@ -267,8 +267,9 @@ class TestOauthAuthWiring:
         assert conn._byoidc is False
 
     def test_api_key_mode_controlplane_auth_is_now_a_basicauth_instance(self):
-        """Regression pin for the tuple->httpx.Auth widening #155 needed: a global-key connection's
-        control-plane auth is now an httpx.BasicAuth object, not a raw (key, secret) tuple."""
+        """Regression pin for the tuple->httpx.Auth widening oauth mode needed: a global-key
+        connection's control-plane auth is now an httpx.BasicAuth object, not a raw (key, secret)
+        tuple."""
         conn = connect(
             global_api_key="gk",
             global_api_secret="gs",
@@ -346,8 +347,8 @@ class TestOauthCmkCapabilityGain:
 
 
 class TestOauthOrganizationId:
-    """organization_id discovery under auth="oauth" (#155), and the one-identity guard #154's
-    holder already enforces once #155 actually calls into it."""
+    """organization_id discovery under auth="oauth" and the one-identity guard the
+    holder already enforces once `connect()` actually calls into it."""
 
     def test_organization_id_supplied_scopes_the_session(self):
         conn = _oauth_connect(organization_id="org-X")
@@ -373,7 +374,7 @@ class TestOauthOrganizationId:
 
 class TestOauthClose:
     """Connection.close() under auth="oauth" releases the holder's hold, never the shared
-    provider itself (#155) -- the provider is process-shared, so tearing it down here could break
+    provider itself -- the provider is process-shared, so tearing it down here could break
     another live Connection."""
 
     def test_close_calls_holder_release_not_provider_close(self, monkeypatch):
@@ -430,7 +431,7 @@ def _connection_with_flaky_flink_auth(
     reauth: Literal["auto", "raise"],
 ) -> tuple[Connection, _FlakyReauthAuth]:
     """A plain api_key-mode Connection whose Flink client is swapped for one backed by
-    `_FlakyReauthAuth`, so `_send_with_reauth_policy` (#156) can be exercised directly without a
+    `_FlakyReauthAuth`, so `_send_with_reauth_policy` can be exercised directly without a
     real oauth-mode login. `reauth` is poked onto the private attribute rather than threaded
     through connect()'s validation, since that validation (tested separately below) only allows
     a non-default `reauth` together with `auth="oauth"`.
@@ -454,7 +455,7 @@ def _connection_with_flaky_flink_auth(
 
 
 class TestReauthPolicy:
-    """The `reauth=` policy knob (#156) and `_send_with_reauth_policy`, the chokepoint that
+    """The `reauth=` policy knob and `_send_with_reauth_policy`, the chokepoint that
     applies it whenever a request raises `ReauthenticationRequired`."""
 
     def test_validation_rejects_an_invalid_value(self):

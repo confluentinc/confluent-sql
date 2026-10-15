@@ -1,4 +1,4 @@
-"""Unit tests for `CCloudOAuth`, the interactive-OAuth orchestrator (#153).
+"""Unit tests for `CCloudOAuth`, the interactive-OAuth orchestrator.
 
 Three fakes stand in for the three things a real login touches, and the split between them is
 deliberate:
@@ -68,7 +68,7 @@ ORG_RESOURCE_ID = "org-resolved-from-the-session"
 
 PII_EMAIL = "someone@example.com"
 """Planted in the fake `/api/sessions` response so a test can prove the body never reaches a log
-record. The real response is large and PII-laden; issue #153 calls this out explicitly."""
+record. The real response is large and PII-laden; the epic (#150) calls this out explicitly."""
 
 LONG_LIFETIME = timedelta(minutes=5)
 """Comfortably past `EXPIRY_SKEW`, so a token minted with it is usable."""
@@ -435,15 +435,15 @@ class TestLogin:
         assert fake.sessions_requests[0]["org_resource_id"] == supplied
 
     def test_session_without_an_organization_raises(self):
-        """Every caller in this epic needs an org -- #155 fills the Flink path from it -- so a
-        session that resolves none is a failure now rather than a None that surfaces later."""
+        """Every caller in this epic needs an org -- `connect()` fills the Flink path from it --
+        so a session that resolves none is a failure now rather than a None that surfaces later."""
         fake = FakeCCloud()
         fake.organization = None
         with _provider(fake) as provider, pytest.raises(OperationalError, match="organization"):
             provider.login(None, timeout=BRIEF_TIMEOUT)
 
     def test_session_response_body_is_never_logged(self, caplog):
-        """The `/api/sessions` response is large and PII-laden (issue #153). Only the token and
+        """The `/api/sessions` response is large and PII-laden (#150). Only the token and
         the org's resource_id may be taken from it; nothing may log the body."""
         fake = FakeCCloud()
         with caplog.at_level(logging.DEBUG, logger="confluent_sql"), _logged_in(fake):
@@ -479,7 +479,7 @@ class TestLogin:
         assert "/authorize?" in caplog.text
 
     def test_second_login_on_a_logged_in_provider_is_refused(self):
-        """Re-login is `reauthenticate()` (#156), routed through the refresh gate instead --
+        """Re-login is `reauthenticate()`, routed through the refresh gate instead --
         see TestReauthenticate. A second `login()` remains refused unconditionally: it would
         silently strand the live session's tokens."""
         fake = FakeCCloud()
@@ -1131,7 +1131,7 @@ def _latch_a_dead_session(fake: FakeCCloud, provider: CCloudOAuth) -> None:
 
 
 class TestReauthenticate:
-    """#156: recovering a dead session in place via a fresh interactive login, without opening a
+    """Recovering a dead session in place via a fresh interactive login, without opening a
     new `Connection`/provider."""
 
     def test_before_any_login_raises_programming_error(self):

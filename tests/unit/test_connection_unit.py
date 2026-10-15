@@ -665,7 +665,7 @@ class TestConnectChecks:
 
     def test_connection_constructible_with_organization_id_omitted(self):
         """Connection() is directly constructible with organization_id omitted entirely -- not
-        just passed as "" -- given a global key (#132/#155 regression guard).
+        just passed as "" -- given a global key (#132 regression guard).
 
         organization_id was reordered to sit just before Connection.__init__'s keyword-only
         boundary specifically so it could gain a default without disturbing the (all keyword-
@@ -1127,7 +1127,7 @@ class TestConnectAuthWiring:
         return basic_auth_spy
 
     def test_global_only_authenticates_with_global_creds(self):
-        # A global key also authenticates the (lazily-*built*, but eagerly *auth-wrapped*, #155)
+        # A global key also authenticates the (lazily-*built*, but eagerly *auth-wrapped*)
         # control-plane and Connect clients, so BasicAuth is constructed three times here -- once
         # per surface -- all with this same global pair; assert_any_call, not
         # assert_called_once_with.

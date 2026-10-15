@@ -22,7 +22,7 @@ def pytest_runtest_setup(item):
 
 @pytest.fixture(autouse=True)
 def _reset_oauth_holder():
-    """Every unit test starts and ends with a pristine process-wide OAuth holder (#155).
+    """Every unit test starts and ends with a pristine process-wide OAuth holder.
 
     The holder is a module-level singleton by design (one interactive-OAuth identity per
     process), so a login established by one `connect(auth="oauth")` test would otherwise leak

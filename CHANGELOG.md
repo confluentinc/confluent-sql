@@ -7,6 +7,11 @@ All notable changes to this dbapi driver will be documented in this file.
 ### Added
 
 - Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. See the README and `examples/interactive_oauth_login.py` (#150).
+- `connect(..., reauth="auto"|"raise")` (with `auth="oauth"` only): what to do once an OAuth session can no longer be refreshed. `"auto"` (default) opens the browser for a fresh login and retries the request; `"raise"` raises `ReauthenticationRequired` instead, for unattended runs. (#150)
+- New exceptions, all subclasses of `OperationalError` and importable from `confluent_sql` (#150):
+  - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, or `SERVER_ERROR`.
+  - `OAuthTokenEndpointError`: the auth service's token endpoint rejected a request. Carries the OAuth `error_code` (e.g. `"invalid_grant"`) and `http_status_code`.
+  - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
 - `Connection.dry_run_statement(statement_text, *, mode=ExecutionMode.SNAPSHOT, compute_pool_id=None)`: validate a statement with Flink's `sql.dry-run` in a single request, without running or storing it, and return the resulting `Statement`. The returned `Statement`'s `schema` and `is_append_only` may then be of interest to the caller. Raises `OperationalError` with the server's detail if Flink rejects the statement. (#246)
 - New property `Statement.is_dry_run`: whether the statement was submitted with the `sql.dry-run` statement property. (#246)
 

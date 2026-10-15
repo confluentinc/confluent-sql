@@ -2,7 +2,7 @@
 
 Each function is standalone: it takes the `httpx.Client` to send through as a parameter rather
 than owning one, so this module stays network-capable but lifecycle-agnostic -- the caller (the
-provider landing in #153) decides the client's lifetime, and this module never touches any of a
+provider) decides the client's lifetime, and this module never touches any of a
 `Connection`'s three request clients.
 
 Hop 1 (`exchange_code_for_tokens`) and the refresh exchange (`exchange_refresh_token`) both hit
@@ -30,7 +30,7 @@ Every exchange funnels its request through `http_json.post_json`, which is what 
 module's DB-API promise: only `Error` subclasses ever escape to a caller -- `OperationalError`,
 or its `OAuthTokenEndpointError` subclass when the auth service's token endpoint itself refuses
 the grant. See `http_json`'s docstring for the shared hardening this and later oauth-package
-modules (#152's callback server, #153's provider) build on.
+modules (the callback server, the provider) build on.
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def exchange_refresh_token(
     refresh tokens are single-use and rotating -- the returned refresh_token is a *different*
     string that must replace the one just spent. This function performs the exchange only;
     persisting the rotated token before anything else is the caller's responsibility (the
-    persist-before-exchange ordering, landing with #153)."""
+    persist-before-exchange ordering)."""
     body = post_json(
         client,
         config.token_url,

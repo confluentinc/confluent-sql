@@ -1,6 +1,6 @@
 """`CCloudOAuth`: one interactive login, one shared `TokenSet`, two `httpx.Auth` views over it.
 
-This is the orchestrator that turns #151's pure primitives and #152's callback server into a
+This is the orchestrator that turns the pure primitives and the callback server into a
 working credential. It owns everything stateful: the current token snapshot, the locks guarding
 it, the private `httpx.Client` the token chain runs over, and the organization the login settled
 on. It is deliberately **not** itself an `httpx.Auth` -- that split is what lets one login feed
@@ -8,18 +8,17 @@ two clients carrying two *different* tokens (`control_plane_auth` for Tableflow 
 `data_plane_auth` for Flink) instead of forcing a provider per surface.
 
 **Refresh here is synchronous and on-request.** There is no
-background thread in this child (#157 adds one purely to keep the ~4-round-trip refresh latency
-off the hot path). Correctness deliberately does not depend on that thread ever existing: every
-request checks its token's validity, and a stale one is refreshed through the single-flight gate
-before the header is stamped. A connection that sat idle for an hour re-mints from the long-lived
-refresh token on its next request, however long the short-lived (~5-min) tokens have been lapsed.
+background refresh thread: every request checks its token's validity, and a stale one is
+refreshed through the single-flight gate before the header is stamped. A connection that sat idle
+for an hour re-mints from the long-lived refresh token on its next request, however long the
+short-lived (~5-min) tokens have been lapsed.
 
 **The refresh single-flight is a shared `Future`, not a lock held across the chain.** One thread
 wins the right to run the refresh and publishes its outcome into the `Future`; everyone who
 arrives while it is in flight joins that same `Future` and receives the winner's result -- or has
 the winner's exception re-raised on their own thread. Nothing is held across network I/O.
 
-That shape is the point, and it is the one #154 also mandates for the login single-flight. A lock
+That shape is the point, and it is the one the holder also uses for the login single-flight. A lock
 only says *"you may proceed"*: a thread waking from one holds no handle on what the winner did and
 has to reconstruct it by re-reading shared mutable state. Reconstruction is where this went wrong
 twice -- a mid-chain checkpoint could be misread as somebody's finished work (see
@@ -132,8 +131,8 @@ class CCloudOAuth:
 
     One provider is one identity: one `(user, organization)` pair, established by `login()` and
     fixed for the provider's life. Sharing a single provider process-wide -- so that N
-    `Connection`s trigger one browser bounce rather than N -- is #154's holder; this class knows
-    nothing about that and is usable standalone.
+    `Connection`s trigger one browser bounce rather than N -- is the holder's job (`holder.py`);
+    this class knows nothing about that and is usable standalone.
 
     Satisfies `OAuthProvider` structurally (see `_CCLOUDOAUTH_CONFORMS`).
     """
@@ -231,7 +230,7 @@ class CCloudOAuth:
         """The `organization.resource_id` this login settled on -- whichever was supplied to
         `login()`, or the default Confluent Cloud resolved for the user. None before `login()`.
 
-        #155 reads this back to fill the Flink path for a `connect()` that omitted the org."""
+        `connect()` reads this back to fill the Flink path when it omitted the org."""
         with self._token_lock:
             return self._organization_id
 
@@ -281,7 +280,7 @@ class CCloudOAuth:
         # A dedicated lock, deliberately not the refresh gate: this one is held across a
         # multi-minute human round-trip, and the request path must never queue behind that. The
         # two cannot overlap anyway -- login runs only when there is no token set, refresh only
-        # when there is. #156's reauthenticate() is what runs a second login-shaped flow *with* a
+        # when there is. `reauthenticate()` is what runs a second login-shaped flow *with* a
         # token set already present -- it routes through the refresh gate instead (see
         # reauthenticate()), never through this lock, so the invariant above still holds for this
         # method specifically.
@@ -457,15 +456,13 @@ class CCloudOAuth:
         """Release the private HTTP client. Idempotent.
 
         Does not invalidate the tokens -- there is nothing process-local to tear down beyond the
-        client, and #157's daemon is what will give this method more to do.
+        client.
 
         **Not safe to call while another thread may still be using this provider.** `login()` and
         `_run_refresh_chain()` run their HTTP calls over `_client` with no lock held across that
         I/O, by design; closing `_client` out from under one of them surfaces as a confusing
         transport error on that thread rather than a clean one. Nothing here coordinates with
-        in-flight use -- #157's refcount + park-don't-evict lifecycle is what will make `close()`
-        safe to call from a live holder. Until then, callers must ensure the provider has no other
-        active users first.
+        in-flight use, so callers must ensure the provider has no other active users first.
         """
         if not self._client.is_closed:
             self._client.close()

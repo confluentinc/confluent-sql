@@ -1,7 +1,7 @@
 """TokenSet: the immutable snapshot of the three tokens the OAuth chain mints.
 
 An instance is a frozen dataclass -- refresh never mutates one in place (that's the provider's
-job, landing in #153); a refresh instead builds a brand-new TokenSet and swaps the provider's
+job); a refresh instead builds a brand-new TokenSet and swaps the provider's
 reference to it. That copy-on-write shape is what lets a caller who has already grabbed a
 reference read its fields with zero locking and zero risk of a torn read mid-update; the lock
 lives on the provider's reference slot, not on this object. All three `*_valid` helpers are pure
@@ -9,7 +9,7 @@ arithmetic over fields that never change after construction -- no lock, no I/O.
 
 The auth service's *idle* (4h) refresh-token cap is deliberately not modeled
 here: it requires tracking last-use time, which only matters once something actually refreshes
-(#153) or proactively re-auths ahead of the wall (#158). This snapshot only carries the
+or proactively re-auths ahead of the wall. This snapshot only carries the
 *absolute* (8h) wall, computed by the caller at mint time and passed in as
 `refresh_token_expires_at` -- ABSOLUTE_LIFETIME is exposed for that purpose.
 """

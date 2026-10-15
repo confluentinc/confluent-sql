@@ -110,7 +110,7 @@ class TestSuccessfulRedirect:
         )
 
     def test_the_code_can_be_read_repeatedly(self):
-        """wait_for_code is not a one-shot consume: #153's login() reads the code once, but a
+        """wait_for_code is not a one-shot consume: `CCloudOAuth.login()` reads the code once, but a
         second *sequential* read (a retry path, a test) must see the same value rather than hang.
         Concurrent readers are covered separately, by TestConcurrentWaiters."""
         with _running_server() as server:
@@ -422,9 +422,9 @@ def _blocked_waiters(server: CallbackServer, count: int) -> Iterator[list[_Outco
 class TestConcurrentWaiters:
     """Several threads blocked in `wait_for_code` at the moment the redirect lands.
 
-    Not how #153 drives this class -- one login thread does the waiting, and the N-waiter fan-out
-    belongs to #154's holder -- but `wait_for_code` blocks on an `Event`, which permits any number
-    of waiters, so the behavior is pinned rather than left to chance.
+    Not how `CCloudOAuth` drives this class -- one login thread does the waiting, and the
+    N-waiter fan-out belongs to the holder -- but `wait_for_code` blocks on an `Event`,
+    which permits any number of waiters, so the behavior is pinned rather than left to chance.
     """
 
     WAITER_COUNT = 4

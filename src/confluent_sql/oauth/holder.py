@@ -1,7 +1,7 @@
 """`ProcessOAuthHolder`: at most one interactive OAuth login per process/interpreter, shared by
 every `Connection`.
 
-#153's `CCloudOAuth` is one login and one shared `TokenSet`; this is the layer above it that makes
+`CCloudOAuth` is one login and one shared `TokenSet`; this is the layer above it that makes
 the login itself singular across a whole process. The motivating case is **dbt in multi-threaded
 mode**, where each worker thread opens its own DB-API `Connection`: without this holder that is N
 browser bounces and N independently-refreshing providers; with it, the user sees the browser
@@ -16,8 +16,8 @@ identity per process" are the same statement. The holder does three things:
   human round-trip. Every other `acquire()` arriving meanwhile joins that same `Future` and
   receives the winner's provider, has the winner's login failure re-raised on its own thread, or
   gives up if its *own* `timeout` elapses first. This is the same `Future`-as-single-flight idiom
-  #153 uses for token refresh, lifted one level: one browser, never N. On failure the slot is
-  cleared so a later `acquire()` retries with a fresh browser.
+  `CCloudOAuth` uses for token refresh, lifted one level: one browser, never N. On failure the
+  slot is cleared so a later `acquire()` retries with a fresh browser.
 
 - **One-identity guard.** Every caller, winner or joiner, checks the `(environment, organization)`
   it asked for against what the login settled on. A caller naming a different environment
@@ -36,11 +36,8 @@ identity per process" are the same statement. The holder does three things:
 `Future` -- microseconds each -- so a waiter, a teardown, or a second `acquire()` never queues
 behind a human at a browser.
 
-**Deferred to #157:** the refresh daemon and the refcount + park-don't-evict + linger lifecycle.
-Without a daemon there is nothing to *park* at refcount 0, so this baseline holder simply keeps the
-shared provider alive until `shutdown_all()` or interpreter exit. `Connection.close()`'s
-`holder.release()` refcount hook arrives with that child; here a `Connection` closing is a no-op on
-the holder.
+**No refcounting.** The holder keeps the shared provider alive until `shutdown_all()` or interpreter
+exit; a `Connection` closing is a no-op on the holder (`release()`).
 """
 
 from __future__ import annotations
@@ -86,7 +83,7 @@ def acquire(
 def shutdown_all() -> None:
     """Tear down the process's shared OAuth login, if any.
 
-    The module-level escape hatch #154's design calls out: for test isolation between cases, and
+    The module-level escape hatch: for test isolation between cases, and
     for a long-lived host that wants to drop the credential explicitly. Idempotent. The teardown
     peer of `acquire()`.
     """
@@ -94,18 +91,16 @@ def shutdown_all() -> None:
 
 
 def release() -> None:
-    """The `Connection.close()` counterpart to `acquire()` (#155). No-op today.
+    """The `Connection.close()` counterpart to `acquire()`. A no-op.
 
-    Deferred to #157: the refcount-driven park lifecycle. Until that lands, the holder keeps the
-    shared provider alive regardless of how many Connections have released it -- see the module
-    docstring. Exists now so #155's `Connection.close()` has a stable call target that won't need
-    to change shape when #157 adds real teeth to it.
+    The holder keeps the shared provider alive regardless of how many Connections have released
+    it -- see the module docstring.
     """
     ProcessOAuthHolder.instance().release()
 
 
 def reauthenticate(*, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
-    """Re-authenticate the process's established OAuth login (#156).
+    """Re-authenticate the process's established OAuth login.
 
     Module-level convenience over `ProcessOAuthHolder.instance().reauthenticate(...)`, the peer of
     `acquire()` for recovering a session once its refresh token can no longer be used (the ~8h
@@ -318,16 +313,15 @@ class ProcessOAuthHolder:
                 self._inflight = None
 
     def release(self) -> None:
-        """No-op -- see the module docstring's "Deferred to #157" note and `release()` above.
+        """No-op -- see the module docstring and `release()` above.
 
         Not `shutdown()`: this must never tear down the shared provider, since other Connections
-        in the process may still be using it. #157 turns this into the real refcount decrement /
-        park hook.
+        in the process may still be using it.
         """
         return None
 
     def reauthenticate(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
-        """Re-authenticate the established provider (#156), re-arming every `Connection` sharing
+        """Re-authenticate the established provider, re-arming every `Connection` sharing
         this process's holder in one call.
 
         Thin delegation, not its own single-flight: the provider's `reauthenticate()` already

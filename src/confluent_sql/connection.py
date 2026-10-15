@@ -323,7 +323,7 @@ def connect(  # noqa: PLR0913
             as the `Confluent-Identity-Pool-Id` header. Must be supplied together with
             external_access_token.
         auth: Selects the authentication mode. `"api_key"` (default) is the API-key/BYOIDC modes
-            documented above. `"oauth"` selects interactive human-login OAuth (epic #150): the
+            documented above. `"oauth"` selects interactive human-login OAuth (#150): the
             driver opens a browser for a one-time Confluent Cloud sign-in and shares the resulting
             login process-wide (one browser bounce per process, even across many Connections --
             see `confluent_sql.oauth`), then uses the resulting control-plane token for Tableflow,
@@ -509,14 +509,14 @@ class Connection:
     """True when authenticating with a customer-supplied BYOIDC bearer token (Flink data plane
     only); drives the honest fail-closed messages on the control-plane guards."""
     _oauth: bool
-    """True when authenticating via interactive human-login OAuth (auth="oauth", epic #150).
+    """True when authenticating via interactive human-login OAuth (auth="oauth", #150).
     Lifts the control-plane guards' global-key requirement -- see _resolve_kafka_cluster_id and
     _get_controlplane_client/_get_connect_controlplane_client."""
     _oauth_provider: OAuthProvider | None
     """The process-wide shared provider acquired via oauth.acquire() when _oauth is True; None
     otherwise. Never closed directly by this Connection -- see close()."""
     _reauth_policy: Literal["auto", "raise"]
-    """How to respond when a request raises ReauthenticationRequired (#156) -- see connect()'s
+    """How to respond when a request raises ReauthenticationRequired -- see connect()'s
     `reauth` docstring. Consulted by _send_with_reauth_policy regardless of _oauth, though it is
     only ever meaningful under auth="oauth", the only mode that can raise that exception."""
     _flink_client: httpx.Client | None
@@ -1614,9 +1614,9 @@ class Connection:
         (auth="oauth"), or None under every other auth mode.
 
         **Not per-connection telemetry.** `oauth.acquire()` hands out one process-wide shared
-        provider (`ProcessOAuthHolder`, #154) -- every `Connection` in the process that logs in
+        provider (`ProcessOAuthHolder`) -- every `Connection` in the process that logs in
         under the same identity gets the *same* provider, and `Connection.close()`'s
-        `oauth.release()` is currently a no-op (#157 is what gives it real teeth), so the shared
+        `oauth.release()` is a no-op, so the shared
         provider and its accumulated metrics outlive any one connection. A newly opened
         `Connection` reusing that provider can observe a nonzero `refresh_chain_count` from
         refreshes triggered by another connection's requests, or from before this one existed.
@@ -2188,7 +2188,7 @@ class Connection:
 
     def _send_with_reauth_policy(self, do_request: Callable[[], httpx.Response]) -> httpx.Response:
         """Run one HTTP call, applying `self._reauth_policy` if it raises `ReauthenticationRequired`
-        (#156) -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
+        -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
         of stamping a request, once its session's refresh token can no longer be used.
 
         `"raise"` lets it propagate untouched. `"auto"` (the default) instead blocks on
