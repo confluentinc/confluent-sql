@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
+from confluent_sql.artifacts import ArtifactScope
 from confluent_sql.connection import Connection, connect
 
 pytestmark = pytest.mark.unit
@@ -43,7 +44,7 @@ def _artifact_authorization(conn: Connection) -> str:
 
 class TestArtifactScope:
     def test_cloud_is_uppercased_for_the_api(self) -> None:
-        assert _connect().artifact_scope() == ("AWS", "us-east-2")
+        assert _connect().artifact_scope() == ArtifactScope(cloud="AWS", region="us-east-2")
 
     def test_recovered_from_standard_flink_endpoint(self) -> None:
         conn = _connect(
@@ -51,7 +52,7 @@ class TestArtifactScope:
             cloud_region="",
             endpoint="https://flink.eu-west-1.gcp.confluent.cloud",
         )
-        assert conn.artifact_scope() == ("GCP", "eu-west-1")
+        assert conn.artifact_scope() == ArtifactScope(cloud="GCP", region="eu-west-1")
 
     def test_unrecoverable_from_custom_endpoint(self) -> None:
         conn = _connect(
@@ -62,11 +63,11 @@ class TestArtifactScope:
 
     def test_explicit_cloud_arguments_win_over_endpoint_parse(self) -> None:
         conn = _connect(endpoint="https://flink.eu-west-1.gcp.confluent.cloud")
-        assert conn.artifact_scope() == ("AWS", "us-east-2")
+        assert conn.artifact_scope() == ArtifactScope(cloud="AWS", region="us-east-2")
 
     def test_private_link_endpoint_uses_explicit_cloud_arguments(self) -> None:
         conn = _connect(endpoint="https://flink.dom123.us-east-2.aws.private.confluent.cloud")
-        assert conn.artifact_scope() == ("AWS", "us-east-2")
+        assert conn.artifact_scope() == ArtifactScope(cloud="AWS", region="us-east-2")
 
     def test_private_link_endpoint_without_cloud_arguments_is_unrecoverable(self) -> None:
         conn = _connect(
@@ -83,7 +84,7 @@ class TestArtifactScope:
             cloud_region="",
             endpoint="https://FLINK.EU-West-1.GCP.confluent.cloud",
         )
-        assert conn.artifact_scope() == ("GCP", "eu-west-1")
+        assert conn.artifact_scope() == ArtifactScope(cloud="GCP", region="eu-west-1")
 
     @pytest.mark.parametrize(
         "endpoint",
