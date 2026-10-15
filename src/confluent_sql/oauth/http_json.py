@@ -1,8 +1,8 @@
 """Hardened HTTP + JSON primitives shared across the oauth package.
 
-`token_chain.py`'s four exchanges all POST and parse a JSON response the same way; the callback
-server (#152) and the refresh-loop provider (#153) landing later in this package will too. This
-module centralizes that so every caller gets the same guarantee for free: a malformed-but-valid
+`token_chain.py`'s four exchanges all POST and parse a JSON response the same way; the
+callback-driving provider in this package does too. This module centralizes that so every caller
+gets the same guarantee for free: a malformed-but-valid
 server response (wrong JSON shape, missing field, wrong field type) becomes `OperationalError`,
 never a bare `TypeError`/`AttributeError`/`KeyError` leaking past this package's DB-API boundary.
 

@@ -22,17 +22,17 @@ def pytest_runtest_setup(item):
 
 @pytest.fixture(autouse=True)
 def _reset_oauth_holder():
-    """Every unit test starts and ends with a pristine process-wide OAuth holder (#155).
+    """Every unit test starts and ends with a pristine process-wide OAuth holder.
 
     The holder is a module-level singleton by design (one interactive-OAuth identity per
     process), so a login established by one `connect(auth="oauth")` test would otherwise leak
-    into every test that runs after it in the same pytest process. `shutdown_all()` is
+    into every test that runs after it in the same pytest process. `discard_login()` is
     idempotent, so this is a no-op for the (overwhelming majority of) tests that never touch
     oauth mode at all.
     """
-    oauth.shutdown_all()
+    oauth.discard_login()
     yield
-    oauth.shutdown_all()
+    oauth.discard_login()
 
 
 ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], ChangelogRow]

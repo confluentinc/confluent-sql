@@ -1,11 +1,11 @@
-"""Unit tests for `CCloudOAuth`, the interactive-OAuth orchestrator (#153).
+"""Unit tests for `CCloudOAuth`, the interactive-OAuth orchestrator.
 
 Three fakes stand in for the three things a real login touches, and the split between them is
 deliberate:
 
 - **`FakeCCloud`** backs the provider's *own* private `httpx.Client` through a `MockTransport`,
   answering the auth service's token endpoint and Confluent Cloud's `/api/sessions` +
-  `/api/access_tokens`. It enforces the property that makes this whole child's locking
+  `/api/access_tokens`. It enforces the property that makes this provider's locking
   load-bearing: **a refresh token is single-use**, and presenting a spent one earns a
   `403 invalid_grant`, exactly as production would.
 - **`FakeResource`** backs a *separate* client whose `auth=` is one of the provider's two
@@ -50,7 +50,7 @@ from confluent_sql.exceptions import (
     ReauthenticationRequired,
 )
 from confluent_sql.oauth.callback_server import CallbackServer
-from confluent_sql.oauth.config import CCloudOAuthConfig
+from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 from confluent_sql.oauth.pkce import challenge_for
 from confluent_sql.oauth.provider import CCloudOAuth
 from confluent_sql.oauth.token_set import ABSOLUTE_LIFETIME, TokenSet
@@ -60,7 +60,7 @@ pytestmark = pytest.mark.unit
 AUTH_SERVICE_DOMAIN = "login.confluent.io"
 API_HOST = "https://confluent.cloud"
 CLIENT_ID = "test-client-id"
-CALLBACK_PATH = "/gateway/v1/callback-local-mcp-docs"
+CALLBACK_PATH = PROD.callback_path
 
 AUTH_CODE = "the-authorization-code"
 INITIAL_REFRESH_TOKEN = "refresh-token-0"
@@ -68,7 +68,7 @@ ORG_RESOURCE_ID = "org-resolved-from-the-session"
 
 PII_EMAIL = "someone@example.com"
 """Planted in the fake `/api/sessions` response so a test can prove the body never reaches a log
-record. The real response is large and PII-laden; issue #153 calls this out explicitly."""
+record. The real response is large and PII-laden (#150)."""
 
 LONG_LIFETIME = timedelta(minutes=5)
 """Comfortably past `EXPIRY_SKEW`, so a token minted with it is usable."""
@@ -91,8 +91,8 @@ def _free_port() -> int:
     The callback port is fixed in production (it is baked into the client registration), so
     unlike `CallbackServer`'s own tests -- which bind port 0 and read the port back -- these
     tests need the number *before* the login starts: the provider builds `redirect_uri` from
-    config, and the fake browser drives that exact URL. Never binds the real 26640, which a
-    developer's live mcp-confluent login legitimately holds.
+    config, and the fake browser drives that exact URL. Never binds the real callback port, which a
+    developer's live login legitimately holds.
     """
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
         probe.bind(("127.0.0.1", 0))
@@ -104,9 +104,7 @@ def _config(port: int) -> CCloudOAuthConfig:
         auth_service_domain=AUTH_SERVICE_DOMAIN,
         api_host=API_HOST,
         client_id=CLIENT_ID,
-        callback_host="127.0.0.1",
         callback_port=port,
-        callback_path=CALLBACK_PATH,
     )
 
 
@@ -437,15 +435,15 @@ class TestLogin:
         assert fake.sessions_requests[0]["org_resource_id"] == supplied
 
     def test_session_without_an_organization_raises(self):
-        """Every caller in this epic needs an org -- #155 fills the Flink path from it -- so a
-        session that resolves none is a failure now rather than a None that surfaces later."""
+        """Every caller needs an org -- `connect()` fills the Flink path from it --
+        so a session that resolves none is a failure now rather than a None that surfaces later."""
         fake = FakeCCloud()
         fake.organization = None
         with _provider(fake) as provider, pytest.raises(OperationalError, match="organization"):
             provider.login(None, timeout=BRIEF_TIMEOUT)
 
     def test_session_response_body_is_never_logged(self, caplog):
-        """The `/api/sessions` response is large and PII-laden (issue #153). Only the token and
+        """The `/api/sessions` response is large and PII-laden (#150). Only the token and
         the org's resource_id may be taken from it; nothing may log the body."""
         fake = FakeCCloud()
         with caplog.at_level(logging.DEBUG, logger="confluent_sql"), _logged_in(fake):
@@ -481,7 +479,7 @@ class TestLogin:
         assert "/authorize?" in caplog.text
 
     def test_second_login_on_a_logged_in_provider_is_refused(self):
-        """Re-login is `reauthenticate()` (#156), routed through the refresh gate instead --
+        """Re-login is `reauthenticate()`, routed through the refresh gate instead --
         see TestReauthenticate. A second `login()` remains refused unconditionally: it would
         silently strand the live session's tokens."""
         fake = FakeCCloud()
@@ -1133,7 +1131,7 @@ def _latch_a_dead_session(fake: FakeCCloud, provider: CCloudOAuth) -> None:
 
 
 class TestReauthenticate:
-    """#156: recovering a dead session in place via a fresh interactive login, without opening a
+    """Recovering a dead session in place via a fresh interactive login, without opening a
     new `Connection`/provider."""
 
     def test_before_any_login_raises_programming_error(self):
@@ -1281,7 +1279,7 @@ class TestReauthenticate:
         discovers the refresh token itself is dead. A joiner must not be fobbed off with that
         refresh's `ReauthenticationRequired`: it explicitly asked to reauthenticate, so it must
         retry and actually run a fresh login rather than just re-raise the problem it came to
-        fix (jbreeden's #197 review comment)."""
+        fix."""
         fake = FakeCCloud()
         fake.dp_lifetime = BORN_STALE_LIFETIME
         with _logged_in(fake) as provider:

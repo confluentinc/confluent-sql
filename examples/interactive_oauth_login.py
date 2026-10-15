@@ -1,16 +1,18 @@
-"""Example of interactive human-login OAuth (epic #150): sign in once via a browser instead of
+"""Example of interactive human-login OAuth: sign in once via a browser instead of
 supplying API keys.
 
 Running this pops a browser to Confluent Cloud for a one-time interactive sign-in (the driver
-listens on 127.0.0.1:26640 for the redirect); once you consent, the resulting login is reused for
+listens on 127.0.0.1:26642 for the redirect); once you consent, the resulting login is reused for
 every Connection this process opens -- one browser bounce per process, even under something like
-dbt's multi-threaded mode. The control-plane token this login mints reaches Tableflow, Connect,
-and CMK; the data-plane token reaches Flink -- one credential covering everything an API-key
-connection would otherwise need up to three separate key pairs for.
+dbt's multi-threaded mode.
 
 organization_id is optional under auth="oauth": omitted, it's discovered from your login session
 (your default Confluent Cloud organization); supplied, it scopes the login to that organization
 instead.
+
+To sign in against a non-production Confluent Cloud environment instead, import `STAG` or `DEVEL`
+(`from confluent_sql.oauth.config import STAG`) and pass the additional keyword argument
+`oauth_config=STAG` to `confluent_sql.connect()`.
 """
 
 import os
