@@ -412,6 +412,28 @@ class TestCreate:
             ArtifactsApi(ctx).create("n", **kwargs)
         assert ctx.requests == []
 
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"file": "a.zip", "runtime_language": "JAVA"}, "JAVA artifacts must be JAR"),
+            ({"file": "a.jar", "runtime_language": "PYTHON"}, "PYTHON artifacts must be ZIP"),
+            (
+                {"file": "a.tar.gz", "content_format": "JAR", "runtime_language": "PYTHON"},
+                "PYTHON artifacts must be ZIP",
+            ),
+            # runtime_language defaults to JAVA server-side, so a bare ZIP is a mismatch.
+            ({"file": "a.zip"}, "defaults to JAVA; pass runtime_language=PYTHON"),
+        ],
+    )
+    def test_format_language_mismatch_fails_before_any_request(
+        self, kwargs: dict, match: str, upload_transport
+    ) -> None:
+        ctx = FakeContext()
+        with pytest.raises(InterfaceError, match=match):
+            ArtifactsApi(ctx).create("n", **kwargs)
+        assert ctx.requests == []
+        assert upload_transport == []
+
     def test_explicit_content_format_overrides_the_extension(
         self, upload_transport, archive: Path
     ) -> None:
@@ -436,7 +458,7 @@ class TestCreate:
     ) -> None:
         ctx = FakeContext(_response(_presign_body()), duplicate_response)
         with pytest.raises(ArtifactAlreadyExistsError) as exc:
-            ArtifactsApi(ctx).create("dup", archive)
+            ArtifactsApi(ctx).create("dup", archive, runtime_language="PYTHON")
         assert exc.value.display_name == "dup"
         assert exc.value.http_status_code == duplicate_response.status_code
 
@@ -446,7 +468,7 @@ class TestCreate:
     ) -> None:
         ctx = FakeContext(_response(_presign_body()), _response(status=status))
         with pytest.raises(OperationalError) as exc:
-            ArtifactsApi(ctx).create("n", archive)
+            ArtifactsApi(ctx).create("n", archive, runtime_language="PYTHON")
         assert exc.value.http_status_code == status
 
     @pytest.mark.parametrize("bad_name", ["", "   ", "x" * 61])

@@ -807,7 +807,9 @@ artifacts.delete(artifact.id)                  # blocks until gone; wait_for_rem
 ```
 
 `create` requests a presigned URL, uploads the file to it and registers the artifact. It infers
-`content_format` from the `.jar`/`.zip` extension when you don't pass one. The file is streamed
+`content_format` from the `.jar`/`.zip` extension when you don't pass one. Only JAVA with JAR and PYTHON
+with ZIP are accepted; anything else raises `InterfaceError` before the upload. `runtime_language`
+defaults to JAVA, so a ZIP needs `runtime_language=PYTHON`. The file is streamed
 from disk.
 
 Uploads retry failures to *connect* (nothing sent yet) three times by default, but not failures

@@ -181,6 +181,34 @@ def _normalize_runtime_language(value: ArtifactRuntimeLanguage | str) -> Artifac
     return lang
 
 
+_FORMAT_FOR_LANGUAGE = {
+    ArtifactRuntimeLanguage.JAVA: ArtifactContentFormat.JAR,
+    ArtifactRuntimeLanguage.PYTHON: ArtifactContentFormat.ZIP,
+}
+_DEFAULT_RUNTIME_LANGUAGE = ArtifactRuntimeLanguage.JAVA
+"""The language the server assumes when `runtime_language` is omitted."""
+
+
+def _validate_format_matches_language(
+    fmt: ArtifactContentFormat, lang: ArtifactRuntimeLanguage | None
+) -> None:
+    """Pre-flight, so a mismatch fails before the archive is uploaded: only JAVA with JAR and
+    PYTHON with ZIP are accepted."""
+    effective = lang or _DEFAULT_RUNTIME_LANGUAGE
+    expected = _FORMAT_FOR_LANGUAGE[effective]
+    if fmt is not expected:
+        hint = (
+            ""
+            if lang
+            else f" (runtime_language defaults to {effective.value}; pass runtime_language=PYTHON"
+            " for a Python UDF)"
+        )
+        raise InterfaceError(
+            f"{effective.value} artifacts must be {expected.value} archives, got "
+            f"content_format={fmt.value}{hint}"
+        )
+
+
 @dataclass(frozen=True)
 class PresignedUploadUrl:
     """A presigned upload target for an artifact archive (`artifact.v1.PresignedUrl`).
@@ -467,7 +495,8 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             display_name: Unique (per cloud/region/environment) name, up to 60 characters.
             file: Path of the archive to upload.
             content_format: JAR or ZIP. Inferred from the `.jar`/`.zip` extension when omitted.
-            runtime_language: JAVA or PYTHON; the server defaults to JAVA when omitted.
+            runtime_language: JAVA or PYTHON; the server defaults to JAVA when omitted. JAVA
+                requires a JAR and PYTHON a ZIP, checked before anything is uploaded.
             description: Up to 256 characters.
             documentation_link: An http(s) URL.
             class_name: Deprecated by the API; the Java class or alias of the function.
@@ -495,6 +524,7 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             raise InterfaceError(
                 "content_format is required when it can't be inferred from a .jar/.zip path"
             )
+        _validate_format_matches_language(fmt, lang)
         target = self._get_upload_url(fmt)
         self._upload(target, file, upload_timeout=upload_timeout, retry=upload_retry)
 
