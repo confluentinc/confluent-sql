@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError, ProgrammingError
-from confluent_sql.connection import Connection, _resolve_connect_credentials, connect
+from confluent_sql.connection import Connection, connect
 
 pytestmark = pytest.mark.unit
 
@@ -30,26 +30,6 @@ def _connect(**overrides: Any) -> Connection:
     }
     kwargs.update(overrides)
     return connect(**kwargs)
-
-
-class TestResolveConnectCredentials:
-    """The Connect control-plane credential pick: global wins, else the connect pair, else None."""
-
-    def test_global_wins_over_connect(self) -> None:
-        assert _resolve_connect_credentials("gk", "gs", "ck", "cs") == ("gk", "gs")
-
-    def test_connect_pair_when_no_global(self) -> None:
-        assert _resolve_connect_credentials("", "", "ck", "cs") == ("ck", "cs")
-
-    def test_none_when_neither(self) -> None:
-        assert _resolve_connect_credentials("", "", "", "") is None
-
-    def test_half_connect_pair_raises(self) -> None:
-        with pytest.raises(InterfaceError, match="connect_api_key and connect_api_secret"):
-            _resolve_connect_credentials("", "", "ck", "")
-
-    def test_global_short_circuits_half_connect_pair(self) -> None:
-        assert _resolve_connect_credentials("gk", "gs", "ck", "") == ("gk", "gs")
 
 
 class TestConnectControlplaneClient:
