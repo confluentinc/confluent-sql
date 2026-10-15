@@ -414,7 +414,7 @@ class CCloudOAuth:
         with CallbackServer(self._config, state) as server:
             authorize_url = self._authorize_url(challenge_for(verifier), state)
             if not self._open_browser(authorize_url):
-                logger.info(
+                logger.warning(
                     "Could not open a browser automatically. To finish signing in to "
                     f"Confluent Cloud, open this URL yourself: {authorize_url}"
                 )
