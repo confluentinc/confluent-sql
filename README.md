@@ -21,12 +21,13 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
 - **Confluent Cloud account** with Flink environment
 - **Existing Flink Database** (Confluent Cloud Kafka cluster)
 - **API credentials**, one of:
+  - an **interactive browser login**, with `auth="oauth"` (see [Interactive login](#interactive-browser-login) below), or
   - a **"Global" Confluent Cloud API key** and secret, passed as `global_api_key` / `global_api_secret`, or
   - a **Flink Region API key** and secret, passed as `flink_api_key` / `flink_api_secret`, or
   - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `external_access_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
 
-  A Global key works against every route this driver touches, so it is the more future-proof choice; a Flink Region key works against the Flink SQL routes that are the driver's focus today. Provide at least one pair. If you supply both, the Global pair is used and the Flink pair is ignored. A half-supplied pair (a key without its secret, or vice versa) is rejected.
-- **Organization ID** — required, *unless* you're using a Global API key and it can see exactly one organization, in which case you can omit `organization_id` and it's inferred automatically on first use of the connection. A Flink Region key has no way to discover it, so it always requires `organization_id` explicitly.
+  The simplest path to start using the driver is to use oauth, however it requires an interactive browser session bounce for each Connection-using process. A Global key works against every route this driver touches. A Flink Region key only works against the coremost Flink SQL routes (the core dbapi functionality, and not other portions such as TableFlow, Connectors, Artifacts, etc.)
+- **Organization ID** — required if using a Flink API key. Inferrable if using any of the other mechanisms.
 
 ### How to Obtain a Flink Region API Key
 
@@ -46,6 +47,21 @@ To create or find a Flink Region API key:
 6. Use these credentials as the `flink_api_key` and `flink_api_secret` parameters in the `connect()` function
 
 API keys may also be generated using the Confluent CLI or by API access, outside the scope of this document.
+
+### Interactive browser login
+
+Instead of API keys, sign in once through your browser:
+
+```python
+conn = confluent_sql.connect(
+    auth="oauth",
+    environment_id="env-...",
+    cloud_provider="aws",
+    cloud_region="us-east-1",
+)
+```
+
+The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. The driver listens on `127.0.0.1:26642` for the redirect, so that port must be free. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py).
 
 ### BYOIDC bearer-token authentication
 
