@@ -6,6 +6,15 @@ executing SQL queries against Confluent SQL services.
 """
 
 from .__version__ import __version__
+from .artifacts import (
+    ArtifactContentFormat,
+    ArtifactRuntimeLanguage,
+    ArtifactsApi,
+    FlinkArtifact,
+    FlinkArtifactVersion,
+    PresignedUploadUrl,
+    UploadRetry,
+)
 from .changelog_compressor import ChangelogCompressor
 from .connection import Connection, connect
 from .connectors import (
@@ -17,6 +26,8 @@ from .connectors import (
 )
 from .cursor import Cursor
 from .exceptions import (
+    ArtifactAlreadyExistsError,
+    ArtifactNotFoundError,
     ComputePoolExhaustedError,
     ConnectorAlreadyExistsError,
     ConnectorNotFoundError,
@@ -99,6 +110,15 @@ __all__ = [
     "TypeMismatchError",
     "TableflowTopicNotFoundError",
     "TableflowTopicAlreadyExistsError",
+    "ArtifactNotFoundError",
+    "ArtifactAlreadyExistsError",
+    "ArtifactsApi",
+    "ArtifactContentFormat",
+    "ArtifactRuntimeLanguage",
+    "FlinkArtifact",
+    "FlinkArtifactVersion",
+    "PresignedUploadUrl",
+    "UploadRetry",
     "ConnectorNotFoundError",
     "ConnectorAlreadyExistsError",
     "Connector",
