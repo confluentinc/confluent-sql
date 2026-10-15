@@ -108,6 +108,9 @@ class OAuthProvider(Protocol):
     def organization_id(self) -> str | None: ...
 
     @property
+    def session_generation(self) -> int: ...
+
+    @property
     def control_plane_auth(self) -> httpx.Auth: ...
 
     @property
@@ -118,7 +121,9 @@ class OAuthProvider(Protocol):
 
     def login(self, org_resource_id: str | None = ..., *, timeout: float = ...) -> None: ...
 
-    def reauthenticate(self, *, timeout: float = ...) -> None: ...
+    def reauthenticate(
+        self, *, timeout: float = ..., stale_generation: int | None = ...
+    ) -> None: ...
 
     def close(self) -> None: ...
 
@@ -206,6 +211,11 @@ class CCloudOAuth:
         `login()`, or the default Confluent Cloud resolved for the user. None before `login()`.
         Only read under _token_lock."""
 
+        self._session_generation = 0
+        """Counts interactive logins installed: bumped by `login()` and `reauthenticate()` (never
+        by a plain refresh, which continues the same session). Only read/written under
+        _token_lock. See `session_generation`."""
+
         self._control_plane_auth = _PlaneAuth(self, _Plane.CONTROL)
         """The view stamping the control-plane token -- Tableflow, Connect, CMK, org lookups."""
         self._data_plane_auth = _PlaneAuth(self, _Plane.DATA)
@@ -224,6 +234,19 @@ class CCloudOAuth:
         """
         with self._token_lock:
             return self._token_set
+
+    @property
+    def session_generation(self) -> int:
+        """How many interactive logins this provider has installed -- 0 before `login()`, then
+        +1 for each successful `login()` / `reauthenticate()`. A plain token refresh does not
+        change it.
+
+        A caller that fails with `ReauthenticationRequired` can pass the value it observed
+        *before* its request as `reauthenticate(stale_generation=...)`, so that a worker arriving
+        after another's recovery already finished doesn't trigger a redundant browser login.
+        """
+        with self._token_lock:
+            return self._session_generation
 
     @property
     def organization_id(self) -> str | None:
@@ -298,10 +321,16 @@ class CCloudOAuth:
                 self._organization_id = organization_id
                 self._interim_snapshot = None
                 self._failure = None
+                self._session_generation += 1
 
         logger.info(f"Signed in to Confluent Cloud for organization {organization_id}")
 
-    def reauthenticate(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
+    def reauthenticate(
+        self,
+        *,
+        timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS,
+        stale_generation: int | None = None,
+    ) -> None:
         """Recover a session that can no longer be refreshed by running a fresh interactive login.
 
         For use once a request has raised `ReauthenticationRequired` (the refresh token is
@@ -331,6 +360,13 @@ class CCloudOAuth:
         reauthentication that got there first.
 
         Args:
+            stale_generation: the `session_generation` the caller observed before the request that
+                failed. If the session has since been replaced (another caller's reauthentication
+                finished first), no login runs and this returns immediately -- the caller should
+                just retry its request with the fresh tokens. Checked under the flight gate, so
+                it closes the window a plain single-flight leaves open for a caller arriving
+                *after* the winning flight has finished. None (the default) always
+                reauthenticates, or joins one in flight.
             timeout: seconds to wait for the browser round-trip (the winner), or for the winner's
                 login to finish (a joiner) -- its own timeout either way, so a brief-timeout
                 caller is never bound to another's longer deadline. A retry after joining a dead
@@ -342,7 +378,9 @@ class CCloudOAuth:
         token exchange fails.
         """
         while True:
-            flight, is_winner = self._enter_reauth_flight()
+            flight, is_winner = self._enter_reauth_flight(stale_generation)
+            if flight is None:
+                return
             if is_winner:
                 break
             try:
@@ -373,6 +411,7 @@ class CCloudOAuth:
                 self._organization_id = organization_id
                 self._interim_snapshot = None
                 self._failure = None
+                self._session_generation += 1
             flight.set_result(token_set)
             logger.info(f"Re-authenticated to Confluent Cloud for organization {organization_id}")
         finally:
@@ -382,8 +421,12 @@ class CCloudOAuth:
             with self._refresh_lock:
                 self._inflight_refresh = None
 
-    def _enter_reauth_flight(self) -> tuple[Future[TokenSet], bool]:
-        """Decide whether this caller runs the fresh login or joins one already running.
+    def _enter_reauth_flight(
+        self, stale_generation: int | None = None
+    ) -> tuple[Future[TokenSet] | None, bool]:
+        """Decide whether this caller runs the fresh login, joins one already running, or -- when
+        `stale_generation` is given and the session has already moved past it -- needs none
+        (returns `(None, False)`).
 
         Shares `_refresh()`'s `_inflight_refresh` slot under `_refresh_lock`, but -- unlike
         `_enter_flight` -- neither raises on a latched `self._failure` (clearing it is the whole
@@ -397,6 +440,11 @@ class CCloudOAuth:
                     "This CCloudOAuth provider has no tokens yet -- it must log in before it can "
                     "be re-authenticated."
                 )
+            if stale_generation is not None:
+                with self._token_lock:
+                    superseded = self._session_generation != stale_generation
+                if superseded:
+                    return None, False
             if self._inflight_refresh is not None:
                 return self._inflight_refresh, False
             self._inflight_refresh = Future()

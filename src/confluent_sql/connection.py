@@ -42,6 +42,7 @@ from .oauth import (
     acquire,
 )
 from .oauth import reauthenticate as oauth_reauthenticate
+from .oauth import session_generation as oauth_session_generation
 from .polling import sleep_with_backoff
 from .retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
@@ -2192,19 +2193,24 @@ class Connection:
 
         `"raise"` lets it propagate untouched. `"auto"` (the default) instead blocks on
         `oauth.reauthenticate()` -- itself single-flighted process-wide, so concurrent callers
-        hitting the wall together still cost one browser bounce -- and retries `do_request` exactly
-        once; a `reauthenticate()` failure (a denied/timed-out login, a failed token exchange)
+        hitting the wall together still cost one browser bounce (and a worker arriving after
+        that recovery finished is recognized, via the session generation it observed before its
+        request, and skips the login) -- and retries `do_request` exactly once; a
+        `reauthenticate()` failure (a denied/timed-out login, a failed token exchange)
         propagates as-is, and is not retried further.
 
         The sole chokepoint for this: every HTTP call this `Connection` makes, Flink or
         control-plane, funnels through here via `_request_raw` or `_send_request`.
         """
+        # Observed before the request, so a worker whose failure is only handled after another's
+        # recovery completed can tell its session was already replaced and skip a second login.
+        generation = oauth_session_generation()
         try:
             return do_request()
         except ReauthenticationRequired:
             if self._reauth_policy == "raise":
                 raise
-            oauth_reauthenticate()
+            oauth_reauthenticate(stale_generation=generation)
             return do_request()
 
     def _make_controlplane_client(self, auth: httpx.Auth) -> httpx.Client:
