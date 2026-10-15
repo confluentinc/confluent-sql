@@ -270,6 +270,14 @@ class TestUpload:
         with pytest.raises(InterfaceError, match="binary mode"):
             ArtifactsApi(FakeContext())._upload(target, io.StringIO("text"))  # pyright: ignore[reportArgumentType]
 
+    @pytest.mark.parametrize("error", [OSError("boom"), ValueError("I/O operation on closed file")])
+    def test_failing_file_object_read_is_interface_error(self, error: Exception, mocker) -> None:
+        broken = mocker.Mock(spec=["read"])
+        broken.read.side_effect = error
+        target = PresignedUploadUrl.from_response(_presign_body())
+        with pytest.raises(InterfaceError, match="can't read artifact file object"):
+            ArtifactsApi(FakeContext())._upload(target, broken)
+
     def test_unreadable_path_is_interface_error(self, tmp_path: Path) -> None:
         target = PresignedUploadUrl.from_response(_presign_body())
         with pytest.raises(InterfaceError, match="can't read artifact file"):
@@ -647,6 +655,13 @@ class TestGetListUpdateDelete:
         ctx = FakeContext(_response(status=204), _response(_artifact_body()), _response(status=404))
         ArtifactsApi(ctx).delete(ARTIFACT_ID)
         assert [r[0] for r in ctx.requests] == ["DELETE", "GET", "GET"]
+
+    def test_delete_returns_without_polling_when_already_gone(self, mocker) -> None:
+        sleeper = mocker.patch("confluent_sql.artifacts.sleep_with_backoff")
+        ctx = FakeContext(_response(status=204), _response(status=404))
+        ArtifactsApi(ctx).delete(ARTIFACT_ID)
+        assert [r[0] for r in ctx.requests] == ["DELETE", "GET"]
+        sleeper.assert_not_called()
 
     def test_delete_wait_timeout_raises(self, mocker) -> None:
         mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None]))
