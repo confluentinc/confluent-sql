@@ -68,11 +68,8 @@ try:
         )
     print(f"created artifact {artifact.id} ({artifact.display_name})")
 
-    artifact = artifacts.update(artifact.id, description="Updated by the example")
-    print(f"updated description: {artifact.description!r}")
-
     print("artifacts in this environment/region:")
-    for a in artifacts.list_artifacts(runtime_language=ArtifactRuntimeLanguage.PYTHON):
+    for a in artifacts.list(runtime_language=ArtifactRuntimeLanguage.PYTHON):
         print(f"  {a.id}  {a.display_name}  {a.content_format}")
 
     # Versions only show up on a read of the artifact (not in the create response or a list).

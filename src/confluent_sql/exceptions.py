@@ -268,7 +268,7 @@ class ArtifactNotFoundError(OperationalError):
     """
     Exception raised when a Flink artifact does not exist.
 
-    Raised on an HTTP 404 from get_artifact(), update_artifact() or delete_artifact() -- i.e. the
+    Raised on an HTTP 404 from get_artifact() or delete_artifact() -- i.e. the
     artifact was never created (or has already been removed). delete_artifact(wait_for_removal=True)
     polls against this 404 to confirm teardown.
 

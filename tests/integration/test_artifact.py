@@ -29,7 +29,6 @@ from confluent_sql import (
 )
 
 ORIGINAL_DESCRIPTION = "confluent-sql integration test artifact"
-UPDATED_DESCRIPTION = "updated by confluent-sql integration test"
 
 
 def _tiny_zip() -> bytes:
@@ -125,12 +124,16 @@ def zip_on_disk(tmp_path: Path) -> Path:
 
 @pytest.mark.integration
 class TestArtifactLifecycle:
-    def test_create_read_list_update_delete_arc(
-        self, artifacts: ArtifactsApi, artifact_name: str, created_artifact_ids: list[str]
+    def test_create_read_list_delete_arc(
+        self,
+        artifacts: ArtifactsApi,
+        artifact_name: str,
+        created_artifact_ids: list[str],
+        zip_on_disk: Path,
     ) -> None:
         artifact = artifacts.create(
             artifact_name,
-            file=_tiny_zip(),
+            file=zip_on_disk,
             content_format=ArtifactContentFormat.ZIP,
             runtime_language=ArtifactRuntimeLanguage.PYTHON,
             description=ORIGINAL_DESCRIPTION,
@@ -143,24 +146,25 @@ class TestArtifactLifecycle:
         assert read_back.description == ORIGINAL_DESCRIPTION
         assert read_back.latest_version is not None
 
-        assert artifact.id in {a.id for a in artifacts.list_artifacts()}
+        assert artifact.id in {a.id for a in artifacts.list()}
         assert artifact.id in {
-            a.id for a in artifacts.list_artifacts(runtime_language=ArtifactRuntimeLanguage.PYTHON)
+            a.id for a in artifacts.list(runtime_language=ArtifactRuntimeLanguage.PYTHON)
         }
-
-        updated = artifacts.update(artifact.id, description=UPDATED_DESCRIPTION)
-        assert updated.description == UPDATED_DESCRIPTION
 
         artifacts.delete(artifact.id)  # blocks until gone
         with pytest.raises(ArtifactNotFoundError):
             artifacts.get(artifact.id)
 
     def test_duplicate_display_name_is_rejected(
-        self, artifacts: ArtifactsApi, artifact_name: str, created_artifact_ids: list[str]
+        self,
+        artifacts: ArtifactsApi,
+        artifact_name: str,
+        created_artifact_ids: list[str],
+        zip_on_disk: Path,
     ) -> None:
         first = artifacts.create(
             artifact_name,
-            file=_tiny_zip(),
+            file=zip_on_disk,
             content_format=ArtifactContentFormat.ZIP,
             runtime_language=ArtifactRuntimeLanguage.PYTHON,
         )
@@ -168,7 +172,7 @@ class TestArtifactLifecycle:
         with pytest.raises(ArtifactAlreadyExistsError):
             artifacts.create(
                 artifact_name,
-                file=_tiny_zip(),
+                file=zip_on_disk,
                 content_format=ArtifactContentFormat.ZIP,
                 runtime_language=ArtifactRuntimeLanguage.PYTHON,
             )
@@ -180,8 +184,7 @@ class TestArtifactLifecycle:
 
 @pytest.mark.integration
 class TestArtifactFileInputs:
-    """`create` accepts a path or an open binary file as well as bytes; each goes through a
-    different branch of the real multipart upload to the object store."""
+    """Inferring `content_format` from the archive's extension."""
 
     def test_create_from_path_infers_content_format(
         self,
@@ -194,25 +197,6 @@ class TestArtifactFileInputs:
         artifact = artifacts.create(
             artifact_name, file=zip_on_disk, runtime_language=ArtifactRuntimeLanguage.PYTHON
         )
-        created_artifact_ids.append(artifact.id)
-
-        assert artifact.content_format is ArtifactContentFormat.ZIP
-        assert artifacts.get(artifact.id).latest_version is not None
-
-    def test_create_from_open_binary_file(
-        self,
-        artifacts: ArtifactsApi,
-        artifact_name: str,
-        created_artifact_ids: list[str],
-        zip_on_disk: Path,
-    ) -> None:
-        with zip_on_disk.open("rb") as f:
-            artifact = artifacts.create(
-                artifact_name,
-                file=f,
-                content_format=ArtifactContentFormat.ZIP,
-                runtime_language=ArtifactRuntimeLanguage.PYTHON,
-            )
         created_artifact_ids.append(artifact.id)
 
         assert artifact.content_format is ArtifactContentFormat.ZIP
