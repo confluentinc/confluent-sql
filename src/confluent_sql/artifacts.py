@@ -14,7 +14,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePath
-from typing import Protocol, Union
+from typing import NamedTuple, Protocol, Union
 from urllib.parse import quote
 
 import httpx
@@ -27,6 +27,7 @@ from .exceptions import (
 )
 from .polling import sleep_with_backoff
 from .retry import call_with_retries
+from .service_api import ServiceApi
 from .types import StrAnyDict
 from .utils import extract_error_detail, next_page_token
 
@@ -340,27 +341,31 @@ def build_create_payload(
     return payload
 
 
+class ArtifactScope(NamedTuple):
+    """The cloud and region artifacts are scoped to (cloud upper-cased, as the API spells it)."""
+
+    cloud: str
+    region: str
+
+
 class ArtifactsContext(Protocol):
     """What `ArtifactsApi` needs from its host connection."""
 
     environment_id: str
 
-    def artifact_scope(self) -> tuple[str, str]: ...
+    def artifact_scope(self) -> ArtifactScope: ...
 
     def artifact_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
     ) -> httpx.Response: ...
 
 
-class ArtifactsApi:
+class ArtifactsApi(ServiceApi[ArtifactsContext]):
     """Artifact lifecycle, obtained from `Connection.get_artifacts_api()`. Create is
     synchronous; delete blocks by default (`wait_for_removal`)."""
 
     _ARTIFACTS_PATH = "/artifact/v1/flink-artifacts"
     _PRESIGN_PATH = "/artifact/v1/presigned-upload-url"
-
-    def __init__(self, context: ArtifactsContext) -> None:
-        self._context = context
 
     def _artifact_path(self, artifact_id: str) -> str:
         """The item path, with `artifact_id` percent-encoded so it can't alter the route (e.g.
@@ -370,22 +375,24 @@ class ArtifactsApi:
         return f"{self._ARTIFACTS_PATH}/{quote(artifact_id, safe='')}"
 
     def _scope_params(self, *, with_environment: bool = True) -> dict[str, str]:
-        cloud, region = self._context.artifact_scope()
+        context = self.get_context()
+        cloud, region = context.artifact_scope()
         params = {Fields.CLOUD: cloud, Fields.REGION: region}
         if with_environment:
-            params[Fields.ENVIRONMENT] = self._context.environment_id
+            params[Fields.ENVIRONMENT] = context.environment_id
         return params
 
     def _get_upload_url(self, content_format: ArtifactContentFormat | str) -> PresignedUploadUrl:
         """Request a presigned upload target."""
-        cloud, region = self._context.artifact_scope()
+        context = self.get_context()
+        cloud, region = context.artifact_scope()
         payload = build_presign_payload(
             content_format=_normalize_content_format(content_format),
             cloud=cloud,
             region=region,
-            environment=self._context.environment_id,
+            environment=context.environment_id,
         )
-        response = self._context.artifact_controlplane_request(
+        response = context.artifact_controlplane_request(
             self._PRESIGN_PATH, method="POST", json=payload, raise_for_status=False
         )
         self._raise_for_status(response, prefix="Error requesting artifact upload URL")
@@ -490,20 +497,21 @@ class ArtifactsApi:
         target = self._get_upload_url(fmt)
         self._upload(target, file, upload_timeout=upload_timeout, retry=upload_retry)
 
-        cloud, region = self._context.artifact_scope()
+        context = self.get_context()
+        cloud, region = context.artifact_scope()
         payload = build_create_payload(
             display_name=display_name,
             upload_id=target.upload_id,
             cloud=cloud,
             region=region,
-            environment=self._context.environment_id,
+            environment=context.environment_id,
             content_format=fmt,
             runtime_language=lang,
             description=description,
             documentation_link=documentation_link,
             class_name=class_name,
         )
-        response = self._context.artifact_controlplane_request(
+        response = context.artifact_controlplane_request(
             self._ARTIFACTS_PATH,
             method="POST",
             params=self._scope_params(with_environment=False),
@@ -538,7 +546,7 @@ class ArtifactsApi:
             ArtifactNotFoundError: If the artifact doesn't exist (HTTP 404).
             OperationalError: On other API errors, a network failure, or an unparseable response.
         """
-        response = self._context.artifact_controlplane_request(
+        response = self.get_context().artifact_controlplane_request(
             self._artifact_path(artifact_id),
             params=self._scope_params(),
             raise_for_status=False,
@@ -574,7 +582,7 @@ class ArtifactsApi:
 
         artifacts: list[FlinkArtifact] = []
         while True:
-            response = self._context.artifact_controlplane_request(
+            response = self.get_context().artifact_controlplane_request(
                 self._ARTIFACTS_PATH, params=params, raise_for_status=False
             )
             self._raise_for_status(response, prefix="Error listing artifacts")
@@ -616,7 +624,7 @@ class ArtifactsApi:
             OperationalError: On other API errors or a network failure, or if the artifact is
                 still present after `timeout` seconds.
         """
-        response = self._context.artifact_controlplane_request(
+        response = self.get_context().artifact_controlplane_request(
             self._artifact_path(artifact_id),
             method="DELETE",
             params=self._scope_params(),
