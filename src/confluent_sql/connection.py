@@ -11,10 +11,10 @@ import json
 import logging
 import uuid
 from collections import namedtuple
-from collections.abc import Collection, Generator
+from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 import httpx
 
@@ -26,12 +26,22 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
+    ReauthenticationRequired,
     StatementDeletedError,
     StatementNotFoundError,
     TableflowTopicAlreadyExistsError,
     TableflowTopicNotFoundError,
 )
 from .execution_mode import ExecutionMode
+from .oauth import (
+    PROD,
+    CCloudOAuth,
+    CCloudOAuthConfig,
+    OAuthMetrics,
+    OAuthProvider,
+    acquire,
+)
+from .oauth import reauthenticate as oauth_reauthenticate
 from .polling import sleep_with_backoff
 from .retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
@@ -251,8 +261,12 @@ def connect(  # noqa: PLR0913
     connect_api_secret: str | None = None,
     external_access_token: str | None = None,
     identity_pool_id: str | None = None,
+    auth: Literal["api_key", "oauth"] = "api_key",
+    oauth_config: CCloudOAuthConfig | None = None,
+    oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
+    reauth: Literal["auto", "raise"] = "auto",
     environment_id: str,
-    organization_id: str,
+    organization_id: str = "",
     compute_pool_id: str | None = None,
     cloud_provider: str | None = None,
     cloud_region: str | None = None,
@@ -270,11 +284,14 @@ def connect(  # noqa: PLR0913
 
     Args:
         global_api_key: A "Global" Confluent Cloud API key, usable against every route this
-            driver touches. Preferred over flink_api_key when both are supplied. Either this
-            pair or the flink_api_key pair must be provided.
+            driver touches. Preferred over flink_api_key when both are supplied. Under the default
+            `auth="api_key"` mode, either this pair or the flink_api_key pair must be provided;
+            under `auth="oauth"` no API key is supplied (see `auth`).
         global_api_secret: Secret paired with global_api_key. Must be supplied together with it.
         flink_api_key: Flink region API key, usable only against Flink routes. Used when no
-            global key is supplied. Either this pair or the global_api_key pair must be provided.
+            global key is supplied. Under the default `auth="api_key"` mode, either this pair or
+            the global_api_key pair must be provided; under `auth="oauth"` no API key is supplied
+            (see `auth`).
         flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
         tableflow_api_key: API key for the Tableflow control-plane routes (enable/get/disable
             Tableflow). Only consulted when no global key is supplied; a global key already
@@ -304,14 +321,38 @@ def connect(  # noqa: PLR0913
         identity_pool_id: The Confluent identity-pool id that scopes external_access_token, stamped
             as the `Confluent-Identity-Pool-Id` header. Must be supplied together with
             external_access_token.
+        auth: Selects the authentication mode. `"api_key"` (default) is the API-key/BYOIDC modes
+            documented above. `"oauth"` selects interactive human-login OAuth (#150): the
+            driver opens a browser for a one-time Confluent Cloud sign-in and shares the resulting
+            login process-wide (one browser bounce per process, even across many Connections --
+            see `confluent_sql.oauth`), then uses the resulting control-plane token for Tableflow,
+            Connect, and CMK, and the data-plane token for Flink. Mutually exclusive with every
+            API-key parameter above and with the BYOIDC pair; organization_id becomes optional
+            (see below). `oauth_config` and `oauth_provider_factory` are only meaningful with
+            `auth="oauth"`.
+        oauth_config: Deliberately **not** a public API: only Confluent-internal developers
+            ever need it, to sign in against a non-production Confluent Cloud environment
+            (`confluent_sql.oauth.config.STAG` / `DEVEL`). Defaults to `confluent_sql.oauth.PROD`.
+            Only valid when `auth="oauth"`. Subject to change without notice.
+        oauth_provider_factory: Internal testing hook for `auth="oauth"`; production callers
+            should never need to pass this. Forwarded to `confluent_sql.oauth.acquire()`.
+        reauth: How to recover once an `auth="oauth"` session can no longer be refreshed (the
+            ~8h absolute session lifetime, or the token endpoint rejecting the refresh token as
+            idle-expired/revoked/already-spent). `"auto"` (default) catches that condition
+            transparently, blocks on `confluent_sql.oauth.reauthenticate()` -- another browser
+            round-trip -- and retries the request; `auth="oauth"` is inherently a human-present
+            mode (login itself requires a browser), so popping one again hours later to keep
+            going is unsurprising for the common case. `"raise"` opts back out to surfacing
+            `ReauthenticationRequired` instead, for a session that *started* under a human but may
+            be unattended by the time it crosses the wall (a long dbt run kicked off and left
+            running, a notebook kernel idle overnight) -- there, `"auto"` fails no faster than
+            `"raise"` would have (both eventually give up with no one at the browser), it just
+            spends the login timeout finding that out. Only valid with `auth="oauth"`.
         environment_id: Environment ID
-        organization_id: Organization ID. Required unless a global_api_key/global_api_secret
-            pair is supplied, in which case it may be omitted: it's inferred lazily, on first
-            use of the connection, via GET /org/v2/organizations (only when exactly one
-            organization is visible to the key). OperationalError surfaces from that first use,
-            not from connect() itself, if zero or multiple organizations are visible. A
-            Flink-only key or a dedicated Tableflow/Connect key has no such reach and always
-            requires organization_id.
+        organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
+            interactive login's session) or with a global_api_key/global_api_secret pair (inferred
+            on first use). Required with a Flink-only API key, which has no reach to determine it;
+            omitting it there raises `InterfaceError`.
         compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
             created on this connection name no pool, so Confluent Cloud Flink runs them in
             the environment+region default compute pool (provisioning if necessary). Individual
@@ -325,9 +366,9 @@ def connect(  # noqa: PLR0913
             table/view/udf names (optional)
         database_kafka_cluster_id: The `lkc-…` id of the Kafka cluster backing `database`
             (optional). Supplying it lets the Tableflow and connector methods skip the CMK
-            name→id lookup (which needs a global/cloud key), so they work with only their
-            dedicated key pair. Omitted, the id is resolved lazily from `database` via CMK on
-            first such use, which requires a global key.
+            name→id lookup (which needs a global key or `auth="oauth"`), so they work with only
+            their dedicated key pair. Omitted, the id is resolved lazily from `database` via CMK
+            on first such use, which requires a global key or an interactive OAuth connection.
         local_time_zone: Seeds the read/write `Connection.local_time_zone` property (optional).
             When set, every statement submitted on this connection carries `sql.local-time-zone`
             unless the call's own `properties=`/`StatementProperties` already sets it, which takes
@@ -372,12 +413,17 @@ def connect(  # noqa: PLR0913
         OperationalError: If connection cannot be established
     """
 
+    # All parameter validation now lives in Connection.__init__() (#213), the single source of
+    # truth: connect() just forwards. Connection is directly constructible without going through
+    # connect(), so centralizing there keeps both entry points validating identically -- including
+    # _resolve_oauth_config's oauth-vs-api-key mutual-exclusion checks, which run there before any
+    # interactive login can pop a browser.
     return Connection(
         environment_id,
-        organization_id,
         cloud_provider,
         cloud_region,
         endpoint,
+        organization_id,
         global_api_key=global_api_key,
         global_api_secret=global_api_secret,
         flink_api_key=flink_api_key,
@@ -388,6 +434,10 @@ def connect(  # noqa: PLR0913
         connect_api_secret=connect_api_secret,
         external_access_token=external_access_token,
         identity_pool_id=identity_pool_id,
+        auth=auth,
+        oauth_config=oauth_config,
+        oauth_provider_factory=oauth_provider_factory,
+        reauth=reauth,
         compute_pool_id=compute_pool_id,
         database=database,
         database_kafka_cluster_id=database_kafka_cluster_id,
@@ -458,6 +508,17 @@ class Connection:
     _byoidc: bool
     """True when authenticating with a customer-supplied BYOIDC bearer token (Flink data plane
     only); drives the honest fail-closed messages on the control-plane guards."""
+    _oauth: bool
+    """True when authenticating via interactive human-login OAuth (auth="oauth", #150).
+    Lifts the control-plane guards' global-key requirement -- see _resolve_kafka_cluster_id and
+    _get_controlplane_client/_get_connect_controlplane_client."""
+    _oauth_provider: OAuthProvider | None
+    """The process-wide shared provider acquired via oauth.acquire() when _oauth is True; None
+    otherwise. Never closed directly by this Connection -- see close()."""
+    _reauth_policy: Literal["auto", "raise"]
+    """How to respond when a request raises ReauthenticationRequired -- see connect()'s
+    `reauth` docstring. Consulted by _send_with_reauth_policy regardless of _oauth, though it is
+    only ever meaningful under auth="oauth", the only mode that can raise that exception."""
     _flink_client: httpx.Client | None
     """Lazily created on first Flink request (see _get_flink_client()); None until then. Deferred so
     that construction never blocks on the network call organization_id inference may need."""
@@ -466,13 +527,15 @@ class Connection:
 
     _controlplane_endpoint: str
     """Base URL for the control plane (Tableflow, Connect, CMK), distinct from the Flink gateway."""
-    _controlplane_auth: tuple[str, str] | None
-    """(key, secret) shared by `_tableflow_request`, `_cmk_request`, and
-    `_organization_lookup_request` -- a global key, or (Tableflow calls only) a Tableflow-scoped
-    key pair -- or None if no usable credential exists. Distinct from `_connect_auth`, Connect's
-    own separate credential slot."""
-    _connect_auth: tuple[str, str] | None
-    """(key, secret) for Connect routes, or None if no usable credential exists."""
+    _controlplane_auth: httpx.Auth | None
+    """Shared by `_tableflow_request`, `_cmk_request`, and `_organization_lookup_request`:
+    httpx.BasicAuth over a global or (Tableflow calls only) Tableflow-scoped key pair in API-key
+    mode, or the shared control-plane token view under oauth mode -- or None if no usable
+    credential exists. Distinct from `_connect_auth`, Connect's own separate credential slot."""
+    _connect_auth: httpx.Auth | None
+    """For Connect routes; same shape as `_controlplane_auth` (under oauth mode the two are the
+    same object -- one control-plane token reaches Tableflow, Connect, and CMK alike), or None if
+    no usable credential exists."""
     _global_credentials: tuple[str, str] | None
     """(key, secret) of the global API key if one was supplied -- the only credential CMK takes."""
     _controlplane_client: httpx.Client | None
@@ -488,13 +551,13 @@ class Connection:
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915, PLR0912
         self,
         environment_id: str,
-        organization_id: str,
         cloud_provider: str | None,
         cloud_region: str | None,
         endpoint: str | None,
+        organization_id: str = "",
         *,
         global_api_key: str | None = None,
         global_api_secret: str | None = None,
@@ -506,6 +569,10 @@ class Connection:
         connect_api_secret: str | None = None,
         external_access_token: str | None = None,
         identity_pool_id: str | None = None,
+        auth: Literal["api_key", "oauth"] = "api_key",
+        oauth_config: CCloudOAuthConfig | None = None,
+        oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
+        reauth: Literal["auto", "raise"] = "auto",
         compute_pool_id: str | None = None,
         database: str | None = None,
         database_kafka_cluster_id: str | None = None,
@@ -520,12 +587,14 @@ class Connection:
 
         Args:
             global_api_key: A "Global" Confluent Cloud API key, usable against every route this
-                driver touches. Preferred over flink_api_key when both are supplied. Either this
-                pair or the flink_api_key pair must be provided.
+                driver touches. Preferred over flink_api_key when both are supplied. Under the
+                default `auth="api_key"` mode, either this pair or the flink_api_key pair must be
+                provided; under `auth="oauth"` no API key is supplied (see `auth`).
             global_api_secret: Secret paired with global_api_key. Must be supplied together with it.
             flink_api_key: Flink region API key, usable only against Flink routes. Used when no
-                global key is supplied. Either this pair or the global_api_key pair must be
-                provided.
+                global key is supplied. Under the default `auth="api_key"` mode, either this pair
+                or the global_api_key pair must be provided; under `auth="oauth"` no API key is
+                supplied (see `auth`).
             flink_api_secret: Secret paired with flink_api_key. Must be supplied together with it.
             tableflow_api_key: API key for the Tableflow control-plane routes. Only consulted
                 when no global key is supplied. Must be supplied together with tableflow_api_secret.
@@ -541,13 +610,15 @@ class Connection:
                 the connection (reconnect with a fresh one).
             identity_pool_id: Identity-pool id scoping external_access_token, stamped as the
                 `Confluent-Identity-Pool-Id` header. Must be supplied with external_access_token.
+            auth: Selects the authentication mode -- see `connect()`'s docstring for the full
+                description. `"oauth"` is mutually exclusive with every API-key parameter and
+                with the BYOIDC pair.
+            oauth_config: Not a public API (Confluent-internal use); only valid with
+                `auth="oauth"`. See `connect()`.
+            oauth_provider_factory: Internal testing hook for `auth="oauth"`. See `connect()`.
+            reauth: How to recover an `auth="oauth"` session that can no longer be refreshed.
+                See `connect()`.
             environment_id: Environment ID
-            organization_id: Organization ID. Required unless a global_api_key/global_api_secret
-                pair is supplied; omitting it with no global key raises InterfaceError here (#213),
-                the same as connect() -- a Flink-only key or a dedicated Tableflow/Connect key has
-                no /org/v2 reach to infer it. When omitted ("") with a global key present, it's
-                left unresolved and inferred lazily from the `organization_id` property (see there)
-                on first use rather than here.
             cloud_provider: Cloud provider (required if endpoint is not provided)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
                 not provided.
@@ -559,6 +630,10 @@ class Connection:
                 If your Kafka clusters / Flink tables require private networking, supply the base
                 endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for
                 example, but cases and private networking technologies vary).
+            organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
+                interactive login's session) or with a global_api_key/global_api_secret pair
+                (inferred on first use). Required with a Flink-only API key, which has no reach to
+                determine it; omitting it there raises `InterfaceError`.
             compute_pool_id: Optional compute pool ID for SQL execution. If omitted (None) or
                 empty, statements created on this connection name no pool and Confluent Cloud
                 Flink runs them in the environment+region default compute pool.
@@ -566,7 +641,7 @@ class Connection:
             database_kafka_cluster_id: The `lkc-…` id of the Kafka cluster backing `database`
                 (optional). Pre-seeds the Tableflow cluster-id cache so the CMK lookup never
                 fires; otherwise the id is resolved lazily from `database` via CMK (needs a
-                global key).
+                global key or an interactive OAuth connection).
             local_time_zone: Seeds the read/write `local_time_zone` property (optional). See the
                 property's docstring for the precedence rules and mutation semantics.
             controlplane_endpoint: Base URL for the control plane (Tableflow, Connect, CMK).
@@ -581,6 +656,26 @@ class Connection:
             http_timeout_secs: Timeout in seconds applied to the underlying httpx client.
                            Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS.
         """
+
+        # Validate api key vs oauth first, so that we can raise errors about auth misconfiguration
+        # as simply and early as possible before we might complain about lesser issues.
+        oauth_cfg = _resolve_oauth_config(
+            auth,
+            oauth_config,
+            reauth,
+            external_access_token,
+            identity_pool_id,
+            global_api_key,
+            global_api_secret,
+            flink_api_key,
+            flink_api_secret,
+            tableflow_api_key,
+            tableflow_api_secret,
+            connect_api_key,
+            connect_api_secret,
+        )
+        self._reauth_policy = reauth
+
         # Validated here (not only in connect()) so direct Connection() construction fails fast
         # too (#213): an empty environment_id interpolates into request paths and would otherwise
         # only surface later as a confusing server-side 404 rather than a clear InterfaceError.
@@ -588,18 +683,19 @@ class Connection:
             raise InterfaceError("Environment ID is required")
         self.environment_id = environment_id
 
-        # Validated here too (not only in connect()) so direct Connection() construction fails
-        # fast (#213). Without this gate an empty organization_id with no global key would be
-        # silently accepted -- the organization_id property used to fall back to "" when it had no
-        # global key to infer from -- and only surface later as a malformed request path / confusing
-        # 404 (organization_id is interpolated into the Flink base URL). Any global key material
-        # (even a half-supplied pair) defers this gate to the more specific
-        # "must be provided together" credential error _resolve_*_credentials raises below,
-        # otherwise a half-supplied pair plus an omitted organization_id would be misdiagnosed as
-        # a missing org id instead of the actual credential mistake (#144 review). Mirrors the
-        # check connect() used to own.
+        # Validated here (the single source of truth since #213; connect() no longer duplicates
+        # it). Without this gate an empty organization_id with no global key would be silently
+        # accepted -- the organization_id property used to fall back to "" when it had no global
+        # key to infer from -- and only surface later as a malformed request path / confusing 404
+        # (organization_id is interpolated into the Flink base URL). Any global key material (even
+        # a half-supplied pair) defers this gate to the more specific "must be provided together"
+        # credential error _resolve_*_credentials raises below, otherwise a half-supplied pair plus
+        # an omitted organization_id would be misdiagnosed as a missing org id instead of the actual
+        # credential mistake (#144 review). auth="oauth" is exempt for a different reason: it has
+        # its own reach to discover organization_id (the interactive login's session), so the
+        # omission is never an error for that mode.
         global_key_provided = bool(global_api_key) or bool(global_api_secret)
-        if not organization_id and not global_key_provided:
+        if not organization_id and not global_key_provided and auth != "oauth":
             raise InterfaceError("Organization ID is required")
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
@@ -664,41 +760,73 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        # _resolve_flink_auth validates the BYOIDC pair and its mutual exclusion with every API-key
-        # parameter *before* _resolve_*_credentials runs, so BYOIDC mode never reaches (and never
-        # trips) the "either global or flink" API-key check. In BYOIDC mode every key param is
-        # empty by construction, so the three control-plane resolvers below return None and the
-        # control plane fails closed -- see the guards' self._byoidc branches.
-        self._flink_auth, self._byoidc = _resolve_flink_auth(
-            external_access_token,
-            identity_pool_id,
-            global_api_key,
-            global_api_secret,
-            flink_api_key,
-            flink_api_secret,
-            tableflow_api_key,
-            tableflow_api_secret,
-            connect_api_key,
-            connect_api_secret,
-        )
-        self._flink_endpoint = endpoint
-
-        # Control-plane (Tableflow, CMK) plumbing. The client is built lazily on first use so a
-        # connection that never touches Tableflow pays nothing, and one with no usable
-        # control-plane credential still constructs fine -- the error surfaces only when Tableflow
-        # is invoked.
+        self._oauth = oauth_cfg is not None
         self._controlplane_endpoint = (
             controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
-        self._controlplane_auth = _resolve_tableflow_credentials(
-            global_api_key, global_api_secret, tableflow_api_key, tableflow_api_secret
-        )
-        self._connect_auth = _resolve_connect_credentials(
-            global_api_key, global_api_secret, connect_api_key, connect_api_secret
-        )
-        self._global_credentials = (
-            (global_api_key, global_api_secret) if global_api_key and global_api_secret else None
-        )
+        if oauth_cfg is not None:
+            # May block for minutes on a real browser login -- or return immediately, joining one
+            # already in flight, or reusing an already-established one. Every cheap validation
+            # above (including oauth_cfg's own mutual-exclusion checks) has already run, so a bad
+            # parameter combination never pops a browser before failing. organization_id or None
+            # (not the raw parameter) so an omitted org -- spelled "" since organization_id has no
+            # default -- is treated by the holder's one-identity guard as "inherit," never as a
+            # conflicting explicit value.
+            provider = acquire(
+                oauth_cfg, organization_id or None, provider_factory=oauth_provider_factory
+            )
+            self._oauth_provider = provider
+            self._flink_auth = provider.data_plane_auth
+            self._byoidc = False
+            # One control-plane token reaches Tableflow, Connect, and CMK alike -- the capability
+            # gain over API-key mode, which needs a separate credential per surface. Safe to share
+            # the same httpx.Auth object across both clients: it holds no per-client state, only a
+            # reference back to the shared, lock-guarded provider.
+            self._controlplane_auth = provider.control_plane_auth
+            self._connect_auth = provider.control_plane_auth
+            self._global_credentials = None
+        else:
+            self._oauth_provider = None
+            # _resolve_flink_auth validates the BYOIDC pair and its mutual exclusion with every
+            # API-key parameter *before* _resolve_*_credentials runs, so BYOIDC mode never reaches
+            # (and never trips) the "either global or flink" API-key check. In BYOIDC mode every
+            # key param is empty by construction, so the three control-plane resolvers below
+            # return None and the control plane fails closed -- see the guards' self._byoidc
+            # branches.
+            self._flink_auth, self._byoidc = _resolve_flink_auth(
+                external_access_token,
+                identity_pool_id,
+                global_api_key,
+                global_api_secret,
+                flink_api_key,
+                flink_api_secret,
+                tableflow_api_key,
+                tableflow_api_secret,
+                connect_api_key,
+                connect_api_secret,
+            )
+            tableflow_pair = _resolve_tableflow_credentials(
+                global_api_key, global_api_secret, tableflow_api_key, tableflow_api_secret
+            )
+            self._controlplane_auth = (
+                httpx.BasicAuth(username=tableflow_pair[0], password=tableflow_pair[1])
+                if tableflow_pair
+                else None
+            )
+            connect_pair = _resolve_connect_credentials(
+                global_api_key, global_api_secret, connect_api_key, connect_api_secret
+            )
+            self._connect_auth = (
+                httpx.BasicAuth(username=connect_pair[0], password=connect_pair[1])
+                if connect_pair
+                else None
+            )
+            self._global_credentials = (
+                (global_api_key, global_api_secret)
+                if global_api_key and global_api_secret
+                else None
+            )
+        self._flink_endpoint = endpoint
         self._connector_api = None
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
         # Tableflow work with only a tableflow key pair (no global key needed for CMK).
@@ -709,6 +837,10 @@ class Connection:
     def close(self) -> None:
         """
         Close the connection.
+
+        Under `auth="oauth"` this never closes the shared OAuth provider -- other Connections in
+        the process may still be using it; it lives for the life of the process unless
+        `oauth.discard_login()` is called.
         """
         if not self._closed:
             self._closed = True
@@ -1456,18 +1588,43 @@ class Connection:
         """
         The connection's Confluent Cloud organization id.
 
-        Returned as supplied to connect()/Connection() if given. If omitted, it must have been
-        omitted alongside a global API key (Connection.__init__ rejects an omitted organization_id
-        with no global key, #213), so it is inferred once via GET /org/v2/organizations on first
-        access and cached thereafter -- see _resolve_organization_id().
+        Returned as supplied to connect()/Connection() if given. If omitted under `auth="oauth"`,
+        the organization the interactive login's session resolved (see `_oauth_provider`) -- no
+        network call here, since `oauth.acquire()` already settled it synchronously in __init__.
+        If omitted under an API-key mode, it must have been omitted alongside a global API key
+        (Connection.__init__ rejects an omitted organization_id with no global key outside oauth,
+        #213), so it is inferred once via GET /org/v2/organizations on first access and cached
+        thereafter -- see _resolve_organization_id().
         """
         if self._organization_id_value is None:
-            # Reaching here means organization_id was omitted; __init__'s gate guarantees that only
-            # happens when a global key is present, so _global_credentials is not None and
-            # inference can proceed (#213). The old "no global key -> return ''" fallback is now
-            # unreachable and has been removed.
-            self._organization_id_value = self._resolve_organization_id()
+            if self._oauth_provider is not None:
+                self._organization_id_value = self._oauth_provider.organization_id or ""
+            else:
+                # Reaching here (non-oauth, org omitted) means __init__'s gate guaranteed a global
+                # key is present, so _global_credentials is not None and inference can proceed
+                # (#213). The old "no global key -> return ''" fallback is now unreachable and has
+                # been removed.
+                self._organization_id_value = self._resolve_organization_id()
         return self._organization_id_value
+
+    @property
+    def oauth_metrics(self) -> OAuthMetrics | None:
+        """Timing/counts for the in-loop token refreshes of this connection's OAuth provider
+        (auth="oauth"), or None under every other auth mode.
+
+        **Not per-connection telemetry.** `oauth.acquire()` hands out one process-wide shared
+        provider (`ProcessOAuthHolder`) -- every `Connection` in the process that logs in
+        under the same identity gets the *same* provider, and `Connection.close()` never
+        tears it down, so the shared provider and its accumulated metrics outlive any one
+        connection. A newly opened
+        `Connection` reusing that provider can observe a nonzero `refresh_chain_count` from
+        refreshes triggered by another connection's requests, or from before this one existed.
+
+        Covers only refreshes triggered *during* the shared provider's life, never the interactive
+        login `connect()` performed to establish it -- see `OAuthMetrics`. The supported
+        replacement for reading `_oauth_provider` directly.
+        """
+        return self._oauth_provider.metrics if self._oauth_provider is not None else None
 
     @property
     def local_time_zone(self) -> str | None:
@@ -1925,9 +2082,10 @@ class Connection:
         """Issue a request against a CMK (Cluster Management for Kafka) route.
 
         Only ever called by `_lookup_cluster_ids_by_name`, itself only reached from
-        `_resolve_kafka_cluster_id` once `_global_credentials is not None` -- CMK doesn't accept a
-        Tableflow-scoped key, so by the time this method runs the resolved credential is always
-        the global key. Shares the underlying control-plane client with `_tableflow_request` and
+        `_resolve_kafka_cluster_id` once `_global_credentials is not None` or the connection is in
+        oauth mode -- CMK doesn't accept a Tableflow-scoped key, so by the time this method runs
+        the resolved credential is always either the global key or the shared control-plane
+        token. Shares the underlying control-plane client with `_tableflow_request` and
         `_organization_lookup_request`; see that method's docstring for why they're split by name
         rather than sharing one ambiguous entry point.
         """
@@ -2000,7 +2158,9 @@ class Connection:
         if self._closed:
             raise InterfaceError("Connection is closed")
 
-        response = self._get_flink_client().request(method, url, **kwargs)
+        response = self._send_with_reauth_policy(
+            lambda: self._get_flink_client().request(method, url, **kwargs)
+        )
         logger.debug("Response: %s", response.content)
         if raise_for_status:
             self._raise_for_status_as_operational_error(response)
@@ -2017,7 +2177,7 @@ class Connection:
         docstring for the one place that still needs it.
         """
         try:
-            response = client.request(method, url, **kwargs)
+            response = self._send_with_reauth_policy(lambda: client.request(method, url, **kwargs))
             logger.debug("Response: %s", response.content)
             if raise_for_status:
                 self._raise_for_status_as_operational_error(response)
@@ -2025,15 +2185,37 @@ class Connection:
         except httpx.RequestError as e:
             self._wrap_request_error(e)
 
-    def _make_controlplane_client(self, auth: tuple[str, str]) -> httpx.Client:
-        """Build a control-plane httpx client authenticated with the given (key, secret).
+    def _send_with_reauth_policy(self, do_request: Callable[[], httpx.Response]) -> httpx.Response:
+        """Run one HTTP call, applying `self._reauth_policy` if it raises `ReauthenticationRequired`
+        -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
+        of stamping a request, once its session's refresh token can no longer be used.
+
+        `"raise"` lets it propagate untouched. `"auto"` (the default) instead blocks on
+        `oauth.reauthenticate()` -- itself single-flighted process-wide, so concurrent callers
+        hitting the wall together still cost one browser bounce -- and retries `do_request` exactly
+        once; a `reauthenticate()` failure (a denied/timed-out login, a failed token exchange)
+        propagates as-is, and is not retried further.
+
+        The sole chokepoint for this: every HTTP call this `Connection` makes, Flink or
+        control-plane, funnels through here via `_request_raw` or `_send_request`.
+        """
+        try:
+            return do_request()
+        except ReauthenticationRequired:
+            if self._reauth_policy == "raise":
+                raise
+            oauth_reauthenticate()
+            return do_request()
+
+    def _make_controlplane_client(self, auth: httpx.Auth) -> httpx.Client:
+        """Build a control-plane httpx client authenticated with the given auth.
 
         Shared by the Tableflow and Connect surfaces, which target the same control-plane host
-        but may carry distinct dedicated credentials when no global key is supplied.
+        but may carry distinct dedicated credentials when no global key is supplied (API-key
+        mode) or the same shared control-plane token view (oauth mode).
         """
-        key, secret = auth
         client_kwargs: dict[str, Any] = {
-            "auth": httpx.BasicAuth(username=key, password=secret),
+            "auth": auth,
             "base_url": self._controlplane_endpoint,
             "headers": {
                 "Content-Type": "application/json",
@@ -2073,9 +2255,9 @@ class Connection:
         client/connection-pool, since all three hit the same host under the same resolved
         credential). The ProgrammingError below is worded for Tableflow specifically because it's
         provably the only caller that can ever trigger it: both the CMK and org-lookup call paths
-        (`_resolve_kafka_cluster_id`, the `organization_id` property) already require
-        `_global_credentials` to be set before they ever reach this method, which guarantees
-        `_controlplane_auth` is the global pair (not None) by the time they get here.
+        (`_resolve_kafka_cluster_id`, the `organization_id` property) already require either
+        `_global_credentials` to be set or oauth mode (`self._oauth`) before they ever reach this
+        method, which guarantees `_controlplane_auth` is not None by the time they get here.
 
         Raises:
             InterfaceError: If the connection is closed.
@@ -2231,7 +2413,7 @@ class Connection:
         Raises:
             InterfaceError: If table_formats is empty or names an unknown format.
             ProgrammingError: If no control-plane credential is available, or the cluster id
-                can't be resolved without a global key.
+                can't be resolved without a global key or an interactive OAuth connection.
             TableflowTopicAlreadyExistsError: If Tableflow is already enabled (HTTP 409).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
@@ -2276,7 +2458,7 @@ class Connection:
         Raises:
             ProgrammingError: If the Kafka cluster id can't be resolved -- no
                 database_kafka_cluster_id was supplied and CMK resolution is unavailable
-                (no global key).
+                (no global key and no interactive OAuth connection).
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
@@ -2396,7 +2578,7 @@ class Connection:
         Raises:
             ProgrammingError: If the Kafka cluster id can't be resolved -- no
                 database_kafka_cluster_id was supplied and CMK resolution is unavailable
-                (no global key).
+                (no global key and no interactive OAuth connection).
             TableflowTopicNotFoundError: If Tableflow was not enabled for the topic (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
@@ -2487,7 +2669,9 @@ class Connection:
 
         Raises:
             ProgrammingError: If no id was seeded and CMK resolution isn't possible -- under BYOIDC
-                (CMK accepts only API keys), with no global key, or with no database name.
+                (the CMK route doesn't accept a BYOIDC bearer token), with no global key and no
+                oauth login (auth="oauth" lifts the global-key requirement), or with no database
+                name.
             OperationalError: If no cluster, or more than one cluster, matches the database name.
         """
         if self._resolved_kafka_cluster_id is not None:
@@ -2496,13 +2680,14 @@ class Connection:
         if self._byoidc:
             raise ProgrammingError(
                 "Resolving the Kafka cluster id from the database name is not reachable with a "
-                "BYOIDC bearer token: the CMK route accepts only API keys. Pass "
+                "BYOIDC bearer token: the CMK route doesn't accept one. Pass "
                 "database_kafka_cluster_id to connect() to skip the lookup."
             )
-        if self._global_credentials is None:
+        if not self._oauth and self._global_credentials is None:
             raise ProgrammingError(
-                "Resolving the Kafka cluster id from the database name requires a global API key; "
-                "alternatively pass database_kafka_cluster_id to connect()."
+                "Resolving the Kafka cluster id from the database name requires a global API "
+                "key or an interactive OAuth connection (auth='oauth'); alternatively pass "
+                "database_kafka_cluster_id to connect()."
             )
         if not self._database:
             raise ProgrammingError(
@@ -2591,6 +2776,77 @@ class Connection:
         # Collapse an empty/absent token to None: list_statements' pagination loop terminates on
         # `next_page_token is not None`, so an empty string would spin it forever.
         return page_token or None
+
+
+def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
+    auth: str,
+    oauth_config: CCloudOAuthConfig | None,
+    reauth: str,
+    external_access_token: str | None,
+    identity_pool_id: str | None,
+    global_api_key: str | None,
+    global_api_secret: str | None,
+    flink_api_key: str | None,
+    flink_api_secret: str | None,
+    tableflow_api_key: str | None,
+    tableflow_api_secret: str | None,
+    connect_api_key: str | None,
+    connect_api_secret: str | None,
+) -> CCloudOAuthConfig | None:
+    """Validate the `auth=`/`reauth=` mode selection and return the environment to log in against.
+
+    Pure and network-free, mirroring `_resolve_flink_auth`'s role for the older two modes --
+    called before any network or browser activity so a bad parameter combination fails fast,
+    never after a browser has already been popped for the login.
+
+    Returns:
+        The `CCloudOAuthConfig` to log in against (`oauth_config` if supplied, else `PROD`) when
+        `auth == "oauth"`; `None` for `auth == "api_key"` (BYOIDC/API-key mode, resolved
+        separately by `_resolve_flink_auth`).
+
+    Raises:
+        InterfaceError: If `auth` names neither mode; if `oauth_config` is supplied while
+            `auth != "oauth"`; if `auth == "oauth"` is combined with the BYOIDC pair or any
+            API-key parameter -- interactive OAuth supplies its own credentials for every surface;
+            if `reauth` names neither `"auto"` nor `"raise"`; or if a non-default `reauth` is
+            supplied while `auth != "oauth"` (there is no wall to hit outside interactive OAuth).
+    """
+    if reauth not in ("auto", "raise"):
+        raise InterfaceError(f"reauth must be 'auto' or 'raise', got {reauth!r}")
+
+    if auth not in ("api_key", "oauth"):
+        raise InterfaceError(f"auth must be 'api_key' or 'oauth', got {auth!r}")
+
+    if auth != "oauth":
+        if oauth_config is not None:
+            raise InterfaceError("oauth_config may only be supplied when auth='oauth'")
+        if reauth != "auto":
+            raise InterfaceError("reauth may only be supplied when auth='oauth'")
+        return None
+
+    if external_access_token or identity_pool_id:
+        raise InterfaceError(
+            "auth='oauth' cannot be combined with external_access_token/identity_pool_id; "
+            "interactive OAuth and BYOIDC bearer-token auth are mutually exclusive."
+        )
+    if any(
+        (
+            global_api_key,
+            global_api_secret,
+            flink_api_key,
+            flink_api_secret,
+            tableflow_api_key,
+            tableflow_api_secret,
+            connect_api_key,
+            connect_api_secret,
+        )
+    ):
+        raise InterfaceError(
+            "auth='oauth' cannot be combined with API key credentials "
+            "(global/flink/tableflow/connect); interactive OAuth and API-key auth are mutually "
+            "exclusive."
+        )
+    return oauth_config if oauth_config is not None else PROD
 
 
 class RowTypeRegistry:
