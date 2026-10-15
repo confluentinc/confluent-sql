@@ -14,6 +14,7 @@ import os
 import zipfile
 from collections.abc import Generator
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -115,6 +116,13 @@ def created_artifact_ids(artifacts: ArtifactsApi) -> Generator[list[str], None, 
             artifacts.delete(artifact_id)
 
 
+@pytest.fixture()
+def zip_on_disk(tmp_path: Path) -> Path:
+    path = tmp_path / "udf_package.zip"
+    path.write_bytes(_tiny_zip())
+    return path
+
+
 @pytest.mark.integration
 class TestArtifactLifecycle:
     def test_create_read_list_update_delete_arc(
@@ -168,3 +176,44 @@ class TestArtifactLifecycle:
     def test_get_missing_artifact_raises_not_found(self, artifacts: ArtifactsApi) -> None:
         with pytest.raises(ArtifactNotFoundError):
             artifacts.get("cfa-doesnotexist")
+
+
+@pytest.mark.integration
+class TestArtifactFileInputs:
+    """`create` accepts a path or an open binary file as well as bytes; each goes through a
+    different branch of the real multipart upload to the object store."""
+
+    def test_create_from_path_infers_content_format(
+        self,
+        artifacts: ArtifactsApi,
+        artifact_name: str,
+        created_artifact_ids: list[str],
+        zip_on_disk: Path,
+    ) -> None:
+        # No content_format: it must be inferred from the ".zip" suffix.
+        artifact = artifacts.create(
+            artifact_name, file=zip_on_disk, runtime_language=ArtifactRuntimeLanguage.PYTHON
+        )
+        created_artifact_ids.append(artifact.id)
+
+        assert artifact.content_format is ArtifactContentFormat.ZIP
+        assert artifacts.get(artifact.id).latest_version is not None
+
+    def test_create_from_open_binary_file(
+        self,
+        artifacts: ArtifactsApi,
+        artifact_name: str,
+        created_artifact_ids: list[str],
+        zip_on_disk: Path,
+    ) -> None:
+        with zip_on_disk.open("rb") as f:
+            artifact = artifacts.create(
+                artifact_name,
+                file=f,
+                content_format=ArtifactContentFormat.ZIP,
+                runtime_language=ArtifactRuntimeLanguage.PYTHON,
+            )
+        created_artifact_ids.append(artifact.id)
+
+        assert artifact.content_format is ArtifactContentFormat.ZIP
+        assert artifacts.get(artifact.id).latest_version is not None
