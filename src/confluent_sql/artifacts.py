@@ -276,7 +276,7 @@ class FlinkArtifact:
     """A Flink artifact as read back from the API (`artifact.v1.FlinkArtifact`).
 
     `raw` keeps the full response, including `metadata` (self link, CRN, timestamps). `versions`
-    is populated only by `get_artifact`, not by create or list.
+    is populated only by `get`, not by create or list.
     """
 
     id: str

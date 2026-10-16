@@ -12,7 +12,7 @@ import logging
 import re
 import uuid
 from collections import namedtuple
-from collections.abc import Collection, Generator
+from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from typing import Any, NoReturn
@@ -1915,7 +1915,13 @@ class Connection:
         kwargs.pop("raise_for_status", None)
         return self._get_with_retries(self._request_raw, url, True, **kwargs)
 
-    def _get_with_retries(self, send_raw, url, raise_for_status: bool, **kwargs) -> httpx.Response:
+    def _get_with_retries(
+        self,
+        send_raw: Callable[..., httpx.Response],
+        url: str,
+        raise_for_status: bool,
+        **kwargs: Any,
+    ) -> httpx.Response:
         """Retry loop shared by `_request_get` (Flink gateway) and artifact GETs (control plane).
 
         `send_raw(url, raise_for_status=False, **kwargs)` must issue the request without
@@ -1966,7 +1972,7 @@ class Connection:
         )
 
     def _artifact_request(
-        self, url, method="GET", raise_for_status=True, **kwargs
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """Request against a `/artifact/v1` route, on the artifact (global or cloud-key) client.
 
@@ -1988,7 +1994,7 @@ class Connection:
         )
 
     def _artifact_request_raw(
-        self, url, method="GET", raise_for_status=True, **kwargs
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """Artifact counterpart of `_request_raw`: no httpx.RequestError translation, for
         `_get_with_retries`."""
@@ -2249,7 +2255,7 @@ class Connection:
         return self._resolve_kafka_cluster_id()
 
     def artifact_controlplane_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """ArtifactsContext hook."""
         return self._artifact_request(url, method, raise_for_status, **kwargs)
