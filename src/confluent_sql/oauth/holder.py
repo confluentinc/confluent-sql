@@ -102,7 +102,9 @@ def reauthenticate(*, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> None:
 
     Module-level convenience over `ProcessOAuthHolder.instance().reauthenticate(...)`, the peer of
     `acquire()` for recovering a session once its refresh token can no longer be used (the ~8h
-    absolute wall, or the token endpoint rejecting it as idle-expired/revoked/already-spent). See
+    absolute wall, or the token endpoint rejecting it as idle-expired/revoked/already-spent). A
+    recovery operation, not a forced re-login: it is a no-op when the session has no latched
+    failure, i.e. is healthy or was already recovered by another caller. See
     `ProcessOAuthHolder.reauthenticate` for the full contract.
     """
     ProcessOAuthHolder.instance().reauthenticate(timeout=timeout)
@@ -319,6 +321,10 @@ class ProcessOAuthHolder:
         `Connection`s hitting the wall together and each calling this still cost exactly one
         login. The module lock is never held across the call -- released before `reauthenticate()`
         runs, same as `acquire()` never holds it across `login()`.
+
+        A recovery operation, not a forced re-login: like the provider's `reauthenticate()` it
+        returns without logging in when the session has no latched failure -- healthy, or already
+        recovered by another caller (see the provider's docstring for why that is reliable).
 
         Raises:
             ProgrammingError: no OAuth login has been established yet (no `acquire()` has
