@@ -1222,6 +1222,32 @@ class TestReauthenticate:
             # Exactly one fresh login ran: the original login's code grant, plus this one.
             assert len(fake.code_grants) == 2
 
+    def test_a_late_arrival_after_the_recovery_finished_skips_a_second_login(self):
+        """A worker that failed against the old session but only reaches `reauthenticate()` after
+        another's recovery completed (no flight left to join) must not run a second login."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)  # the winner
+            recovered = _tokens(provider)
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)  # the late arrival
+
+            assert _tokens(provider) == recovered
+            # The original login's code grant, plus the winner's -- none for the late arrival.
+            assert len(fake.code_grants) == 2
+
+    def test_on_a_healthy_session_is_a_no_op(self):
+        """`reauthenticate()` recovers a latched failure; with none, there is nothing to do."""
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            before = _tokens(provider)
+
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert _tokens(provider) == before
+            assert len(fake.code_grants) == 1
+
     def test_a_joiner_receives_the_winners_reauthentication_failure(self):
         """A failed reauthentication must cost one attempt, shared by every waiter -- not one
         doomed login per thread."""
@@ -1322,7 +1348,7 @@ class TestReauthenticate:
             joined = threading.Event()
             real_enter_reauth_flight = provider._enter_reauth_flight  # noqa: SLF001
 
-            def enter_reauth_flight_and_signal() -> tuple[Future, bool]:
+            def enter_reauth_flight_and_signal() -> tuple[Future | None, bool]:
                 result = real_enter_reauth_flight()
                 joined.set()
                 return result
