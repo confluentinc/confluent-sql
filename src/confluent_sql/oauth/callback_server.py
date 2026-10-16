@@ -19,7 +19,7 @@ Two behaviors here are less obvious than they look, and both are deliberate:
 
 Out of scope, by design: generating the PKCE verifier/challenge/state (`pkce.py`), building the
 authorize URL, opening the browser, and the token exchanges (`token_chain.py`) -- the provider
-landing in #153 owns the login sequence and merely drives this class through
+owns the login sequence and merely drives this class through
 `start()`/`wait_for_code()`/`stop()`, or the context manager that pairs them.
 """
 

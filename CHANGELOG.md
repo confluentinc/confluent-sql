@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`), so it could gain a default of `""` without a `SyntaxError` from the still-defaultless parameters ahead of it. `connect()` itself was already fully keyword-only and unaffected by this reordering; `Connection()` construction should always use keyword arguments (as every call site in this codebase already does) rather than relying on positional order.
+
 ### Added
 
 - `Connection.dry_run_statement(statement_text, *, mode=ExecutionMode.SNAPSHOT, compute_pool_id=None)`: validate a statement with Flink's `sql.dry-run` in a single request, without running or storing it, and return the resulting `Statement`. The returned `Statement`'s `schema` and `is_append_only` may then be of interest to the caller. Raises `OperationalError` with the server's detail if Flink rejects the statement. (#246)
@@ -11,10 +15,19 @@ All notable changes to this dbapi driver will be documented in this file.
 - Support for the Flink Artifact API (`/artifact/v1/flink-artifacts` and `/presigned-upload-url`), for uploading UDF packages (a JAR, or for Python a ZIP) to Confluent Cloud.
   See `examples/artifact_upload_example.py` for a full example of packaging, uploading and calling a Python UDF artifact end to end.
   Artifact calls authenticate with a global key, or a dedicated Cloud resource management key via the new `cloud_api_key`/`cloud_api_secret` parameters of `connect()`.
+- Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. While the login is in progress the driver listens on the fixed loopback port `127.0.0.1:26642`, which must be free (otherwise `OAuthLoginError` with reason `PORT_IN_USE`). See the README and `examples/interactive_oauth_login.py` (#150).
+- `confluent_sql.oauth_discard_login()`: discard the process's shared interactive OAuth login. Closing a `Connection` never does this; the next `connect(auth="oauth", ...)` opens the browser again. (#150)
+- `connect(..., reauth="auto"|"raise")` (with `auth="oauth"` only): what to do once an OAuth session can no longer be refreshed. `"auto"` (default) opens the browser for a fresh login and retries the request; `"raise"` raises `ReauthenticationRequired` instead, for unattended runs. (#150)
+- New exceptions, all subclasses of `OperationalError` and importable from `confluent_sql` (#150):
+  - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, or `SERVER_ERROR`.
+  - `OAuthTokenEndpointError`: the auth service's token endpoint rejected a request. Carries the OAuth `error_code` (e.g. `"invalid_grant"`) and `http_status_code`.
+  - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
 
 ### Changed
 
 - `Cursor.execute()` rejects `sql.dry-run` property being supplied as True with an `InterfaceError` pointing to use `Connection.dry_run_statement()` instead. Previously, valid SQL raised `StatementNotFoundError` (the cursor polled for a statement the server never stores) and invalid SQL raised `OperationalError`. (#246)
+- `organization_id` is now genuinely optional on both `connect()` and `Connection()` when it can be self-discovered (configured to use either oauth or a global API key).
+- Direct `Connection()` construction's `organization_id` requirement (introduced in 0.6.0, #213) does not apply under `auth="oauth"`, which discovers the organization from the interactive login's session.
 
 ## 0.6.0, 2026-09-29
 
@@ -22,14 +35,6 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - `Connection.enable_tableflow()`: Renamed the `tableflow_formats` parameter to `table_formats`. Update calls from `enable_tableflow(tableflow_formats=...)` to `enable_tableflow(table_formats=...)`. (#214)
 - `TableflowTopicSpec.config`: Now parsed as a typed `TableflowTopicConfig` instead of being left as a raw mapping. If you need unmodeled wire fields, read `topic.spec.raw.get("config")` instead. (#214)
-
-### Changed
-
-- `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`), so it could gain a default of `""` without a `SyntaxError` from the still-defaultless parameters ahead of it. `connect()` itself was already fully keyword-only and unaffected by this reordering; `Connection()` construction should always use keyword arguments (as every call site in this codebase already does) rather than relying on positional order.
-- `organization_id` is now genuinely optional on both `connect()` and `Connection()` when it can be self-discovered (configured to use either oauth or a global API key).
-- Pushed the remaining `connect()`-only validation (`environment_id` and the endpoint-vs-`cloud_provider`/`cloud_region` requirement) down into `Connection.__init__()` as the single source of truth, so `connect()` and direct `Connection()` construction validate uniformly. `connect()` callers see no new errors; direct `Connection()` construction now fails fast with the same `InterfaceError`s (and the more specific per-field message for missing cloud info) instead of deferring to a confusing server-side failure later. (#213)
-- **Behavior change for direct `Connection()` construction:** `organization_id` validation is now centralized in `Connection.__init__()` as well, extending the same fail-fast treatment to the constructor. Constructing a `Connection` directly with an empty `organization_id` and no global key -- outside `auth="oauth"`, which discovers it from the interactive login's session -- now raises `InterfaceError("Organization ID is required")` rather than being silently accepted, and the `organization_id` property's former "no global key → return `""`" fallback has been removed as now-unreachable. (#213)
-- `Statement.can_fetch_results()`'s snapshot-mode branch is now kind/trait-based (schema presence, `is_pure_ddl`, `is_bounded`, `is_append_only`) instead of unconditionally waiting for a terminal phase -- the same logic streaming mode already used. A bounded, append-only snapshot query that actually produces a result set (e.g. a plain projection) is now reported ready as soon as the statement reaches `RUNNING`, instead of blocking `Cursor.execute()` / `Connection.execute_snapshot_ddl()` until `COMPLETED`. Bounded, non-append-only snapshot queries (aggregations that could still retract) and any statement with no result schema at all -- `INSERT INTO`, snapshot CTAS (`CREATE TABLE ... AS SELECT`), and other DML/DDL that produces no rows -- are unaffected and still wait for terminal, since a finite write or population job isn't guaranteed to have landed until then (unlike its streaming counterpart, which may run forever and is ready once RUNNING). This can make `Cursor.execute()` and iteration/`fetchall()` return sooner for snapshot-mode queries that produce a result set. (#205)
 
 ### Added
 
@@ -42,6 +47,12 @@ All notable changes to this dbapi driver will be documented in this file.
 
 - Type conversion methods across `types.py` now consistently raise dbapi-mandated exceptions (`DataError`, `InterfaceError`) rather than a bare builtin (`ValueError`, `decimal.InvalidOperation`) for problems with a Flink response value, a Python value that can't be represented as a Flink SQL literal, or a converter misconfigured with the wrong column type. (#204)
 - `stop_statement(wait_for_stopped=True)` (the default) on a statement that had already reached FAILED on its own -- before the stop was ever requested -- no longer raises `OperationalError`. The blocking wait mistook "the statement is currently FAILED" for "the statement transitioned to FAILED while we were waiting for it to stop," when the former is really the same "already terminal, nothing to stop" success the `Statement`-object short-circuit already returns for a cached terminal statement; only a transition *into* FAILED partway through the wait is a genuine failure to stop cleanly. (#203)
+
+### Changed
+
+- Pushed the remaining `connect()`-only validation (`environment_id` and the endpoint-vs-`cloud_provider`/`cloud_region` requirement) down into `Connection.__init__()` as the single source of truth, so `connect()` and direct `Connection()` construction validate uniformly. `connect()` callers see no new errors; direct `Connection()` construction now fails fast with the same `InterfaceError`s (and the more specific per-field message for missing cloud info) instead of deferring to a confusing server-side failure later. (#213)
+- **Behavior change for direct `Connection()` construction:** `organization_id` validation is now centralized in `Connection.__init__()` as well, extending the same fail-fast treatment to the constructor. Constructing a `Connection` directly with an empty `organization_id` and no global key now raises `InterfaceError("Organization ID is required")` rather than being silently accepted, and the `organization_id` property's former "no global key → return `""`" fallback has been removed as now-unreachable. 
+- `Statement.can_fetch_results()`'s snapshot-mode branch is now kind/trait-based (schema presence, `is_pure_ddl`, `is_bounded`, `is_append_only`) instead of unconditionally waiting for a terminal phase -- the same logic streaming mode already used. A bounded, append-only snapshot query that actually produces a result set (e.g. a plain projection) is now reported ready as soon as the statement reaches `RUNNING`, instead of blocking `Cursor.execute()` / `Connection.execute_snapshot_ddl()` until `COMPLETED`. Bounded, non-append-only snapshot queries (aggregations that could still retract) and any statement with no result schema at all -- `INSERT INTO`, snapshot CTAS (`CREATE TABLE ... AS SELECT`), and other DML/DDL that produces no rows -- are unaffected and still wait for terminal, since a finite write or population job isn't guaranteed to have landed until then (unlike its streaming counterpart, which may run forever and is ready once RUNNING). This can make `Cursor.execute()` and iteration/`fetchall()` return sooner for snapshot-mode queries that produce a result set. (#205)
 
 ### Removed
 

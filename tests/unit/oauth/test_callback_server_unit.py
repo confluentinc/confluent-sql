@@ -5,10 +5,10 @@ synthesizing `BaseHTTPRequestHandler` internals: the whole point of this class i
 redirected by the auth service can reach it, so the socket is the interesting part and mocking it
 away would test nothing.
 
-Every server here binds port **0** (an ephemeral port the OS picks), never the real 26640 from
-`CCloudOAuthConfig`. A developer running a live mcp-confluent login legitimately holds 26640, and
-so does a parallel run of this same suite; binding it would make this file flaky for reasons
-having nothing to do with the code under test. `TestLifecycle.test_port_already_bound_...` is the
+Every server here binds port **0** (an ephemeral port the OS picks), never the real callback port
+from `CCloudOAuthConfig`. A developer's live login legitimately holds it, and so does a parallel run
+of this same suite; binding it would make this file flaky for reasons having nothing to do with
+the code under test. `TestLifecycle.test_port_already_bound_...` is the
 one case that needs a known-taken port, and it makes one for itself.
 """
 
@@ -27,13 +27,13 @@ import pytest
 
 from confluent_sql.exceptions import OAuthLoginError, OAuthLoginFailure, ProgrammingError
 from confluent_sql.oauth.callback_server import CallbackServer
-from confluent_sql.oauth.config import CCloudOAuthConfig
+from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 
 pytestmark = pytest.mark.unit
 
 EXPECTED_STATE = "the-state-this-login-generated"
 AUTH_CODE = "the-authorization-code"
-CALLBACK_PATH = "/gateway/v1/callback-local-mcp-docs"
+CALLBACK_PATH = PROD.callback_path
 LOGGER_NAME = "confluent_sql.oauth.callback_server"
 
 BRIEF_TIMEOUT = 5.0
@@ -52,7 +52,6 @@ def _config(port: int = 0, host: str = "127.0.0.1") -> CCloudOAuthConfig:
         client_id="test-client-id",
         callback_host=host,
         callback_port=port,
-        callback_path=CALLBACK_PATH,
     )
 
 
@@ -111,7 +110,7 @@ class TestSuccessfulRedirect:
         )
 
     def test_the_code_can_be_read_repeatedly(self):
-        """wait_for_code is not a one-shot consume: #153's login() reads the code once, but a
+        """wait_for_code is not a one-shot consume: `CCloudOAuth.login()` reads the code once, but a
         second *sequential* read (a retry path, a test) must see the same value rather than hang.
         Concurrent readers are covered separately, by TestConcurrentWaiters."""
         with _running_server() as server:
@@ -293,7 +292,7 @@ class TestWaitingAfterStop:
             server.wait_for_code(timeout=BRIEF_TIMEOUT)
 
     def test_a_stop_while_already_waiting_wakes_the_wait_promptly(self):
-        """The race a reviewer flagged: the up-front "stopped without settling" check only ran
+        """The race: the up-front "stopped without settling" check only ran
         once, before the wait started, so a `stop()` landing after a wait was already blocked in
         `_settled.wait()` had no way to wake it -- the wait rode out its entire `timeout` before
         reaching the same verdict. `stop()` now sets `_settled` itself, so this must resolve almost
@@ -423,9 +422,9 @@ def _blocked_waiters(server: CallbackServer, count: int) -> Iterator[list[_Outco
 class TestConcurrentWaiters:
     """Several threads blocked in `wait_for_code` at the moment the redirect lands.
 
-    Not how #153 drives this class -- one login thread does the waiting, and the N-waiter fan-out
-    belongs to #154's holder -- but `wait_for_code` blocks on an `Event`, which permits any number
-    of waiters, so the behavior is pinned rather than left to chance.
+    Not how `CCloudOAuth` drives this class -- one login thread does the waiting, and the
+    N-waiter fan-out belongs to the holder -- but `wait_for_code` blocks on an `Event`,
+    which permits any number of waiters, so the behavior is pinned rather than left to chance.
     """
 
     WAITER_COUNT = 4

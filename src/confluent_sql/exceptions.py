@@ -268,8 +268,7 @@ class ConnectorAlreadyExistsError(OperationalError):
 class OAuthLoginFailure(Enum):
     """Why an interactive OAuth browser login could not complete.
 
-    Members are added as later children of the OAuth epic grow new failure modes; the callback
-    server (#152) raises the four here.
+    The callback server raises the four here.
     """
 
     TIMED_OUT = "timed_out"
