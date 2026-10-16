@@ -1,4 +1,4 @@
-"""Unit tests for `ProcessOAuthHolder`, the one-identity-per-process OAuth holder (#154).
+"""Unit tests for `ProcessOAuthHolder`, the one-identity-per-process OAuth holder.
 
 The holder's whole job is *coordination*, not login mechanics: one browser bounce shared by
 every `Connection` in the process, one identity guarded across them, and a clean teardown. So
@@ -10,8 +10,8 @@ seam, never a real `CCloudOAuth`. That is deliberate, not a shortcut:
   the *holder*, independent of what a real login does over the network. A fake provider whose
   `login()` we can make slow, make fail, or block mid-flight isolates exactly that logic.
 - `CCloudOAuth`'s own end-to-end login (PKCE, the callback port, the token chain) is already
-  pinned by `test_provider_unit.py`; re-driving it through the holder would retest #153 and add a
-  real socket bind to every concurrency case here for nothing.
+  pinned by `test_provider_unit.py`; re-driving it through the holder would retest
+  `CCloudOAuth` and add a real socket bind to every concurrency case here for nothing.
 
 `FakeProvider.login()` optionally runs a caller-supplied `gate` -- an arbitrary callable -- which
 is how a test makes the login block until other threads have piled onto the in-flight `Future`, or
@@ -37,7 +37,7 @@ from confluent_sql.exceptions import (
 )
 from confluent_sql.oauth import holder as holder_module
 from confluent_sql.oauth.config import CCloudOAuthConfig
-from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, reauthenticate, shutdown_all
+from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, discard_login, reauthenticate
 from confluent_sql.oauth.provider import OAuthMetrics, OAuthProvider
 
 pytestmark = pytest.mark.unit
@@ -46,18 +46,12 @@ CONFIG = CCloudOAuthConfig(
     auth_service_domain="login.confluent.io",
     api_host="https://confluent.cloud",
     client_id="test-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 
 OTHER_ENV_CONFIG = CCloudOAuthConfig(
     auth_service_domain="login-stag.confluent-dev.io",
     api_host="https://stag.cpdev.cloud",
     client_id="stag-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 """A *different* Confluent Cloud environment -- different issuer, API host, and client -- for
 pinning that the holder refuses to hand one environment's provider to a connection asking for
@@ -120,7 +114,7 @@ class FakeProvider:
     @property
     def control_plane_auth(self) -> httpx.Auth:
         # Part of the OAuthProvider surface but never exercised here -- the holder shares the
-        # provider out untouched; #155's connect() wiring is what stamps requests with these.
+        # provider out untouched; `connect()`'s wiring is what stamps requests with these.
         raise NotImplementedError
 
     @property
@@ -130,7 +124,7 @@ class FakeProvider:
     @property
     def metrics(self) -> OAuthMetrics:
         # Part of the OAuthProvider surface but never exercised here -- the holder never reads
-        # refresh-chain metrics, only the connect() wiring (#155) does.
+        # refresh-chain metrics, only the connect() wiring does.
         raise NotImplementedError
 
     def close(self) -> None:
@@ -169,11 +163,11 @@ def _reset_holder():
 
     The holder is module-global by design (one identity per process), so a provider leaked from
     one case into the next is exactly the cross-test contamination this guards -- and the reset
-    also exercises `shutdown_all()` as a side effect.
+    also exercises `discard_login()` as a side effect.
     """
-    shutdown_all()
+    discard_login()
     yield
-    shutdown_all()
+    discard_login()
 
 
 class TestSingleFlight:
@@ -629,7 +623,7 @@ class TestLockNotHeldAcrossLogin:
 
 
 class TestReauthenticate:
-    """#156: `holder.reauthenticate()` delegates to the established provider -- the provider's
+    """`holder.reauthenticate()` delegates to the established provider -- the provider's
     own single-flight gate (pinned in `test_provider_unit.py`) is what collapses concurrent
     callers, so the holder itself needs no single-flight of its own, just the same "never hold
     the module lock across a login-shaped call" discipline `acquire()` already has."""
@@ -681,12 +675,12 @@ class TestReauthenticate:
 
 
 class TestShutdown:
-    def test_shutdown_all_closes_the_provider_and_resets_to_pristine(self):
+    def test_discard_login_closes_the_provider_and_resets_to_pristine(self):
         first_factory = RecordingFactory()
         holder = ProcessOAuthHolder.instance()
         provider = holder.acquire(CONFIG, provider_factory=first_factory)
 
-        shutdown_all()
+        discard_login()
         assert first_factory.providers[0].closed
 
         # Pristine: a later acquire builds and logs in anew rather than handing back the closed one.
@@ -695,21 +689,21 @@ class TestShutdown:
         assert again is not provider
         assert again is second_factory.providers[0]
 
-    def test_shutdown_all_is_idempotent(self):
+    def test_discard_login_is_idempotent(self):
         factory = RecordingFactory()
         ProcessOAuthHolder.instance().acquire(CONFIG, provider_factory=factory)
-        shutdown_all()
-        shutdown_all()  # no provider left; must not raise
+        discard_login()
+        discard_login()  # no provider left; must not raise
 
-    def test_shutdown_all_on_a_fresh_holder_is_a_no_op(self):
-        shutdown_all()
+    def test_discard_login_on_a_fresh_holder_is_a_no_op(self):
+        discard_login()
 
     def test_instance_returns_the_one_singleton(self):
         assert ProcessOAuthHolder.instance() is ProcessOAuthHolder.instance()
 
 
 class TestModuleLevelFunctions:
-    """The `acquire()` / `shutdown_all()` free functions delegate to the one singleton -- the
+    """The `acquire()` / `discard_login()` free functions delegate to the one singleton -- the
     everyday API most callers use instead of `ProcessOAuthHolder.instance()`."""
 
     def test_module_acquire_delegates_to_the_singleton(self):
@@ -721,10 +715,10 @@ class TestModuleLevelFunctions:
         assert ProcessOAuthHolder.instance().acquire(CONFIG, provider_factory=factory) is provider
         assert len(factory.providers) == 1
 
-    def test_module_shutdown_all_tears_down_what_module_acquire_built(self):
+    def test_module_discard_login_tears_down_what_module_acquire_built(self):
         factory = RecordingFactory()
         acquire(CONFIG, provider_factory=factory)
-        shutdown_all()
+        discard_login()
         assert factory.providers[0].closed
 
     def test_module_reauthenticate_delegates_to_the_singleton(self):
