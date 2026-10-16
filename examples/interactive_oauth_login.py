@@ -11,8 +11,14 @@ organization_id is optional under auth="oauth": omitted, it's discovered from yo
 instead.
 
 To sign in against a non-production Confluent Cloud environment instead, import `STAG` or `DEVEL`
-(`from confluent_sql.oauth.config import STAG`) and pass the additional keyword argument
-`oauth_config=STAG` to `confluent_sql.connect()`.
+(`from confluent_sql.oauth.config import STAG`) and pass `oauth_config=STAG` to
+`confluent_sql.connect()`. Note that `oauth_config` only redirects the *login*: resource endpoints
+still default to production. You must also pass the matching non-production Flink gateway as
+`endpoint=` (https://flink.<region>.<cloud>.<environment>.cpdev.cloud, where <environment> is
+`stag` or `devel`) and, for control-plane operations (Tableflow, Connectors, Artifacts), the
+matching `controlplane_endpoint=` (https://api.<environment>.cpdev.cloud). Otherwise the example's
+statements go to the production gateway with non-production credentials. Cloud provider and
+region are not needed when `endpoint=` is given.
 """
 
 import os
