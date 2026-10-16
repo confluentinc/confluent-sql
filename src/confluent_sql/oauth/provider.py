@@ -400,17 +400,8 @@ class CCloudOAuth:
 
     def _enter_reauth_flight(self) -> tuple[Future[TokenSet] | None, bool]:
         """Decide whether this caller runs the fresh login, joins one already running, or finds
-        the session already recovered and needs none (returns `(None, False)`).
-
-        Shares `_refresh()`'s `_inflight_refresh` slot under `_refresh_lock`, but -- unlike
-        `_enter_flight` -- does not raise on a latched `self._failure` (clearing it is the whole
-        point of `reauthenticate()`). Instead the failure is the *precondition*: with no flight in
-        progress and none latched, there is nothing to recover. A caller only reaches
-        `reauthenticate()` after a `ReauthenticationRequired`, which is always built from a
-        latched failure, and only a completed `login()` / `reauthenticate()` clears one -- so an
-        empty latch here means a recovery finished in the meantime. The in-flight check comes
-        first on purpose: a flight in progress (possibly a plain refresh about to latch a failure)
-        must settle before the latch is trusted; `reauthenticate()`'s loop re-enters here after.
+        the session already recovered. Shares `_refresh()`'s `_inflight_refresh` slot; see
+        `reauthenticate()` for why an empty failure latch means "already recovered".
 
         Returns:
             A `(flight, is_winner)` pair, one of three shapes:
@@ -420,6 +411,8 @@ class CCloudOAuth:
               `future`, and clear the slot in a `finally`.
             - `(future, False)`: a flight is already in progress (a reauthentication, or a plain
               refresh that may yet latch a failure). The caller is a joiner and waits on `future`.
+              Checked before the latch on purpose: that refresh must settle before an empty latch
+              can be trusted.
             - `(None, False)`: no flight and no latched failure -- the session was already
               recovered. The caller has nothing to do and returns without a login.
 
