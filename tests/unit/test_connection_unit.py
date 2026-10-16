@@ -1128,8 +1128,8 @@ class TestConnectAuthWiring:
 
     def test_global_only_authenticates_with_global_creds(self):
         # A global key also authenticates the (lazily-*built*, but eagerly *auth-wrapped*)
-        # control-plane and Connect clients, so BasicAuth is constructed three times here -- once
-        # per surface -- all with this same global pair; assert_any_call, not
+        # control-plane, Connect, and Artifact clients, so BasicAuth is constructed four times
+        # here -- once per surface -- all with this same global pair; assert_any_call, not
         # assert_called_once_with.
         spy = self._connect_spying_on_basic_auth(
             global_api_key="global-key", global_api_secret="global-secret"
@@ -1143,8 +1143,8 @@ class TestConnectAuthWiring:
         spy.assert_called_once_with(username="flink-key", password="flink-secret")
 
     def test_both_pairs_authenticate_with_global_creds(self):
-        # See test_global_only_authenticates_with_global_creds: a global key wraps three
-        # BasicAuths (Flink, control-plane, Connect), all with the global pair.
+        # See test_global_only_authenticates_with_global_creds: a global key wraps four
+        # BasicAuths (Flink, control-plane, Connect, Artifact), all with the global pair.
         spy = self._connect_spying_on_basic_auth(
             global_api_key="global-key",
             global_api_secret="global-secret",

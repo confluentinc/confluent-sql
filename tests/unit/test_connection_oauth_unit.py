@@ -258,6 +258,12 @@ class TestOauthAuthWiring:
         assert conn._connect_auth is _provider(conn).control_plane_auth
         assert conn._connect_auth is conn._controlplane_auth
 
+    def test_oauth_cloud_auth_is_providers_control_plane_auth(self):
+        """Artifact routes share the same control-plane token as Tableflow and Connect."""
+        conn = _oauth_connect()
+        assert conn._cloud_auth is _provider(conn).control_plane_auth
+        assert conn._cloud_auth is conn._controlplane_auth
+
     def test_oauth_global_credentials_is_none(self):
         conn = _oauth_connect()
         assert conn._global_credentials is None
@@ -280,6 +286,7 @@ class TestOauthAuthWiring:
         )
         assert isinstance(conn._controlplane_auth, httpx.BasicAuth)
         assert isinstance(conn._connect_auth, httpx.BasicAuth)
+        assert isinstance(conn._cloud_auth, httpx.BasicAuth)
 
 
 class TestOauthMetrics:
@@ -493,3 +500,23 @@ class TestReauthPolicy:
 
         reauth_mock.assert_not_called()
         assert auth.calls == 1
+
+    def test_artifact_get_honors_the_auto_policy(self, monkeypatch):
+        """Artifact GETs take their own raw path (`_artifact_request_raw`), which must go through
+        `_send_with_reauth_policy` like every other request path."""
+        conn, auth = _connection_with_flaky_flink_auth("auto")
+        conn._cloud_controlplane_client = httpx.Client(  # noqa: SLF001
+            auth=auth,
+            base_url="https://api.example.confluent.cloud",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        )
+        reauth_mock = Mock()
+        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        try:
+            response = conn._artifact_request("/artifact/v1/flink-artifacts")  # noqa: SLF001
+        finally:
+            conn.close()
+
+        assert response.status_code == 200
+        reauth_mock.assert_called_once_with()
+        assert auth.calls == 2
