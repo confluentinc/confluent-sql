@@ -180,6 +180,10 @@ class CCloudOAuth:
         # _token_lock is the one that nests inside either: under _login_lock in login(), and
         # jointly with _refresh_lock in _enter_flight()/_enter_reauth_flight(). Only _login_lock
         # is ever held across I/O.
+        #
+        # Lock order: _token_lock is a leaf. It may be taken while holding _refresh_lock or
+        # _login_lock, but never the reverse -- never acquire either of those while holding
+        # _token_lock, or two threads can deadlock. Most call sites take _token_lock alone.
 
         self._inflight_refresh: Future[TokenSet] | None = None
         """The single-flight `Future` slot, shared by `_refresh()` and `reauthenticate()`. One
@@ -310,6 +314,16 @@ class CCloudOAuth:
         the organization this provider originally settled on, and installs the result as the
         current snapshot, clearing the latched failure and resetting the 8h wall.
 
+        This is a *recovery* operation, not a "log in again" button: it acts only on a session
+        with a latched failure, and returns immediately, without a login, when there is none --
+        either the session was never broken, or another caller's recovery already repaired it.
+        The second case is what lets a worker that failed against the old session, but only got
+        here after the winning reauthentication finished, skip a redundant browser bounce. (Every
+        `ReauthenticationRequired` originates from a latched failure, and only `login()` /
+        `reauthenticate()` clear one, so "no latched failure" reliably means "recovered since".)
+        To force a fresh login on a healthy session, retire it with `discard_login()` and
+        `acquire()` again.
+
         Routed through the *same* single-flight gate `_refresh()` uses (`_inflight_refresh` /
         `_refresh_lock`), not an independent one: see the module docstring and
         `_enter_reauth_flight` for why sharing it is what keeps a concurrent plain refresh from
@@ -343,6 +357,8 @@ class CCloudOAuth:
         """
         while True:
             flight, is_winner = self._enter_reauth_flight()
+            if flight is None:
+                return
             if is_winner:
                 break
             try:
@@ -382,14 +398,28 @@ class CCloudOAuth:
             with self._refresh_lock:
                 self._inflight_refresh = None
 
-    def _enter_reauth_flight(self) -> tuple[Future[TokenSet], bool]:
-        """Decide whether this caller runs the fresh login or joins one already running.
+    def _enter_reauth_flight(self) -> tuple[Future[TokenSet] | None, bool]:
+        """Decide whether this caller runs the fresh login, joins one already running, or finds
+        the session already recovered. Shares `_refresh()`'s `_inflight_refresh` slot; see
+        `reauthenticate()` for why an empty failure latch means "already recovered".
 
-        Shares `_refresh()`'s `_inflight_refresh` slot under `_refresh_lock`, but -- unlike
-        `_enter_flight` -- neither raises on a latched `self._failure` (clearing it is the whole
-        point of `reauthenticate()`) nor double-checks for an already-superseded snapshot (there
-        is no `stale` reference to compare against; a caller that explicitly asked to
-        reauthenticate gets a reauthentication, or joins one already in flight).
+        Returns:
+            A `(flight, is_winner)` pair, one of three shapes:
+
+            - `(future, True)`: this caller is the winner. `future` is the freshly installed
+              `_inflight_refresh` slot; the caller must run the login, publish its outcome into
+              `future`, and clear the slot in a `finally`.
+            - `(future, False)`: a flight is already in progress (a reauthentication, or a plain
+              refresh that may yet latch a failure). The caller is a joiner and waits on `future`.
+              Checked before the latch on purpose: that refresh must settle before an empty latch
+              can be trusted.
+            - `(None, False)`: no flight and no latched failure -- the session was already
+              recovered. The caller has nothing to do and returns without a login.
+
+            `is_winner` is never True with a `None` flight.
+
+        Raises:
+            ProgrammingError: this provider has never logged in.
         """
         with self._refresh_lock:
             if self._token_set is None:
@@ -399,6 +429,10 @@ class CCloudOAuth:
                 )
             if self._inflight_refresh is not None:
                 return self._inflight_refresh, False
+            with self._token_lock:
+                recovered = self._failure is None
+            if recovered:
+                return None, False
             self._inflight_refresh = Future()
             return self._inflight_refresh, True
 
