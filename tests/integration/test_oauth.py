@@ -23,13 +23,42 @@ from typing import Any
 
 import pytest
 
-import confluent_sql
-from confluent_sql import ConnectorNotFoundError, TableflowTopicNotFoundError
-from confluent_sql.connection import Connection
+from confluent_sql import (
+    Connection,
+    ConnectorNotFoundError,
+    TableflowTopicNotFoundError,
+    connect,
+    oauth_discard_login,
+)
 
 
 @pytest.fixture(scope="module")
-def oauth_connection(load_env_file) -> Generator[Connection, Any, None]:
+def oauth_connect_args() -> dict[str, str]:
+    """Return the connection arguments for an OAuth-authenticated connection."""
+    required_vars = [
+        "CONFLUENT_ENV_ID",
+        "CONFLUENT_CLOUD_PROVIDER",
+        "CONFLUENT_CLOUD_REGION",
+        "CONFLUENT_TEST_DBNAME",
+    ]
+    if missing := [name for name in required_vars if not os.getenv(name)]:
+        pytest.skip(
+            f"Missing required environment variable(s) for OAuth tests: {', '.join(missing)}"
+        )
+
+    return {
+        "auth": "oauth",
+        "environment_id": os.environ["CONFLUENT_ENV_ID"],
+        "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
+        "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
+        "database": os.environ["CONFLUENT_TEST_DBNAME"],
+    }
+
+
+@pytest.fixture(scope="module")
+def oauth_connection(
+    load_env_file, oauth_connect_args: dict[str, str]
+) -> Generator[Connection, Any, None]:
     """A real Connection authenticated via interactive OAuth login against production.
 
     Skips unless RUN_OAUTH_TESTS is set and the environment/cloud/region/database vars are
@@ -39,36 +68,29 @@ def oauth_connection(load_env_file) -> Generator[Connection, Any, None]:
     if not os.getenv("RUN_OAUTH_TESTS"):
         pytest.skip("RUN_OAUTH_TESTS not set; OAuth tests require a human browser login")
 
-    required_vars = [
-        "CONFLUENT_ENV_ID",
-        "CONFLUENT_CLOUD_PROVIDER",
-        "CONFLUENT_CLOUD_REGION",
-        "CONFLUENT_TEST_DBNAME",
-    ]
-    if missing := [name for name in required_vars if not os.getenv(name)]:
-        pytest.skip(f"Missing required environment variables for OAuth tests: {', '.join(missing)}")
-
-    conn = confluent_sql.connect(
-        auth="oauth",
-        environment_id=os.environ["CONFLUENT_ENV_ID"],
-        cloud_provider=os.environ["CONFLUENT_CLOUD_PROVIDER"],
-        cloud_region=os.environ["CONFLUENT_CLOUD_REGION"],
-        database=os.environ["CONFLUENT_TEST_DBNAME"],
-    )
+    conn = connect(**oauth_connect_args)  # type: ignore
 
     yield conn
 
     conn.close()
+    oauth_discard_login()
 
 
 @pytest.mark.integration
 class TestOauth:
     """Client functionality exercised over an OAuth-authenticated connection."""
 
+    def test_oauth_inferrs_organization_id(
+        self, oauth_connection: Connection, oauth_connect_args: dict[str, str]
+    ):
+        """An OAuth-authenticated connection can infer its organization_id."""
+        # Not present in the connection arguments
+        assert oauth_connect_args.get("organization_id") is None
+        # But determined after oauth happens.
+        assert oauth_connection.organization_id is not None
+
     def test_query_round_trip(self, oauth_connection: Connection):
         """A simple snapshot query submitted over an OAuth login returns its row."""
-        assert oauth_connection.organization_id
-
         with oauth_connection.closing_cursor() as cursor:
             cursor.execute("SELECT 1 AS test_value_1, 2 AS test_value_2, 3 AS test_value_3")
             assert cursor.fetchall() == [(1, 2, 3)]
