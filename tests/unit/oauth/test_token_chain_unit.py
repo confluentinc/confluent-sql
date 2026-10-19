@@ -23,9 +23,6 @@ CONFIG = CCloudOAuthConfig(
     auth_service_domain="login.confluent.io",
     api_host="https://confluent.cloud",
     client_id="test-client-id",
-    callback_host="127.0.0.1",
-    callback_port=26640,
-    callback_path="/gateway/v1/callback-local-mcp-docs",
 )
 
 

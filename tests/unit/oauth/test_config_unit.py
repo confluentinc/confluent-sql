@@ -8,21 +8,21 @@ pytestmark = pytest.mark.unit
 
 
 def test_prod_config_values():
-    """PROD borrows mcp-confluent's registered auth service client (see the module docstring) --
-    pinning the exact values here makes any accidental drift a loud test failure rather than a
-    silent redirect_uri mismatch discovered against a live auth service tenant."""
+    """PROD has its own dedicated, official Auth0 client -- pinning the exact values here makes
+    any accidental drift a loud test failure rather than a silent redirect_uri mismatch
+    discovered against a live auth service tenant."""
     assert PROD.auth_service_domain == "login.confluent.io"
     assert PROD.api_host == "https://confluent.cloud"
-    assert PROD.client_id == "cZ0wejEDJLNocYDJ54mAmGK21klrv21h"
+    assert PROD.client_id == "3OP4CbmWzyLp9mB0asHmt0YZVlOmNqwi"
     assert PROD.callback_host == "127.0.0.1"
-    assert PROD.callback_port == 26640
-    assert PROD.callback_path == "/gateway/v1/callback-local-mcp-docs"
+    assert PROD.callback_port == 26642
+    assert PROD.callback_path == "/callback-confluent-sql-docs"
     assert PROD.scopes == ("email", "openid", "offline_access")
 
 
 def test_devel_config_values():
-    """DEVEL has its own dedicated Auth0 client (identity-login-static#977), not a borrowed one --
-    pinning it here catches accidental drift the same way test_prod_config_values does for PROD."""
+    """DEVEL has its own dedicated Auth0 client (identity-login-static#977) -- pinning it here
+    catches accidental drift the same way test_prod_config_values does for PROD."""
     assert DEVEL.auth_service_domain == "login.confluent-dev.io"
     assert DEVEL.api_host == "https://devel.cpdev.cloud"
     assert DEVEL.client_id == "txYV6dvI8PWu6OEoADXv9PVs1nyMrbCr"
@@ -33,8 +33,8 @@ def test_devel_config_values():
 
 
 def test_stag_config_values():
-    """STAG has its own dedicated Auth0 client (identity-login-static#984), not a borrowed one --
-    pinning it here catches accidental drift the same way test_prod_config_values does for PROD."""
+    """STAG has its own dedicated Auth0 client (identity-login-static#984) -- pinning it here
+    catches accidental drift the same way test_prod_config_values does for PROD."""
     assert STAG.auth_service_domain == "login-stag.confluent-dev.io"
     assert STAG.api_host == "https://stag.cpdev.cloud"
     assert STAG.client_id == "kBIUXUKdg1RiEtg4cJjTCF58MEexw8EO"
@@ -53,7 +53,7 @@ def test_token_url():
 
 
 def test_redirect_uri():
-    assert PROD.redirect_uri == "http://127.0.0.1:26640/gateway/v1/callback-local-mcp-docs"
+    assert PROD.redirect_uri == "http://127.0.0.1:26642/callback-confluent-sql-docs"
 
 
 def test_config_is_frozen():
