@@ -2,7 +2,6 @@
 
 All notable changes to this dbapi driver will be documented in this file.
 
-
 ## Unreleased
 
 
