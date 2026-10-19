@@ -200,7 +200,15 @@ class TestArtifactLifecycle:
     def test_list_of_empty_scope_returns_empty_list(
         self, empty_scope_artifacts: ArtifactsApi
     ) -> None:
-        assert empty_scope_artifacts.list() == []
+        listed = empty_scope_artifacts.list()
+        if listed:
+            pytest.fail(
+                f"Environmental problem, not a driver bug: expected the {EMPTY_SCOPE_CLOUD}/"
+                f"{EMPTY_SCOPE_REGION} artifact scope to be empty, but observed {len(listed)} "
+                f"artifact(s) there. Someone has uploaded artifacts to this region; pick a new "
+                f"artifact-free cloud/region and update EMPTY_SCOPE_CLOUD / EMPTY_SCOPE_REGION."
+            )
+        assert listed == []
 
     def test_get_missing_artifact_raises_not_found(self, artifacts: ArtifactsApi) -> None:
         with pytest.raises(ArtifactNotFoundError):
