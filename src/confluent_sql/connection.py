@@ -672,18 +672,20 @@ class Connection:
         # as simply and early as possible before we might complain about lesser issues.
         oauth_cfg = _resolve_oauth_config(
             auth,
-            oauth_config,
-            reauth,
-            external_access_token,
-            identity_pool_id,
-            global_api_key,
-            global_api_secret,
-            flink_api_key,
-            flink_api_secret,
-            tableflow_api_key,
-            tableflow_api_secret,
-            connect_api_key,
-            connect_api_secret,
+            oauth_config=oauth_config,
+            reauth=reauth,
+            external_access_token=external_access_token,
+            identity_pool_id=identity_pool_id,
+            global_api_key=global_api_key,
+            global_api_secret=global_api_secret,
+            flink_api_key=flink_api_key,
+            flink_api_secret=flink_api_secret,
+            tableflow_api_key=tableflow_api_key,
+            tableflow_api_secret=tableflow_api_secret,
+            connect_api_key=connect_api_key,
+            connect_api_secret=connect_api_secret,
+            cloud_api_key=cloud_api_key,
+            cloud_api_secret=cloud_api_secret,
         )
         self._reauth_policy = reauth
 
@@ -2935,8 +2937,9 @@ class Connection:
         return parse_next_page_token(next_url)
 
 
-def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
+def _resolve_oauth_config(  # noqa: PLR0913
     auth: str,
+    *,
     oauth_config: CCloudOAuthConfig | None,
     reauth: str,
     external_access_token: str | None,
@@ -2949,6 +2952,8 @@ def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
     tableflow_api_secret: str | None,
     connect_api_key: str | None,
     connect_api_secret: str | None,
+    cloud_api_key: str | None,
+    cloud_api_secret: str | None,
 ) -> CCloudOAuthConfig | None:
     """Validate the `auth=`/`reauth=` mode selection and return the environment to log in against.
 
@@ -2996,12 +3001,14 @@ def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
             tableflow_api_secret,
             connect_api_key,
             connect_api_secret,
+            cloud_api_key,
+            cloud_api_secret,
         )
     ):
         raise InterfaceError(
             "auth='oauth' cannot be combined with API key credentials "
-            "(global/flink/tableflow/connect); interactive OAuth and API-key auth are mutually "
-            "exclusive."
+            "(global/flink/tableflow/connect/cloud); interactive OAuth and API-key auth are "
+            "mutually exclusive."
         )
     return oauth_config if oauth_config is not None else PROD
 
