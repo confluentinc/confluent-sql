@@ -146,7 +146,7 @@ class TestControlplaneAccess:
 
     def test_global_key_wins_over_cloud_key(self) -> None:
         conn = _connect(cloud_api_key="ck", cloud_api_secret="cs")
-        assert conn._cloud_auth == ("gk", "gs")
+        assert _artifact_authorization(conn) == _basic_authorization("gk", "gs")
 
     def test_half_supplied_cloud_key_is_rejected(self) -> None:
         with pytest.raises(InterfaceError, match="cloud_api_key and cloud_api_secret"):
