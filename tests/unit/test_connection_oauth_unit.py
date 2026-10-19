@@ -202,12 +202,23 @@ class TestOauthValidation:
         ):
             _oauth_connect(**{key_param: "some-value"})
 
-    def test_auth_oauth_mutually_exclusive_with_byoidc_pair(self):
+    @pytest.mark.parametrize(
+        "byoidc_kwargs",
+        [
+            {"external_access_token": "tok-xyz"},
+            {"identity_pool_id": "pool-9"},
+            {"external_access_token": "tok-xyz", "identity_pool_id": "pool-9"},
+        ],
+        ids=["token_only", "pool_only", "both"],
+    )
+    def test_auth_oauth_mutually_exclusive_with_any_byoidc_param(self, byoidc_kwargs):
+        """Either BYOIDC parameter alone (not just the complete pair) trips the exclusivity error,
+        before the BYOIDC pair-completeness check could report a different mistake."""
         with pytest.raises(
             InterfaceError,
             match="auth='oauth' cannot be combined with external_access_token",
         ):
-            _oauth_connect(external_access_token="tok-xyz", identity_pool_id="pool-9")
+            _oauth_connect(**byoidc_kwargs)
 
     def test_auth_oauth_does_not_require_organization_id(self):
         """Unlike every other mode, omitting organization_id under auth="oauth" is not an error --
