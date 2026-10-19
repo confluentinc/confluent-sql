@@ -32,24 +32,28 @@ from confluent_sql.connection import Connection
 def oauth_connection(load_env_file) -> Generator[Connection, Any, None]:
     """A real Connection authenticated via interactive OAuth login against production.
 
-    Skips unless RUN_OAUTH_TESTS is set and the environment/cloud/region vars are present.
+    Skips unless RUN_OAUTH_TESTS is set and the environment/cloud/region/database vars are
+    present (the database is needed to resolve the Kafka cluster id).
     organization_id is not supplied; it is discovered from the login session.
     """
     if not os.getenv("RUN_OAUTH_TESTS"):
         pytest.skip("RUN_OAUTH_TESTS not set; OAuth tests require a human browser login")
 
-    environment_id = os.getenv("CONFLUENT_ENV_ID", "")
-    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
-    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
-    if not all([environment_id, cloud_provider, cloud_region]):
-        pytest.skip("Missing required environment variables for OAuth integration test")
+    required_vars = [
+        "CONFLUENT_ENV_ID",
+        "CONFLUENT_CLOUD_PROVIDER",
+        "CONFLUENT_CLOUD_REGION",
+        "CONFLUENT_TEST_DBNAME",
+    ]
+    if missing := [name for name in required_vars if not os.getenv(name)]:
+        pytest.skip(f"Missing required environment variables for OAuth tests: {', '.join(missing)}")
 
     conn = confluent_sql.connect(
         auth="oauth",
-        environment_id=environment_id,
-        cloud_provider=cloud_provider,
-        cloud_region=cloud_region,
-        database=os.getenv("CONFLUENT_TEST_DBNAME") or None,
+        environment_id=os.environ["CONFLUENT_ENV_ID"],
+        cloud_provider=os.environ["CONFLUENT_CLOUD_PROVIDER"],
+        cloud_region=os.environ["CONFLUENT_CLOUD_REGION"],
+        database=os.environ["CONFLUENT_TEST_DBNAME"],
     )
 
     yield conn
@@ -71,31 +75,18 @@ class TestOauth:
 
     def test_cmk_cluster_resolution(self, oauth_connection: Connection):
         """The CMK cluster lookup (Tableflow/CMK control-plane client) resolves the database."""
-        self._require_database()
         assert oauth_connection.resolve_kafka_cluster_id().startswith("lkc-")
 
     def test_tableflow_route_authenticated(self, oauth_connection: Connection):
         """A Tableflow read of a nonexistent topic is a 404, not an auth failure."""
-        self._require_database()
         with pytest.raises(TableflowTopicNotFoundError):
             oauth_connection.get_tableflow(f"no_such_table_{uuid.uuid4().hex}")
 
     def test_connector_route_authenticated(self, oauth_connection: Connection):
         """A Connect read of a nonexistent connector is a 404, not an auth failure."""
-        self._require_database()
         with pytest.raises(ConnectorNotFoundError):
             oauth_connection.get_connector(f"no-such-connector-{uuid.uuid4().hex}")
 
-    # TODO: re-enable once ArtifactsApi.list() tolerates `"data": null` for an empty result. The
-    # live API returns an explicit null (not an absent key) when no artifacts exist, which
-    # artifacts.py's strict `data` type check rejects as an OperationalError. Driver bug, to be
-    # fixed in its own branch; the OAuth token itself was accepted by the route.
-    #
-    # def test_artifact_route_authenticated(self, oauth_connection: Connection):
-    #     """Listing artifacts (cloud/artifact control-plane client) succeeds, empty or not."""
-    #     assert isinstance(oauth_connection.get_artifacts_api().list(page_size=1), list)
-
-    @staticmethod
-    def _require_database() -> None:
-        if not os.getenv("CONFLUENT_TEST_DBNAME"):
-            pytest.skip("CONFLUENT_TEST_DBNAME not set; needed to resolve the Kafka cluster id")
+    def test_artifact_route_authenticated(self, oauth_connection: Connection):
+        """Listing artifacts (cloud/artifact control-plane client) succeeds, empty or not."""
+        assert isinstance(oauth_connection.get_artifacts_api().list(page_size=1), list)
