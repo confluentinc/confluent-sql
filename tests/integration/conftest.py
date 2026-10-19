@@ -43,6 +43,31 @@ def load_env_file():
 
 
 @pytest.fixture(scope="session")
+def oauth_base_connect_args(load_env_file) -> dict[str, str]:
+    """Connection arguments common to every OAuth integration test, or skip.
+
+    OAuth tests pop a browser for a human login, so they are opt-in: skipped unless
+    RUN_OAUTH_TESTS is set. They also need CONFLUENT_ENV_ID, CONFLUENT_CLOUD_PROVIDER and
+    CONFLUENT_CLOUD_REGION. Tests needing more (e.g. a database) layer it on top of this.
+    """
+    if not os.getenv("RUN_OAUTH_TESTS"):
+        pytest.skip("RUN_OAUTH_TESTS not set; OAuth tests require a human browser login")
+
+    required_vars = ["CONFLUENT_ENV_ID", "CONFLUENT_CLOUD_PROVIDER", "CONFLUENT_CLOUD_REGION"]
+    if missing := [name for name in required_vars if not os.getenv(name)]:
+        pytest.skip(
+            f"Missing required environment variable(s) for OAuth tests: {', '.join(missing)}"
+        )
+
+    return {
+        "auth": "oauth",
+        "environment_id": os.environ["CONFLUENT_ENV_ID"],
+        "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
+        "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
+    }
+
+
+@pytest.fixture(scope="session")
 def filtered_username() -> str:
     """Returns a sanitized username safe for use in resource names.
 
