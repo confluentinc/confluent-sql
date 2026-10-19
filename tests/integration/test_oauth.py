@@ -80,7 +80,7 @@ def oauth_connection(
 class TestOauth:
     """Client functionality exercised over an OAuth-authenticated connection."""
 
-    def test_oauth_inferrs_organization_id(
+    def test_oauth_infers_organization_id(
         self, oauth_connection: Connection, oauth_connect_args: dict[str, str]
     ):
         """An OAuth-authenticated connection can infer its organization_id."""
