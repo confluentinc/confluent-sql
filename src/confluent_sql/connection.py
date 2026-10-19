@@ -684,6 +684,8 @@ class Connection:
             tableflow_api_secret,
             connect_api_key,
             connect_api_secret,
+            cloud_api_key,
+            cloud_api_secret,
         )
         self._reauth_policy = reauth
 
@@ -2949,6 +2951,8 @@ def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
     tableflow_api_secret: str | None,
     connect_api_key: str | None,
     connect_api_secret: str | None,
+    cloud_api_key: str | None,
+    cloud_api_secret: str | None,
 ) -> CCloudOAuthConfig | None:
     """Validate the `auth=`/`reauth=` mode selection and return the environment to log in against.
 
@@ -2996,12 +3000,14 @@ def _resolve_oauth_config(  # noqa: PLR0913, PLR0917
             tableflow_api_secret,
             connect_api_key,
             connect_api_secret,
+            cloud_api_key,
+            cloud_api_secret,
         )
     ):
         raise InterfaceError(
             "auth='oauth' cannot be combined with API key credentials "
-            "(global/flink/tableflow/connect); interactive OAuth and API-key auth are mutually "
-            "exclusive."
+            "(global/flink/tableflow/connect/cloud); interactive OAuth and API-key auth are "
+            "mutually exclusive."
         )
     return oauth_config if oauth_config is not None else PROD
 
