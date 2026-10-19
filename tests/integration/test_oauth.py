@@ -33,41 +33,25 @@ from confluent_sql import (
 
 
 @pytest.fixture(scope="module")
-def oauth_connect_args() -> dict[str, str]:
-    """Return the connection arguments for an OAuth-authenticated connection."""
-    required_vars = [
-        "CONFLUENT_ENV_ID",
-        "CONFLUENT_CLOUD_PROVIDER",
-        "CONFLUENT_CLOUD_REGION",
-        "CONFLUENT_TEST_DBNAME",
-    ]
-    if missing := [name for name in required_vars if not os.getenv(name)]:
+def oauth_connect_args(oauth_base_connect_args: dict[str, str]) -> dict[str, str]:
+    """Return the connection arguments for an OAuth-authenticated connection, adding the
+    database (needed to resolve the Kafka cluster id) to the shared base arguments."""
+    if not os.getenv("CONFLUENT_TEST_DBNAME"):
         pytest.skip(
-            f"Missing required environment variable(s) for OAuth tests: {', '.join(missing)}"
+            "Missing required environment variable(s) for OAuth tests: CONFLUENT_TEST_DBNAME"
         )
 
-    return {
-        "auth": "oauth",
-        "environment_id": os.environ["CONFLUENT_ENV_ID"],
-        "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
-        "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
-        "database": os.environ["CONFLUENT_TEST_DBNAME"],
-    }
+    return {**oauth_base_connect_args, "database": os.environ["CONFLUENT_TEST_DBNAME"]}
 
 
 @pytest.fixture(scope="module")
-def oauth_connection(
-    load_env_file, oauth_connect_args: dict[str, str]
-) -> Generator[Connection, Any, None]:
+def oauth_connection(oauth_connect_args: dict[str, str]) -> Generator[Connection, Any, None]:
     """A real Connection authenticated via interactive OAuth login against production.
 
-    Skips unless RUN_OAUTH_TESTS is set and the environment/cloud/region/database vars are
-    present (the database is needed to resolve the Kafka cluster id).
-    organization_id is not supplied; it is discovered from the login session.
+    Skips unless the shared OAuth gating passes (see `oauth_base_connect_args`) and
+    CONFLUENT_TEST_DBNAME is set. organization_id is not supplied; it is discovered from the
+    login session.
     """
-    if not os.getenv("RUN_OAUTH_TESTS"):
-        pytest.skip("RUN_OAUTH_TESTS not set; OAuth tests require a human browser login")
-
     conn = connect(**oauth_connect_args)  # type: ignore
 
     yield conn
