@@ -87,7 +87,11 @@ class TestOauth:
         # Not present in the connection arguments
         assert oauth_connect_args.get("organization_id") is None
         # But determined after oauth happens.
-        assert oauth_connection.organization_id is not None
+        assert (
+            oauth_connection.organization_id
+            and isinstance(oauth_connection.organization_id, str)
+            and len(oauth_connection.organization_id) > 0
+        )
 
     def test_query_round_trip(self, oauth_connection: Connection):
         """A simple snapshot query submitted over an OAuth login returns its row."""
@@ -111,4 +115,4 @@ class TestOauth:
 
     def test_artifact_route_authenticated(self, oauth_connection: Connection):
         """Listing artifacts (cloud/artifact control-plane client) succeeds, empty or not."""
-        assert isinstance(oauth_connection.get_artifacts_api().list(page_size=1), list)
+        assert isinstance(oauth_connection.get_artifacts_api().list(), list)
