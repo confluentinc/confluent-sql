@@ -1,0 +1,75 @@
+import dataclasses
+
+import pytest
+
+from confluent_sql.oauth.config import DEVEL, PROD, STAG, CCloudOAuthConfig
+
+pytestmark = pytest.mark.unit
+
+
+def test_prod_config_values():
+    """PROD has its own dedicated, official Auth0 client -- pinning the exact values here makes
+    any accidental drift a loud test failure rather than a silent redirect_uri mismatch
+    discovered against a live auth service tenant."""
+    assert PROD.auth_service_domain == "login.confluent.io"
+    assert PROD.api_host == "https://confluent.cloud"
+    assert PROD.client_id == "3OP4CbmWzyLp9mB0asHmt0YZVlOmNqwi"
+    assert PROD.callback_host == "127.0.0.1"
+    assert PROD.callback_port == 26642
+    assert PROD.callback_path == "/callback-confluent-sql-docs"
+    assert PROD.scopes == ("email", "openid", "offline_access")
+
+
+def test_devel_config_values():
+    """DEVEL has its own dedicated Auth0 client (identity-login-static#977) -- pinning it here
+    catches accidental drift the same way test_prod_config_values does for PROD."""
+    assert DEVEL.auth_service_domain == "login.confluent-dev.io"
+    assert DEVEL.api_host == "https://devel.cpdev.cloud"
+    assert DEVEL.client_id == "txYV6dvI8PWu6OEoADXv9PVs1nyMrbCr"
+    assert DEVEL.callback_host == "127.0.0.1"
+    assert DEVEL.callback_port == 26642
+    assert DEVEL.callback_path == "/callback-confluent-sql-docs"
+    assert DEVEL.scopes == ("email", "openid", "offline_access")
+
+
+def test_stag_config_values():
+    """STAG has its own dedicated Auth0 client (identity-login-static#984) -- pinning it here
+    catches accidental drift the same way test_prod_config_values does for PROD."""
+    assert STAG.auth_service_domain == "login-stag.confluent-dev.io"
+    assert STAG.api_host == "https://stag.cpdev.cloud"
+    assert STAG.client_id == "kBIUXUKdg1RiEtg4cJjTCF58MEexw8EO"
+    assert STAG.callback_host == "127.0.0.1"
+    assert STAG.callback_port == 26642
+    assert STAG.callback_path == "/callback-confluent-sql-docs"
+    assert STAG.scopes == ("email", "openid", "offline_access")
+
+
+def test_authorize_url():
+    assert PROD.authorize_url == "https://login.confluent.io/authorize"
+
+
+def test_token_url():
+    assert PROD.token_url == "https://login.confluent.io/oauth/token"
+
+
+def test_redirect_uri():
+    assert PROD.redirect_uri == "http://127.0.0.1:26642/callback-confluent-sql-docs"
+
+
+def test_config_is_frozen():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        PROD.client_id = "something-else"  # type: ignore[misc]
+
+
+def test_custom_config_renders_its_own_urls():
+    config = CCloudOAuthConfig(
+        auth_service_domain="login-stag.confluent-dev.io",
+        api_host="https://stag.cpdev.cloud",
+        client_id="test-client",
+        callback_host="127.0.0.1",
+        callback_port=12345,
+        callback_path="/callback",
+    )
+    assert config.authorize_url == "https://login-stag.confluent-dev.io/authorize"
+    assert config.token_url == "https://login-stag.confluent-dev.io/oauth/token"
+    assert config.redirect_uri == "http://127.0.0.1:12345/callback"
