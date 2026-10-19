@@ -29,6 +29,9 @@ from confluent_sql import (
 )
 
 ORIGINAL_DESCRIPTION = "confluent-sql integration test artifact"
+# A real cloud/region the test suite never uploads artifacts to, so listing its scope is empty.
+EMPTY_SCOPE_CLOUD = "aws"
+EMPTY_SCOPE_REGION = "ap-southeast-1"
 
 
 def _tiny_zip() -> bytes:
@@ -38,11 +41,15 @@ def _tiny_zip() -> bytes:
     return buffer.getvalue()
 
 
-def _artifact_connection_from_env() -> Connection:
+def _artifact_connection_from_env(
+    *, cloud_provider: str | None = None, cloud_region: str | None = None
+) -> Connection:
     """Build an artifact-capable Connection from env, or skip if the configuration is incomplete.
 
     Artifact routes need a global key or a Cloud resource management pair; the connection's own
     Flink client needs a global or Flink-region pair.
+
+    `cloud_provider` / `cloud_region`, when given, override the env-configured artifact scope.
     """
     global_api_key = os.getenv("CONFLUENT_GLOBAL_API_KEY", "")
     global_api_secret = os.getenv("CONFLUENT_GLOBAL_API_SECRET", "")
@@ -52,8 +59,8 @@ def _artifact_connection_from_env() -> Connection:
     cloud_api_secret = os.getenv("CONFLUENT_CLOUD_API_SECRET", "")
     environment_id = os.getenv("CONFLUENT_ENV_ID", "")
     organization_id = os.getenv("CONFLUENT_ORG_ID", "")
-    cloud_provider = os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
-    cloud_region = os.getenv("CONFLUENT_CLOUD_REGION", "")
+    cloud_provider = cloud_provider or os.getenv("CONFLUENT_CLOUD_PROVIDER", "")
+    cloud_region = cloud_region or os.getenv("CONFLUENT_CLOUD_REGION", "")
     database = os.getenv("CONFLUENT_TEST_DBNAME", "")
 
     has_global = bool(global_api_key) and bool(global_api_secret)
@@ -92,6 +99,19 @@ def artifact_connection(load_env_file) -> Generator[Connection, None, None]:
     """An artifact-capable connection, closed at the end of the test."""
     conn = _artifact_connection_from_env()
     yield conn
+    conn.close()
+
+
+@pytest.fixture()
+def empty_scope_artifacts(load_env_file) -> Generator[ArtifactsApi, None, None]:
+    """ArtifactsApi scoped to a cloud/region that holds no test artifacts, so listing it is empty.
+
+    The server reports an empty collection as `"data": null` (#263).
+    """
+    conn = _artifact_connection_from_env(
+        cloud_provider=EMPTY_SCOPE_CLOUD, cloud_region=EMPTY_SCOPE_REGION
+    )
+    yield conn.get_artifacts_api()
     conn.close()
 
 
@@ -176,6 +196,19 @@ class TestArtifactLifecycle:
                 content_format=ArtifactContentFormat.ZIP,
                 runtime_language=ArtifactRuntimeLanguage.PYTHON,
             )
+
+    def test_list_of_empty_scope_returns_empty_list(
+        self, empty_scope_artifacts: ArtifactsApi
+    ) -> None:
+        listed = empty_scope_artifacts.list()
+        if listed:
+            pytest.fail(
+                f"Environmental problem, not a driver bug: expected the {EMPTY_SCOPE_CLOUD}/"
+                f"{EMPTY_SCOPE_REGION} artifact scope to be empty, but observed {len(listed)} "
+                f"artifact(s) there. Someone has uploaded artifacts to this region; pick a new "
+                f"artifact-free cloud/region and update EMPTY_SCOPE_CLOUD / EMPTY_SCOPE_REGION."
+            )
+        assert listed == []
 
     def test_get_missing_artifact_raises_not_found(self, artifacts: ArtifactsApi) -> None:
         with pytest.raises(ArtifactNotFoundError):

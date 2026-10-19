@@ -524,15 +524,21 @@ class TestMalformedResponses:
 
     @pytest.mark.parametrize(
         "body",
-        [{"data": "x"}, {"data": None}, {"metadata": "x"}, {"metadata": None}, {"data": {"a": 1}}],
+        [{"data": "x"}, {"metadata": "x"}, {"data": {"a": 1}}],
     )
     def test_list_with_malformed_data_or_metadata_is_operational_error(self, body: dict) -> None:
         api = ArtifactsApi(FakeContext(_response(body)))
         with pytest.raises(OperationalError, match="Error parsing artifact list"):
             api.list()
 
-    def test_list_tolerates_absent_data_and_metadata(self) -> None:
-        assert ArtifactsApi(FakeContext(_response({}))).list() == []
+    @pytest.mark.parametrize(
+        "body",
+        [{}, {"data": None}, {"metadata": None}, {"data": None, "metadata": None}],
+        ids=["absent", "null-data", "null-metadata", "both-null"],
+    )
+    def test_list_tolerates_absent_or_null_data_and_metadata(self, body: dict) -> None:
+        """An empty collection arrives as an absent key or an explicit JSON null (#263)."""
+        assert ArtifactsApi(FakeContext(_response(body))).list() == []
 
 
 class TestGetListUpdateDelete:

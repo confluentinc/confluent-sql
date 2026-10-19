@@ -621,8 +621,14 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             self._raise_for_status(response, prefix="Error listing artifacts")
             body = _json_body(response, what="artifact list")
             try:
-                data = body.get("data", [])
-                metadata = body.get("metadata", {})
+                # The API reports an empty collection as an explicit JSON null, so None is
+                # tolerated like an absent key; other non-list/non-object values are malformed.
+                data = body.get("data")
+                metadata = body.get("metadata")
+                if data is None:
+                    data = []
+                if metadata is None:
+                    metadata = {}
                 if not isinstance(data, list):
                     raise TypeError(f"'data' must be a list, got {type(data).__name__}")
                 if not isinstance(metadata, dict):
