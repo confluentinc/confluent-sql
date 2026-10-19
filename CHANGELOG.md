@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`).
+
 ### Added
 
 - `Connection.dry_run_statement(statement_text, *, mode=ExecutionMode.SNAPSHOT, compute_pool_id=None)`: validate a statement with Flink's `sql.dry-run` in a single request, without running or storing it, and return the resulting `Statement`. The returned `Statement`'s `schema` and `is_append_only` may then be of interest to the caller. Raises `OperationalError` with the server's detail if Flink rejects the statement. (#246)
@@ -11,10 +15,19 @@ All notable changes to this dbapi driver will be documented in this file.
 - Support for the Flink Artifact API (`/artifact/v1/flink-artifacts` and `/presigned-upload-url`), for uploading UDF packages (a JAR, or for Python a ZIP) to Confluent Cloud.
   See `examples/artifact_upload_example.py` for a full example of packaging, uploading and calling a Python UDF artifact end to end.
   Artifact calls authenticate with a global key, or a dedicated Cloud resource management key via the new `cloud_api_key`/`cloud_api_secret` parameters of `connect()`.
+- Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. While the login is in progress the driver listens on the fixed loopback port `127.0.0.1:26642`, which must be free (otherwise `OAuthLoginError` with reason `PORT_IN_USE`). See the README and `examples/interactive_oauth_login.py` (#150).
+  - `confluent_sql.oauth_discard_login()`: discard the process's shared interactive OAuth login. Closing a `Connection` never does this; the next `connect(auth="oauth", ...)` opens the browser again. (#150)
+  - `connect(..., reauth="auto"|"raise")` (with `auth="oauth"` only): what to do once an OAuth session can no longer be refreshed. `"auto"` (default) opens the browser for a fresh login and retries the request; `"raise"` raises `ReauthenticationRequired` instead, for unattended runs. (#150)
+  - New exceptions, all subclasses of `OperationalError` and importable from `confluent_sql` (#150):
+    - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, or `SERVER_ERROR`.
+    - `OAuthTokenEndpointError`: the auth service's token endpoint rejected a request. Carries the OAuth `error_code` (e.g. `"invalid_grant"`) and `http_status_code`.
+    - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
 
 ### Changed
 
-- `Cursor.execute()` rejects `sql.dry-run` property being supplied as True with an `InterfaceError` pointing to use `Connection.dry_run_statement()` instead. Previously, valid SQL raised `StatementNotFoundError` (the cursor polled for a statement the server never stores) and invalid SQL raised `OperationalError`. (#246)
+- `Cursor.execute()` rejects `sql.dry-run` property being supplied as `True` with an `InterfaceError` pointing to use `Connection.dry_run_statement()` instead. Previously, valid SQL raised `StatementNotFoundError` (the cursor polled for a statement the server never stores) and invalid SQL raised `OperationalError`. (#246)
+- `organization_id` is now genuinely optional on both `connect()` and `Connection()` when it can be self-discovered (configured to use either oauth or a global API key).
+- Direct `Connection()` construction's `organization_id` requirement (introduced in 0.6.0, #213) does not apply under `auth="oauth"`, which discovers the organization from the interactive login's session.
 
 ## 0.6.0, 2026-09-29
 

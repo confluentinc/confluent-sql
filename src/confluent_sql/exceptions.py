@@ -7,6 +7,7 @@ Confluent SQL driver.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -262,6 +263,108 @@ class ConnectorAlreadyExistsError(OperationalError):
     def __init__(self, message: str, connector_name: str):
         super().__init__(message)
         self.connector_name = connector_name
+
+
+class OAuthLoginFailure(Enum):
+    """Why an interactive OAuth browser login could not complete.
+
+    The callback server raises the four here.
+    """
+
+    TIMED_OUT = "timed_out"
+    """The user never completed the browser login within the allotted time."""
+
+    PORT_IN_USE = "port_in_use"
+    """The fixed loopback callback port was already bound. Because the port is baked into the
+    auth service client's whitelisted redirect_uri, there is no alternate port to fall back to."""
+
+    AUTHORIZATION_DENIED = "authorization_denied"
+    """The auth service redirected back with an `error` -- the user declined consent, or the
+    authorization request itself was rejected."""
+
+    SERVER_ERROR = "server_error"
+    """The local callback listener could not be established, or died after binding."""
+
+
+class OAuthLoginError(OperationalError):
+    """
+    Exception raised when an interactive OAuth browser login cannot complete.
+
+    This is a subclass of OperationalError.
+
+    Attributes:
+        reason: An `OAuthLoginFailure` naming the cause, for callers that need to react to it
+            (e.g. re-prompting on a timeout but not on a denied authorization) rather than
+            matching on message text.
+    """
+
+    def __init__(self, message: str, reason: OAuthLoginFailure):
+        super().__init__(message)
+        self.reason = reason
+
+
+class OAuthTokenEndpointError(OperationalError):
+    """
+    Exception raised when the authentication service's token endpoint rejects a request.
+
+    Covers both grants this driver sends to `/oauth/token`: the initial `authorization_code`
+    exchange and every subsequent `refresh_token` exchange.
+
+    This is a subclass of OperationalError.
+
+    Attributes:
+        error_code: The machine-readable `error` field from the token endpoint's OAuth 2.0
+            error response (RFC 6749 section 5.2) -- most importantly `"invalid_grant"`, which
+            is how the service reports a refresh token that is expired, revoked, or already
+            spent. None when the response carried no such field (a non-JSON body, an HTML error
+            page from an intermediary, etc.).
+
+    The code is surfaced as an attribute rather than left buried in the message because the
+    refresh path has to *act* on it: `invalid_grant` means only a fresh interactive login can
+    recover, while a 429 or a 5xx is a blip worth retrying on the next request. Matching that
+    distinction on message text would be a guess; matching it on this field is not.
+    """
+
+    def __init__(
+        self, message: str, error_code: str | None = None, http_status_code: int | None = None
+    ):
+        super().__init__(message, http_status_code=http_status_code)
+        self.error_code = error_code
+
+
+class ReauthenticationReason(Enum):
+    """Why a fresh interactive login is the only way forward.
+
+    Both members mean the same thing operationally -- the refresh token can no longer mint
+    tokens -- but they are reached differently, and a caller re-prompting a human benefits from
+    knowing which.
+    """
+
+    ABSOLUTE_EXPIRY = "absolute_expiry"
+    """The refresh token's ~8h absolute lifetime elapsed. Known locally from the token set's own
+    expiry, so this is detected *without* spending a doomed request on the token endpoint."""
+
+    REFRESH_REJECTED = "refresh_rejected"
+    """The token endpoint refused the refresh token (`invalid_grant`). Covers idle expiry, an
+    administrator revoking the session, and a token already spent by someone else -- the service
+    reports all three identically, so this driver does not pretend to tell them apart."""
+
+
+class ReauthenticationRequired(OperationalError):
+    """
+    Exception raised when an OAuth session can no longer be refreshed and only a fresh
+    interactive browser login can recover.
+
+    This is a subclass of OperationalError, raised from the request path once the driver knows
+    that no further token refresh can succeed.
+
+    Attributes:
+        reason: A `ReauthenticationReason` naming which wall was hit.
+    """
+
+    def __init__(self, message: str, reason: ReauthenticationReason):
+        super().__init__(message)
+        self.reason = reason
 
 
 class ArtifactNotFoundError(OperationalError):

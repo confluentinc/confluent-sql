@@ -37,8 +37,13 @@ from .exceptions import (
     InterfaceError,
     InternalError,
     NotSupportedError,
+    OAuthLoginError,
+    OAuthLoginFailure,
+    OAuthTokenEndpointError,
     OperationalError,
     ProgrammingError,
+    ReauthenticationReason,
+    ReauthenticationRequired,
     StatementDeletedError,
     StatementNotFoundError,
     StatementStoppedError,
@@ -48,6 +53,7 @@ from .exceptions import (
     Warning,
 )
 from .execution_mode import ExecutionMode
+from .oauth import discard_login as oauth_discard_login
 from .result_readers import ChangeloggedRow
 from .statement import HIDDEN_LABEL, Op, StatementWarning, WarningSeverity
 from .statement_properties import (
@@ -119,6 +125,12 @@ __all__ = [
     "UploadRetry",
     "ConnectorNotFoundError",
     "ConnectorAlreadyExistsError",
+    "OAuthLoginError",
+    "OAuthLoginFailure",
+    "OAuthTokenEndpointError",
+    "ReauthenticationReason",
+    "ReauthenticationRequired",
+    "oauth_discard_login",
     "Connector",
     "ConnectorSpec",
     "ConnectorStatus",
