@@ -330,6 +330,7 @@ class TestExchangeIdTokenForCpToken:
         """Test that when the organization is rejected and the username is not readable, it is
         omitted from the error message. Exercises _id_token_email() call from
         exchange_id_token_for_cp_token()."""
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(403, json=CCLOUD_UNKNOWN_ORG_BODY)
 
