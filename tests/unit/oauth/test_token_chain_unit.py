@@ -26,6 +26,13 @@ CONFIG = CCloudOAuthConfig(
 )
 
 
+CCLOUD_UNKNOWN_ORG_ERROR = {"code": 403, "message": "Cannot find the organization for this user"}
+CCLOUD_UNKNOWN_ORG_BODY = {"error": CCLOUD_UNKNOWN_ORG_ERROR}
+"""What CCloud's `/api/sessions` answers (403) when the supplied org_resource_id is unusable --
+captured from real CCloud (#271): the error object is nested under `error`, so the generic
+message embeds its dict repr."""
+
+
 def _now() -> datetime:
     return datetime(2026, 8, 11, 9, 0, tzinfo=timezone.utc)
 
@@ -38,6 +45,15 @@ def _jwt_with_payload(payload: object) -> str:
     """Build a token (header.payload.sig) with an arbitrary -- possibly malformed -- JSON
     payload segment, for testing _jwt_exp's handling of shapes a real JWT would never have."""
     return f"{_jwt_segment({'alg': 'none'})}.{_jwt_segment(payload)}.sig"
+
+
+def _jwt_with_raw_payload_segment(segment: str) -> str:
+    """Like _jwt_with_payload, but with the payload segment verbatim, so it can be bad base64."""
+    return f"{_jwt_segment({'alg': 'none'})}.{segment}.sig"
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
 def _make_jwt(exp: int) -> str:
@@ -264,6 +280,95 @@ class TestExchangeIdTokenForCpToken:
         with _client(handler) as client, pytest.raises(OperationalError, match=error_message):
             exchange_id_token_for_cp_token(client, CONFIG, id_token="bad", org_resource_id=None)
 
+    def test_rejected_supplied_org_raises_org_aware_error(self):
+        """A 403 on a session that named an org says so, naming the org and the way out, while
+        keeping the status, CCloud's own message, and the original exception chained."""
+        org_resource_id = "org-bogus-123"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json=CCLOUD_UNKNOWN_ORG_BODY)
+
+        username = "ada@example.com"
+        id_token = _jwt_with_payload({"email": username})
+        with _client(handler) as client, pytest.raises(OperationalError) as caught:
+            exchange_id_token_for_cp_token(
+                client, CONFIG, id_token=id_token, org_resource_id=org_resource_id
+            )
+
+        message = str(caught.value)
+        assert org_resource_id in message
+        assert username in message
+        assert "Omit organization_id" in message
+        assert CCLOUD_UNKNOWN_ORG_ERROR["message"] in message
+        assert caught.value.http_status_code == 403
+        assert isinstance(caught.value.__cause__, OperationalError)
+
+    @pytest.mark.parametrize(
+        "id_token",
+        [
+            pytest.param("opaque-id-token", id="not-three-segments-ValueError"),
+            pytest.param(
+                _jwt_with_raw_payload_segment("a"), id="bad-base64-padding-binascii-Error"
+            ),
+            pytest.param(
+                _jwt_with_raw_payload_segment(_b64url(b"not json")), id="not-json-JSONDecodeError"
+            ),
+            pytest.param(
+                _jwt_with_raw_payload_segment(_b64url(b"\xff\xfe")),
+                id="not-utf8-UnicodeDecodeError",
+            ),
+            pytest.param(_jwt_with_payload({"sub": "u-1"}), id="no-email-claim-KeyError"),
+            pytest.param(_jwt_with_payload(["email"]), id="payload-is-list-TypeError"),
+            pytest.param(_jwt_with_payload("email"), id="payload-is-string-TypeError"),
+            pytest.param(_jwt_with_payload(5), id="payload-is-int-TypeError"),
+            pytest.param(_jwt_with_payload(None), id="payload-is-null-TypeError"),
+            pytest.param(_jwt_with_payload({"email": 42}), id="non-string-email"),
+            pytest.param(_jwt_with_payload({"email": ""}), id="empty-email"),
+        ],
+    )
+    def test_rejected_org_without_a_readable_username_omits_it(self, id_token):
+        """Test that when the organization is rejected and the username is not readable, it is
+        omitted from the error message. Exercises _id_token_email() call from
+        exchange_id_token_for_cp_token()."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json=CCLOUD_UNKNOWN_ORG_BODY)
+
+        with _client(handler) as client, pytest.raises(OperationalError) as caught:
+            exchange_id_token_for_cp_token(
+                client, CONFIG, id_token=id_token, org_resource_id="org-1"
+            )
+
+        assert "org-1" in str(caught.value)
+        assert "logged in as" not in str(caught.value)
+
+    @pytest.mark.parametrize(
+        ("status", "org_resource_id"),
+        [
+            pytest.param(403, None, id="403-but-no-org-was-sent"),
+            pytest.param(401, "org-1", id="401-with-org"),
+            pytest.param(403, "org-1", id="403-with-org-other-reason"),
+            pytest.param(500, "org-1", id="500-with-org"),
+        ],
+    )
+    def test_other_failures_keep_the_generic_message(self, status, org_resource_id):
+        body = (
+            {"error": {"code": 403, "message": "Some other forbidden reason"}}
+            if (status, org_resource_id) == (403, "org-1")
+            else CCLOUD_UNKNOWN_ORG_BODY
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, json=body)
+
+        with _client(handler) as client, pytest.raises(OperationalError) as caught:
+            exchange_id_token_for_cp_token(
+                client, CONFIG, id_token="id-tok", org_resource_id=org_resource_id
+            )
+
+        assert str(caught.value) == f"Confluent Cloud API request failed: {body['error']}"
+        assert caught.value.http_status_code == status
+
     def test_token_with_unparseable_exp_falls_back_to_fixed_lifetime(self):
         now = _now()
 
@@ -406,3 +511,17 @@ class TestExchangeCpForDpToken:
 
         with _client(handler) as client, pytest.raises(OperationalError, match=error_message):
             exchange_cp_for_dp_token(client, CONFIG, cp_token="expired-cp-tok")
+
+    def test_403_keeps_the_generic_message_with_no_org_text(self):
+        """This hop never sends an org, so the shared error helper must not grow org hints."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json=CCLOUD_UNKNOWN_ORG_BODY)
+
+        with _client(handler) as client, pytest.raises(OperationalError) as caught:
+            exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok")
+
+        assert str(caught.value) == (
+            f"Confluent Cloud API request failed: {CCLOUD_UNKNOWN_ORG_ERROR}"
+        )
+        assert caught.value.http_status_code == 403

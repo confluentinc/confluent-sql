@@ -47,6 +47,10 @@ from ..exceptions import OAuthTokenEndpointError, OperationalError
 from .config import CCloudOAuthConfig
 from .http_json import best_effort_json_object, optional_object_field, post_json, require_field
 
+UNKNOWN_ORG_REASON = "Cannot find the organization for this user"
+"""The reason CCloud's `/api/sessions` gives (with a 403) when the supplied org_resource_id is
+unusable for the logged-in user. A 403 can have other reasons, so this is what we key on."""
+
 FALLBACK_CP_LIFETIME = timedelta(minutes=5)
 """Used when a control-plane token isn't a decodable JWT (or has no usable `exp`) -- matches
 mcp-confluent's CONTROL_PLANE_TOKEN_LIFETIME_MS."""
@@ -152,12 +156,34 @@ def exchange_id_token_for_cp_token(
     request_body: dict[str, str] = {"id_token": id_token}
     if org_resource_id is not None:
         request_body["org_resource_id"] = org_resource_id
-    payload = post_json(
-        client,
-        f"{config.api_host}/api/sessions",
-        check_response=_raise_for_confluent_api_error,
-        json=request_body,
-    )
+    try:
+        payload = post_json(
+            client,
+            f"{config.api_host}/api/sessions",
+            check_response=_raise_for_confluent_api_error,
+            json=request_body,
+        )
+    except OperationalError as e:
+        # This is the only hop that sends an org, and a 403 with this specific reason means CCloud
+        # refused it for this user. Say so, rather than leaving the caller to guess the org id was
+        # the problem. Other 403 reasons pass through untouched. The reason is nested in the error
+        # body, so it appears verbatim inside the generic message's text.
+        if (
+            org_resource_id is not None
+            and e.http_status_code == 403
+            and UNKNOWN_ORG_REASON in str(e)
+        ):
+            username = _id_token_email(id_token)
+            logged_in_as = f" (logged in as {username})" if username else ""
+            raise OperationalError(
+                f"Confluent Cloud rejected organization_id {org_resource_id!r} for the "
+                f"logged-in user{logged_in_as}: they are not a member of it, or no such "
+                "organization exists. "
+                "Omit organization_id to use the login's default organization, or log in as a "
+                f"user who belongs to that organization. ({e})",
+                http_status_code=e.http_status_code,
+            ) from e
+        raise
     token = require_field(payload, "token", context="the control-plane token exchange")
     organization = optional_object_field(payload, "organization")
     organization_resource_id = (
@@ -223,6 +249,19 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
             else now.replace(tzinfo=timezone.utc)
         )
         return anchor + fallback_lifetime
+
+
+def _id_token_email(id_token: str) -> str | None:
+    """Best-effort: the unverified `email` claim of the id_token, for naming who is logged in
+    in an error message. None for anything that isn't a decodable JWT with a string `email` --
+    a diagnostic nicety must never mask the real failure it is decorating."""
+    try:
+        _header, payload_segment, _signature = id_token.split(".")
+        padded = payload_segment + "=" * (-len(payload_segment) % 4)
+        email = json.loads(base64.urlsafe_b64decode(padded))["email"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return email if isinstance(email, str) and email else None
 
 
 def _raise_for_auth_service_error(response: httpx.Response) -> None:
