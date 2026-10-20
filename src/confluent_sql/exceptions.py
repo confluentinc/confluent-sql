@@ -268,7 +268,8 @@ class ConnectorAlreadyExistsError(OperationalError):
 class OAuthLoginFailure(Enum):
     """Why an interactive OAuth browser login could not complete.
 
-    The callback server raises the four here.
+    The callback server raises the first four here; `USER_MISMATCH` comes from the provider's
+    reauthentication.
     """
 
     TIMED_OUT = "timed_out"
@@ -284,6 +285,11 @@ class OAuthLoginFailure(Enum):
 
     SERVER_ERROR = "server_error"
     """The local callback listener could not be established, or died after binding."""
+
+    USER_MISMATCH = "user_mismatch"
+    """A reauthentication logged in as a different user than the session's original login. The
+    session is left as it was (still needing reauthentication), so the caller can retry as the
+    original user."""
 
 
 class OAuthLoginError(OperationalError):
