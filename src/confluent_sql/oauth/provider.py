@@ -79,6 +79,7 @@ from ..exceptions import (
     ReauthenticationReason,
     ReauthenticationRequired,
 )
+from ..utils import DEFAULT_HTTP_TIMEOUT_SECS
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import CCloudOAuthConfig
 from .pkce import challenge_for, generate_state, generate_verifier
@@ -142,6 +143,7 @@ class CCloudOAuth:
         config: CCloudOAuthConfig,
         *,
         http_client: httpx.Client | None = None,
+        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
         open_browser: Callable[[str], bool] = webbrowser.open,
     ) -> None:
         """
@@ -152,6 +154,10 @@ class CCloudOAuth:
                 request clients -- so a refresh triggered from one caller's thread cannot
                 contend with that caller's own in-flight requests. Owned either way: `close()`
                 closes it.
+            http_timeout_secs: timeout applied to the default private client's requests -- every
+                hop of the token chain. Ignored when `http_client` is supplied (that client
+                carries its own timeout). Without it the client would silently inherit httpx's
+                5s default rather than the package's.
             open_browser: how to send the user to the authorization URL. Returning False (a
                 headless box, no `BROWSER`, no display) is not a failure -- the URL is logged so
                 the user can paste it, and the login waits as normal.
@@ -159,7 +165,9 @@ class CCloudOAuth:
         self._config = config
         """What Confluent Cloud environment to authenticate against, and the callback host/port/path
            to listen on."""
-        self._client = http_client if http_client is not None else httpx.Client()
+        self._client = (
+            http_client if http_client is not None else httpx.Client(timeout=http_timeout_secs)
+        )
         self._open_browser = open_browser
         """How to send the user to the authorization URL."""
 
