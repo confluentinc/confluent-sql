@@ -44,6 +44,7 @@ from .oauth import (
     acquire,
 )
 from .oauth import reauthenticate as oauth_reauthenticate
+from .oauth.holder import ProviderFactory
 from .polling import sleep_with_backoff
 from .retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
@@ -70,15 +71,10 @@ from .tableflow import (
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
-from .utils import extract_error_detail
+from .utils import DEFAULT_HTTP_TIMEOUT_SECS, extract_error_detail
 from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_HTTP_TIMEOUT_SECS: float = 10.0
-"""Applied to the httpx client whenever a caller doesn't pass http_timeout_secs explicitly,
-so the effective default is ours to control rather than an implicit dependency on httpx's own
-default (5s)."""
 
 
 def _resolve_api_credentials(
@@ -244,7 +240,7 @@ def connect(  # noqa: PLR0913
     identity_pool_id: str | None = None,
     auth: Literal["api_key", "oauth"] = "api_key",
     oauth_config: CCloudOAuthConfig | None = None,
-    oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
+    oauth_provider_factory: ProviderFactory = CCloudOAuth,
     reauth: Literal["auto", "raise"] = "auto",
     environment_id: str,
     organization_id: str = "",
@@ -389,7 +385,11 @@ def connect(  # noqa: PLR0913
                        where version is from __version__.py
         http_timeout_secs: Timeout in seconds for HTTP requests made by the underlying httpx
                        client. Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS,
-                       applied to connect, read, write, and pool operations.
+                       applied to connect, read, write, and pool operations. With
+                       `auth="oauth"` it also bounds every HTTP hop of the token chain (code
+                       exchange, token exchanges, refresh), but only if this connection is the
+                       one that establishes the process's shared login; later connections reuse
+                       that login's provider as-is.
 
     Returns:
         A Connection object representing the database connection
@@ -577,7 +577,7 @@ class Connection:
         identity_pool_id: str | None = None,
         auth: Literal["api_key", "oauth"] = "api_key",
         oauth_config: CCloudOAuthConfig | None = None,
-        oauth_provider_factory: Callable[[CCloudOAuthConfig], OAuthProvider] = CCloudOAuth,
+        oauth_provider_factory: ProviderFactory = CCloudOAuth,
         reauth: Literal["auto", "raise"] = "auto",
         compute_pool_id: str | None = None,
         database: str | None = None,
@@ -794,7 +794,10 @@ class Connection:
             # default -- is treated by the holder's one-identity guard as "inherit," never as a
             # conflicting explicit value.
             provider = acquire(
-                oauth_cfg, organization_id or None, provider_factory=oauth_provider_factory
+                oauth_cfg,
+                organization_id or None,
+                http_timeout_secs=http_timeout_secs,
+                provider_factory=oauth_provider_factory,
             )
             self._oauth_provider = provider
             self._flink_auth = provider.data_plane_auth

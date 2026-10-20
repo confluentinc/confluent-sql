@@ -29,6 +29,7 @@ from confluent_sql import (
 from confluent_sql.connection import Connection
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.provider import OAuthMetrics
+from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
 
 pytestmark = pytest.mark.unit
 
@@ -64,8 +65,11 @@ class FakeOAuthProvider:
     actually work -- they're exactly what `connect()` wires onto the driver's clients.
     """
 
-    def __init__(self, config: CCloudOAuthConfig) -> None:
+    def __init__(
+        self, config: CCloudOAuthConfig, http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS
+    ) -> None:
         self.config = config
+        self.http_timeout_secs = http_timeout_secs
         self._organization_id: str | None = None
         self.data_plane_auth = _MarkerAuth("dp")
         self.control_plane_auth = _MarkerAuth("cp")
@@ -238,6 +242,16 @@ class TestOauthValidation:
             cloud_region="us-east-1",
         )
         assert conn.organization_id == DEFAULT_ORG
+
+    def test_http_timeout_secs_reaches_the_oauth_provider(self):
+        """The provider's private token-chain client must honor the caller's http_timeout_secs,
+        not fall back to httpx's implicit default."""
+        conn = _oauth_connect(http_timeout_secs=3.5)
+        assert _provider(conn).http_timeout_secs == 3.5
+
+    def test_default_http_timeout_secs_reaches_the_oauth_provider(self):
+        conn = _oauth_connect()
+        assert _provider(conn).http_timeout_secs == DEFAULT_HTTP_TIMEOUT_SECS
 
     def test_auth_api_key_default_is_unaffected(self):
         """Regression guard: omitting auth= behaves exactly as before (api_key mode)."""

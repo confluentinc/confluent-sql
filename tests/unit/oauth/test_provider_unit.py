@@ -54,6 +54,7 @@ from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 from confluent_sql.oauth.pkce import challenge_for
 from confluent_sql.oauth.provider import CCloudOAuth
 from confluent_sql.oauth.token_set import ABSOLUTE_LIFETIME, TokenSet
+from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
 
 pytestmark = pytest.mark.unit
 
@@ -1414,6 +1415,22 @@ class TestClose:
         fake = FakeCCloud()
         with _logged_in(fake) as provider:
             provider.close()
+            provider.close()
+
+    def test_private_http_client_defaults_to_the_package_http_timeout(self):
+        provider = CCloudOAuth(_config(_free_port()), open_browser=_browser())
+        try:
+            assert provider._client.timeout == httpx.Timeout(DEFAULT_HTTP_TIMEOUT_SECS)
+        finally:
+            provider.close()
+
+    def test_private_http_client_honors_http_timeout_secs(self):
+        provider = CCloudOAuth(
+            _config(_free_port()), http_timeout_secs=3.5, open_browser=_browser()
+        )
+        try:
+            assert provider._client.timeout == httpx.Timeout(3.5)
+        finally:
             provider.close()
 
     def test_close_releases_the_private_http_client(self):

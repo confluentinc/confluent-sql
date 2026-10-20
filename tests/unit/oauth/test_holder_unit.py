@@ -39,6 +39,7 @@ from confluent_sql.oauth import holder as holder_module
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.holder import ProcessOAuthHolder, acquire, discard_login, reauthenticate
 from confluent_sql.oauth.provider import OAuthMetrics, OAuthProvider
+from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
 
 pytestmark = pytest.mark.unit
 
@@ -148,12 +149,15 @@ class RecordingFactory:
         self._gate = gate
         self._reauth_gate = reauth_gate
         self.providers: list[FakeProvider] = []
+        self.http_timeouts: list[float] = []
+        """The `http_timeout_secs` each build was handed, parallel to `providers`."""
         self._lock = threading.Lock()
 
-    def __call__(self, config: CCloudOAuthConfig) -> FakeProvider:
+    def __call__(self, config: CCloudOAuthConfig, http_timeout_secs: float) -> FakeProvider:
         provider = FakeProvider(config, gate=self._gate, reauth_gate=self._reauth_gate)
         with self._lock:
             self.providers.append(provider)
+            self.http_timeouts.append(http_timeout_secs)
         return provider
 
 
@@ -281,7 +285,7 @@ class TestLoginFailure:
         browser, not the first attempt's stranded failure."""
         holder = ProcessOAuthHolder.instance()
 
-        def failing(config: CCloudOAuthConfig) -> FakeProvider:
+        def failing(config: CCloudOAuthConfig, http_timeout_secs: float) -> FakeProvider:
             return FakeProvider(config, gate=_raising(DENIED_LOGIN))
 
         with pytest.raises(OAuthLoginError):
@@ -297,7 +301,7 @@ class TestLoginFailure:
         holder = ProcessOAuthHolder.instance()
         built: list[FakeProvider] = []
 
-        def failing(config: CCloudOAuthConfig) -> FakeProvider:
+        def failing(config: CCloudOAuthConfig, http_timeout_secs: float) -> FakeProvider:
             provider = FakeProvider(config, gate=_raising(DENIED_LOGIN))
             built.append(provider)
             return provider
@@ -315,7 +319,7 @@ class TestLoginFailure:
         """
         holder = ProcessOAuthHolder.instance()
 
-        def exploding_factory(config: CCloudOAuthConfig) -> OAuthProvider:
+        def exploding_factory(config: CCloudOAuthConfig, http_timeout_secs: float) -> OAuthProvider:
             raise RuntimeError("factory blew up before any login")
 
         with pytest.raises(RuntimeError, match="factory blew up"):
@@ -331,7 +335,7 @@ class TestLoginFailure:
         """
         holder = ProcessOAuthHolder.instance()
 
-        def factory(config: CCloudOAuthConfig) -> FakeProvider:
+        def factory(config: CCloudOAuthConfig, http_timeout_secs: float) -> FakeProvider:
             provider = FakeProvider(config, gate=_raising(DENIED_LOGIN))
             provider.close = _raising(RuntimeError("close blew up"))  # type: ignore[method-assign]
             return provider
@@ -700,6 +704,18 @@ class TestShutdown:
 
     def test_instance_returns_the_one_singleton(self):
         assert ProcessOAuthHolder.instance() is ProcessOAuthHolder.instance()
+
+
+class TestHttpTimeout:
+    def test_acquire_hands_the_factory_the_callers_http_timeout(self):
+        factory = RecordingFactory()
+        acquire(CONFIG, http_timeout_secs=3.5, provider_factory=factory)
+        assert factory.http_timeouts == [3.5]
+
+    def test_acquire_defaults_to_the_package_http_timeout(self):
+        factory = RecordingFactory()
+        acquire(CONFIG, provider_factory=factory)
+        assert factory.http_timeouts == [DEFAULT_HTTP_TIMEOUT_SECS]
 
 
 class TestModuleLevelFunctions:
