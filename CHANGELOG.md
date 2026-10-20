@@ -14,7 +14,7 @@ All notable changes to this dbapi driver will be documented in this file.
   - `confluent_sql.oauth_discard_login()`: discard the process's shared interactive OAuth login. Closing a `Connection` never does this; the next `connect(auth="oauth", ...)` opens the browser again. (#150)
   - `connect(..., reauth="auto"|"raise")` (with `auth="oauth"` only): what to do once an OAuth session can no longer be refreshed. `"auto"` (default) opens the browser for a fresh login and retries the request; `"raise"` raises `ReauthenticationRequired` instead, for unattended runs. (#150)
   - New exceptions, all subclasses of `OperationalError` and importable from `confluent_sql` (#150):
-    - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, or `SERVER_ERROR`.
+    - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, `SERVER_ERROR`, or (on re-authentication) `USER_MISMATCH`.
     - `OAuthTokenEndpointError`: the auth service's token endpoint rejected a request. Carries the OAuth `error_code` (e.g. `"invalid_grant"`) and `http_status_code`.
     - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
 

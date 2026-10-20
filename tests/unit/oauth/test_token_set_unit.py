@@ -5,7 +5,7 @@ import pytest
 
 from confluent_sql.oauth.token_set import EXPIRY_SKEW, TokenSet
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 
 def _now() -> datetime:

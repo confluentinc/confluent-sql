@@ -226,6 +226,11 @@ class CCloudOAuth:
         `login()`, or the default Confluent Cloud resolved for the user. None before `login()`.
         Only read under _token_lock."""
 
+        self._user_resource_id: str | None = None
+        """Who this login is: the CP token's `userResourceId` (else `sub`) from `login()`, pinned
+        for the provider's life so `reauthenticate()` can refuse a different user (#277). None
+        before `login()`, or if the token named nobody. Only read under _token_lock."""
+
         self._control_plane_auth = _PlaneAuth(self, _Plane.CONTROL)
         """The view stamping the control-plane token -- Tableflow, Connect, CMK, org lookups."""
         self._data_plane_auth = _PlaneAuth(self, _Plane.DATA)
@@ -253,6 +258,14 @@ class CCloudOAuth:
         `connect()` reads this back to fill the Flink path when it omitted the org."""
         with self._token_lock:
             return self._organization_id
+
+    @property
+    def user_resource_id(self) -> str | None:
+        """The user this login belongs to (the CP token's `userResourceId`, else `sub`), pinned at
+        `login()` and enforced by `reauthenticate()`. None before `login()` or when the token
+        named nobody."""
+        with self._token_lock:
+            return self._user_resource_id
 
     @property
     def control_plane_auth(self) -> httpx.Auth:
@@ -311,11 +324,19 @@ class CCloudOAuth:
                     "identity for its whole life; use a new provider for a different one."
                 )
 
-            token_set, organization_id = self._run_login_flow(org_resource_id, timeout)
+            token_set, organization_id, user_resource_id = self._run_login_flow(
+                org_resource_id, timeout
+            )
+            if user_resource_id is None:
+                logger.warning(
+                    "Could not determine which Confluent Cloud user logged in, so a later "
+                    "re-authentication cannot verify it is the same user."
+                )
 
             with self._token_lock:
                 self._token_set = token_set
                 self._organization_id = organization_id
+                self._user_resource_id = user_resource_id
                 self._interim_snapshot = None
                 self._failure = None
 
@@ -395,7 +416,10 @@ class CCloudOAuth:
                 continue
 
         try:
-            token_set, organization_id = self._run_login_flow(self._organization_id, timeout)
+            token_set, organization_id, user_resource_id = self._run_login_flow(
+                self._organization_id, timeout
+            )
+            self._require_same_user(user_resource_id)
         except BaseException as e:
             flight.set_exception(e)
             raise
@@ -452,9 +476,38 @@ class CCloudOAuth:
             self._inflight_refresh = Future()
             return self._inflight_refresh, True
 
-    def _run_login_flow(self, org_resource_id: str | None, timeout: float) -> tuple[TokenSet, str]:
+    def _require_same_user(self, user_resource_id: str | None) -> None:
+        """Refuse a reauthentication that logged in as someone other than the original user.
+
+        A different user in the same org may carry different RBAC, so silently continuing as them
+        would be a surprise. The mismatch is raised before anything is installed, leaving the
+        session latched so the caller can retry as the original user. When either side's identity
+        could not be determined there is nothing to compare, so this warns (for the reauth side;
+        `login()` already warned for the original) and lets the login through.
+        """
+        with self._token_lock:
+            pinned = self._user_resource_id
+        if pinned is None:
+            return
+        if user_resource_id is None:
+            logger.warning(
+                "Could not determine which Confluent Cloud user re-authenticated, so it cannot "
+                "be verified to be the same user as the original login."
+            )
+            return
+        if user_resource_id != pinned:
+            raise OAuthLoginError(
+                "Re-authentication logged in as a different user than this session's original "
+                "login. Log in again as the original user.",
+                OAuthLoginFailure.USER_MISMATCH,
+            )
+
+    def _run_login_flow(
+        self, org_resource_id: str | None, timeout: float
+    ) -> tuple[TokenSet, str, str | None]:
         """The browser round-trip and the three token hops, shared by `login()` and
-        `reauthenticate()`. Touches no shared state -- the caller installs the result under
+        `reauthenticate()`. Returns the token set, the organization id and the logged-in user's
+        id (None if undeterminable). Touches no shared state -- the caller installs the result under
         `_token_lock` itself, since the two callers install it differently (`login()` also clears
         `_interim_snapshot`/`_failure` under `_login_lock`; `reauthenticate()` under the refresh
         gate).
@@ -500,7 +553,7 @@ class CCloudOAuth:
             dp_token=data_plane.token,
             dp_token_expires_at=data_plane.expires_at,
         )
-        return token_set, control_plane.organization_resource_id
+        return token_set, control_plane.organization_resource_id, control_plane.user_resource_id
 
     def close(self) -> None:
         """Release the private HTTP client. Idempotent.

@@ -17,25 +17,14 @@ proving nothing leaked from it.
     RUN_OAUTH_TESTS=1 uv run pytest -n0 tests/integration/test_oauth_rejected_org.py
 """
 
-from collections.abc import Generator
-
 import pytest
 
-from confluent_sql import OperationalError, connect, oauth_discard_login
+from confluent_sql import OperationalError, connect
+
+pytestmark = pytest.mark.oauth
+
 
 BOGUS_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000000"
-
-
-@pytest.fixture
-def fresh_oauth_process(oauth_base_connect_args: dict[str, str]) -> Generator[None, None, None]:
-    """Guarantee no process-wide login can short-circuit the test's own, and none leaks out.
-
-    Without the leading discard, the holder would hand back an already-established provider and
-    the one-identity guard would fail with a different error, never reaching CCloud.
-    """
-    oauth_discard_login()
-    yield
-    oauth_discard_login()
 
 
 @pytest.mark.integration
