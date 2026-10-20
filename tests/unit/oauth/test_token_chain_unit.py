@@ -11,6 +11,7 @@ from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.token_chain import (
     FALLBACK_CP_LIFETIME,
     FALLBACK_DP_LIFETIME,
+    UserIdentity,
     exchange_code_for_tokens,
     exchange_cp_for_dp_token,
     exchange_id_token_for_cp_token,
@@ -435,10 +436,10 @@ class TestExchangeIdTokenForCpToken:
 
 
 class TestCpTokenUserIdentity:
-    """The CP token's unverified `userResourceId` (else `sub`) names who logged in (#277)."""
+    """The CP token's unverified `userResourceId` and `sub` claims name who logged in (#277)."""
 
     @staticmethod
-    def _user_resource_id_for(token: str) -> str | None:
+    def _user_identity_for(token: str) -> UserIdentity | None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200, json={"token": token, "organization": {"resource_id": "org-abc"}}
@@ -448,28 +449,31 @@ class TestCpTokenUserIdentity:
             result = exchange_id_token_for_cp_token(
                 client, CONFIG, id_token="id-tok", org_resource_id=None
             )
-        return result.user_resource_id
+        return result.user_identity
 
     @pytest.mark.parametrize(
         ("claims", "expected"),
         [
             pytest.param(
                 {"userResourceId": "u-abc123", "sub": "auth0|1"},
-                "u-abc123",
-                id="prefers-user-resource-id",
+                UserIdentity("u-abc123", "auth0|1"),
+                id="both-claims-kept",
             ),
-            pytest.param({"sub": "auth0|1"}, "auth0|1", id="falls-back-to-sub"),
+            pytest.param({"sub": "auth0|1"}, UserIdentity(None, "auth0|1"), id="sub-only"),
+            pytest.param(
+                {"userResourceId": "u-abc123"}, UserIdentity("u-abc123", None), id="uri-only"
+            ),
             pytest.param(
                 {"userResourceId": "", "sub": "auth0|1"},
-                "auth0|1",
-                id="empty-user-resource-id-falls-back",
+                UserIdentity(None, "auth0|1"),
+                id="empty-claim-is-absent",
             ),
             pytest.param({"userResourceId": 42, "sub": 7}, None, id="non-string-claims-ignored"),
             pytest.param({"exp": 1}, None, id="no-identity-claims"),
         ],
     )
     def test_extracts_identity_from_payload(self, claims, expected):
-        assert self._user_resource_id_for(_jwt_with_payload(claims)) == expected
+        assert self._user_identity_for(_jwt_with_payload(claims)) == expected
 
     @pytest.mark.parametrize(
         "token",
@@ -480,7 +484,37 @@ class TestCpTokenUserIdentity:
         ],
     )
     def test_undecodable_token_yields_no_identity(self, token):
-        assert self._user_resource_id_for(token) is None
+        assert self._user_identity_for(token) is None
+
+
+class TestUserIdentityComparison:
+    """Identities are comparable only on the claims both carry: a `userResourceId` must never be
+    compared against a `sub` (that would flag the very same user as someone else)."""
+
+    BOTH = UserIdentity("u-1", "auth0|1")
+
+    @pytest.mark.parametrize(
+        ("other", "shares", "conflicts"),
+        [
+            pytest.param(UserIdentity("u-1", "auth0|1"), True, False, id="identical"),
+            pytest.param(UserIdentity(None, "auth0|1"), True, False, id="same-user-only-sub"),
+            pytest.param(UserIdentity("u-1", None), True, False, id="same-user-only-uri"),
+            pytest.param(UserIdentity("u-2", "auth0|1"), True, True, id="uri-differs"),
+            pytest.param(UserIdentity("u-1", "auth0|2"), True, True, id="sub-differs"),
+            pytest.param(UserIdentity(None, "auth0|2"), True, True, id="only-sub-and-differs"),
+        ],
+    )
+    def test_comparable_identities(self, other, shares, conflicts):
+        assert self.BOTH.shares_a_claim_with(other) is shares
+        assert other.shares_a_claim_with(self.BOTH) is shares
+        assert self.BOTH.conflicts_with(other) is conflicts
+        assert other.conflicts_with(self.BOTH) is conflicts
+
+    def test_identities_with_no_claim_in_common_are_incomparable_not_conflicting(self):
+        uri_only, sub_only = UserIdentity("u-1", None), UserIdentity(None, "auth0|1")
+
+        assert not uri_only.shares_a_claim_with(sub_only)
+        assert not uri_only.conflicts_with(sub_only)
 
 
 class TestJwtExpHardening:

@@ -74,6 +74,8 @@ The browser opens once per process; the login is shared by every connection the 
 
 Re-authentication must be completed as the same user who originally signed in. If a different user signs in, even within the same organization, the driver raises `OAuthLoginError` with reason `OAuthLoginFailure.USER_MISMATCH` and the session stays unauthenticated, so you can sign in again as the original user.
 
+This check relies on the user identity claims in the login's token, and is strict: a re-authentication whose token carries no identity comparable to the original's is refused the same way, as is one that names a user when the original login's token named none. The only case let through unchecked is a login whose token never named a user at all, where the driver logs a warning at login and has nothing to compare.
+
 ### BYOIDC bearer-token authentication
 
 If your Confluent Cloud organization is configured with your own registered OAuth/OIDC identity provider, you can authenticate to the **Flink data plane** with a bearer token you mint yourself (an "external" token in Confluent's authorization vocabulary) rather than a Confluent API key. Pass the token and the identity-pool id that scopes it:

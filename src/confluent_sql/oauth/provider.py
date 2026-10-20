@@ -84,6 +84,7 @@ from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import CCloudOAuthConfig
 from .pkce import challenge_for, generate_state, generate_verifier
 from .token_chain import (
+    UserIdentity,
     exchange_code_for_tokens,
     exchange_cp_for_dp_token,
     exchange_id_token_for_cp_token,
@@ -226,10 +227,10 @@ class CCloudOAuth:
         `login()`, or the default Confluent Cloud resolved for the user. None before `login()`.
         Only read under _token_lock."""
 
-        self._user_resource_id: str | None = None
-        """Who this login is: the CP token's `userResourceId` (else `sub`) from `login()`, pinned
-        for the provider's life so `reauthenticate()` can refuse a different user (#277). None
-        before `login()`, or if the token named nobody. Only read under _token_lock."""
+        self._user_identity: UserIdentity | None = None
+        """Who this login is: the CP token's identity claims from `login()`, pinned for the
+        provider's life so `reauthenticate()` can refuse a different user (#277). None before
+        `login()`, or if the token named nobody. Only read under _token_lock."""
 
         self._control_plane_auth = _PlaneAuth(self, _Plane.CONTROL)
         """The view stamping the control-plane token -- Tableflow, Connect, CMK, org lookups."""
@@ -260,12 +261,11 @@ class CCloudOAuth:
             return self._organization_id
 
     @property
-    def user_resource_id(self) -> str | None:
-        """The user this login belongs to (the CP token's `userResourceId`, else `sub`), pinned at
-        `login()` and enforced by `reauthenticate()`. None before `login()` or when the token
-        named nobody."""
+    def user_identity(self) -> UserIdentity | None:
+        """The user this login belongs to, pinned at `login()` and enforced by
+        `reauthenticate()`. None before `login()` or when the token named nobody."""
         with self._token_lock:
-            return self._user_resource_id
+            return self._user_identity
 
     @property
     def control_plane_auth(self) -> httpx.Auth:
@@ -324,10 +324,10 @@ class CCloudOAuth:
                     "identity for its whole life; use a new provider for a different one."
                 )
 
-            token_set, organization_id, user_resource_id = self._run_login_flow(
+            token_set, organization_id, user_identity = self._run_login_flow(
                 org_resource_id, timeout
             )
-            if user_resource_id is None:
+            if user_identity is None:
                 logger.warning(
                     "Could not determine which Confluent Cloud user logged in, so a later "
                     "re-authentication cannot verify it is the same user."
@@ -336,7 +336,7 @@ class CCloudOAuth:
             with self._token_lock:
                 self._token_set = token_set
                 self._organization_id = organization_id
-                self._user_resource_id = user_resource_id
+                self._user_identity = user_identity
                 self._interim_snapshot = None
                 self._failure = None
 
@@ -416,10 +416,10 @@ class CCloudOAuth:
                 continue
 
         try:
-            token_set, organization_id, user_resource_id = self._run_login_flow(
+            token_set, organization_id, user_identity = self._run_login_flow(
                 self._organization_id, timeout
             )
-            self._require_same_user(user_resource_id)
+            self._require_same_user(user_identity)
         except BaseException as e:
             flight.set_exception(e)
             raise
@@ -476,26 +476,40 @@ class CCloudOAuth:
             self._inflight_refresh = Future()
             return self._inflight_refresh, True
 
-    def _require_same_user(self, user_resource_id: str | None) -> None:
+    def _require_same_user(self, user_identity: UserIdentity | None) -> None:
         """Refuse a reauthentication that logged in as someone other than the original user.
 
         A different user in the same org may carry different RBAC, so silently continuing as them
-        would be a surprise. The mismatch is raised before anything is installed, leaving the
-        session latched so the caller can retry as the original user. When either side's identity
-        could not be determined there is nothing to compare, so this warns (for the reauth side;
-        `login()` already warned for the original) and lets the login through.
+        would be a surprise. A refusal is raised before anything is installed, leaving the session
+        latched so the caller can retry as the original user.
+
+        Identities are compared on the claims both carry. Refused: a shared claim that differs, a
+        login whose token carries no identity comparable to the original's (nothing proves it is
+        the same user, and a token that no longer identifies the user suggests something about
+        the identity changed), and a login that names a user when the original login's user was
+        never determined (an identity appearing where there was none is a strong sign the user
+        changed). Let through: neither login named a user, so there is nothing to compare at all
+        (`login()` already warned about the undeterminable original).
         """
         with self._token_lock:
-            pinned = self._user_resource_id
+            pinned = self._user_identity
         if pinned is None:
-            return
-        if user_resource_id is None:
-            logger.warning(
-                "Could not determine which Confluent Cloud user re-authenticated, so it cannot "
-                "be verified to be the same user as the original login."
+            if user_identity is None:
+                return
+            raise OAuthLoginError(
+                "Re-authentication logged in as an identifiable user, but the original login's "
+                "user could not be determined, so it cannot be confirmed to be the same user. "
+                "Log in again as the original user.",
+                OAuthLoginFailure.USER_MISMATCH,
             )
-            return
-        if user_resource_id != pinned:
+        if user_identity is None or not pinned.shares_a_claim_with(user_identity):
+            raise OAuthLoginError(
+                "Re-authentication's login carries no user identity comparable to the original "
+                "login's, so it cannot be confirmed to be the same user. Log in again as the "
+                "original user.",
+                OAuthLoginFailure.USER_MISMATCH,
+            )
+        if pinned.conflicts_with(user_identity):
             raise OAuthLoginError(
                 "Re-authentication logged in as a different user than this session's original "
                 "login. Log in again as the original user.",
@@ -504,13 +518,13 @@ class CCloudOAuth:
 
     def _run_login_flow(
         self, org_resource_id: str | None, timeout: float
-    ) -> tuple[TokenSet, str, str | None]:
+    ) -> tuple[TokenSet, str, UserIdentity | None]:
         """The browser round-trip and the three token hops, shared by `login()` and
         `reauthenticate()`. Returns the token set, the organization id and the logged-in user's
-        id (None if undeterminable). Touches no shared state -- the caller installs the result under
-        `_token_lock` itself, since the two callers install it differently (`login()` also clears
-        `_interim_snapshot`/`_failure` under `_login_lock`; `reauthenticate()` under the refresh
-        gate).
+        identity (None if undeterminable). Touches no shared state -- the caller installs the
+        result under `_token_lock` itself, since the two callers install it differently
+        (`login()` also clears `_interim_snapshot`/`_failure` under `_login_lock`;
+        `reauthenticate()` under the refresh gate).
         """
         verifier = generate_verifier()
         state = generate_state()
@@ -553,7 +567,7 @@ class CCloudOAuth:
             dp_token=data_plane.token,
             dp_token_expires_at=data_plane.expires_at,
         )
-        return token_set, control_plane.organization_resource_id, control_plane.user_resource_id
+        return token_set, control_plane.organization_resource_id, control_plane.user_identity
 
     def close(self) -> None:
         """Release the private HTTP client. Idempotent.
