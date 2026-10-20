@@ -434,6 +434,55 @@ class TestExchangeIdTokenForCpToken:
             exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
 
 
+class TestCpTokenUserIdentity:
+    """The CP token's unverified `userResourceId` (else `sub`) names who logged in (#277)."""
+
+    @staticmethod
+    def _user_resource_id_for(token: str) -> str | None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"token": token, "organization": {"resource_id": "org-abc"}}
+            )
+
+        with _client(handler) as client:
+            result = exchange_id_token_for_cp_token(
+                client, CONFIG, id_token="id-tok", org_resource_id=None
+            )
+        return result.user_resource_id
+
+    @pytest.mark.parametrize(
+        ("claims", "expected"),
+        [
+            pytest.param(
+                {"userResourceId": "u-abc123", "sub": "auth0|1"},
+                "u-abc123",
+                id="prefers-user-resource-id",
+            ),
+            pytest.param({"sub": "auth0|1"}, "auth0|1", id="falls-back-to-sub"),
+            pytest.param(
+                {"userResourceId": "", "sub": "auth0|1"},
+                "auth0|1",
+                id="empty-user-resource-id-falls-back",
+            ),
+            pytest.param({"userResourceId": 42, "sub": 7}, None, id="non-string-claims-ignored"),
+            pytest.param({"exp": 1}, None, id="no-identity-claims"),
+        ],
+    )
+    def test_extracts_identity_from_payload(self, claims, expected):
+        assert self._user_resource_id_for(_jwt_with_payload(claims)) == expected
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            pytest.param("not-a-jwt", id="opaque"),
+            pytest.param(_jwt_with_payload(["not", "an", "object"]), id="non-object-payload"),
+            pytest.param(_jwt_with_raw_payload_segment("!!!"), id="bad-base64"),
+        ],
+    )
+    def test_undecodable_token_yields_no_identity(self, token):
+        assert self._user_resource_id_for(token) is None
+
+
 class TestJwtExpHardening:
     """_jwt_exp must turn every malformed-token shape into the fixed-lifetime fallback, never a
     bare TypeError/OverflowError/OSError -- exercised through exchange_cp_for_dp_token since both

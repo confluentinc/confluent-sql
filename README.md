@@ -72,6 +72,8 @@ The browser opens once per process; the login is shared by every connection the 
 - `reauth="auto"` (the default): the driver opens the browser for a fresh sign-in and retries the failed request. Every connection in the process shares the new login. This suits interactive use such as notebooks and scripts run by a person.
 - `reauth="raise"`: the request raises `confluent_sql.ReauthenticationRequired` instead. Use this for unattended runs (a long batch job or dbt run started and left running), where nobody would be at the browser. Its `reason` is `ABSOLUTE_EXPIRY` (the ~8 hour wall) or `REFRESH_REJECTED` (idle expiry or revocation); catch it to abort or restart the job cleanly.
 
+Re-authentication must be completed as the same user who originally signed in. If a different user signs in, even within the same organization, the driver raises `OAuthLoginError` with reason `OAuthLoginFailure.USER_MISMATCH` and the session stays unauthenticated, so you can sign in again as the original user.
+
 ### BYOIDC bearer-token authentication
 
 If your Confluent Cloud organization is configured with your own registered OAuth/OIDC identity provider, you can authenticate to the **Flink data plane** with a bearer token you mint yourself (an "external" token in Confluent's authorization vocabulary) rather than a Confluent API key. Pass the token and the identity-pool id that scopes it:
