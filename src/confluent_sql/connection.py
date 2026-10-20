@@ -19,7 +19,6 @@ from typing import Any, Literal, NoReturn
 
 import httpx
 
-from .__version__ import __version__
 from .artifacts import ArtifactsApi, ArtifactScope
 from .auth import FlinkBearerAuth
 from .connectors import Connector, ConnectorApi
@@ -71,7 +70,7 @@ from .tableflow import (
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
-from .utils import DEFAULT_HTTP_TIMEOUT_SECS, extract_error_detail
+from .utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT, extract_error_detail
 from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
@@ -457,9 +456,7 @@ class Connection:
     methods for creating cursors and managing the connection lifecycle.
     """
 
-    DEFAULT_USER_AGENT = (
-        f"Confluent-SQL-Dbapi/v{__version__} (https://confluent.io; support@confluent.io)"
-    )
+    DEFAULT_USER_AGENT = DEFAULT_USER_AGENT
 
     # Also the host for artifact routes (`/artifact/v1`); `controlplane_endpoint` redirects them.
     _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
@@ -797,6 +794,7 @@ class Connection:
                 oauth_cfg,
                 organization_id or None,
                 http_timeout_secs=http_timeout_secs,
+                http_user_agent=self._http_user_agent,
                 provider_factory=oauth_provider_factory,
             )
             self._oauth_provider = provider

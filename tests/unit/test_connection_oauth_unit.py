@@ -66,10 +66,14 @@ class FakeOAuthProvider:
     """
 
     def __init__(
-        self, config: CCloudOAuthConfig, http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS
+        self,
+        config: CCloudOAuthConfig,
+        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+        http_user_agent: str = Connection.DEFAULT_USER_AGENT,
     ) -> None:
         self.config = config
         self.http_timeout_secs = http_timeout_secs
+        self.http_user_agent = http_user_agent
         self._organization_id: str | None = None
         self.data_plane_auth = _MarkerAuth("dp")
         self.control_plane_auth = _MarkerAuth("cp")
@@ -252,6 +256,16 @@ class TestOauthValidation:
     def test_default_http_timeout_secs_reaches_the_oauth_provider(self):
         conn = _oauth_connect()
         assert _provider(conn).http_timeout_secs == DEFAULT_HTTP_TIMEOUT_SECS
+
+    def test_http_user_agent_reaches_the_oauth_provider(self):
+        """The provider's private token-chain client must identify as the caller's
+        http_user_agent, not httpx's stock one."""
+        conn = _oauth_connect(http_user_agent="my-app/1.0")
+        assert _provider(conn).http_user_agent == "my-app/1.0"
+
+    def test_default_http_user_agent_reaches_the_oauth_provider(self):
+        conn = _oauth_connect()
+        assert _provider(conn).http_user_agent == Connection.DEFAULT_USER_AGENT
 
     def test_auth_api_key_default_is_unaffected(self):
         """Regression guard: omitting auth= behaves exactly as before (api_key mode)."""
