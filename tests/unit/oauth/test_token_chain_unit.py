@@ -47,6 +47,15 @@ def _jwt_with_payload(payload: object) -> str:
     return f"{_jwt_segment({'alg': 'none'})}.{_jwt_segment(payload)}.sig"
 
 
+def _jwt_with_raw_payload_segment(segment: str) -> str:
+    """Like _jwt_with_payload, but with the payload segment verbatim, so it can be bad base64."""
+    return f"{_jwt_segment({'alg': 'none'})}.{segment}.sig"
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
 def _make_jwt(exp: int) -> str:
     """A hand-built, unsigned JWT carrying only an `exp` claim -- enough for _jwt_exp to decode,
     since we never verify the signature (see token_chain.py's docstring)."""
@@ -297,12 +306,30 @@ class TestExchangeIdTokenForCpToken:
     @pytest.mark.parametrize(
         "id_token",
         [
-            pytest.param("opaque-id-token", id="not-a-jwt"),
-            pytest.param(_jwt_with_payload({"sub": "u-1"}), id="no-email-claim"),
+            pytest.param("opaque-id-token", id="not-three-segments-ValueError"),
+            pytest.param(
+                _jwt_with_raw_payload_segment("a"), id="bad-base64-padding-binascii-Error"
+            ),
+            pytest.param(
+                _jwt_with_raw_payload_segment(_b64url(b"not json")), id="not-json-JSONDecodeError"
+            ),
+            pytest.param(
+                _jwt_with_raw_payload_segment(_b64url(b"\xff\xfe")),
+                id="not-utf8-UnicodeDecodeError",
+            ),
+            pytest.param(_jwt_with_payload({"sub": "u-1"}), id="no-email-claim-KeyError"),
+            pytest.param(_jwt_with_payload(["email"]), id="payload-is-list-TypeError"),
+            pytest.param(_jwt_with_payload("email"), id="payload-is-string-TypeError"),
+            pytest.param(_jwt_with_payload(5), id="payload-is-int-TypeError"),
+            pytest.param(_jwt_with_payload(None), id="payload-is-null-TypeError"),
             pytest.param(_jwt_with_payload({"email": 42}), id="non-string-email"),
+            pytest.param(_jwt_with_payload({"email": ""}), id="empty-email"),
         ],
     )
     def test_rejected_org_without_a_readable_username_omits_it(self, id_token):
+        """Test that when the organization is rejected and the username is not readable, it is
+        omitted from the error message. Exercises _id_token_email() call from
+        exchange_id_token_for_cp_token()."""
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(403, json=CCLOUD_UNKNOWN_ORG_BODY)
 

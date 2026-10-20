@@ -249,7 +249,7 @@ def _id_token_email(id_token: str) -> str | None:
         _header, payload_segment, _signature = id_token.split(".")
         padded = payload_segment + "=" * (-len(payload_segment) % 4)
         email = json.loads(base64.urlsafe_b64decode(padded))["email"]
-    except (ValueError, KeyError, TypeError, binascii.Error):
+    except (ValueError, KeyError, TypeError):
         return None
     return email if isinstance(email, str) and email else None
 
