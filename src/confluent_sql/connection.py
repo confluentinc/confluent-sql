@@ -333,7 +333,10 @@ def connect(  # noqa: PLR0913
         organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
             interactive login's session) or with a global_api_key/global_api_secret pair (inferred
             on first use). Required with a Flink-only API key, which has no reach to determine it;
-            omitting it there raises `InterfaceError`.
+            omitting it there raises `InterfaceError`. Under `auth="oauth"`, supplying it pins the
+            login to that organization for a multi-org user; an organization the logged-in user
+            can't access is rejected at login with an `OperationalError` naming it, and a process
+            holds a single organization identity.
         compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
             created on this connection name no pool, so Confluent Cloud Flink runs them in
             the environment+region default compute pool (provisioning if necessary). Individual
@@ -640,7 +643,10 @@ class Connection:
             organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
                 interactive login's session) or with a global_api_key/global_api_secret pair
                 (inferred on first use). Required with a Flink-only API key, which has no reach to
-                determine it; omitting it there raises `InterfaceError`.
+                determine it; omitting it there raises `InterfaceError`. Under `auth="oauth"`,
+                supplying it pins the login to that organization for a multi-org user; an
+                organization the logged-in user can't access is rejected at login with an
+                `OperationalError` naming it, and a process holds a single organization identity.
             compute_pool_id: Optional compute pool ID for SQL execution. If omitted (None) or
                 empty, statements created on this connection name no pool and Confluent Cloud
                 Flink runs them in the environment+region default compute pool.

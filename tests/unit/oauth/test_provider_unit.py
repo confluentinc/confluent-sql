@@ -215,7 +215,12 @@ class FakeCCloud:
     def _sessions(self, request: httpx.Request) -> httpx.Response:
         self.sessions_requests.append(json.loads(request.content))
         if self.fail_sessions_with is not None:
-            return httpx.Response(self.fail_sessions_with, json={"message": "sessions is down"})
+            message = (
+                "Cannot find the organization for this user"
+                if self.fail_sessions_with == 403
+                else "sessions is down"
+            )
+            return httpx.Response(self.fail_sessions_with, json={"error": {"message": message}})
         body: dict[str, object] = {
             "token": _jwt("cp", self._serial, self.cp_lifetime),
             # A stand-in for the real response's large, PII-laden remainder.
@@ -438,6 +443,29 @@ class TestLogin:
         with _logged_in(fake, supplied) as provider:
             assert provider.organization_id == supplied
         assert fake.sessions_requests[0]["org_resource_id"] == supplied
+
+    def test_rejected_org_fails_login_cleanly_and_frees_the_callback_port(self):
+        """An org CCloud refuses surfaces the org-aware error after the browser round trip,
+        leaves the provider logged out, and releases the fixed callback port for a retry."""
+        fake = FakeCCloud()
+        fake.fail_sessions_with = 403
+        bogus_org = "org-bogus-123"
+        port = _free_port()
+        provider = CCloudOAuth(
+            _config(port),
+            http_client=httpx.Client(transport=fake.transport()),
+            open_browser=_browser(),
+        )
+        try:
+            with pytest.raises(OperationalError, match=bogus_org) as caught:
+                provider.login(bogus_org, timeout=BRIEF_TIMEOUT)
+            assert caught.value.http_status_code == 403
+            assert provider.organization_id is None
+        finally:
+            provider.close()
+
+        with CallbackServer(_config(port), "a-later-logins-state") as later_login:
+            assert later_login.port == port
 
     def test_session_without_an_organization_raises(self):
         """Every caller needs an org -- `connect()` fills the Flink path from it --
