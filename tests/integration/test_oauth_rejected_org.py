@@ -21,6 +21,9 @@ import pytest
 
 from confluent_sql import OperationalError, connect
 
+pytestmark = pytest.mark.oauth
+
+
 BOGUS_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000000"
 
 

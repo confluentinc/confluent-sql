@@ -14,6 +14,12 @@ The login is shared by every test in this module (module-scoped fixture), so the
 browser bounce per run. Run with `-n0` to keep the login easy to watch:
 
     RUN_OAUTH_TESTS=1 uv run pytest -n0 tests/integration/test_oauth.py
+
+Every OAuth integration module (this one included) carries the `oauth` marker, so all of them run
+in a single invocation (`-n0` is mandatory: the callback port is fixed, and parallel workers would
+fight over it and open several browsers at once):
+
+    RUN_OAUTH_TESTS=1 uv run pytest -n0 -m "oauth and integration"
 """
 
 import os
@@ -30,6 +36,8 @@ from confluent_sql import (
     connect,
     oauth_discard_login,
 )
+
+pytestmark = pytest.mark.oauth
 
 
 @pytest.fixture(scope="module")

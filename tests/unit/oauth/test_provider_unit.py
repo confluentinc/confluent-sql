@@ -57,7 +57,7 @@ from confluent_sql.oauth.provider import CCloudOAuth
 from confluent_sql.oauth.token_set import ABSOLUTE_LIFETIME, TokenSet
 from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 AUTH_SERVICE_DOMAIN = "login.confluent.io"
 API_HOST = "https://confluent.cloud"

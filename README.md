@@ -283,3 +283,20 @@ Run tests:
 ```bash
 uv run pytest
 ```
+
+#### OAuth tests
+
+Every OAuth test (unit and integration) carries the `oauth` pytest marker. The OAuth *integration* tests open your browser for a real Confluent Cloud sign-in, so they are opt-in: they skip unless `RUN_OAUTH_TESTS` is set (they also need `CONFLUENT_ENV_ID`, `CONFLUENT_CLOUD_PROVIDER` and `CONFLUENT_CLOUD_REGION`; some need `CONFLUENT_TEST_DBNAME`). A plain `uv run pytest` therefore runs the OAuth unit tests only.
+
+```bash
+# Fast, browser-free OAuth unit tests only
+uv run pytest -m "oauth and unit"
+
+# The browser-driven OAuth integration tests only
+RUN_OAUTH_TESTS=1 uv run pytest -n0 -m "oauth and integration"
+
+# Every OAuth test, unit and integration
+RUN_OAUTH_TESTS=1 uv run pytest -n0 -m oauth tests
+```
+
+`-n0` is required for any run that includes the integration tests: the loopback callback port is fixed, so parallel workers would collide (and open several browsers at once).
