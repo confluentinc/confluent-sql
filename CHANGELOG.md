@@ -4,6 +4,24 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`).
+
+### Added
+
+- Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. While the login is in progress the driver listens on the fixed loopback port `127.0.0.1:26642`, which must be free (otherwise `OAuthLoginError` with reason `PORT_IN_USE`). See the README and `examples/interactive_oauth_login.py` (#150).
+  - `confluent_sql.oauth_discard_login()`: discard the process's shared interactive OAuth login. Closing a `Connection` never does this; the next `connect(auth="oauth", ...)` opens the browser again. (#150)
+  - `connect(..., reauth="auto"|"raise")` (with `auth="oauth"` only): what to do once an OAuth session can no longer be refreshed. `"auto"` (default) opens the browser for a fresh login and retries the request; `"raise"` raises `ReauthenticationRequired` instead, for unattended runs. (#150)
+  - New exceptions, all subclasses of `OperationalError` and importable from `confluent_sql` (#150):
+    - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, or `SERVER_ERROR`.
+    - `OAuthTokenEndpointError`: the auth service's token endpoint rejected a request. Carries the OAuth `error_code` (e.g. `"invalid_grant"`) and `http_status_code`.
+    - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
+
+### Changed
+
+- `organization_id` is now genuinely optional on both `connect()` and `Connection()` when it can be self-discovered (configured to use either oauth or a global API key).
+- Direct `Connection()` construction's `organization_id` requirement (introduced in 0.6.0, #213) does not apply under `auth="oauth"`, which discovers the organization from the interactive login's session.
 
 ## 0.7.0, 2026-10-19
 
