@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from confluent_sql.__version__ import __version__
 from confluent_sql.exceptions import DataError
 
 DEFAULT_HTTP_TIMEOUT_SECS: float = 10.0
@@ -23,6 +24,12 @@ DEFAULT_HTTP_TIMEOUT_SECS: float = 10.0
 so the effective default is ours to control rather than an implicit dependency on httpx's own
 default (5s). Lives here, a leaf module, so the OAuth provider can share it with `connection.py`
 without an import cycle; `confluent_sql.connection` re-exports it."""
+
+DEFAULT_USER_AGENT: str = (
+    f"Confluent-SQL-Dbapi/v{__version__} (https://confluent.io; support@confluent.io)"
+)
+"""The User-Agent sent whenever a caller doesn't pass http_user_agent. Lives here for the same
+reason as `DEFAULT_HTTP_TIMEOUT_SECS`; `Connection.DEFAULT_USER_AGENT` aliases it."""
 
 
 def decode_sql_hex_literal(encoded: Any) -> bytes:

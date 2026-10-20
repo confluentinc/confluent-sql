@@ -79,7 +79,7 @@ from ..exceptions import (
     ReauthenticationReason,
     ReauthenticationRequired,
 )
-from ..utils import DEFAULT_HTTP_TIMEOUT_SECS
+from ..utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS, CallbackServer
 from .config import CCloudOAuthConfig
 from .pkce import challenge_for, generate_state, generate_verifier
@@ -144,6 +144,7 @@ class CCloudOAuth:
         *,
         http_client: httpx.Client | None = None,
         http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+        http_user_agent: str = DEFAULT_USER_AGENT,
         open_browser: Callable[[str], bool] = webbrowser.open,
     ) -> None:
         """
@@ -158,6 +159,11 @@ class CCloudOAuth:
                 hop of the token chain. Ignored when `http_client` is supplied (that client
                 carries its own timeout). Without it the client would silently inherit httpx's
                 5s default rather than the package's.
+            http_user_agent: User-Agent sent on every request of the default private client, so
+                the token chain identifies as this package (or the caller's override) rather than
+                as httpx's stock `python-httpx/x.y.z`. Like `http_timeout_secs`, ignored when
+                `http_client` is supplied. Fixed at construction: a later change to a
+                `Connection`'s `http_user_agent` does not reach this shared provider.
             open_browser: how to send the user to the authorization URL. Returning False (a
                 headless box, no `BROWSER`, no display) is not a failure -- the URL is logged so
                 the user can paste it, and the login waits as normal.
@@ -166,7 +172,9 @@ class CCloudOAuth:
         """What Confluent Cloud environment to authenticate against, and the callback host/port/path
            to listen on."""
         self._client = (
-            http_client if http_client is not None else httpx.Client(timeout=http_timeout_secs)
+            http_client
+            if http_client is not None
+            else httpx.Client(timeout=http_timeout_secs, headers={"User-Agent": http_user_agent})
         )
         self._open_browser = open_browser
         """How to send the user to the authorization URL."""

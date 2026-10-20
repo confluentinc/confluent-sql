@@ -52,7 +52,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Protocol
 
 from ..exceptions import InterfaceError, OAuthLoginError, OAuthLoginFailure, ProgrammingError
-from ..utils import DEFAULT_HTTP_TIMEOUT_SECS
+from ..utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT
 from .callback_server import DEFAULT_LOGIN_TIMEOUT_SECS
 from .config import CCloudOAuthConfig
 from .provider import CCloudOAuth, OAuthProvider
@@ -62,10 +62,13 @@ logger = logging.getLogger(__name__)
 
 class ProviderFactory(Protocol):
     """How the holder builds the one provider it will share, called as
-    `factory(config, http_timeout_secs=...)`. Defaults to `CCloudOAuth` itself; exists so a test
-    can inject a provider whose `login()` it controls without a real browser."""
+    `factory(config, http_timeout_secs=..., http_user_agent=...)`. Defaults to `CCloudOAuth`
+    itself; exists so a test can inject a provider whose `login()` it controls without a real
+    browser."""
 
-    def __call__(self, config: CCloudOAuthConfig, *, http_timeout_secs: float) -> OAuthProvider: ...
+    def __call__(
+        self, config: CCloudOAuthConfig, *, http_timeout_secs: float, http_user_agent: str
+    ) -> OAuthProvider: ...
 
 
 def acquire(
@@ -74,6 +77,7 @@ def acquire(
     *,
     timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS,
     http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+    http_user_agent: str = DEFAULT_USER_AGENT,
     provider_factory: ProviderFactory = CCloudOAuth,
 ) -> OAuthProvider:
     """Return the process's shared OAuth provider, running the browser login if needed.
@@ -88,6 +92,7 @@ def acquire(
         organization_id,
         timeout=timeout,
         http_timeout_secs=http_timeout_secs,
+        http_user_agent=http_user_agent,
         provider_factory=provider_factory,
     )
 
@@ -163,6 +168,7 @@ class ProcessOAuthHolder:
         *,
         timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS,
         http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+        http_user_agent: str = DEFAULT_USER_AGENT,
         provider_factory: ProviderFactory = CCloudOAuth,
     ) -> OAuthProvider:
         """Return the process's shared OAuth provider, running the browser login if needed.
@@ -185,8 +191,11 @@ class ProcessOAuthHolder:
                 client. Only the winner's value matters: it is baked into the one provider every
                 later caller shares, so a reusing or joining caller's value is not applied (it
                 is not part of the one-identity guard, so a differing value is not an error).
+            http_user_agent: User-Agent for the provider's private token-chain client. Same
+                first-wins rule as `http_timeout_secs`.
             provider_factory: builds the provider the winner logs in, called as
-                `factory(config, http_timeout_secs=...)`. Defaults to `CCloudOAuth`.
+                `factory(config, http_timeout_secs=..., http_user_agent=...)`. Defaults to
+                `CCloudOAuth`.
 
         Raises:
             InterfaceError: this caller named a different Confluent Cloud environment (`config`)
@@ -196,7 +205,7 @@ class ProcessOAuthHolder:
             Exception: whatever `login()` raised, re-raised on every waiter of a failed login.
         """
         provider = self._obtain(
-            config, organization_id, timeout, http_timeout_secs, provider_factory
+            config, organization_id, timeout, http_timeout_secs, http_user_agent, provider_factory
         )
 
         # One-identity guard, applied after obtaining the provider by whichever path (reuse / join
@@ -231,6 +240,7 @@ class ProcessOAuthHolder:
         organization_id: str | None,
         timeout: float,
         http_timeout_secs: float,
+        http_user_agent: str,
         provider_factory: ProviderFactory,
     ) -> OAuthProvider:
         """Resolve the shared provider: reuse it, join an in-flight login, or become its winner."""
@@ -251,7 +261,13 @@ class ProcessOAuthHolder:
         # (or re-raise its login exception on my own thread).
         if is_winner:
             return self._run_login(
-                config, organization_id, timeout, http_timeout_secs, provider_factory, flight
+                config,
+                organization_id,
+                timeout,
+                http_timeout_secs,
+                http_user_agent,
+                provider_factory,
+                flight,
             )
 
         # Joiner: wait for the winner's login, but no longer than *this* caller's own timeout, so a
@@ -274,6 +290,7 @@ class ProcessOAuthHolder:
         organization_id: str | None,
         timeout: float,
         http_timeout_secs: float,
+        http_user_agent: str,
         provider_factory: ProviderFactory,
         flight: Future[OAuthProvider],
     ) -> OAuthProvider:
@@ -289,7 +306,9 @@ class ProcessOAuthHolder:
         try:
             # Both inside the try: a `provider_factory` that raises would otherwise leave `flight`
             # unsettled and `_inflight` populated, wedging every joiner and later caller forever.
-            provider = provider_factory(config, http_timeout_secs=http_timeout_secs)
+            provider = provider_factory(
+                config, http_timeout_secs=http_timeout_secs, http_user_agent=http_user_agent
+            )
             provider.login(organization_id, timeout=timeout)
         except BaseException as e:
             # Discard the half-built provider and clear the slot so the *next* acquire() gets a

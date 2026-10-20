@@ -41,6 +41,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
+from confluent_sql.connection import Connection
 from confluent_sql.exceptions import (
     OAuthLoginError,
     OAuthLoginFailure,
@@ -142,6 +143,8 @@ class FakeCCloud:
         self.refresh_grants: list[dict[str, str]] = []
         self.sessions_requests: list[dict[str, str]] = []
         self.access_token_authorizations: list[str | None] = []
+        self.user_agents: list[str | None] = []
+        """The User-Agent of every request this service received, across all hops."""
 
         self.fail_token_endpoint_with: tuple[int, str | None] | None = None
         """(status, error code) to refuse the *next and every* token-endpoint call with."""
@@ -162,6 +165,7 @@ class FakeCCloud:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        self.user_agents.append(request.headers.get("User-Agent"))
         if url == f"https://{AUTH_SERVICE_DOMAIN}/oauth/token":
             return self._token_endpoint(request)
         if url == f"{API_HOST}/api/sessions":
@@ -1460,6 +1464,49 @@ class TestClose:
             assert provider._client.timeout == httpx.Timeout(3.5)
         finally:
             provider.close()
+
+    def test_private_http_client_defaults_to_the_package_user_agent(self):
+        provider = CCloudOAuth(_config(_free_port()), open_browser=_browser())
+        try:
+            assert provider._client.headers["User-Agent"] == Connection.DEFAULT_USER_AGENT
+        finally:
+            provider.close()
+
+    def test_private_http_client_honors_http_user_agent(self):
+        provider = CCloudOAuth(
+            _config(_free_port()), http_user_agent="my-app/1.0", open_browser=_browser()
+        )
+        try:
+            assert provider._client.headers["User-Agent"] == "my-app/1.0"
+        finally:
+            provider.close()
+
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [({}, Connection.DEFAULT_USER_AGENT), ({"http_user_agent": "my-app/1.0"}, "my-app/1.0")],
+        ids=["default", "explicit"],
+    )
+    def test_every_token_chain_hop_sends_the_user_agent(self, monkeypatch, kwargs, expected):
+        """Login (code exchange, sessions, access_tokens) and refresh (token endpoint again) all
+        ride the provider's own client, so none may fall back to httpx's `python-httpx/x.y.z`."""
+        fake = FakeCCloud()
+        fake.dp_lifetime = BORN_STALE_LIFETIME
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx, "Client", lambda **kw: real_client(**{"transport": fake.transport(), **kw})
+        )
+        provider = CCloudOAuth(_config(_free_port()), open_browser=_browser(), **kwargs)
+        try:
+            provider.login(timeout=BRIEF_TIMEOUT)
+            fake.dp_lifetime = LONG_LIFETIME
+            with _resource_client(provider.data_plane_auth, FakeResource()) as client:
+                client.get(RESOURCE_URL)  # stale dp token -> refresh chain
+        finally:
+            provider.close()
+
+        assert len(fake.refresh_grants) == 1
+        # code exchange + sessions + access_tokens, then refresh + sessions + access_tokens
+        assert fake.user_agents == [expected] * 6
 
     def test_close_releases_the_private_http_client(self):
         fake = FakeCCloud()
