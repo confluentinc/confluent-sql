@@ -210,7 +210,12 @@ class FakeCCloud:
     def _sessions(self, request: httpx.Request) -> httpx.Response:
         self.sessions_requests.append(json.loads(request.content))
         if self.fail_sessions_with is not None:
-            return httpx.Response(self.fail_sessions_with, json={"message": "sessions is down"})
+            message = (
+                "Cannot find the organization for this user"
+                if self.fail_sessions_with == 403
+                else "sessions is down"
+            )
+            return httpx.Response(self.fail_sessions_with, json={"error": {"message": message}})
         body: dict[str, object] = {
             "token": _jwt("cp", self._serial, self.cp_lifetime),
             # A stand-in for the real response's large, PII-laden remainder.

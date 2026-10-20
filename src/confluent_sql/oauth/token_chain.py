@@ -47,6 +47,10 @@ from ..exceptions import OAuthTokenEndpointError, OperationalError
 from .config import CCloudOAuthConfig
 from .http_json import best_effort_json_object, optional_object_field, post_json, require_field
 
+UNKNOWN_ORG_REASON = "Cannot find the organization for this user"
+"""The reason CCloud's `/api/sessions` gives (with a 403) when the supplied org_resource_id is
+unusable for the logged-in user. A 403 can have other reasons, so this is what we key on."""
+
 FALLBACK_CP_LIFETIME = timedelta(minutes=5)
 """Used when a control-plane token isn't a decodable JWT (or has no usable `exp`) -- matches
 mcp-confluent's CONTROL_PLANE_TOKEN_LIFETIME_MS."""
@@ -160,9 +164,15 @@ def exchange_id_token_for_cp_token(
             json=request_body,
         )
     except OperationalError as e:
-        # This is the only hop that sends an org, and a 403 here means CCloud refused it for
-        # this user. Say so, rather than leaving the caller to guess the org id was the problem.
-        if org_resource_id is not None and e.http_status_code == 403:
+        # This is the only hop that sends an org, and a 403 with this specific reason means CCloud
+        # refused it for this user. Say so, rather than leaving the caller to guess the org id was
+        # the problem. Other 403 reasons pass through untouched. The reason is nested in the error
+        # body, so it appears verbatim inside the generic message's text.
+        if (
+            org_resource_id is not None
+            and e.http_status_code == 403
+            and UNKNOWN_ORG_REASON in str(e)
+        ):
             username = _id_token_email(id_token)
             logged_in_as = f" (logged in as {username})" if username else ""
             raise OperationalError(

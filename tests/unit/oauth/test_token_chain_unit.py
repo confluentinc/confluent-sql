@@ -347,21 +347,26 @@ class TestExchangeIdTokenForCpToken:
         [
             pytest.param(403, None, id="403-but-no-org-was-sent"),
             pytest.param(401, "org-1", id="401-with-org"),
+            pytest.param(403, "org-1", id="403-with-org-other-reason"),
             pytest.param(500, "org-1", id="500-with-org"),
         ],
     )
     def test_other_failures_keep_the_generic_message(self, status, org_resource_id):
+        body = (
+            {"error": {"code": 403, "message": "Some other forbidden reason"}}
+            if (status, org_resource_id) == (403, "org-1")
+            else CCLOUD_UNKNOWN_ORG_BODY
+        )
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status, json=CCLOUD_UNKNOWN_ORG_BODY)
+            return httpx.Response(status, json=body)
 
         with _client(handler) as client, pytest.raises(OperationalError) as caught:
             exchange_id_token_for_cp_token(
                 client, CONFIG, id_token="id-tok", org_resource_id=org_resource_id
             )
 
-        assert str(caught.value) == (
-            f"Confluent Cloud API request failed: {CCLOUD_UNKNOWN_ORG_ERROR}"
-        )
+        assert str(caught.value) == f"Confluent Cloud API request failed: {body['error']}"
         assert caught.value.http_status_code == status
 
     def test_token_with_unparseable_exp_falls_back_to_fixed_lifetime(self):
