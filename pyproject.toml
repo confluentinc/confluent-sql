@@ -67,6 +67,15 @@ verboseOutput = true
 pythonVersion = "3.10"
 pythonPlatform = "All"
 include = ["src", "tests", "examples"]
+# Default to requiring fully parameter type annotation (src/, examples/)
+reportMissingParameterType = "error"
+executionEnvironments = [
+    # But let tests/ not require parameter type annotations (at this time).
+    #  (extraPaths is needed because an environment's root is also its import root: without it,
+    #   tests' `from tests.conftest import ...` (needs ".") and `import confluent_sql` (needs "src")
+    #   stop resolving.)
+    { root = "tests", reportMissingParameterType = "none", extraPaths = [".", "src"] }
+]
 
 [tool.pytest.ini_options]
 addopts = [
