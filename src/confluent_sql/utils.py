@@ -43,6 +43,7 @@ class ExtensibleEnum(str, Enum):
 
     @classmethod
     def _missing_(cls, value: object) -> ExtensibleEnum | None:
+        """Return the `UNKNOWN` member for unrecognized values, or None if not present."""
         return cls.__members__.get("UNKNOWN")
 
 
