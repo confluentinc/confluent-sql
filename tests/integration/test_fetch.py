@@ -636,7 +636,9 @@ def auto_dropped_table_name(
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestExecuteDDL:
+class TestExecuteCtasDDL:
+    """execute_streaming_ddl() / execute_snapshot_ddl() over CREATE TABLE AS SELECT."""
+
     def test_execute_streaming_ddl_leaves_statement_running(
         self,
         populated_table_connection: Connection,
@@ -787,6 +789,12 @@ class TestExecuteDDL:
         assert statement.has_schema() is False, "CTAS produces no result schema"
         assert statement.schema is None, "CTAS schema should be None"
         assert statement.is_deleted, "Snapshot DDL statement should be auto-deleted"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestExecuteMaterializedTableDDL:
+    """execute_streaming_ddl() / execute_snapshot_ddl() over MATERIALIZED TABLE statements."""
 
     def test_execute_streaming_ddl_create_materialized_table_completes(
         self,
