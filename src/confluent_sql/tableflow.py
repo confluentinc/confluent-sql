@@ -17,6 +17,7 @@ from typing import ClassVar
 
 from .exceptions import InterfaceError, OperationalError
 from .types import StrAnyDict
+from .utils import ExtensibleEnum
 
 
 class Fields:
@@ -119,7 +120,7 @@ def normalize_table_formats(
     return [fmt.value for fmt in TableFormat if fmt in chosen]
 
 
-class TableflowPhase(str, Enum):
+class TableflowPhase(ExtensibleEnum):
     """Lifecycle phase of a Tableflow topic.
 
     The API marks this an extensible enum, so an unrecognized value parses to `UNKNOWN` rather
@@ -130,10 +131,6 @@ class TableflowPhase(str, Enum):
     RUNNING = "RUNNING"
     FAILED = "FAILED"
     UNKNOWN = "UNKNOWN"
-
-    @classmethod
-    def _missing_(cls, value: object) -> TableflowPhase:
-        return cls.UNKNOWN
 
     @property
     def is_terminal(self) -> bool:

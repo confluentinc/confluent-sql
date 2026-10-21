@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Protocol
 
 import httpx
@@ -47,6 +46,7 @@ from .exceptions import (
 from .polling import sleep_with_backoff
 from .service_api import ServiceApi
 from .types import StrAnyDict
+from .utils import ExtensibleEnum
 
 _REQUIRED_CONFIG_KEYS = ("connector.class", "kafka.api.key", "kafka.api.secret")
 """Config keys the Connect v1 create body marks required (besides `name`, which we inject)."""
@@ -79,7 +79,7 @@ def build_create_payload(*, name: str, config: StrAnyDict) -> StrAnyDict:
     return {"name": name, "config": {**config, "name": name}}
 
 
-class ConnectorState(str, Enum):
+class ConnectorState(ExtensibleEnum):
     """Lifecycle state of a connector (`/status` `connector.state`).
 
     Output-only: appears on responses (`ConnectorStatus.state`, `Connector.state`) and drives the
@@ -95,10 +95,6 @@ class ConnectorState(str, Enum):
     PAUSED = "PAUSED"
     DELETED = "DELETED"
     UNKNOWN = "UNKNOWN"
-
-    @classmethod
-    def _missing_(cls, value: object) -> ConnectorState:
-        return cls.UNKNOWN
 
 
 @dataclass
