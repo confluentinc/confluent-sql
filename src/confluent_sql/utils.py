@@ -12,6 +12,7 @@ elsewhere.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 import httpx
@@ -30,6 +31,20 @@ DEFAULT_USER_AGENT: str = (
 )
 """The User-Agent sent whenever a caller doesn't pass http_user_agent. Lives here for the same
 reason as `DEFAULT_HTTP_TIMEOUT_SECS`; `Connection.DEFAULT_USER_AGENT` aliases it."""
+
+
+class ExtensibleEnum(str, Enum):
+    """Base for API enums the server may extend: an unrecognized value parses to `UNKNOWN`.
+
+    A future server-side value then doesn't break response parsing. Subclasses must declare an
+    `UNKNOWN` member; without one, an unrecognized value raises the usual `ValueError`.
+    `(str, Enum)` rather than `StrEnum`, which needs Python 3.11+ (the package floor is 3.10).
+    """
+
+    @classmethod
+    def _missing_(cls, value: object) -> ExtensibleEnum | None:
+        """Return the `UNKNOWN` member for unrecognized values, or None if not present."""
+        return cls.__members__.get("UNKNOWN")
 
 
 def decode_sql_hex_literal(encoded: Any) -> bytes:
