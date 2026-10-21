@@ -41,10 +41,11 @@ from .config import CCloudOAuthConfig
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LOGIN_TIMEOUT_SECS = 120.0
-"""How long `wait_for_code` waits by default -- matching mcp-confluent's PKCE_LOGIN_TIMEOUT_MS.
-Long enough for a human to find the browser window, pick an identity provider, and get through an
-MFA prompt; short enough that an abandoned login eventually releases the port."""
+DEFAULT_LOGIN_TIMEOUT_SECS = 300.0
+"""How long `wait_for_code` waits by default (5 minutes; was 120s before #278). Long enough for a
+human to find the browser window, pick an identity provider, and get through an MFA prompt (or fetch
+a hardware key / password manager); short enough that an abandoned login eventually releases the
+port."""
 
 _SHUTDOWN_POLL_INTERVAL_SECS = 0.05
 """How often the serving loop checks whether `stop()` has been called. `serve_forever`'s own
