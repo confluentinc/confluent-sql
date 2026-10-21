@@ -38,7 +38,7 @@ LOGGER_NAME = "confluent_sql.oauth.callback_server"
 
 BRIEF_TIMEOUT = 5.0
 """For waits that are *expected* to succeed. Generous enough that a loaded CI box still wins the
-race, but far below the production 120s default, so a genuinely wedged wait fails fast."""
+race, but far below the production default, so a genuinely wedged wait fails fast."""
 
 PENDING_TIMEOUT = 0.1
 """For waits that are expected to time out, where the assertion is that the login is still
