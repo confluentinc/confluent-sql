@@ -910,7 +910,9 @@ class Connection:
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
-    def cursor(self, *, as_dict: bool = False, mode=ExecutionMode.SNAPSHOT) -> Cursor:
+    def cursor(
+        self, *, as_dict: bool = False, mode: ExecutionMode = ExecutionMode.SNAPSHOT
+    ) -> Cursor:
         """
         Create a new cursor for executing statements. Defaults to creating
         a snapshot (bounded) query cursor for returning point-in-time results.
@@ -2067,7 +2069,9 @@ class Connection:
 
         return (results, next_url)
 
-    def _request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+    def _request(
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
+    ) -> httpx.Response:
         """Issue a Flink-gateway request, translating any httpx.RequestError into
         OperationalError so no raw httpx exception ever escapes to a caller (#138)."""
         try:
@@ -2077,7 +2081,7 @@ class Connection:
         except httpx.RequestError as e:
             self._wrap_request_error(e)
 
-    def _request_get(self, url, **kwargs) -> httpx.Response:
+    def _request_get(self, url: str, **kwargs: Any) -> httpx.Response:
         """Issue a Flink-gateway GET, retrying transient transport errors (#137) and transient
         HTTP status codes alike -- both feed the same call_with_retries backoff/attempt budget. If
         retries are exhausted (or the exception isn't retryable at all), the raw httpx exception
@@ -2134,7 +2138,7 @@ class Connection:
         return response
 
     def _tableflow_request(
-        self, url, method="GET", raise_for_status=True, **kwargs
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """Issue a request against a genuine Tableflow route (enable/get/disable).
 
@@ -2188,7 +2192,9 @@ class Connection:
             self._raise_for_status_as_operational_error(response)
         return response
 
-    def _cmk_request(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+    def _cmk_request(
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
+    ) -> httpx.Response:
         """Issue a request against a CMK (Cluster Management for Kafka) route.
 
         Only ever called by `_lookup_cluster_ids_by_name`, itself only reached from
@@ -2204,7 +2210,7 @@ class Connection:
         )
 
     def _organization_lookup_request(
-        self, url, method="GET", raise_for_status=True, **kwargs
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """Issue a request against the /org/v2 organization-lookup route (#132).
 
@@ -2248,7 +2254,9 @@ class Connection:
         exception's type, so the type name is included explicitly rather than losing it."""
         raise OperationalError(f"error sending request: {type(e).__name__}: {e}") from e
 
-    def _request_raw(self, url, method="GET", raise_for_status=True, **kwargs) -> httpx.Response:
+    def _request_raw(
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
+    ) -> httpx.Response:
         """Issue a Flink-gateway request without translating httpx.RequestError.
 
         Exists solely so `_request_get`'s internal retried callable can see the raw exception
@@ -2268,7 +2276,14 @@ class Connection:
         return response
 
     def _send_request(
-        self, client: httpx.Client, url, method, raise_for_status, *, log_body=True, **kwargs
+        self,
+        client: httpx.Client,
+        url: str,
+        method: str,
+        raise_for_status: bool,
+        *,
+        log_body: bool = True,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Shared request/response handling for the control-plane clients (Tableflow, Connect).
 
@@ -2445,7 +2460,7 @@ class Connection:
         return self._cloud_controlplane_client
 
     def connect_controlplane_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs
+        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """Public ControlPlaneContext hook -- issues a Connect control-plane request for
         ConnectorApi.
