@@ -4,7 +4,7 @@ import pytest
 
 from confluent_sql.oauth.config import DEVEL, PROD, STAG, CCloudOAuthConfig
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 
 def test_prod_config_values():

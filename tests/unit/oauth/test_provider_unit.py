@@ -54,10 +54,11 @@ from confluent_sql.oauth.callback_server import CallbackServer
 from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 from confluent_sql.oauth.pkce import challenge_for
 from confluent_sql.oauth.provider import CCloudOAuth
+from confluent_sql.oauth.token_chain import UserIdentity
 from confluent_sql.oauth.token_set import ABSOLUTE_LIFETIME, TokenSet
 from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 AUTH_SERVICE_DOMAIN = "login.confluent.io"
 API_HOST = "https://confluent.cloud"
@@ -67,6 +68,11 @@ CALLBACK_PATH = PROD.callback_path
 AUTH_CODE = "the-authorization-code"
 INITIAL_REFRESH_TOKEN = "refresh-token-0"
 ORG_RESOURCE_ID = "org-resolved-from-the-session"
+USER_RESOURCE_ID = "u-original"
+OTHER_USER_RESOURCE_ID = "u-someone-else"
+ORIGINAL_SUB = "auth0|original"
+OTHER_SUB = "auth0|someone-else"
+ORIGINAL_IDENTITY = UserIdentity(USER_RESOURCE_ID, ORIGINAL_SUB)
 
 PII_EMAIL = "someone@example.com"
 """Planted in the fake `/api/sessions` response so a test can prove the body never reaches a log
@@ -110,7 +116,9 @@ def _config(port: int) -> CCloudOAuthConfig:
     )
 
 
-def _jwt(kind: str, serial: int, lifetime: timedelta) -> str:
+def _jwt(
+    kind: str, serial: int, lifetime: timedelta, extra_claims: dict[str, str] | None = None
+) -> str:
     """A three-segment JWT whose payload carries `exp` -- what `token_chain._jwt_exp` reads.
 
     `kind` and `serial` are carried purely to make every minted token a distinct string, so a
@@ -121,6 +129,7 @@ def _jwt(kind: str, serial: int, lifetime: timedelta) -> str:
         "exp": int((datetime.now(timezone.utc) + lifetime).timestamp()),
         "kind": kind,
         "serial": serial,
+        **(extra_claims or {}),
     }
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode("ascii")
     return f"header.{payload}.signature"
@@ -138,6 +147,13 @@ class FakeCCloud:
         self.cp_lifetime = LONG_LIFETIME
         self.dp_lifetime = LONG_LIFETIME
         self.organization: dict[str, str] | None = {"resource_id": ORG_RESOURCE_ID}
+        self.cp_identity_claims: dict[str, str] = {
+            "userResourceId": USER_RESOURCE_ID,
+            "sub": ORIGINAL_SUB,
+        }
+        """The identity claims stamped into every minted CP token -- who is 'logged in'. A test
+        reassigns this between logins to play the part of a different user (or of a token that
+        names nobody)."""
 
         self.code_grants: list[dict[str, str]] = []
         self.refresh_grants: list[dict[str, str]] = []
@@ -222,7 +238,7 @@ class FakeCCloud:
             )
             return httpx.Response(self.fail_sessions_with, json={"error": {"message": message}})
         body: dict[str, object] = {
-            "token": _jwt("cp", self._serial, self.cp_lifetime),
+            "token": _jwt("cp", self._serial, self.cp_lifetime, self.cp_identity_claims),
             # A stand-in for the real response's large, PII-laden remainder.
             "user": {"email": PII_EMAIL, "first_name": "Ada", "last_name": "Lovelace"},
         }
@@ -1440,6 +1456,198 @@ class TestReauthenticate:
             provider.reauthenticate(timeout=BRIEF_TIMEOUT)
 
             assert provider.token_set is not None
+
+    def test_a_different_user_is_refused_and_leaves_the_session_latched(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            dead = _tokens(provider)
+
+            fake.cp_identity_claims = {
+                "userResourceId": OTHER_USER_RESOURCE_ID,
+                "sub": OTHER_SUB,
+            }
+            with pytest.raises(OAuthLoginError) as caught:
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert caught.value.reason is OAuthLoginFailure.USER_MISMATCH
+            # The intruder's tokens were never installed, and the original identity stands.
+            assert _tokens(provider) is dead
+            assert provider.user_identity == ORIGINAL_IDENTITY
+            # Still latched: requests keep failing as needing reauth rather than silently
+            # running as someone else.
+            with (
+                _resource_client(provider.data_plane_auth, FakeResource()) as client,
+                pytest.raises(ReauthenticationRequired),
+            ):
+                client.get(RESOURCE_URL)
+
+            # ... and logging back in as the right user recovers it.
+            fake.cp_identity_claims = {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB}
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+            assert _tokens(provider) is not dead
+
+    def test_the_same_user_reauthenticates_fine(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            assert provider.user_identity == ORIGINAL_IDENTITY
+            _latch_a_dead_session(fake, provider)
+
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert provider.user_identity == ORIGINAL_IDENTITY
+
+    def test_the_mismatch_message_names_none_of_the_ids(self):
+        fake = FakeCCloud()
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            fake.cp_identity_claims = {"userResourceId": OTHER_USER_RESOURCE_ID}
+
+            with pytest.raises(OAuthLoginError) as caught:
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert "different user" in str(caught.value)
+            for leaked in (USER_RESOURCE_ID, OTHER_USER_RESOURCE_ID, ORIGINAL_SUB):
+                assert leaked not in str(caught.value)
+
+    @pytest.mark.parametrize(
+        ("original", "later", "expect_refused"),
+        [
+            pytest.param(
+                {"sub": ORIGINAL_SUB}, {"sub": OTHER_SUB}, True, id="sub-only-different-user"
+            ),
+            pytest.param(
+                {"sub": ORIGINAL_SUB}, {"sub": ORIGINAL_SUB}, False, id="sub-only-same-user"
+            ),
+            # Claim availability changing between logins must neither false-alarm on the same
+            # user nor miss a different one: only claims both logins carry are compared.
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                {"sub": ORIGINAL_SUB},
+                False,
+                id="both-then-sub-only-same-user",
+            ),
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                {"userResourceId": USER_RESOURCE_ID},
+                False,
+                id="both-then-uri-only-same-user",
+            ),
+            pytest.param(
+                {"sub": ORIGINAL_SUB},
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                False,
+                id="sub-only-then-both-same-user",
+            ),
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                {"sub": OTHER_SUB},
+                True,
+                id="both-then-sub-only-different-user",
+            ),
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                {"userResourceId": OTHER_USER_RESOURCE_ID},
+                True,
+                id="both-then-uri-only-different-user",
+            ),
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                {"userResourceId": USER_RESOURCE_ID, "sub": OTHER_SUB},
+                True,
+                id="any-shared-claim-differing-is-a-different-user",
+            ),
+        ],
+    )
+    def test_identities_are_compared_on_the_claims_both_logins_carry(
+        self, original, later, expect_refused
+    ):
+        fake = FakeCCloud()
+        fake.cp_identity_claims = original
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            fake.cp_identity_claims = later
+
+            if expect_refused:
+                with pytest.raises(OAuthLoginError) as caught:
+                    provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+                assert caught.value.reason is OAuthLoginFailure.USER_MISMATCH
+            else:
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+    def test_no_identity_at_either_login_warns_and_reauth_proceeds(self, caplog):
+        fake = FakeCCloud()
+        fake.cp_identity_claims = {}
+        with (
+            caplog.at_level(logging.WARNING, logger="confluent_sql"),
+            _logged_in(fake) as provider,
+        ):
+            assert provider.user_identity is None
+            assert any("user" in r.getMessage() for r in caplog.records)
+            _latch_a_dead_session(fake, provider)
+
+            # Neither login names anyone, so there is nothing to compare.
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert provider.token_set is not None
+            assert provider.user_identity is None
+
+    def test_an_identity_appearing_where_the_original_had_none_is_refused(self):
+        fake = FakeCCloud()
+        fake.cp_identity_claims = {}
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            dead = _tokens(provider)
+
+            # The original user was never determined, but this login names one: a strong sign
+            # the user changed, so it is refused rather than waved through.
+            fake.cp_identity_claims = {"userResourceId": OTHER_USER_RESOURCE_ID}
+            with pytest.raises(OAuthLoginError) as caught:
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert caught.value.reason is OAuthLoginFailure.USER_MISMATCH
+            assert _tokens(provider) is dead
+            assert provider.user_identity is None
+            assert OTHER_USER_RESOURCE_ID not in str(caught.value)
+
+    @pytest.mark.parametrize(
+        ("original", "later"),
+        [
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB}, {}, id="names-nobody"
+            ),
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID, "sub": ORIGINAL_SUB},
+                {"unrelated": "claim"},
+                id="no-identity-claims",
+            ),
+            # Both name a user, but not via any claim in common: nothing proves they are the same.
+            pytest.param(
+                {"userResourceId": USER_RESOURCE_ID},
+                {"sub": ORIGINAL_SUB},
+                id="no-shared-claim",
+            ),
+        ],
+    )
+    def test_a_reauth_with_no_comparable_identity_is_refused(self, original, later):
+        fake = FakeCCloud()
+        fake.cp_identity_claims = original
+        with _logged_in(fake) as provider:
+            _latch_a_dead_session(fake, provider)
+            dead = _tokens(provider)
+            pinned = provider.user_identity
+            fake.cp_identity_claims = later
+
+            with pytest.raises(OAuthLoginError) as caught:
+                provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+
+            assert caught.value.reason is OAuthLoginFailure.USER_MISMATCH
+            # Left latched with the original pin intact, so the right user can still recover it.
+            assert _tokens(provider) is dead
+            assert provider.user_identity == pinned
+            fake.cp_identity_claims = original
+            provider.reauthenticate(timeout=BRIEF_TIMEOUT)
+            assert _tokens(provider) is not dead
 
 
 class TestClose:

@@ -13,6 +13,7 @@ import pytest
 from dotenv import load_dotenv
 
 import confluent_sql
+from confluent_sql import oauth_discard_login
 from confluent_sql.connection import Connection
 from confluent_sql.cursor import Cursor
 
@@ -65,6 +66,18 @@ def oauth_base_connect_args(load_env_file) -> dict[str, str]:
         "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
         "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
     }
+
+
+@pytest.fixture
+def fresh_oauth_process(oauth_base_connect_args: dict[str, str]) -> Generator[None, None, None]:
+    """Guarantee no process-wide login can short-circuit the test's own, and none leaks out.
+
+    Without the leading discard, the holder would hand back an already-established provider and
+    the one-identity guard would fail with a different error, never reaching CCloud.
+    """
+    oauth_discard_login()
+    yield
+    oauth_discard_login()
 
 
 @pytest.fixture(scope="session")

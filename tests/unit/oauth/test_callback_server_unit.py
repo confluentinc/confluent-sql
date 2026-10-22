@@ -29,7 +29,7 @@ from confluent_sql.exceptions import OAuthLoginError, OAuthLoginFailure, Program
 from confluent_sql.oauth.callback_server import CallbackServer
 from confluent_sql.oauth.config import PROD, CCloudOAuthConfig
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 EXPECTED_STATE = "the-state-this-login-generated"
 AUTH_CODE = "the-authorization-code"

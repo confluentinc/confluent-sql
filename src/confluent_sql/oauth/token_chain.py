@@ -70,16 +70,56 @@ class CodeExchangeResult:
 
 
 @dataclass(frozen=True)
+class UserIdentity:
+    """Who a control-plane token was minted for: the unverified identity claims it carries.
+
+    Both claims are kept, rather than collapsed into one string, because a later token may carry a
+    different subset of them than the original did. Two identities are only comparable on the
+    claims *both* carry -- comparing a `userResourceId` against a `sub` would flag the very same
+    user as someone else. At least one claim is always present (a token with neither yields no
+    `UserIdentity` at all).
+    """
+
+    user_resource_id: str | None
+    """The `userResourceId` claim: the stable `u-...` Confluent resource id (confirmed present
+    against production in #277)."""
+    sub: str | None
+    """The `sub` claim."""
+
+    def _claims(self) -> dict[str, str]:
+        return {
+            name: value
+            for name, value in (("userResourceId", self.user_resource_id), ("sub", self.sub))
+            if value is not None
+        }
+
+    def shares_a_claim_with(self, other: UserIdentity) -> bool:
+        """Whether there is at least one claim both identities carry, i.e. they are comparable."""
+        return bool(self._claims().keys() & other._claims().keys())
+
+    def conflicts_with(self, other: UserIdentity) -> bool:
+        """Whether any claim carried by both identities differs, i.e. provably not the same user.
+        False for identities that share no claim -- check `shares_a_claim_with` first."""
+        mine, theirs = self._claims(), other._claims()
+        return any(mine[name] != theirs[name] for name in mine.keys() & theirs.keys())
+
+
+@dataclass(frozen=True)
 class ControlPlaneTokenResult:
     """The outcome of exchanging an id_token for a Confluent Cloud control-plane token.
 
     organization_resource_id is None only when the /api/sessions response omits an organization
     block; callers that need an org (every caller in this driver) should treat that as unexpected.
+
+    user_identity names who logged in, from the token's unverified claims, or is None when the
+    token is opaque or carries neither identity claim. It is what lets a reauthentication confirm
+    it landed on the same user as the original login (#277).
     """
 
     token: str
     expires_at: datetime
     organization_resource_id: str | None
+    user_identity: UserIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +239,7 @@ def exchange_id_token_for_cp_token(
             fallback_lifetime=FALLBACK_CP_LIFETIME,
         ),
         organization_resource_id=organization_resource_id,
+        user_identity=_cp_token_user_identity(token),
     )
 
 
@@ -237,11 +278,8 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
     failure. `now` is anchored to UTC before use in the fallback so this always returns tz-aware
     UTC, same as the JWT-decode path, regardless of whether the caller's `now` was naive."""
     try:
-        _header, payload_segment, _signature = token.split(".")
-        padded = payload_segment + "=" * (-len(payload_segment) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-        exp = payload["exp"]
-        return datetime.fromtimestamp(exp, tz=timezone.utc)
+        exp = (_jwt_payload(token) or {})["exp"]
+        return datetime.fromtimestamp(exp, tz=timezone.utc)  # type: ignore[arg-type]
     except (ValueError, KeyError, TypeError, OverflowError, OSError, binascii.Error):
         anchor = (
             now.astimezone(timezone.utc)
@@ -251,17 +289,42 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
         return anchor + fallback_lifetime
 
 
+def _jwt_payload(token: str) -> dict[str, object] | None:
+    """The unverified payload object of a JWT, or None for anything that isn't a three-segment
+    token whose payload segment is base64url JSON encoding an object. Never raises: every caller
+    here uses claims best-effort, so a malformed token degrades them rather than failing the
+    login."""
+    try:
+        _header, payload_segment, _signature = token.split(".")
+        padded = payload_segment + "=" * (-len(payload_segment) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+    except (ValueError, binascii.Error):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _string_claim(token: str, name: str) -> str | None:
+    """A non-empty string claim from the unverified payload of `token`, else None."""
+    payload = _jwt_payload(token)
+    value = payload.get(name) if payload is not None else None
+    return value if isinstance(value, str) and value else None
+
+
+def _cp_token_user_identity(cp_token: str) -> UserIdentity | None:
+    """The identity claims of a control-plane token, or None when it carries neither a usable
+    `userResourceId` nor a usable `sub`."""
+    user_resource_id = _string_claim(cp_token, "userResourceId")
+    sub = _string_claim(cp_token, "sub")
+    if user_resource_id is None and sub is None:
+        return None
+    return UserIdentity(user_resource_id=user_resource_id, sub=sub)
+
+
 def _id_token_email(id_token: str) -> str | None:
     """Best-effort: the unverified `email` claim of the id_token, for naming who is logged in
     in an error message. None for anything that isn't a decodable JWT with a string `email` --
     a diagnostic nicety must never mask the real failure it is decorating."""
-    try:
-        _header, payload_segment, _signature = id_token.split(".")
-        padded = payload_segment + "=" * (-len(payload_segment) % 4)
-        email = json.loads(base64.urlsafe_b64decode(padded))["email"]
-    except (ValueError, KeyError, TypeError):
-        return None
-    return email if isinstance(email, str) and email else None
+    return _string_claim(id_token, "email")
 
 
 def _raise_for_auth_service_error(response: httpx.Response) -> None:
