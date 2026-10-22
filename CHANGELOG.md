@@ -17,6 +17,11 @@ All notable changes to this dbapi driver will be documented in this file.
     - `OAuthLoginError`: the interactive browser login could not complete. Its `reason` is an `OAuthLoginFailure`: `TIMED_OUT`, `PORT_IN_USE`, `AUTHORIZATION_DENIED`, or `SERVER_ERROR`.
     - `OAuthTokenEndpointError`: the auth service's token endpoint rejected a request. Carries the OAuth `error_code` (e.g. `"invalid_grant"`) and `http_status_code`.
     - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
+- `RequestTimeoutError`, a subclass of `OperationalError` importable from `confluent_sql`, raised when an individual HTTP request times out. Existing `except OperationalError` handlers keep working. (#236)
+
+### Fixed
+
+- A single slow status poll (an `httpx` connect/read/write/pool timeout, e.g. against a cold compute pool) no longer aborts `Cursor.execute()`'s readiness wait, `stop_statement(wait_for_stopped=True)`, or the Tableflow `wait_for_running`/`wait_for_removal` waits. Such a poll is treated as "no news yet" and polled again until the call's own `timeout` expires. (#236)
 
 ### Changed
 
