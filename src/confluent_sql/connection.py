@@ -28,6 +28,7 @@ from .exceptions import (
     OperationalError,
     ProgrammingError,
     ReauthenticationRequired,
+    RequestTimeoutError,
     StatementDeletedError,
     StatementNotFoundError,
     TableflowTopicAlreadyExistsError,
@@ -1623,7 +1624,12 @@ class Connection:
             return statement
 
         for _ in sleep_with_backoff(timeout):
-            statement = self.get_statement(statement.name)
+            try:
+                statement = self.get_statement(statement.name)
+            except RequestTimeoutError:
+                # One slow poll is "no news yet", not a failure (#236); the loop's own deadline
+                # still bounds the wait.
+                continue
             raise_if_failed(statement)
             if statement.phase.is_terminal:
                 return statement
@@ -2251,8 +2257,15 @@ class Connection:
         """Translate a network-level transport failure (no HTTP response -- timeout, connection
         reset/refused, protocol error, etc.) into OperationalError. httpx's own str() for these
         tends to be terse ("reset", "All connection attempts failed") and doesn't name the
-        exception's type, so the type name is included explicitly rather than losing it."""
-        raise OperationalError(f"error sending request: {type(e).__name__}: {e}") from e
+        exception's type, so the type name is included explicitly rather than losing it.
+
+        httpx timeouts (connect/read/write/pool) become the OperationalError subclass
+        `RequestTimeoutError`, so polling loops can tell one slow response from a hard failure
+        (#236)."""
+        error_cls = (
+            RequestTimeoutError if isinstance(e, httpx.TimeoutException) else OperationalError
+        )
+        raise error_cls(f"error sending request: {type(e).__name__}: {e}") from e
 
     def _request_raw(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
@@ -2820,7 +2833,10 @@ class Connection:
             return topic
 
         for _ in sleep_with_backoff(timeout):
-            topic = self.get_tableflow(topic.spec.display_name)
+            try:
+                topic = self.get_tableflow(topic.spec.display_name)
+            except RequestTimeoutError:
+                continue  # one slow poll is "no news yet" (#236)
             raise_if_failed(topic)
             if topic.phase is TableflowPhase.RUNNING:
                 return topic
@@ -2840,12 +2856,16 @@ class Connection:
             self.get_tableflow(table_name)
         except TableflowTopicNotFoundError:
             return
+        except RequestTimeoutError:
+            pass  # one slow probe is "no news yet" (#236); fall into the paced loop
 
         for _ in sleep_with_backoff(timeout):
             try:
                 self.get_tableflow(table_name)
             except TableflowTopicNotFoundError:
                 return
+            except RequestTimeoutError:
+                continue  # one slow poll is "no news yet" (#236)
 
         raise OperationalError(
             f"Tableflow for '{table_name}' was not removed within {timeout} seconds"

@@ -13,6 +13,7 @@ from confluent_sql.exceptions import (
     ConnectorAlreadyExistsError,
     ConnectorNotFoundError,
     OperationalError,
+    RequestTimeoutError,
 )
 
 pytestmark = pytest.mark.unit
@@ -81,7 +82,7 @@ class FakeControlPlane:
     environment_id = "env-123"
 
     def __init__(self) -> None:
-        self._queues: dict[str, list[Mock]] = {
+        self._queues: dict[str, list[Mock | Exception]] = {
             "create": [],
             "read": [],
             "status": [],
@@ -93,7 +94,7 @@ class FakeControlPlane:
     def resolve_kafka_cluster_id(self) -> str:
         return "lkc-abc"
 
-    def queue(self, key: str, *responses: Mock) -> None:
+    def queue(self, key: str, *responses: Mock | Exception) -> None:
         self._queues[key].extend(responses)
 
     def connect_controlplane_request(
@@ -113,7 +114,10 @@ class FakeControlPlane:
         queue = self._queues[key]
         if not queue:
             raise AssertionError(f"Wacky -- no queued {key} response for {method} {url}")
-        return queue.pop(0)
+        served = queue.pop(0)
+        if isinstance(served, Exception):
+            raise served
+        return served
 
     def count(self, key: str) -> int:
         method = {"create": "POST", "delete": "DELETE"}.get(key)
@@ -193,6 +197,22 @@ class TestConnectorApiCreate:
         with pytest.raises(ConnectorAlreadyExistsError) as exc:
             api.create("MyDatagen", config=_create_config())
         assert exc.value.connector_name == "MyDatagen"
+
+    def test_timed_out_status_poll_is_retried(self, no_sleep) -> None:
+        """A slow /status poll while waiting for RUNNING is 'no news yet', not a failure (#236)."""
+        ctx = FakeControlPlane()
+        ctx.queue("create", _ok_response(_read_body(), status_code=201))
+        ctx.queue(
+            "status",
+            _ok_response(_status_body("PROVISIONING")),
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _ok_response(_status_body("RUNNING")),
+        )
+
+        connector = ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+
+        assert connector.state is ConnectorState.RUNNING
+        assert ctx.count("status") == 3
 
     def test_failed_state_raises_with_trace(self, no_sleep) -> None:
         ctx = FakeControlPlane()
@@ -317,6 +337,24 @@ class TestConnectorApiDelete:
             api.delete("MyDatagen")
         assert exc.value.http_status_code == 500
         assert "delete boom" in str(exc.value)
+
+    def test_removal_survives_timed_out_probe_and_poll(self, no_sleep) -> None:
+        """Both the unpaced first probe and a paced poll may time out once (#236): the DELETE
+        already succeeded, so each is 'no news yet' and the wait carries on to the 404."""
+        ctx = FakeControlPlane()
+        ctx.queue("delete", _ok_response())
+        ctx.queue(
+            "read",
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _ok_response(_read_body()),
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _error_response(404),
+        )
+        api = ConnectorApi(ctx)
+
+        api.delete("MyDatagen")
+
+        assert ctx.count("read") == 4
 
     def test_polls_through_a_still_present_read_until_gone(self, no_sleep) -> None:
         # The connector is still readable on the first poll, then 404s on the second.
