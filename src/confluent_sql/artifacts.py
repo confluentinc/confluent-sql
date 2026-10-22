@@ -674,20 +674,23 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
 
     def _wait_for_removal(self, artifact_id: str, timeout: float) -> None:
         started_at = time.monotonic()
+        last_timeout: RequestTimeoutError | None = None
         try:
             self.get(artifact_id)
         except ArtifactNotFoundError:
             return
-        except RequestTimeoutError:
-            pass  # one slow probe is "no news yet" (#236); fall into the paced loop
+        except RequestTimeoutError as e:
+            last_timeout = e  # one slow probe is "no news yet" (#236); fall into the paced loop
         for _ in sleep_with_backoff(timeout, started_at=started_at):
             try:
                 self.get(artifact_id)
             except ArtifactNotFoundError:
                 return
-            except RequestTimeoutError:
-                continue  # one slow poll is "no news yet" (#236)
-        raise OperationalError(f"Artifact '{artifact_id}' was not removed within {timeout} seconds")
+            except RequestTimeoutError as e:
+                last_timeout = e  # one slow poll is "no news yet" (#236)
+        raise OperationalError(
+            f"Artifact '{artifact_id}' was not removed within {timeout} seconds"
+        ) from last_timeout
 
     @staticmethod
     def _raise_for_status(response: httpx.Response, *, prefix: str) -> None:

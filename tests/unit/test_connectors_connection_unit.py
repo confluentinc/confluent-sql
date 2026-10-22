@@ -214,6 +214,20 @@ class TestConnectorApiCreate:
         assert connector.state is ConnectorState.RUNNING
         assert ctx.count("status") == 3
 
+    def test_status_poll_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
+        """Every status poll times out until the budget is spent: the ordinary 'did not reach'
+        error is raised with the last RequestTimeoutError chained as its cause (#236)."""
+        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([None] * 2))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeControlPlane()
+        ctx.queue("create", _ok_response(_read_body(), status_code=201))
+        ctx.queue("status", _ok_response(_status_body("PROVISIONING")), slow, slow)
+
+        with pytest.raises(OperationalError, match="did not reach") as exc:
+            ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+
+        assert exc.value.__cause__ is slow
+
     def test_failed_state_raises_with_trace(self, no_sleep) -> None:
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
@@ -355,6 +369,18 @@ class TestConnectorApiDelete:
         api.delete("MyDatagen")
 
         assert ctx.count("read") == 4
+
+    def test_removal_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
+        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([None]))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeControlPlane()
+        ctx.queue("delete", _ok_response())
+        ctx.queue("read", slow, slow)
+
+        with pytest.raises(OperationalError, match="was not removed within") as exc:
+            ConnectorApi(ctx).delete("MyDatagen")
+
+        assert exc.value.__cause__ is slow
 
     def test_polls_through_a_still_present_read_until_gone(self, no_sleep) -> None:
         # The connector is still readable on the first poll, then 404s on the second.

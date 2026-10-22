@@ -665,6 +665,18 @@ class TestGetListUpdateDelete:
         ArtifactsApi(ctx).delete(ARTIFACT_ID)
         assert [r[0] for r in ctx.requests] == ["DELETE", "GET", "GET", "GET", "GET"]
 
+    def test_delete_wait_chains_last_timeout_when_budget_is_spent(self, mocker) -> None:
+        """Probe and polls all time out until the budget is gone: the ordinary 'not removed' error
+        is raised with the last RequestTimeoutError chained as its cause (#236)."""
+        mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None]))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeContext(_response(status=204), slow, slow)
+
+        with pytest.raises(OperationalError, match="was not removed within") as exc_info:
+            ArtifactsApi(ctx).delete(ARTIFACT_ID)
+
+        assert exc_info.value.__cause__ is slow
+
     def test_delete_returns_without_polling_when_already_gone(self, mocker) -> None:
         sleeper = mocker.patch("confluent_sql.artifacts.sleep_with_backoff")
         ctx = FakeContext(_response(status=204), _response(status=404))

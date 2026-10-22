@@ -606,6 +606,20 @@ class TestDisableTableflow:
         backoff.assert_called_once_with(5, started_at=before_probe)
         conn.get_tableflow.assert_called_once()
 
+    def test_wait_for_removal_chains_last_timeout_when_budget_is_spent(self, mocker) -> None:
+        """Probe and polls all time out until the budget is gone: the ordinary 'not removed' error
+        is raised with the last RequestTimeoutError chained as its cause (#236)."""
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(status_code=204))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        conn.get_tableflow = Mock(side_effect=slow)  # type: ignore[method-assign]
+
+        with pytest.raises(OperationalError, match="was not removed within") as exc_info:
+            conn.disable_tableflow("orders", wait_for_removal=True, timeout=5)
+
+        assert exc_info.value.__cause__ is slow
+
     def test_wait_for_removal_returns_when_already_gone(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._tableflow_request = Mock(return_value=_ok_response(status_code=204))

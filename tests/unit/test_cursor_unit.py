@@ -345,15 +345,16 @@ class TestExecute:
         'Statement submission timed out' error rather than a leaked RequestTimeoutError."""
         pending = statement_response_factory(phase="PENDING", null_schema=True)
         mock_connection_cursor._connection._execute_statement.return_value = pending  # type: ignore
-        mock_connection_cursor._connection._get_statement.side_effect = RequestTimeoutError(  # type: ignore
-            "error sending request: ReadTimeout: slow"
-        )
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        mock_connection_cursor._connection._get_statement.side_effect = slow  # type: ignore
         mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([None, None]))
 
         with pytest.raises(OperationalError, match="Statement submission timed out") as exc_info:
             mock_connection_cursor.execute("SELECT 1 AS col")
 
         assert not isinstance(exc_info.value, RequestTimeoutError)
+        # ... but the last timeout is chained so a persistently dead server stays diagnosable.
+        assert exc_info.value.__cause__ is slow
 
     def test_becomes_ready_after_pending_without_traits_then_running_with_traits(
         self,

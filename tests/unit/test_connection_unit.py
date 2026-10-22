@@ -301,6 +301,30 @@ class TestConnectionStopStatement:
         assert result.is_stopped
         assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
 
+    def test_blocking_chains_last_poll_timeout_when_budget_is_spent(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """If every poll times out until the budget is spent, the ordinary 'did not reach STOPPED'
+        error is raised with the last RequestTimeoutError chained as its cause (#236)."""
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None] * 2))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            slow,
+            slow,
+        ]
+
+        with pytest.raises(OperationalError, match="did not reach STOPPED within") as exc_info:
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert exc_info.value.__cause__ is slow
+
     def test_blocking_returns_on_completed_when_stop_races_a_bounded_query(
         self,
         invalid_credential_connection: Connection,
