@@ -569,6 +569,21 @@ class TestDisableTableflow:
         conn.disable_tableflow("orders", wait_for_removal=True)
         assert conn.get_tableflow.call_count == 3
 
+    def test_wait_for_removal_survives_a_timed_out_initial_probe(self, mocker) -> None:
+        """The unpaced probe before the polling loop is also tolerant of one slow GET (#236): the
+        DELETE already succeeded, so a timeout here must fall into the loop, not abort."""
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(status_code=204))
+        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None]))
+        conn.get_tableflow = Mock(  # type: ignore[method-assign]
+            side_effect=[
+                RequestTimeoutError("error sending request: ReadTimeout: slow"),
+                TableflowTopicNotFoundError("gone", table_name="orders"),
+            ]
+        )
+        conn.disable_tableflow("orders", wait_for_removal=True)
+        assert conn.get_tableflow.call_count == 2
+
     def test_wait_for_removal_returns_when_already_gone(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._tableflow_request = Mock(return_value=_ok_response(status_code=204))

@@ -2856,6 +2856,8 @@ class Connection:
             self.get_tableflow(table_name)
         except TableflowTopicNotFoundError:
             return
+        except RequestTimeoutError:
+            pass  # one slow probe is "no news yet" (#236); fall into the paced loop
 
         for _ in sleep_with_backoff(timeout):
             try:

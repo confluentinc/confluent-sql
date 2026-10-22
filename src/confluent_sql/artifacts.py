@@ -24,6 +24,7 @@ from .exceptions import (
     ArtifactNotFoundError,
     InterfaceError,
     OperationalError,
+    RequestTimeoutError,
 )
 from .polling import sleep_with_backoff
 from .retry import call_with_retries
@@ -677,11 +678,15 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             self.get(artifact_id)
         except ArtifactNotFoundError:
             return
+        except RequestTimeoutError:
+            pass  # one slow probe is "no news yet" (#236); fall into the paced loop
         for _ in sleep_with_backoff(timeout, started_at=started_at):
             try:
                 self.get(artifact_id)
             except ArtifactNotFoundError:
                 return
+            except RequestTimeoutError:
+                continue  # one slow poll is "no news yet" (#236)
         raise OperationalError(f"Artifact '{artifact_id}' was not removed within {timeout} seconds")
 
     @staticmethod

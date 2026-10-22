@@ -21,7 +21,7 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Fixed
 
-- A single slow status poll (an `httpx` connect/read/write/pool timeout, e.g. against a cold compute pool) no longer aborts `Cursor.execute()`'s readiness wait, `stop_statement(wait_for_stopped=True)`, or the Tableflow `wait_for_running`/`wait_for_removal` waits. Such a poll is treated as "no news yet" and polled again until the call's own `timeout` expires. (#236)
+- A single slow status poll (an `httpx` connect/read/write/pool timeout, e.g. against a cold compute pool) no longer aborts `Cursor.execute()`'s readiness wait, `stop_statement(wait_for_stopped=True)`, the Tableflow `wait_for_running`/`wait_for_removal` waits, or the Connect (create/pause/resume/delete) and Artifacts (delete) waits. Such a poll is treated as "no news yet" and polled again until the call's own `timeout` expires. (#236)
 
 ### Changed
 
