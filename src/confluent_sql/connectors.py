@@ -42,6 +42,7 @@ from .exceptions import (
     ConnectorNotFoundError,
     InterfaceError,
     OperationalError,
+    RequestTimeoutError,
 )
 from .polling import sleep_with_backoff
 from .service_api import ServiceApi
@@ -457,9 +458,12 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
             return resolved
 
         for _ in sleep_with_backoff(timeout):
-            connector = Connector(
-                spec=connector.spec, status=self._fetch_status(connector.spec.name)
-            )
+            try:
+                connector = Connector(
+                    spec=connector.spec, status=self._fetch_status(connector.spec.name)
+                )
+            except RequestTimeoutError:
+                continue  # one slow poll is "no news yet" (#236)
             if (resolved := settled(connector)) is not None:
                 return resolved
 
@@ -479,11 +483,15 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
             self._read_spec(name)
         except ConnectorNotFoundError:
             return
+        except RequestTimeoutError:
+            pass  # one slow probe is "no news yet" (#236); fall into the paced loop
 
         for _ in sleep_with_backoff(timeout, started_at=started_at):
             try:
                 self._read_spec(name)
             except ConnectorNotFoundError:
                 return
+            except RequestTimeoutError:
+                continue  # one slow poll is "no news yet" (#236)
 
         raise OperationalError(f"Connector '{name}' was not removed within {timeout} seconds")
