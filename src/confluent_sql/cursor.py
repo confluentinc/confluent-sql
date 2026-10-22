@@ -19,6 +19,7 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
+    RequestTimeoutError,
 )
 from .execution_mode import ExecutionMode
 from .polling import sleep_with_backoff
@@ -745,7 +746,13 @@ class Cursor:
 
         logger.info(f"Checking statement '{self._statement.name}' status...")
 
-        response = self._connection._get_statement(self._statement.name)
+        try:
+            response = self._connection._get_statement(self._statement.name)
+        except RequestTimeoutError as e:
+            # One slow poll (e.g. a cold compute pool) is "not ready yet", not a failure (#236);
+            # the caller's wait loop still bounds the total time.
+            logger.info(f"Status poll for '{self._statement.name}' timed out, will retry: {e}")
+            return False
         self._statement = Statement.from_response(self._connection, response)
 
         self._raise_if_statement_is_broken()
