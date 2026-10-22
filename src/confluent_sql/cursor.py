@@ -19,6 +19,7 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
+    RequestTimeoutError,
 )
 from .execution_mode import ExecutionMode
 from .polling import sleep_with_backoff
@@ -723,13 +724,29 @@ class Cursor:
         # First attempt immediately, then back off between subsequent polls. The clock starts
         # before that first poll so its latency counts against the timeout, not on top of it.
         started_at = time.monotonic()
-        if self._poll_ready_once():
+        last_timeout: RequestTimeoutError | None = None
+
+        def poll_tolerating_timeout() -> bool:
+            # One slow poll (e.g. a cold compute pool) is "not ready yet", not a failure (#236);
+            # the wait loop's own deadline still bounds the total time.
+            nonlocal last_timeout
+            try:
+                return self._poll_ready_once()
+            except RequestTimeoutError as e:
+                logger.info(f"Status poll timed out, will retry: {e}")
+                last_timeout = e
+                return False
+
+        if poll_tolerating_timeout():
             return
         for _ in sleep_with_backoff(timeout, started_at=started_at):
-            if self._poll_ready_once():
+            if poll_tolerating_timeout():
                 return
 
-        raise OperationalError(f"Statement submission timed out after {timeout} seconds")
+        # Chain the last timeout (if any) so a persistently unresponsive server stays diagnosable.
+        raise OperationalError(
+            f"Statement submission timed out after {timeout} seconds"
+        ) from last_timeout
 
     def _poll_ready_once(self) -> bool:
         """Refresh self._statement from the server once; return True if results are now fetchable.

@@ -10,6 +10,7 @@ from confluent_sql.exceptions import (
     NotSupportedError,
     OperationalError,
     ProgrammingError,
+    RequestTimeoutError,
 )
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import ChangelogEventReader, ChangeloggedRow, FetchMetrics
@@ -300,6 +301,60 @@ class TestExecute:
             mock_connection_cursor.execute("SELECT 1 AS col", timeout=30)
 
         backoff.assert_called_once_with(30, started_at=0.0)
+
+    def test_timed_out_poll_is_retried_not_fatal(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """A single slow status GET (RequestTimeoutError, e.g. a cold compute pool) neither kills
+        execute() nor counts as readiness: the wait loop keeps polling (#236). Covers both the
+        immediate first poll and a later paced one."""
+        pending = statement_response_factory(phase="PENDING", null_schema=True)
+        running = statement_response_factory(
+            sql_statement="SELECT * FROM source_table",
+            sql_kind="SELECT",
+            phase="RUNNING",
+            is_bounded=True,
+            is_append_only=True,
+        )
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_QUERY
+        mock_connection_cursor._connection._execute_statement.return_value = pending  # type: ignore
+        mock_connection_cursor._connection._get_statement.side_effect = [  # type: ignore
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            pending,
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            running,
+        ]
+        mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([None] * 3))
+
+        mock_connection_cursor.execute("SELECT * FROM source_table")
+
+        assert mock_connection_cursor._connection._get_statement.call_count == 4  # type: ignore
+        assert mock_connection_cursor._statement is not None
+        assert mock_connection_cursor._statement.phase is Phase.RUNNING
+
+    def test_poll_timeouts_until_deadline_still_report_submission_timeout(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """If every poll times out until the budget is spent, the caller gets the ordinary
+        'Statement submission timed out' error rather than a leaked RequestTimeoutError."""
+        pending = statement_response_factory(phase="PENDING", null_schema=True)
+        mock_connection_cursor._connection._execute_statement.return_value = pending  # type: ignore
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        mock_connection_cursor._connection._get_statement.side_effect = slow  # type: ignore
+        mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([None, None]))
+
+        with pytest.raises(OperationalError, match="Statement submission timed out") as exc_info:
+            mock_connection_cursor.execute("SELECT 1 AS col")
+
+        assert not isinstance(exc_info.value, RequestTimeoutError)
+        # ... but the last timeout is chained so a persistently dead server stays diagnosable.
+        assert exc_info.value.__cause__ is slow
 
     def test_becomes_ready_after_pending_without_traits_then_running_with_traits(
         self,

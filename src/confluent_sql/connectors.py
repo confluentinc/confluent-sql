@@ -42,6 +42,7 @@ from .exceptions import (
     ConnectorNotFoundError,
     InterfaceError,
     OperationalError,
+    RequestTimeoutError,
 )
 from .polling import sleep_with_backoff
 from .service_api import ServiceApi
@@ -456,17 +457,22 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         if (resolved := settled(connector)) is not None:
             return resolved
 
+        last_timeout: RequestTimeoutError | None = None
         for _ in sleep_with_backoff(timeout):
-            connector = Connector(
-                spec=connector.spec, status=self._fetch_status(connector.spec.name)
-            )
+            try:
+                connector = Connector(
+                    spec=connector.spec, status=self._fetch_status(connector.spec.name)
+                )
+            except RequestTimeoutError as e:
+                last_timeout = e  # one slow poll is "no news yet" (#236)
+                continue
             if (resolved := settled(connector)) is not None:
                 return resolved
 
         raise OperationalError(
             f"Connector '{connector.spec.name}' did not reach {target.value} "
             f"within {timeout} seconds"
-        )
+        ) from last_timeout
 
     def _wait_for_removal(self, name: str, timeout: float) -> None:
         """Poll the base read until it 404s, confirming the connector is gone.
@@ -475,15 +481,22 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
             OperationalError: If the connector is not removed within timeout.
         """
         started_at = time.monotonic()
+        last_timeout: RequestTimeoutError | None = None
         try:
             self._read_spec(name)
         except ConnectorNotFoundError:
             return
+        except RequestTimeoutError as e:
+            last_timeout = e  # one slow probe is "no news yet" (#236); fall into the paced loop
 
         for _ in sleep_with_backoff(timeout, started_at=started_at):
             try:
                 self._read_spec(name)
             except ConnectorNotFoundError:
                 return
+            except RequestTimeoutError as e:
+                last_timeout = e  # one slow poll is "no news yet" (#236)
 
-        raise OperationalError(f"Connector '{name}' was not removed within {timeout} seconds")
+        raise OperationalError(
+            f"Connector '{name}' was not removed within {timeout} seconds"
+        ) from last_timeout
