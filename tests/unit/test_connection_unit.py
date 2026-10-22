@@ -309,7 +309,7 @@ class TestConnectionStopStatement:
     ):
         """If every poll times out until the budget is spent, the ordinary 'did not reach STOPPED'
         error is raised with the last RequestTimeoutError chained as its cause (#236)."""
-        mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([None] * 2))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 2))
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         request_mock = mocker.patch.object(
             invalid_credential_connection._get_flink_client(), "request"

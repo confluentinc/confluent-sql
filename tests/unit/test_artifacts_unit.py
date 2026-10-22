@@ -645,7 +645,7 @@ class TestGetListUpdateDelete:
         assert [r[0] for r in ctx.requests] == ["DELETE"]
 
     def test_delete_waits_until_read_404s(self, mocker) -> None:
-        mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None] * 3))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 3))
         ctx = FakeContext(_response(status=204), _response(_artifact_body()), _response(status=404))
         ArtifactsApi(ctx).delete(ARTIFACT_ID)
         assert [r[0] for r in ctx.requests] == ["DELETE", "GET", "GET"]
@@ -653,7 +653,7 @@ class TestGetListUpdateDelete:
     def test_delete_wait_survives_timed_out_probe_and_poll(self, mocker) -> None:
         """Both the unpaced first read and a paced poll may time out once (#236): the DELETE
         already succeeded, so each is 'no news yet' and the wait carries on to the 404."""
-        mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None] * 5))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 5))
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         ctx = FakeContext(
             _response(status=204),
@@ -668,7 +668,7 @@ class TestGetListUpdateDelete:
     def test_delete_wait_chains_last_timeout_when_budget_is_spent(self, mocker) -> None:
         """Probe and polls all time out until the budget is gone: the ordinary 'not removed' error
         is raised with the last RequestTimeoutError chained as its cause (#236)."""
-        mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None]))
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         ctx = FakeContext(_response(status=204), slow, slow)
 
@@ -678,14 +678,14 @@ class TestGetListUpdateDelete:
         assert exc_info.value.__cause__ is slow
 
     def test_delete_returns_without_polling_when_already_gone(self, mocker) -> None:
-        sleeper = mocker.patch("confluent_sql.artifacts.sleep_with_backoff")
+        sleeper = mocker.patch("confluent_sql.polling.sleep_with_backoff")
         ctx = FakeContext(_response(status=204), _response(status=404))
         ArtifactsApi(ctx).delete(ARTIFACT_ID)
         assert [r[0] for r in ctx.requests] == ["DELETE", "GET"]
         sleeper.assert_not_called()
 
     def test_delete_wait_timeout_raises(self, mocker) -> None:
-        mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([None]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None]))
         ctx = FakeContext(
             _response(status=204), _response(_artifact_body()), _response(_artifact_body())
         )
@@ -696,10 +696,10 @@ class TestGetListUpdateDelete:
         # The timeout is measured from before the first (possibly slow, retried) read.
         before_first_read, after_first_read = 100.0, 160.0
         mocker.patch(
-            "confluent_sql.artifacts.time.monotonic",
+            "confluent_sql.polling.time.monotonic",
             side_effect=[before_first_read, after_first_read],
         )
-        sleeper = mocker.patch("confluent_sql.artifacts.sleep_with_backoff", return_value=iter([]))
+        sleeper = mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeContext(_response(status=204), _response(_artifact_body()))
         with pytest.raises(OperationalError):
             ArtifactsApi(ctx).delete(ARTIFACT_ID, timeout=5)

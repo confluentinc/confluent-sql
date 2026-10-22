@@ -131,9 +131,7 @@ class FakeControlPlane:
 @pytest.fixture()
 def no_sleep(mocker):
     """Neutralize backoff pacing so wait loops iterate instantly; yields up to 20 times."""
-    return mocker.patch(
-        "confluent_sql.connectors.sleep_with_backoff", return_value=iter([None] * 20)
-    )
+    return mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 20))
 
 
 class TestConnectorApiCreate:
@@ -217,7 +215,7 @@ class TestConnectorApiCreate:
     def test_status_poll_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
         """Every status poll times out until the budget is spent: the ordinary 'did not reach'
         error is raised with the last RequestTimeoutError chained as its cause (#236)."""
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([None] * 2))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 2))
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
@@ -241,7 +239,7 @@ class TestConnectorApiCreate:
             api.create("MyDatagen", config=_create_config())
 
     def test_timeout_raises(self, mocker) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
         ctx.queue("status", _ok_response(_status_body("PROVISIONING")))
@@ -371,7 +369,7 @@ class TestConnectorApiDelete:
         assert ctx.count("read") == 4
 
     def test_removal_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([None]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None]))
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
@@ -404,7 +402,7 @@ class TestConnectorApiDelete:
         no_sleep.assert_not_called()
 
     def test_removal_timeout_raises(self, mocker) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _ok_response(_read_body()))
@@ -418,10 +416,10 @@ class TestConnectorApiDelete:
         # The timeout is measured from before the first (possibly slow, retried) read.
         before_first_read, after_first_read = 100.0, 160.0
         mocker.patch(
-            "confluent_sql.connectors.time.monotonic",
+            "confluent_sql.polling.time.monotonic",
             side_effect=[before_first_read, after_first_read],
         )
-        sleeper = mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        sleeper = mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _ok_response(_read_body()))
@@ -573,7 +571,7 @@ class TestConnectorApiActions:
     def test_timeout_raises_naming_target(
         self, action, method, suffix, target, transient, wait_kwarg, mocker
     ) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("action", _ok_response(status_code=202))
         ctx.queue("read", _ok_response(_read_body()))

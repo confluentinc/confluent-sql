@@ -31,7 +31,6 @@ the base read. So building a complete `Connector` always merges a config read wi
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -42,9 +41,8 @@ from .exceptions import (
     ConnectorNotFoundError,
     InterfaceError,
     OperationalError,
-    RequestTimeoutError,
 )
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .service_api import ServiceApi
 from .types import StrAnyDict
 from .utils import ExtensibleEnum
@@ -457,22 +455,22 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         if (resolved := settled(connector)) is not None:
             return resolved
 
-        last_timeout: RequestTimeoutError | None = None
-        for _ in sleep_with_backoff(timeout):
-            try:
-                connector = Connector(
-                    spec=connector.spec, status=self._fetch_status(connector.spec.name)
-                )
-            except RequestTimeoutError as e:
-                last_timeout = e  # one slow poll is "no news yet" (#236)
-                continue
-            if (resolved := settled(connector)) is not None:
-                return resolved
+        def poll() -> Connector | None:
+            nonlocal connector
+            connector = Connector(
+                spec=connector.spec, status=self._fetch_status(connector.spec.name)
+            )
+            return settled(connector)
 
-        raise OperationalError(
-            f"Connector '{connector.spec.name}' did not reach {target.value} "
-            f"within {timeout} seconds"
-        ) from last_timeout
+        return poll_until(
+            poll,
+            timeout=timeout,
+            immediate=False,
+            on_timeout=lambda: OperationalError(
+                f"Connector '{connector.spec.name}' did not reach {target.value} "
+                f"within {timeout} seconds"
+            ),
+        )
 
     def _wait_for_removal(self, name: str, timeout: float) -> None:
         """Poll the base read until it 404s, confirming the connector is gone.
@@ -480,23 +478,18 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         Raises:
             OperationalError: If the connector is not removed within timeout.
         """
-        started_at = time.monotonic()
-        last_timeout: RequestTimeoutError | None = None
-        try:
-            self._read_spec(name)
-        except ConnectorNotFoundError:
-            return
-        except RequestTimeoutError as e:
-            last_timeout = e  # one slow probe is "no news yet" (#236); fall into the paced loop
 
-        for _ in sleep_with_backoff(timeout, started_at=started_at):
+        def is_removed() -> bool | None:
             try:
                 self._read_spec(name)
             except ConnectorNotFoundError:
-                return
-            except RequestTimeoutError as e:
-                last_timeout = e  # one slow poll is "no news yet" (#236)
+                return True
+            return None
 
-        raise OperationalError(
-            f"Connector '{name}' was not removed within {timeout} seconds"
-        ) from last_timeout
+        poll_until(
+            is_removed,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Connector '{name}' was not removed within {timeout} seconds"
+            ),
+        )

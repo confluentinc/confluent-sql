@@ -8,7 +8,6 @@ retrieving results from Confluent SQL services.
 from __future__ import annotations
 
 import logging
-import time
 import warnings
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, TypeAlias
@@ -19,10 +18,9 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
     ProgrammingError,
-    RequestTimeoutError,
 )
 from .execution_mode import ExecutionMode
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .result_readers import (
     AppendOnlyResultReader,
     ChangelogEventReader,
@@ -721,32 +719,13 @@ class Cursor:
                 "Calling _wait_for_statement_ready but _statement is None, this is probably a bug"
             )  # pragma: no cover
 
-        # First attempt immediately, then back off between subsequent polls. The clock starts
-        # before that first poll so its latency counts against the timeout, not on top of it.
-        started_at = time.monotonic()
-        last_timeout: RequestTimeoutError | None = None
-
-        def poll_tolerating_timeout() -> bool:
-            # One slow poll (e.g. a cold compute pool) is "not ready yet", not a failure (#236);
-            # the wait loop's own deadline still bounds the total time.
-            nonlocal last_timeout
-            try:
-                return self._poll_ready_once()
-            except RequestTimeoutError as e:
-                logger.info(f"Status poll timed out, will retry: {e}")
-                last_timeout = e
-                return False
-
-        if poll_tolerating_timeout():
-            return
-        for _ in sleep_with_backoff(timeout, started_at=started_at):
-            if poll_tolerating_timeout():
-                return
-
-        # Chain the last timeout (if any) so a persistently unresponsive server stays diagnosable.
-        raise OperationalError(
-            f"Statement submission timed out after {timeout} seconds"
-        ) from last_timeout
+        poll_until(
+            lambda: self._poll_ready_once() or None,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Statement submission timed out after {timeout} seconds"
+            ),
+        )
 
     def _poll_ready_once(self) -> bool:
         """Refresh self._statement from the server once; return True if results are now fetchable.

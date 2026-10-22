@@ -295,7 +295,7 @@ class TestExecute:
         mock_connection_cursor._connection._get_statement.side_effect = slow_first_poll  # type: ignore
 
         # Stub the pacer so the loop body never runs; we only assert how it was invoked.
-        backoff = mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([]))
+        backoff = mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
 
         with pytest.raises(OperationalError, match="Statement submission timed out"):
             mock_connection_cursor.execute("SELECT 1 AS col", timeout=30)
@@ -327,7 +327,7 @@ class TestExecute:
             RequestTimeoutError("error sending request: ReadTimeout: slow"),
             running,
         ]
-        mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([None] * 3))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 3))
 
         mock_connection_cursor.execute("SELECT * FROM source_table")
 
@@ -347,7 +347,7 @@ class TestExecute:
         mock_connection_cursor._connection._execute_statement.return_value = pending  # type: ignore
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         mock_connection_cursor._connection._get_statement.side_effect = slow  # type: ignore
-        mocker.patch("confluent_sql.cursor.sleep_with_backoff", return_value=iter([None, None]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None, None]))
 
         with pytest.raises(OperationalError, match="Statement submission timed out") as exc_info:
             mock_connection_cursor.execute("SELECT 1 AS col")

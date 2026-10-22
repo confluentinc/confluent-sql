@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 import uuid
 from collections import namedtuple
 from collections.abc import Callable, Collection, Generator
@@ -46,7 +45,7 @@ from .oauth import (
 )
 from .oauth import reauthenticate as oauth_reauthenticate
 from .oauth.holder import ProviderFactory
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
     DEFAULT_RETRYABLE_STATUS_CODES,
@@ -1624,22 +1623,20 @@ class Connection:
         if statement.phase.is_terminal:
             return statement
 
-        last_timeout: RequestTimeoutError | None = None
-        for _ in sleep_with_backoff(timeout):
-            try:
-                statement = self.get_statement(statement.name)
-            except RequestTimeoutError as e:
-                # One slow poll is "no news yet", not a failure (#236); the loop's own deadline
-                # still bounds the wait.
-                last_timeout = e
-                continue
+        def poll() -> Statement | None:
+            nonlocal statement
+            statement = self.get_statement(statement.name)
             raise_if_failed(statement)
-            if statement.phase.is_terminal:
-                return statement
+            return statement if statement.phase.is_terminal else None
 
-        raise OperationalError(
-            f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
-        ) from last_timeout
+        return poll_until(
+            poll,
+            timeout=timeout,
+            immediate=False,
+            on_timeout=lambda: OperationalError(
+                f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
+            ),
+        )
 
     @property
     def is_closed(self) -> bool:
@@ -2835,21 +2832,21 @@ class Connection:
         if topic.phase is TableflowPhase.RUNNING:
             return topic
 
-        last_timeout: RequestTimeoutError | None = None
-        for _ in sleep_with_backoff(timeout):
-            try:
-                topic = self.get_tableflow(topic.spec.display_name)
-            except RequestTimeoutError as e:
-                last_timeout = e  # one slow poll is "no news yet" (#236)
-                continue
+        def poll() -> TableflowTopic | None:
+            nonlocal topic
+            topic = self.get_tableflow(topic.spec.display_name)
             raise_if_failed(topic)
-            if topic.phase is TableflowPhase.RUNNING:
-                return topic
+            return topic if topic.phase is TableflowPhase.RUNNING else None
 
-        raise OperationalError(
-            f"Tableflow for '{topic.spec.display_name}' did not reach RUNNING within "
-            f"{timeout} seconds"
-        ) from last_timeout
+        return poll_until(
+            poll,
+            timeout=timeout,
+            immediate=False,
+            on_timeout=lambda: OperationalError(
+                f"Tableflow for '{topic.spec.display_name}' did not reach RUNNING within "
+                f"{timeout} seconds"
+            ),
+        )
 
     def _wait_for_tableflow_removal(self, table_name: str, timeout: float) -> None:
         """Poll get_tableflow until it 404s, confirming the topic is gone.
@@ -2857,27 +2854,21 @@ class Connection:
         Raises:
             OperationalError: If the topic is not removed within timeout.
         """
-        # The clock starts before the first probe so its latency counts against the timeout.
-        started_at = time.monotonic()
-        last_timeout: RequestTimeoutError | None = None
-        try:
-            self.get_tableflow(table_name)
-        except TableflowTopicNotFoundError:
-            return
-        except RequestTimeoutError as e:
-            last_timeout = e  # one slow probe is "no news yet" (#236); fall into the paced loop
 
-        for _ in sleep_with_backoff(timeout, started_at=started_at):
+        def is_removed() -> bool | None:
             try:
                 self.get_tableflow(table_name)
             except TableflowTopicNotFoundError:
-                return
-            except RequestTimeoutError as e:
-                last_timeout = e  # one slow poll is "no news yet" (#236)
+                return True
+            return None
 
-        raise OperationalError(
-            f"Tableflow for '{table_name}' was not removed within {timeout} seconds"
-        ) from last_timeout
+        poll_until(
+            is_removed,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Tableflow for '{table_name}' was not removed within {timeout} seconds"
+            ),
+        )
 
     def _resolve_kafka_cluster_id(self) -> str:
         """Resolve the `lkc-…` id of the connection's database (Kafka cluster), cached for reuse.

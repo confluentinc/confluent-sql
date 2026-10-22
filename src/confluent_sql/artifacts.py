@@ -11,7 +11,6 @@ post, so no Confluent credentials), create the artifact with the resulting `uplo
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import NamedTuple, Protocol, Union
@@ -24,9 +23,8 @@ from .exceptions import (
     ArtifactNotFoundError,
     InterfaceError,
     OperationalError,
-    RequestTimeoutError,
 )
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .retry import call_with_retries
 from .service_api import ServiceApi
 from .types import StrAnyDict
@@ -673,24 +671,20 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
             self._wait_for_removal(artifact_id, timeout)
 
     def _wait_for_removal(self, artifact_id: str, timeout: float) -> None:
-        started_at = time.monotonic()
-        last_timeout: RequestTimeoutError | None = None
-        try:
-            self.get(artifact_id)
-        except ArtifactNotFoundError:
-            return
-        except RequestTimeoutError as e:
-            last_timeout = e  # one slow probe is "no news yet" (#236); fall into the paced loop
-        for _ in sleep_with_backoff(timeout, started_at=started_at):
+        def is_removed() -> bool | None:
             try:
                 self.get(artifact_id)
             except ArtifactNotFoundError:
-                return
-            except RequestTimeoutError as e:
-                last_timeout = e  # one slow poll is "no news yet" (#236)
-        raise OperationalError(
-            f"Artifact '{artifact_id}' was not removed within {timeout} seconds"
-        ) from last_timeout
+                return True
+            return None
+
+        poll_until(
+            is_removed,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Artifact '{artifact_id}' was not removed within {timeout} seconds"
+            ),
+        )
 
     @staticmethod
     def _raise_for_status(response: httpx.Response, *, prefix: str) -> None:
