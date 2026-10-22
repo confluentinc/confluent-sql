@@ -72,6 +72,10 @@ The browser opens once per process; the login is shared by every connection the 
 - `reauth="auto"` (the default): the driver opens the browser for a fresh sign-in and retries the failed request. Every connection in the process shares the new login. This suits interactive use such as notebooks and scripts run by a person.
 - `reauth="raise"`: the request raises `confluent_sql.ReauthenticationRequired` instead. Use this for unattended runs (a long batch job or dbt run started and left running), where nobody would be at the browser. Its `reason` is `ABSOLUTE_EXPIRY` (the ~8 hour wall) or `REFRESH_REJECTED` (idle expiry or revocation); catch it to abort or restart the job cleanly.
 
+Re-authentication must be completed as the same user who originally signed in. If a different user signs in, even within the same organization, the driver raises `OAuthLoginError` with reason `OAuthLoginFailure.USER_MISMATCH` and the session stays unauthenticated, so you can sign in again as the original user.
+
+This check relies on the user identity claims in the login's token, and is strict: a re-authentication whose token carries no identity comparable to the original's is refused the same way, as is one that names a user when the original login's token named none. The only case let through unchecked is a login whose token never named a user at all, where the driver logs a warning at login and has nothing to compare.
+
 ### BYOIDC bearer-token authentication
 
 If your Confluent Cloud organization is configured with your own registered OAuth/OIDC identity provider, you can authenticate to the **Flink data plane** with a bearer token you mint yourself (an "external" token in Confluent's authorization vocabulary) rather than a Confluent API key. Pass the token and the identity-pool id that scopes it:
@@ -281,3 +285,20 @@ Run tests:
 ```bash
 uv run pytest
 ```
+
+#### OAuth tests
+
+Every OAuth test (unit and integration) carries the `oauth` pytest marker. The OAuth *integration* tests open your browser for a real Confluent Cloud sign-in, so they are opt-in: they skip unless `RUN_OAUTH_TESTS` is set (they also need `CONFLUENT_ENV_ID`, `CONFLUENT_CLOUD_PROVIDER` and `CONFLUENT_CLOUD_REGION`; some need `CONFLUENT_TEST_DBNAME`). A plain `uv run pytest` therefore runs the OAuth unit tests only.
+
+```bash
+# Fast, browser-free OAuth unit tests only
+uv run pytest -m "oauth and unit"
+
+# The browser-driven OAuth integration tests only
+RUN_OAUTH_TESTS=1 uv run pytest -n0 -m "oauth and integration"
+
+# Every OAuth test, unit and integration
+RUN_OAUTH_TESTS=1 uv run pytest -n0 -m oauth tests
+```
+
+`-n0` is required for any run that includes the integration tests: the loopback callback port is fixed, so parallel workers would collide (and open several browsers at once).

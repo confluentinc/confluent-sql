@@ -93,6 +93,7 @@ markers = [
     "integration: mark a test as an integration test",
     "slow: mark a test as a slow (longer than a few seconds integration) test",
     "typeconv: mark a test as a type conversion test",
+    "oauth: mark a test as exercising the interactive OAuth login (unit or integration)",
 ]
 
 [project.optional-dependencies]

@@ -2,7 +2,7 @@ import pytest
 
 from confluent_sql.oauth.pkce import challenge_for, generate_state, generate_verifier
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 
 def test_challenge_for_matches_rfc7636_vector():
