@@ -38,7 +38,7 @@ LOGGER_NAME = "confluent_sql.oauth.callback_server"
 
 BRIEF_TIMEOUT = 5.0
 """For waits that are *expected* to succeed. Generous enough that a loaded CI box still wins the
-race, but far below the production 120s default, so a genuinely wedged wait fails fast."""
+race, but far below the production default, so a genuinely wedged wait fails fast."""
 
 PENDING_TIMEOUT = 0.1
 """For waits that are expected to time out, where the assertion is that the login is still
@@ -211,6 +211,22 @@ class TestAuthServiceReportedError:
             assert "&lt;script&gt;" in response.text
 
 
+class _ExpiredEvent:
+    """Stands in for `CallbackServer._settled`: records the timeout it is asked to wait for and
+    reports that the event was never set, i.e. the wait ran out. Lets a test observe the timeout
+    that actually reaches the blocking wait without really waiting for it."""
+
+    def __init__(self) -> None:
+        self.waited_for: float | None = None
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waited_for = timeout
+        return False
+
+    def set(self) -> None:
+        """`stop()` wakes waiters through this; nothing is waiting on the stub."""
+
+
 class TestTimeout:
     def test_no_redirect_at_all_times_out(self):
         with _running_server() as server, pytest.raises(OAuthLoginError) as exc_info:
@@ -218,6 +234,18 @@ class TestTimeout:
 
         assert exc_info.value.reason is OAuthLoginFailure.TIMED_OUT
         assert str(PENDING_TIMEOUT) in str(exc_info.value)
+
+    def test_default_timeout_is_five_minutes(self):
+        """#278: every other test passes an explicit timeout, so nothing else would notice the
+        default changing. The wait is stubbed out; we only observe the timeout it was asked for."""
+        with _running_server() as server:
+            expired = _ExpiredEvent()
+            server._settled = expired  # type: ignore[assignment]
+
+            with pytest.raises(OAuthLoginError):
+                server.wait_for_code()
+
+        assert expired.waited_for == 300.0
 
 
 class TestLifecycle:

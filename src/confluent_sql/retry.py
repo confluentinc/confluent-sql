@@ -11,7 +11,7 @@ import logging
 import random
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 
@@ -49,10 +49,10 @@ _RETRY_JITTER_BAND = (0.75, 1.25)
 
 def call_with_retries(
     func: Callable[..., T],
-    *args,
+    *args: Any,
     max_retries: int = 3,
     exceptions: tuple[type[BaseException], ...] = DEFAULT_RETRYABLE_EXCEPTIONS,
-    **kwargs,
+    **kwargs: Any,
 ) -> T:
     """Call func(*args, **kwargs), retrying up to max_retries times on the given exceptions.
 

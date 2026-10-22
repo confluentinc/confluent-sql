@@ -601,23 +601,9 @@ class TestCursorParameterInterpolation:
             assert row["TABLE_SCHEMA"] == database  # type: ignore[index]
 
 
-@pytest.mark.integration
-class TestStreamingChangelogCursor:
-    @staticmethod
-    def get_even_odd(row, as_dict: bool):
-        """Common utility shared between test_changelog_compressor_with_upsert_columns and
-        test_changelog_compressor_get_current_snapshot_with_upsert_columns"""
-        return row["even_odd"] if as_dict else row[0]  # type: ignore[index]
-
-    @staticmethod
-    def get_count(row, as_dict: bool):
-        """Common utility ..."""
-        return row["cnt"] if as_dict else row[1]  # type: ignore[index]
-
-    @staticmethod
-    def make_expected(eo: int, cnt: int, as_dict: bool):
-        """Common utility ..."""
-        return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
+class _SinkAggregationTestBase:
+    """Helpers shared by the sink-DDL aggregation changelog tests. Deliberately not a Test* class,
+    so pytest does not collect it; each subclass is its own loadscope unit."""
 
     @staticmethod
     def _insert_person(connection: Connection, people_table: str, name: str, age: int) -> None:
@@ -652,6 +638,27 @@ class TestStreamingChangelogCursor:
             f"Snapshot predicate not satisfied within {max_iterations} iterations; "
             f"last snapshot was {last_snapshot!r}"
         )
+
+
+@pytest.mark.integration
+class TestChangelogCompressorUpsertColumns:
+    """Changelog compressor tests over a keyed (upsert_columns known) and keyless source."""
+
+    @staticmethod
+    def get_even_odd(row, as_dict: bool):
+        """Common utility shared between test_changelog_compressor_with_upsert_columns and
+        test_changelog_compressor_get_current_snapshot_with_upsert_columns"""
+        return row["even_odd"] if as_dict else row[0]  # type: ignore[index]
+
+    @staticmethod
+    def get_count(row, as_dict: bool):
+        """Common utility ..."""
+        return row["cnt"] if as_dict else row[1]  # type: ignore[index]
+
+    @staticmethod
+    def make_expected(eo: int, cnt: int, as_dict: bool):
+        """Common utility ..."""
+        return {"even_odd": eo, "cnt": cnt} if as_dict else (eo, cnt)
 
     @pytest.mark.slow
     @pytest.mark.parametrize("as_dict", [False, True])
@@ -931,6 +938,11 @@ class TestStreamingChangelogCursor:
             cursor.delete_statement()
             cursor.close()
 
+
+@pytest.mark.integration
+class TestChangelogCompressorKeylessSinkGlobalAggregation(_SinkAggregationTestBase):
+    """Global (ungrouped) aggregation sunk into a keyless retract table, read via the compressor."""
+
     @pytest.mark.slow
     def test_changelog_compressor_keyless_sink_global_aggregation(
         self,
@@ -1029,6 +1041,11 @@ class TestStreamingChangelogCursor:
                     logger.warning(f"Failed to delete pipeline statement {insert_job.name}: {e}")
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {sink_table}")
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
+
+
+@pytest.mark.integration
+class TestChangelogCompressorKeylessSinkGroupedAggregation(_SinkAggregationTestBase):
+    """Grouped aggregation sunk into a keyless retract table, read via the compressor."""
 
     @pytest.mark.slow
     def test_changelog_compressor_keyless_sink_grouped_aggregation(
@@ -1132,6 +1149,11 @@ class TestStreamingChangelogCursor:
                     logger.warning(f"Failed to delete pipeline statement {insert_job.name}: {e}")
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {sink_table}")
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
+
+
+@pytest.mark.integration
+class TestChangelogCompressorKeyedSinkAggregation(_SinkAggregationTestBase):
+    """Grouped aggregation sunk into a keyed upsert table, read via the changelog compressor."""
 
     @pytest.mark.slow
     def test_changelog_compressor_keyed_sink_grouped_aggregation(
@@ -1247,6 +1269,11 @@ class TestStreamingChangelogCursor:
                     logger.warning(f"Failed to delete pipeline statement {insert_job.name}: {e}")
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {sink_table}")
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
+
+
+@pytest.mark.integration
+class TestStreamingQueries:
+    """Streaming cursor behavior: bounded/append-only queries, iteration, and external deletion."""
 
     @pytest.mark.slow
     def test_changelog_compressor_raises_on_external_deletion(

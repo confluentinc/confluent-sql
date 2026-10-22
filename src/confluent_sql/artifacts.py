@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import PurePath
 from typing import NamedTuple, Protocol, Union
 from urllib.parse import quote
@@ -30,7 +29,7 @@ from .polling import sleep_with_backoff
 from .retry import call_with_retries
 from .service_api import ServiceApi
 from .types import StrAnyDict
-from .utils import extract_error_detail, next_page_token
+from .utils import ExtensibleEnum, extract_error_detail, next_page_token
 
 ArtifactFile = Union[str, "os.PathLike[str]"]
 """Path of the archive to upload."""
@@ -122,15 +121,7 @@ class Fields:
     PAGE_TOKEN = "page_token"
 
 
-class _ExtensibleEnum(str, Enum):
-    """Extensible API enum: an unrecognized value parses to `UNKNOWN` instead of raising."""
-
-    @classmethod
-    def _missing_(cls, value: object):
-        return cls.__members__["UNKNOWN"]
-
-
-class ArtifactContentFormat(_ExtensibleEnum):
+class ArtifactContentFormat(ExtensibleEnum):
     """Archive format of an artifact: a JAR for Java UDFs, a ZIP for Python ones."""
 
     JAR = "JAR"
@@ -138,7 +129,7 @@ class ArtifactContentFormat(_ExtensibleEnum):
     UNKNOWN = "UNKNOWN"
 
 
-class ArtifactRuntimeLanguage(_ExtensibleEnum):
+class ArtifactRuntimeLanguage(ExtensibleEnum):
     """Language runtime an artifact's code targets."""
 
     JAVA = "JAVA"

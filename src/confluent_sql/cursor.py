@@ -465,7 +465,7 @@ class Cursor:
             self._closed = True
             self._result_reader = None
 
-    def setinputsizes(self, sizes) -> None:
+    def setinputsizes(self, sizes: Any) -> None:
         """
         Set the sizes of input parameters.
 
@@ -474,7 +474,7 @@ class Cursor:
         """
         pass  # pragma: no cover
 
-    def setoutputsize(self, size, column: int | None = None) -> None:
+    def setoutputsize(self, size: Any, column: int | None = None) -> None:
         """
         Set the size of output columns.
 
