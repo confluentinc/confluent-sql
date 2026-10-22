@@ -584,6 +584,28 @@ class TestDisableTableflow:
         conn.disable_tableflow("orders", wait_for_removal=True)
         assert conn.get_tableflow.call_count == 2
 
+    def test_wait_for_removal_budget_includes_a_timed_out_initial_probe(self, mocker) -> None:
+        """A first probe that times out has already spent part of the wait budget (#236): the
+        origin captured before it is handed to sleep_with_backoff as started_at, so no further
+        poll is issued once the probe has consumed the whole timeout."""
+        before_probe, after_probe = 100.0, 160.0
+        mocker.patch(
+            "confluent_sql.connection.time.monotonic",
+            side_effect=[before_probe, after_probe],
+        )
+        backoff = mocker.patch("confluent_sql.connection.sleep_with_backoff", return_value=iter([]))
+        conn = _connect(database_kafka_cluster_id="lkc-1")
+        conn._tableflow_request = Mock(return_value=_ok_response(status_code=204))
+        conn.get_tableflow = Mock(  # type: ignore[method-assign]
+            side_effect=RequestTimeoutError("error sending request: ReadTimeout: slow")
+        )
+
+        with pytest.raises(OperationalError, match="was not removed within 5 seconds"):
+            conn.disable_tableflow("orders", wait_for_removal=True, timeout=5)
+
+        backoff.assert_called_once_with(5, started_at=before_probe)
+        conn.get_tableflow.assert_called_once()
+
     def test_wait_for_removal_returns_when_already_gone(self, mocker) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
         conn._tableflow_request = Mock(return_value=_ok_response(status_code=204))

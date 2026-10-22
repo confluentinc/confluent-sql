@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
 from collections import namedtuple
 from collections.abc import Callable, Collection, Generator
@@ -2852,6 +2853,8 @@ class Connection:
         Raises:
             OperationalError: If the topic is not removed within timeout.
         """
+        # The clock starts before the first probe so its latency counts against the timeout.
+        started_at = time.monotonic()
         try:
             self.get_tableflow(table_name)
         except TableflowTopicNotFoundError:
@@ -2859,7 +2862,7 @@ class Connection:
         except RequestTimeoutError:
             pass  # one slow probe is "no news yet" (#236); fall into the paced loop
 
-        for _ in sleep_with_backoff(timeout):
+        for _ in sleep_with_backoff(timeout, started_at=started_at):
             try:
                 self.get_tableflow(table_name)
             except TableflowTopicNotFoundError:
