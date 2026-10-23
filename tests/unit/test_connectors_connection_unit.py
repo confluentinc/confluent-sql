@@ -534,8 +534,8 @@ class TestConnectorApiActions:
         slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
         ctx = FakeControlPlane()
         ctx.queue("action", _ok_response(status_code=202))
-        reads = [_ok_response(_read_body())]
-        statuses = [_ok_response(_status_body(target))]
+        reads: list[Mock | Exception] = [_ok_response(_read_body())]
+        statuses: list[Mock | Exception] = [_ok_response(_status_body(target))]
         (reads if slow_key == "read" else statuses).insert(0, slow)
         ctx.queue("read", *reads)
         ctx.queue("status", *statuses)
