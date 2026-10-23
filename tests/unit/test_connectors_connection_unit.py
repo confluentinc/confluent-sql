@@ -212,6 +212,23 @@ class TestConnectorApiCreate:
         assert connector.state is ConnectorState.RUNNING
         assert ctx.count("status") == 3
 
+    def test_timed_out_first_status_read_is_retried(self, no_sleep) -> None:
+        """The initial /status read after a successful POST is part of the budgeted wait (#236):
+        one slow response must neither abort the create nor re-issue the POST."""
+        ctx = FakeControlPlane()
+        ctx.queue("create", _ok_response(_read_body(), status_code=201))
+        ctx.queue(
+            "status",
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _ok_response(_status_body("RUNNING")),
+        )
+
+        connector = ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+
+        assert connector.state is ConnectorState.RUNNING
+        assert ctx.count("create") == 1
+        assert ctx.count("status") == 2
+
     def test_status_poll_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
         """Every status poll times out until the budget is spent: the ordinary 'did not reach'
         error is raised with the last RequestTimeoutError chained as its cause (#236)."""
@@ -488,6 +505,46 @@ class TestConnectorApiActions:
 
         assert connector.state is ConnectorState(target)
         assert ctx.count("status") == 2
+
+    @pytest.mark.parametrize(
+        ("action", "method", "suffix", "target", "transient", "wait_kwarg"),
+        _ACTIONS,
+        ids=_ACTION_IDS,
+    )
+    @pytest.mark.parametrize(
+        ("slow_key", "expected_spec_reads"),
+        [("read", 2), ("status", 1)],
+        ids=["slow-spec-read", "slow-status-read"],
+    )
+    def test_timed_out_initial_read_is_retried(
+        self,
+        action,
+        method,
+        suffix,
+        target,
+        transient,
+        wait_kwarg,
+        slow_key,
+        expected_spec_reads,
+        no_sleep,
+    ) -> None:
+        """The read-back after the action is part of the budgeted wait (#236): a slow response on
+        either half of it neither aborts the call nor re-issues the action, and a spec that was
+        already read is not read again."""
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeControlPlane()
+        ctx.queue("action", _ok_response(status_code=202))
+        reads = [_ok_response(_read_body())]
+        statuses = [_ok_response(_status_body(target))]
+        (reads if slow_key == "read" else statuses).insert(0, slow)
+        ctx.queue("read", *reads)
+        ctx.queue("status", *statuses)
+
+        connector = getattr(ConnectorApi(ctx), action)("MyDatagen")
+
+        assert connector.state is ConnectorState(target)
+        assert sum(1 for _, u in ctx.requests if u.endswith(suffix)) == 1
+        assert ctx.count("read") == expected_spec_reads
 
     @pytest.mark.parametrize(
         ("action", "method", "suffix", "target", "transient", "wait_kwarg"),
