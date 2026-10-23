@@ -31,7 +31,6 @@ the base read. So building a complete `Connector` always merges a config read wi
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -43,7 +42,7 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
 )
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .service_api import ServiceApi
 from .types import StrAnyDict
 from .utils import ExtensibleEnum
@@ -456,16 +455,21 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         if (resolved := settled(connector)) is not None:
             return resolved
 
-        for _ in sleep_with_backoff(timeout):
+        def poll() -> Connector | None:
+            nonlocal connector
             connector = Connector(
                 spec=connector.spec, status=self._fetch_status(connector.spec.name)
             )
-            if (resolved := settled(connector)) is not None:
-                return resolved
+            return settled(connector)
 
-        raise OperationalError(
-            f"Connector '{connector.spec.name}' did not reach {target.value} "
-            f"within {timeout} seconds"
+        return poll_until(
+            poll,
+            timeout=timeout,
+            immediate=False,
+            on_timeout=lambda: OperationalError(
+                f"Connector '{connector.spec.name}' did not reach {target.value} "
+                f"within {timeout} seconds"
+            ),
         )
 
     def _wait_for_removal(self, name: str, timeout: float) -> None:
@@ -474,16 +478,18 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         Raises:
             OperationalError: If the connector is not removed within timeout.
         """
-        started_at = time.monotonic()
-        try:
-            self._read_spec(name)
-        except ConnectorNotFoundError:
-            return
 
-        for _ in sleep_with_backoff(timeout, started_at=started_at):
+        def is_removed() -> bool | None:
             try:
                 self._read_spec(name)
             except ConnectorNotFoundError:
-                return
+                return True
+            return None
 
-        raise OperationalError(f"Connector '{name}' was not removed within {timeout} seconds")
+        poll_until(
+            is_removed,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Connector '{name}' was not removed within {timeout} seconds"
+            ),
+        )

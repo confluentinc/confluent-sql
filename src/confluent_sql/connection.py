@@ -28,6 +28,7 @@ from .exceptions import (
     OperationalError,
     ProgrammingError,
     ReauthenticationRequired,
+    RequestTimeoutError,
     StatementDeletedError,
     StatementNotFoundError,
     TableflowTopicAlreadyExistsError,
@@ -44,7 +45,7 @@ from .oauth import (
 )
 from .oauth import reauthenticate as oauth_reauthenticate
 from .oauth.holder import ProviderFactory
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
     DEFAULT_RETRYABLE_STATUS_CODES,
@@ -1622,14 +1623,19 @@ class Connection:
         if statement.phase.is_terminal:
             return statement
 
-        for _ in sleep_with_backoff(timeout):
+        def poll() -> Statement | None:
+            nonlocal statement
             statement = self.get_statement(statement.name)
             raise_if_failed(statement)
-            if statement.phase.is_terminal:
-                return statement
+            return statement if statement.phase.is_terminal else None
 
-        raise OperationalError(
-            f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
+        return poll_until(
+            poll,
+            timeout=timeout,
+            immediate=False,
+            on_timeout=lambda: OperationalError(
+                f"Statement '{statement.name}' did not reach STOPPED within {timeout} seconds"
+            ),
         )
 
     @property
@@ -2251,8 +2257,15 @@ class Connection:
         """Translate a network-level transport failure (no HTTP response -- timeout, connection
         reset/refused, protocol error, etc.) into OperationalError. httpx's own str() for these
         tends to be terse ("reset", "All connection attempts failed") and doesn't name the
-        exception's type, so the type name is included explicitly rather than losing it."""
-        raise OperationalError(f"error sending request: {type(e).__name__}: {e}") from e
+        exception's type, so the type name is included explicitly rather than losing it.
+
+        httpx timeouts (connect/read/write/pool) become the OperationalError subclass
+        `RequestTimeoutError`, so polling loops can tell one slow response from a hard failure
+        (#236)."""
+        error_cls = (
+            RequestTimeoutError if isinstance(e, httpx.TimeoutException) else OperationalError
+        )
+        raise error_cls(f"error sending request: {type(e).__name__}: {e}") from e
 
     def _request_raw(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
@@ -2819,15 +2832,20 @@ class Connection:
         if topic.phase is TableflowPhase.RUNNING:
             return topic
 
-        for _ in sleep_with_backoff(timeout):
+        def poll() -> TableflowTopic | None:
+            nonlocal topic
             topic = self.get_tableflow(topic.spec.display_name)
             raise_if_failed(topic)
-            if topic.phase is TableflowPhase.RUNNING:
-                return topic
+            return topic if topic.phase is TableflowPhase.RUNNING else None
 
-        raise OperationalError(
-            f"Tableflow for '{topic.spec.display_name}' did not reach RUNNING within "
-            f"{timeout} seconds"
+        return poll_until(
+            poll,
+            timeout=timeout,
+            immediate=False,
+            on_timeout=lambda: OperationalError(
+                f"Tableflow for '{topic.spec.display_name}' did not reach RUNNING within "
+                f"{timeout} seconds"
+            ),
         )
 
     def _wait_for_tableflow_removal(self, table_name: str, timeout: float) -> None:
@@ -2836,19 +2854,20 @@ class Connection:
         Raises:
             OperationalError: If the topic is not removed within timeout.
         """
-        try:
-            self.get_tableflow(table_name)
-        except TableflowTopicNotFoundError:
-            return
 
-        for _ in sleep_with_backoff(timeout):
+        def is_removed() -> bool | None:
             try:
                 self.get_tableflow(table_name)
             except TableflowTopicNotFoundError:
-                return
+                return True
+            return None
 
-        raise OperationalError(
-            f"Tableflow for '{table_name}' was not removed within {timeout} seconds"
+        poll_until(
+            is_removed,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Tableflow for '{table_name}' was not removed within {timeout} seconds"
+            ),
         )
 
     def _resolve_kafka_cluster_id(self) -> str:

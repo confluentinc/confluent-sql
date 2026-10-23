@@ -1,7 +1,8 @@
 import pytest
 
 from confluent_sql import polling
-from confluent_sql.polling import sleep_with_backoff
+from confluent_sql.exceptions import OperationalError, RequestTimeoutError
+from confluent_sql.polling import poll_until, sleep_with_backoff
 
 
 class _FakeClock:
@@ -122,3 +123,86 @@ class TestSleepWithBackoff:
         list(sleep_with_backoff(2.0))
 
         uniform.assert_called_with(0.75, 1.25)
+
+
+@pytest.mark.unit
+class TestPollUntil:
+    """poll_until owns the whole wait loop: pacing, deadline, slow-poll tolerance (#236)."""
+
+    @staticmethod
+    def _deadline_error() -> OperationalError:
+        return OperationalError("gave up")
+
+    def test_returns_first_attempt_result_without_sleeping(self, fake_clock):
+        result = poll_until(lambda: "done", timeout=10, on_timeout=self._deadline_error)
+
+        assert result == "done"
+        assert fake_clock.slept == []
+
+    def test_not_immediate_sleeps_before_first_attempt(self, fake_clock):
+        attempts_at: list[float] = []
+
+        def attempt() -> str:
+            attempts_at.append(fake_clock.now)
+            return "done"
+
+        poll_until(attempt, timeout=10, immediate=False, on_timeout=self._deadline_error)
+
+        assert attempts_at == [1.0]
+
+    def test_polls_until_attempt_yields_a_result(self, fake_clock):
+        results = iter([None, None, "done"])
+
+        result = poll_until(lambda: next(results), timeout=60, on_timeout=self._deadline_error)
+
+        assert result == "done"
+        assert len(fake_clock.slept) == 2
+
+    def test_slow_poll_is_treated_as_not_done_yet(self, fake_clock):
+        outcomes = iter([RequestTimeoutError("slow"), None, RequestTimeoutError("slow"), "done"])
+
+        def attempt() -> str | None:
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        assert poll_until(attempt, timeout=60, on_timeout=self._deadline_error) == "done"
+
+    def test_deadline_raises_on_timeout_error_chained_to_last_slow_poll(self, fake_clock):
+        slow = RequestTimeoutError("slow")
+
+        def attempt() -> str:
+            raise slow
+
+        with pytest.raises(OperationalError, match="gave up") as exc_info:
+            poll_until(attempt, timeout=5, on_timeout=self._deadline_error)
+
+        assert not isinstance(exc_info.value, RequestTimeoutError)
+        assert exc_info.value.__cause__ is slow
+
+    def test_deadline_without_slow_polls_has_no_cause(self, fake_clock):
+        with pytest.raises(OperationalError, match="gave up") as exc_info:
+            poll_until(lambda: None, timeout=5, on_timeout=self._deadline_error)
+
+        assert exc_info.value.__cause__ is None
+
+    def test_other_errors_propagate(self, fake_clock):
+        def attempt() -> str:
+            raise OperationalError("hard failure")
+
+        with pytest.raises(OperationalError, match="hard failure"):
+            poll_until(attempt, timeout=60, on_timeout=self._deadline_error)
+
+    def test_slow_first_attempt_is_charged_against_the_budget(self, fake_clock):
+        calls = 0
+
+        def attempt() -> None:
+            nonlocal calls
+            calls += 1
+            fake_clock.now += 10  # the attempt itself consumes the whole budget
+
+        with pytest.raises(OperationalError, match="gave up"):
+            poll_until(attempt, timeout=10, on_timeout=self._deadline_error)
+
+        assert calls == 1

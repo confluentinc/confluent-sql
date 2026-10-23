@@ -24,6 +24,7 @@ from confluent_sql.connection import (
     connect,
 )
 from confluent_sql.connection import logger as connection_module_logger
+from confluent_sql.exceptions import RequestTimeoutError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.statement import HIDDEN_LABEL, LABEL_PREFIX, Statement
 from tests.conftest import ConnectionFactory
@@ -276,6 +277,53 @@ class TestConnectionStopStatement:
         # One PATCH + two GET polls.
         assert request_mock.call_count == 3
         assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
+
+    def test_blocking_survives_a_timed_out_poll(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """One poll that hits httpx.ReadTimeout is just 'no news yet' while the wait budget
+        remains (#236): the loop re-polls and still reaches STOPPED."""
+        mocker.patch("time.sleep")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            httpx.ReadTimeout("slow"),
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True)),
+        ]
+
+        result = invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert result.is_stopped
+        assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
+
+    def test_blocking_chains_last_poll_timeout_when_budget_is_spent(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """If every poll times out until the budget is spent, the ordinary 'did not reach STOPPED'
+        error is raised with the last RequestTimeoutError chained as its cause (#236)."""
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 2))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._get_flink_client(), "request"
+        )
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            slow,
+            slow,
+        ]
+
+        with pytest.raises(OperationalError, match="did not reach STOPPED within") as exc_info:
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True)
+
+        assert exc_info.value.__cause__ is slow
 
     def test_blocking_returns_on_completed_when_stop_races_a_bounded_query(
         self,
@@ -1947,6 +1995,38 @@ class TestConnectionRetriesIdempotentGets:
 
         assert exc_info.value.__cause__ is original_error
         assert error_cls.__name__ in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("error_cls", "expect_timeout_error"),
+        [
+            (httpx.ReadTimeout, True),
+            (httpx.ConnectTimeout, True),
+            (httpx.PoolTimeout, True),
+            (httpx.ConnectError, False),
+            (httpx.RemoteProtocolError, False),
+        ],
+    )
+    def test_only_timeouts_are_wrapped_as_request_timeout_error(
+        self,
+        invalid_credential_connection: Connection,
+        mocker,
+        error_cls: type[httpx.RequestError],
+        expect_timeout_error: bool,
+    ):
+        """httpx timeouts surface as the OperationalError subclass RequestTimeoutError (#236) so
+        polling loops can tell 'one slow response' from a hard failure; other transport errors
+        stay plain OperationalError."""
+        mocker.patch("confluent_sql.retry.time.sleep")
+        mocker.patch.object(
+            invalid_credential_connection._get_flink_client(),
+            "request",
+            side_effect=error_cls("boom"),
+        )
+
+        with pytest.raises(OperationalError) as exc_info:
+            invalid_credential_connection._get_statement("stmt-1")
+
+        assert isinstance(exc_info.value, RequestTimeoutError) is expect_timeout_error
 
     @pytest.mark.parametrize(
         "error_cls",
