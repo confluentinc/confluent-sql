@@ -58,3 +58,15 @@ Exemplars: `Connection.stop_statement` / `Cursor.stop_statement` (`wait_for_stop
 (`wait_for_removal=True`). The DDL convenience methods (`execute_snapshot_ddl`,
 `execute_streaming_ddl`) block unconditionally and offer no opt-out — that's also acceptable when a
 non-blocking variant would be meaningless.
+
+## The `oauth` test marker
+
+Every test module exercising the interactive OAuth login -- everything under `tests/unit/oauth/`,
+`test_connection_oauth_unit.py`, and the `tests/integration/test_oauth*.py` modules -- carries
+`pytest.mark.oauth` via module-level `pytestmark`, alongside its `unit`/`integration` marker. A new
+OAuth test module must do the same. It is a topic axis orthogonal to unit/integration:
+
+- `uv run pytest -m oauth` -- every OAuth test (integration ones skip without `RUN_OAUTH_TESTS`).
+- `uv run pytest -m "oauth and unit"` -- the fast, browser-free subset.
+- `RUN_OAUTH_TESTS=1 uv run pytest -n0 -m "oauth and integration"` -- the human-in-the-loop browser
+  run. `-n0` is mandatory: the loopback callback port is fixed, so parallel workers collide.
