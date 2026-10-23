@@ -31,7 +31,6 @@ the base read. So building a complete `Connector` always merges a config read wi
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -43,7 +42,7 @@ from .exceptions import (
     InterfaceError,
     OperationalError,
 )
-from .polling import sleep_with_backoff
+from .polling import poll_until
 from .service_api import ServiceApi
 from .types import StrAnyDict
 from .utils import ExtensibleEnum
@@ -278,13 +277,10 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
                 http_status_code=e.response.status_code,
             ) from e
 
-        connector = Connector(
-            spec=ConnectorSpec.from_response(response.json()),
-            status=self._fetch_status(name),
-        )
+        spec = ConnectorSpec.from_response(response.json())
         if wait_for_running:
-            return self._wait_for_state(connector, ConnectorState.RUNNING, timeout)
-        return connector
+            return self._wait_for_state(name, ConnectorState.RUNNING, timeout, spec=spec)
+        return Connector(spec=spec, status=self._fetch_status(name))
 
     def get(self, name: str) -> Connector:
         """Read a connector's config and lifecycle state, merging the base read with `/status`.
@@ -382,12 +378,12 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
 
         The lifecycle actions return no connector body, so `get` supplies a real (not synthesized)
         merged state. With `wait` False, this returns after the single `get` (whatever state is
-        observed at that point).
+        observed at that point). With `wait` True, that initial read is part of the budgeted wait,
+        so one slow response on it can't abort a call whose action already succeeded (#236).
         """
-        connector = self.get(name)
         if not wait:
-            return connector
-        return self._wait_for_state(connector, target, timeout)
+            return self.get(name)
+        return self._wait_for_state(name, target, timeout)
 
     def _read_spec(self, name: str) -> ConnectorSpec:
         """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
@@ -428,13 +424,21 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         return ConnectorStatus.from_response(response.json())
 
     def _wait_for_state(
-        self, connector: Connector, target: ConnectorState, timeout: float
+        self,
+        name: str,
+        target: ConnectorState,
+        timeout: float,
+        *,
+        spec: ConnectorSpec | None = None,
     ) -> Connector:
         """Poll `/status` until the connector reaches `target`, refreshing only its status.
 
-        The spec is fixed once created, so each poll rebuilds the `Connector` from the original spec
-        and the freshly-read status rather than re-reading the config. A FAILED state always ends
-        the wait by raising (with `connector.trace`), since no `target` callers ask for is FAILED.
+        The first poll is immediate and includes acquiring the starting state, so the caller needs
+        no unprotected read ahead of the wait. The spec is fixed once created: pass the one already
+        in hand as `spec`, or leave it None to have it read (once, retained across slow polls)
+        alongside the first status. Each poll rebuilds the `Connector` from that spec and the
+        freshly-read status. A FAILED state always ends the wait by raising (with
+        `connector.trace`), since no `target` callers ask for is FAILED.
 
         Raises:
             OperationalError: If the connector transitions to FAILED (surfacing `connector.trace`),
@@ -453,19 +457,18 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
                 return candidate
             return None
 
-        if (resolved := settled(connector)) is not None:
-            return resolved
+        def poll() -> Connector | None:
+            nonlocal spec
+            if spec is None:
+                spec = self._read_spec(name)
+            return settled(Connector(spec=spec, status=self._fetch_status(name)))
 
-        for _ in sleep_with_backoff(timeout):
-            connector = Connector(
-                spec=connector.spec, status=self._fetch_status(connector.spec.name)
-            )
-            if (resolved := settled(connector)) is not None:
-                return resolved
-
-        raise OperationalError(
-            f"Connector '{connector.spec.name}' did not reach {target.value} "
-            f"within {timeout} seconds"
+        return poll_until(
+            poll,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Connector '{name}' did not reach {target.value} within {timeout} seconds"
+            ),
         )
 
     def _wait_for_removal(self, name: str, timeout: float) -> None:
@@ -474,16 +477,18 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         Raises:
             OperationalError: If the connector is not removed within timeout.
         """
-        started_at = time.monotonic()
-        try:
-            self._read_spec(name)
-        except ConnectorNotFoundError:
-            return
 
-        for _ in sleep_with_backoff(timeout, started_at=started_at):
+        def is_removed() -> bool | None:
             try:
                 self._read_spec(name)
             except ConnectorNotFoundError:
-                return
+                return True
+            return None
 
-        raise OperationalError(f"Connector '{name}' was not removed within {timeout} seconds")
+        poll_until(
+            is_removed,
+            timeout=timeout,
+            on_timeout=lambda: OperationalError(
+                f"Connector '{name}' was not removed within {timeout} seconds"
+            ),
+        )

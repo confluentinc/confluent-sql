@@ -13,6 +13,7 @@ from confluent_sql.exceptions import (
     ConnectorAlreadyExistsError,
     ConnectorNotFoundError,
     OperationalError,
+    RequestTimeoutError,
 )
 
 pytestmark = pytest.mark.unit
@@ -81,7 +82,7 @@ class FakeControlPlane:
     environment_id = "env-123"
 
     def __init__(self) -> None:
-        self._queues: dict[str, list[Mock]] = {
+        self._queues: dict[str, list[Mock | Exception]] = {
             "create": [],
             "read": [],
             "status": [],
@@ -93,7 +94,7 @@ class FakeControlPlane:
     def resolve_kafka_cluster_id(self) -> str:
         return "lkc-abc"
 
-    def queue(self, key: str, *responses: Mock) -> None:
+    def queue(self, key: str, *responses: Mock | Exception) -> None:
         self._queues[key].extend(responses)
 
     def connect_controlplane_request(
@@ -113,7 +114,10 @@ class FakeControlPlane:
         queue = self._queues[key]
         if not queue:
             raise AssertionError(f"Wacky -- no queued {key} response for {method} {url}")
-        return queue.pop(0)
+        served = queue.pop(0)
+        if isinstance(served, Exception):
+            raise served
+        return served
 
     def count(self, key: str) -> int:
         method = {"create": "POST", "delete": "DELETE"}.get(key)
@@ -127,9 +131,7 @@ class FakeControlPlane:
 @pytest.fixture()
 def no_sleep(mocker):
     """Neutralize backoff pacing so wait loops iterate instantly; yields up to 20 times."""
-    return mocker.patch(
-        "confluent_sql.connectors.sleep_with_backoff", return_value=iter([None] * 20)
-    )
+    return mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 20))
 
 
 class TestConnectorApiCreate:
@@ -194,6 +196,53 @@ class TestConnectorApiCreate:
             api.create("MyDatagen", config=_create_config())
         assert exc.value.connector_name == "MyDatagen"
 
+    def test_timed_out_status_poll_is_retried(self, no_sleep) -> None:
+        """A slow /status poll while waiting for RUNNING is 'no news yet', not a failure (#236)."""
+        ctx = FakeControlPlane()
+        ctx.queue("create", _ok_response(_read_body(), status_code=201))
+        ctx.queue(
+            "status",
+            _ok_response(_status_body("PROVISIONING")),
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _ok_response(_status_body("RUNNING")),
+        )
+
+        connector = ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+
+        assert connector.state is ConnectorState.RUNNING
+        assert ctx.count("status") == 3
+
+    def test_timed_out_first_status_read_is_retried(self, no_sleep) -> None:
+        """The initial /status read after a successful POST is part of the budgeted wait (#236):
+        one slow response must neither abort the create nor re-issue the POST."""
+        ctx = FakeControlPlane()
+        ctx.queue("create", _ok_response(_read_body(), status_code=201))
+        ctx.queue(
+            "status",
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _ok_response(_status_body("RUNNING")),
+        )
+
+        connector = ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+
+        assert connector.state is ConnectorState.RUNNING
+        assert ctx.count("create") == 1
+        assert ctx.count("status") == 2
+
+    def test_status_poll_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
+        """Every status poll times out until the budget is spent: the ordinary 'did not reach'
+        error is raised with the last RequestTimeoutError chained as its cause (#236)."""
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 2))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeControlPlane()
+        ctx.queue("create", _ok_response(_read_body(), status_code=201))
+        ctx.queue("status", _ok_response(_status_body("PROVISIONING")), slow, slow)
+
+        with pytest.raises(OperationalError, match="did not reach") as exc:
+            ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+
+        assert exc.value.__cause__ is slow
+
     def test_failed_state_raises_with_trace(self, no_sleep) -> None:
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
@@ -207,7 +256,7 @@ class TestConnectorApiCreate:
             api.create("MyDatagen", config=_create_config())
 
     def test_timeout_raises(self, mocker) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
         ctx.queue("status", _ok_response(_status_body("PROVISIONING")))
@@ -318,6 +367,36 @@ class TestConnectorApiDelete:
         assert exc.value.http_status_code == 500
         assert "delete boom" in str(exc.value)
 
+    def test_removal_survives_timed_out_probe_and_poll(self, no_sleep) -> None:
+        """Both the unpaced first probe and a paced poll may time out once (#236): the DELETE
+        already succeeded, so each is 'no news yet' and the wait carries on to the 404."""
+        ctx = FakeControlPlane()
+        ctx.queue("delete", _ok_response())
+        ctx.queue(
+            "read",
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _ok_response(_read_body()),
+            RequestTimeoutError("error sending request: ReadTimeout: slow"),
+            _error_response(404),
+        )
+        api = ConnectorApi(ctx)
+
+        api.delete("MyDatagen")
+
+        assert ctx.count("read") == 4
+
+    def test_removal_timeouts_chain_last_one_when_budget_is_spent(self, mocker) -> None:
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None]))
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeControlPlane()
+        ctx.queue("delete", _ok_response())
+        ctx.queue("read", slow, slow)
+
+        with pytest.raises(OperationalError, match="was not removed within") as exc:
+            ConnectorApi(ctx).delete("MyDatagen")
+
+        assert exc.value.__cause__ is slow
+
     def test_polls_through_a_still_present_read_until_gone(self, no_sleep) -> None:
         # The connector is still readable on the first poll, then 404s on the second.
         ctx = FakeControlPlane()
@@ -340,7 +419,7 @@ class TestConnectorApiDelete:
         no_sleep.assert_not_called()
 
     def test_removal_timeout_raises(self, mocker) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _ok_response(_read_body()))
@@ -354,10 +433,10 @@ class TestConnectorApiDelete:
         # The timeout is measured from before the first (possibly slow, retried) read.
         before_first_read, after_first_read = 100.0, 160.0
         mocker.patch(
-            "confluent_sql.connectors.time.monotonic",
+            "confluent_sql.polling.time.monotonic",
             side_effect=[before_first_read, after_first_read],
         )
-        sleeper = mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        sleeper = mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _ok_response(_read_body()))
@@ -426,6 +505,46 @@ class TestConnectorApiActions:
 
         assert connector.state is ConnectorState(target)
         assert ctx.count("status") == 2
+
+    @pytest.mark.parametrize(
+        ("action", "method", "suffix", "target", "transient", "wait_kwarg"),
+        _ACTIONS,
+        ids=_ACTION_IDS,
+    )
+    @pytest.mark.parametrize(
+        ("slow_key", "expected_spec_reads"),
+        [("read", 2), ("status", 1)],
+        ids=["slow-spec-read", "slow-status-read"],
+    )
+    def test_timed_out_initial_read_is_retried(
+        self,
+        action,
+        method,
+        suffix,
+        target,
+        transient,
+        wait_kwarg,
+        slow_key,
+        expected_spec_reads,
+        no_sleep,
+    ) -> None:
+        """The read-back after the action is part of the budgeted wait (#236): a slow response on
+        either half of it neither aborts the call nor re-issues the action, and a spec that was
+        already read is not read again."""
+        slow = RequestTimeoutError("error sending request: ReadTimeout: slow")
+        ctx = FakeControlPlane()
+        ctx.queue("action", _ok_response(status_code=202))
+        reads: list[Mock | Exception] = [_ok_response(_read_body())]
+        statuses: list[Mock | Exception] = [_ok_response(_status_body(target))]
+        (reads if slow_key == "read" else statuses).insert(0, slow)
+        ctx.queue("read", *reads)
+        ctx.queue("status", *statuses)
+
+        connector = getattr(ConnectorApi(ctx), action)("MyDatagen")
+
+        assert connector.state is ConnectorState(target)
+        assert sum(1 for _, u in ctx.requests if u.endswith(suffix)) == 1
+        assert ctx.count("read") == expected_spec_reads
 
     @pytest.mark.parametrize(
         ("action", "method", "suffix", "target", "transient", "wait_kwarg"),
@@ -509,7 +628,7 @@ class TestConnectorApiActions:
     def test_timeout_raises_naming_target(
         self, action, method, suffix, target, transient, wait_kwarg, mocker
     ) -> None:
-        mocker.patch("confluent_sql.connectors.sleep_with_backoff", return_value=iter([]))
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([]))
         ctx = FakeControlPlane()
         ctx.queue("action", _ok_response(status_code=202))
         ctx.queue("read", _ok_response(_read_body()))
