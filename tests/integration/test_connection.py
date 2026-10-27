@@ -387,6 +387,53 @@ class TestRetryOnTransientResultFetchErrors:
 
 
 @pytest.mark.integration
+class TestPollToleratesRequestTimeouts:
+    """Integration coverage for #236: a slow status poll is "no news yet", not a failure."""
+
+    def test_execute_survives_first_status_polls_timing_out_then_hits_confluent_cloud_for_real(
+        self, connection: Connection, mocker
+    ):
+        """Simulates the first N statement-status GETs timing out (as a cold compute pool can make
+        them), then lets later ones travel all the way through to Confluent Cloud for real.
+
+        NOTE: largely redundant with the unit coverage of poll_until
+        (tests/unit/test_polling_unit.py) and Cursor.execute() (tests/unit/test_cursor_unit.py).
+        It's written anyway for the real round trip: a genuine httpx.ReadTimeout through
+        _request_get (which deliberately does not retry timeouts), _wrap_request_error's
+        RequestTimeoutError, and poll_until's tolerance, ending in a real statement result.
+        """
+        n_timeouts = 2
+
+        # Capture the real bound method before patching so later calls still reach Confluent Cloud.
+        real_request = connection._get_flink_client().request
+        timed_out = 0
+
+        def timeout_status_polls_then_real_request(method, url, *args, **kwargs):
+            nonlocal timed_out
+            # Only the readiness poll (GET /statements/{name}): not the POST that submits the
+            # statement, nor the /results fetches, which are outside this PR's tolerance.
+            is_status_poll = method == "GET" and "/statements/" in url and "/results" not in url
+            if is_status_poll and timed_out < n_timeouts:
+                timed_out += 1
+                raise httpx.ReadTimeout("simulated slow status poll")
+            return real_request(method, url, *args, **kwargs)
+
+        mocker.patch.object(
+            connection._get_flink_client(),
+            "request",
+            side_effect=timeout_status_polls_then_real_request,
+        )
+
+        with connection.closing_cursor() as cursor:
+            cursor.execute("SELECT 1 AS answer FROM `INFORMATION_SCHEMA`.`TABLES`")
+            row = cursor.fetchone()
+
+        assert row == (1,)
+        # Proves the faults were actually injected and consumed, so the test can't pass vacuously.
+        assert timed_out == n_timeouts
+
+
+@pytest.mark.integration
 class TestStopStatement:
     """Integration tests for stop_statement against a real environment."""
 
