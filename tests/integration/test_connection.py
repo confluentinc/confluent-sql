@@ -366,7 +366,7 @@ class TestRetryOnTransientResultFetchErrors:
 
             # Capture the real bound method before patching so the third call can still reach
             # Confluent Cloud for real.
-            real_request = connection._get_flink_client().request
+            real_request = connection._dataplane.httpx_client.request
             call_count = 0
 
             def flaky_then_real_request(*args, **kwargs):
@@ -377,7 +377,7 @@ class TestRetryOnTransientResultFetchErrors:
                 return real_request(*args, **kwargs)
 
             request_mock = mocker.patch.object(
-                connection._get_flink_client(), "request", side_effect=flaky_then_real_request
+                connection._dataplane.httpx_client, "request", side_effect=flaky_then_real_request
             )
 
             row = cursor.fetchone()
@@ -399,13 +399,13 @@ class TestPollToleratesRequestTimeouts:
         NOTE: largely redundant with the unit coverage of poll_until
         (tests/unit/test_polling_unit.py) and Cursor.execute() (tests/unit/test_cursor_unit.py).
         It's written anyway for the real round trip: a genuine httpx.ReadTimeout through
-        _request_get (which deliberately does not retry timeouts), _wrap_request_error's
+        ServiceClient GETs (which deliberately do not retry timeouts), its wrapping into
         RequestTimeoutError, and poll_until's tolerance, ending in a real statement result.
         """
         n_timeouts = 2
 
         # Capture the real bound method before patching so later calls still reach Confluent Cloud.
-        real_request = connection._get_flink_client().request
+        real_request = connection._dataplane.httpx_client.request
         timed_out = 0
 
         def timeout_status_polls_then_real_request(method, url, *args, **kwargs):
@@ -419,7 +419,7 @@ class TestPollToleratesRequestTimeouts:
             return real_request(method, url, *args, **kwargs)
 
         mocker.patch.object(
-            connection._get_flink_client(),
+            connection._dataplane.httpx_client,
             "request",
             side_effect=timeout_status_polls_then_real_request,
         )
