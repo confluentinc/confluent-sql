@@ -14,8 +14,9 @@ import uuid
 from collections import namedtuple
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
-from dataclasses import fields, is_dataclass
-from typing import Any, Literal, NoReturn
+from dataclasses import dataclass, fields, is_dataclass
+from enum import Enum
+from typing import Any, Literal
 
 import httpx
 
@@ -28,7 +29,6 @@ from .exceptions import (
     OperationalError,
     ProgrammingError,
     ReauthenticationRequired,
-    RequestTimeoutError,
     StatementDeletedError,
     StatementNotFoundError,
     TableflowTopicAlreadyExistsError,
@@ -46,11 +46,7 @@ from .oauth import (
 from .oauth import reauthenticate as oauth_reauthenticate
 from .oauth.holder import ProviderFactory
 from .polling import poll_until
-from .retry import (
-    DEFAULT_RETRYABLE_EXCEPTIONS,
-    DEFAULT_RETRYABLE_STATUS_CODES,
-    call_with_retries,
-)
+from .service_client import ServiceClient, raise_for_status_as_operational_error
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .statement_properties import (
@@ -71,7 +67,7 @@ from .tableflow import (
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes, StrAnyDict
-from .utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT, extract_error_detail
+from .utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT
 from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
@@ -440,16 +436,41 @@ def connect(  # noqa: PLR0913
     )
 
 
-_BODY_NOT_LOGGED = "<body not logged>"
+def _basic_auth(pair: tuple[str, str] | None) -> httpx.BasicAuth | None:
+    return httpx.BasicAuth(username=pair[0], password=pair[1]) if pair else None
 
 
-class _RetryableStatusError(Exception):
-    """Wraps a response carrying a retryable HTTP status (#140) so call_with_retries' existing
-    exception-based retry loop drives status-code retries too. Never escapes _request_get."""
+@dataclass(frozen=True)
+class _SurfaceSpec:
+    """What distinguishes one control-plane API surface from another: how a missing credential is
+    reported, and whether its responses may be DEBUG-logged."""
 
-    def __init__(self, response: httpx.Response):
-        self.response = response
-        super().__init__(f"transient HTTP status {response.status_code}")
+    subject: str
+    """Names the surface in error messages."""
+    plural: bool
+    """Whether `subject` takes plural verb agreement ("Connectors are", "Tableflow is")."""
+    key_pair: str
+    """The dedicated key/secret parameter names that authenticate it when no global key is given."""
+    log_body: bool = True
+    """False for responses carrying secrets."""
+    global_only: bool = False
+    """True for routes that take only the global key (or an oauth login), never a dedicated one."""
+
+
+class ControlPlaneSurface(Enum):
+    """The control-plane API surfaces, which share one host and one `ServiceClient` and differ only
+    in the credential each request carries (see `Connection._auth_for`)."""
+
+    TABLEFLOW = _SurfaceSpec("Tableflow", False, "tableflow_api_key/tableflow_api_secret")
+    CONNECT = _SurfaceSpec("Connectors", True, "connect_api_key/connect_api_secret")
+    ARTIFACTS = _SurfaceSpec("Artifacts", True, "cloud_api_key/cloud_api_secret", log_body=False)
+    """Never logs response bodies: the presign response carries a live upload URL."""
+    CMK = _SurfaceSpec(
+        "Kafka cluster lookups", True, "global_api_key/global_api_secret", global_only=True
+    )
+    ORGANIZATION = _SurfaceSpec(
+        "Organization lookups", True, "global_api_key/global_api_secret", global_only=True
+    )
 
 
 class Connection:
@@ -486,7 +507,10 @@ class Connection:
         statements.
     """
 
+    # --- Lifecycle
     _closed: bool
+
+    # --- Session defaults
     _database: str | None
     _local_time_zone: str | None
     """Connection-level default for `sql.local-time-zone`, or None if unset -- see the
@@ -494,17 +518,23 @@ class Connection:
     _organization_id_value: str | None
     """Supplied organization_id, or None if it must be inferred -- see the organization_id
     property. Once resolved (supplied or inferred), holds the final value."""
-    _flink_endpoint: str
-    _flink_auth: httpx.Auth
-    """The Flink data-plane authentication: httpx.BasicAuth in API-key mode, FlinkBearerAuth in
-    BYOIDC mode. Widened to the httpx.Auth base so both fit the one polymorphic auth= slot."""
+    _cloud_provider: str | None
+    _cloud_region: str | None
+    """Cloud/region as passed to connect() (None when only an endpoint was given) -- see
+    `artifact_scope`."""
+    _resolved_kafka_cluster_id: str | None
+    """Cached `lkc-…` id for `database`; pre-seeded by database_kafka_cluster_id, else from CMK."""
+    _row_type_registry: RowTypeRegistry
+    """Registry for user-defined row types, see register_row_type()."""
+
+    # --- Authentication mode
     _byoidc: bool
     """True when authenticating with a customer-supplied BYOIDC bearer token (Flink data plane
     only); drives the honest fail-closed messages on the control-plane guards."""
     _oauth: bool
     """True when authenticating via interactive human-login OAuth (auth="oauth", #150).
     Lifts the control-plane guards' global-key requirement -- see _resolve_kafka_cluster_id and
-    _get_controlplane_client/_get_connect_controlplane_client."""
+    _auth_for."""
     _oauth_provider: OAuthProvider | None
     """The process-wide shared provider acquired via oauth.acquire() when _oauth is True; None
     otherwise. Never closed directly by this Connection -- see close()."""
@@ -512,49 +542,39 @@ class Connection:
     """How to respond when a request raises ReauthenticationRequired -- see connect()'s
     `reauth` docstring. Consulted by _send_with_reauth_policy regardless of _oauth, though it is
     only ever meaningful under auth="oauth", the only mode that can raise that exception."""
-    _flink_client: httpx.Client | None
-    """Lazily created on first Flink request (see _get_flink_client()); None until then. Deferred so
-    that construction never blocks on the network call organization_id inference may need."""
-    _http_user_agent: str
-    _http_timeout_secs: float
+    _global_credentials: tuple[str, str] | None
+    """(key, secret) of the global API key if one was supplied -- the only credential the CMK and
+    organization lookups take."""
 
+    # --- HTTP configuration
+    _flink_endpoint: str
     _controlplane_endpoint: str
     """Base URL for the control plane (Tableflow, Connect, Artifact, CMK), distinct from the Flink
     gateway."""
-    _controlplane_auth: httpx.Auth | None
-    """Shared by `_tableflow_request`, `_cmk_request`, and `_organization_lookup_request`:
-    httpx.BasicAuth over a global or (Tableflow calls only) Tableflow-scoped key pair in API-key
-    mode, or the shared control-plane token view under oauth mode -- or None if no usable
-    credential exists. Distinct from `_connect_auth`, Connect's own separate credential slot."""
-    _connect_auth: httpx.Auth | None
-    """For Connect routes; same shape as `_controlplane_auth` (under oauth mode the two are the
-    same object -- one control-plane token reaches Tableflow, Connect, Artifact, and CMK alike),
-    or None if no usable credential exists."""
-    _cloud_auth: httpx.Auth | None
-    """For Artifact routes; same shape as `_controlplane_auth` (under oauth mode, the same shared
-    control-plane token view), or None if no usable credential exists."""
-    _global_credentials: tuple[str, str] | None
-    """(key, secret) of the global API key if one was supplied -- the only credential CMK takes."""
-    _controlplane_client: httpx.Client | None
-    """Lazily created on first request from any of `_tableflow_request`, `_cmk_request`, or
-    `_organization_lookup_request`; None until then."""
-    _connect_controlplane_client: httpx.Client | None
-    """Lazily created on first Connect control-plane request; None until then."""
-    _cloud_controlplane_client: httpx.Client | None
-    """Lazily created on first Artifact request; None until then."""
+    _http_user_agent: str
+    _http_timeout_secs: float
+
+    # --- Credentials and transport
+    _flink_auth: httpx.Auth
+    """The Flink data-plane authentication: httpx.BasicAuth in API-key mode, FlinkBearerAuth in
+    BYOIDC mode. Widened to the httpx.Auth base so both fit the one polymorphic auth= slot."""
+    _surface_auth: dict[ControlPlaneSurface, httpx.Auth | None]
+    """Each control-plane surface's credential: httpx.BasicAuth over a global or dedicated key pair
+    in API-key mode, or the one shared control-plane token view under oauth mode (one token reaches
+    every surface) -- or None if no usable credential exists for that surface."""
+    _dataplane: ServiceClient
+    """The Flink gateway (data plane) client. Its httpx client is built on first request, so that
+    construction never blocks on the network call organization_id inference may need."""
+    _controlplane: ServiceClient
+    """The one control-plane client (Tableflow, CMK, organization lookup, Connect, Artifacts). Built
+    without credentials: `_controlplane_request` attaches the calling surface's from `_surface_auth`
+    to each request."""
+
+    # --- Lazily composed service APIs
     _artifacts_api: ArtifactsApi | None
     """Lazily composed on first `get_artifacts_api()` call; None until then."""
-    _cloud_provider: str | None
-    _cloud_region: str | None
-    """Cloud/region as passed to connect() (None when only an endpoint was given) -- see
-    artifact_scope()."""
     _connector_api: ConnectorApi | None
     """Lazily composed on first connector method call; None until then."""
-    _resolved_kafka_cluster_id: str | None
-    """Cached `lkc-…` id for `database`; pre-seeded by database_kafka_cluster_id, else from CMK."""
-
-    _row_type_registry: RowTypeRegistry
-    """Registry for user-defined row types, see register_row_type()."""
 
     def __init__(  # noqa: PLR0913, PLR0915, PLR0912
         self,
@@ -735,10 +755,12 @@ class Connection:
         self._database = database
         self.local_time_zone = local_time_zone
         # Must exist before the http_user_agent setter runs below, since its guards check these.
-        self._flink_client = None
-        self._controlplane_client = None
-        self._connect_controlplane_client = None
-        self._cloud_controlplane_client = None
+        self._dataplane = ServiceClient(
+            self._build_dataplane_client, send_policy=self._send_with_reauth_policy
+        )
+        self._controlplane = ServiceClient(
+            self._build_controlplane_client, send_policy=self._send_with_reauth_policy
+        )
 
         # Set user agent (validation happens in setter, default if None)
         self.http_user_agent = (
@@ -771,7 +793,7 @@ class Connection:
         elif not cloud_region:
             raise InterfaceError("Cloud region is required when endpoint is not provided")
 
-        # Create httpx client for making API calls
+        # Resolve the Flink gateway endpoint the data-plane client will target.
         if not endpoint:
             # Construct the endpoint URL based on cloud provider and region.
             endpoint = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
@@ -782,10 +804,10 @@ class Connection:
         self._oauth = oauth_cfg is not None
         self._flink_endpoint = endpoint
 
-        # Control-plane (Tableflow, Connect, Artifact, CMK) plumbing. The clients are built lazily
-        # on first use so a connection that never touches them pays nothing, and one with no usable
-        # control-plane credential still constructs fine -- the error surfaces only when the
-        # service is invoked.
+        # Control-plane (Tableflow, Connect, Artifact, CMK) plumbing. The httpx client is built
+        # lazily on first use so a connection that never touches the control plane pays nothing,
+        # and a surface with no usable credential still constructs fine -- the error surfaces only
+        # when that surface is invoked (`_auth_for`).
         self._controlplane_endpoint = (
             controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
@@ -811,9 +833,7 @@ class Connection:
             # capability gain over API-key mode, which needs a separate credential per surface.
             # Safe to share the same httpx.Auth object across every client: it holds no per-client
             # state, only a reference back to the shared, lock-guarded provider.
-            self._controlplane_auth = provider.control_plane_auth
-            self._connect_auth = provider.control_plane_auth
-            self._cloud_auth = provider.control_plane_auth
+            self._surface_auth = dict.fromkeys(ControlPlaneSurface, provider.control_plane_auth)
             self._global_credentials = None
         else:
             self._oauth_provider = None
@@ -837,44 +857,44 @@ class Connection:
                 cloud_api_key,
                 cloud_api_secret,
             )
-            tableflow_pair = _resolve_service_credentials(
-                "tableflow",
-                global_api_key,
-                global_api_secret,
-                tableflow_api_key,
-                tableflow_api_secret,
-            )
-            self._controlplane_auth = (
-                httpx.BasicAuth(username=tableflow_pair[0], password=tableflow_pair[1])
-                if tableflow_pair
-                else None
-            )
-            connect_pair = _resolve_service_credentials(
-                "connect", global_api_key, global_api_secret, connect_api_key, connect_api_secret
-            )
-            self._connect_auth = (
-                httpx.BasicAuth(username=connect_pair[0], password=connect_pair[1])
-                if connect_pair
-                else None
-            )
-            cloud_pair = _resolve_service_credentials(
-                "cloud", global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
-            )
-            self._cloud_auth = (
-                httpx.BasicAuth(username=cloud_pair[0], password=cloud_pair[1])
-                if cloud_pair
-                else None
-            )
-            self._global_credentials = (
+            global_pair = (
                 (global_api_key, global_api_secret)
                 if global_api_key and global_api_secret
                 else None
             )
+            self._surface_auth = {
+                ControlPlaneSurface.TABLEFLOW: _basic_auth(
+                    _resolve_service_credentials(
+                        "tableflow",
+                        global_api_key,
+                        global_api_secret,
+                        tableflow_api_key,
+                        tableflow_api_secret,
+                    )
+                ),
+                ControlPlaneSurface.CONNECT: _basic_auth(
+                    _resolve_service_credentials(
+                        "connect",
+                        global_api_key,
+                        global_api_secret,
+                        connect_api_key,
+                        connect_api_secret,
+                    )
+                ),
+                ControlPlaneSurface.ARTIFACTS: _basic_auth(
+                    _resolve_service_credentials(
+                        "cloud", global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
+                    )
+                ),
+                ControlPlaneSurface.CMK: _basic_auth(global_pair),
+                ControlPlaneSurface.ORGANIZATION: _basic_auth(global_pair),
+            }
+            self._global_credentials = global_pair
         self._connector_api = None
         self._artifacts_api = None
         # Kept even alongside an explicit endpoint: the endpoint still decides where requests go,
-        # but artifact_scope() prefers these over parsing the host, which private-link endpoints
-        # (extra domain label) don't allow.
+        # but `artifact_scope` prefers these over parsing the host, which private-link
+        # endpoints (extra domain label) don't allow.
         self._cloud_provider = cloud_provider or None
         self._cloud_region = cloud_region or None
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
@@ -882,6 +902,10 @@ class Connection:
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
 
         self._row_type_registry = RowTypeRegistry()
+
+    @property
+    def _service_clients(self) -> tuple[ServiceClient, ...]:
+        return (self._dataplane, self._controlplane)
 
     def close(self) -> None:
         """
@@ -893,21 +917,14 @@ class Connection:
         """
         if not self._closed:
             self._closed = True
-            # Break the connection <-> service API reference cycles.
+            for service_client in self._service_clients:
+                service_client.close()
             if self._artifacts_api is not None:
                 self._artifacts_api._close()
                 self._artifacts_api = None
             if self._connector_api is not None:
                 self._connector_api._close()
                 self._connector_api = None
-            if self._flink_client is not None:
-                self._flink_client.close()
-            if self._controlplane_client is not None:
-                self._controlplane_client.close()
-            if self._connect_controlplane_client is not None:
-                self._connect_controlplane_client.close()
-            if self._cloud_controlplane_client is not None:
-                self._cloud_controlplane_client.close()
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
@@ -1383,7 +1400,7 @@ class Connection:
         has_more_pages = True
         next_page_token: str | None = None
         while has_more_pages:
-            response = self._request_get("/statements", params=parameters)
+            response = self._dataplane.request("/statements", params=parameters)
             resp_json = response.json()
             statements_json = resp_json.get("data", [])
             statements.extend(Statement.from_response(self, s) for s in statements_json)
@@ -1479,7 +1496,7 @@ class Connection:
             statement_name = statement
 
         logger.info(f"Deleting statement {statement_name}")
-        response = self._request(
+        response = self._dataplane.request(
             f"/statements/{statement_name}", method="DELETE", raise_for_status=False
         )
         try:
@@ -1562,7 +1579,7 @@ class Connection:
 
         logger.info(f"Stopping statement {statement_name}")
         patch_ops = [{"op": "replace", "path": "/spec/stopped", "value": True}]
-        response = self._request(
+        response = self._dataplane.request(
             f"/statements/{statement_name}",
             method="PATCH",
             content=json.dumps(patch_ops),
@@ -1781,16 +1798,8 @@ class Connection:
 
         self._http_user_agent = value
 
-        # Update every existing lazily-built client's headers.
-        lazily_built_clients = (
-            self._flink_client,
-            self._controlplane_client,
-            self._connect_controlplane_client,
-            self._cloud_controlplane_client,
-        )
-        for client in lazily_built_clients:
-            if client is not None:
-                client.headers["User-Agent"] = value
+        for service_client in self._service_clients:
+            service_client.set_user_agent(value)
 
     def register_row_type(self, class_for_flink_row: type[RowPythonTypes]) -> None:
         """Register a user-defined namedtuple, NamedTuple, or @dataclass class to be used
@@ -1971,7 +1980,7 @@ class Connection:
                 payload["metadata"] = {"labels": labels_dict}
 
         # Submit statement using the API
-        res = self._request("/statements", method="POST", json=payload)
+        res = self._dataplane.request("/statements", method="POST", json=payload)
         return res.json()
 
     def _get_statement(self, statement_name: str) -> dict[str, Any]:
@@ -1992,7 +2001,7 @@ class Connection:
             OperationalError: If other API errors occur
         """
         try:
-            return self._request_get(f"/statements/{statement_name}").json()
+            return self._dataplane.request(f"/statements/{statement_name}").json()
         except OperationalError as e:
             # Check if this is a 404 error
             if e.http_status_code == 404:
@@ -2026,7 +2035,7 @@ class Connection:
             next_url = f"/statements/{statement_name}/results"
 
         try:
-            response = self._request_get(next_url).json()
+            response = self._dataplane.request(next_url).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
             if e.http_status_code == 404:
@@ -2075,248 +2084,6 @@ class Connection:
 
         return (results, next_url)
 
-    def _request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Issue a Flink-gateway request, translating any httpx.RequestError into
-        OperationalError so no raw httpx exception ever escapes to a caller (#138)."""
-        try:
-            return self._request_raw(
-                url, method=method, raise_for_status=raise_for_status, **kwargs
-            )
-        except httpx.RequestError as e:
-            self._wrap_request_error(e)
-
-    def _request_get(self, url: str, **kwargs: Any) -> httpx.Response:
-        """Issue a Flink-gateway GET, retrying transient transport errors (#137) and transient
-        HTTP status codes alike -- both feed the same call_with_retries backoff/attempt budget. If
-        retries are exhausted (or the exception isn't retryable at all), the raw httpx exception
-        is translated to OperationalError before it escapes (#138) -- it's never leaked raw.
-
-        Only for idempotent GETs -- retrying a call with side effects (POST/PATCH/DELETE) could
-        double-submit or double-mutate state, so those call sites use `_request` directly.
-        Forwards arbitrary kwargs (params, headers, timeout, etc.) to `_request_raw`, forcing
-        `method="GET"` regardless of what's passed, so a call site cannot accidentally opt out of
-        the retry policy just because it needs a kwarg beyond `params`. `raise_for_status` is
-        dropped if present -- this method always manages it internally, since it must inspect
-        the raw response to decide whether to retry before translating a final error. Calls
-        `_request_raw`, not `_request`, so the retried closure sees the raw httpx exception type
-        for `call_with_retries` to pattern-match against -- see `_request_raw`'s docstring.
-        """
-        kwargs["method"] = "GET"
-        kwargs.pop("raise_for_status", None)
-        return self._get_with_retries(self._request_raw, url, True, **kwargs)
-
-    def _get_with_retries(
-        self,
-        send_raw: Callable[..., httpx.Response],
-        url: str,
-        raise_for_status: bool,
-        **kwargs: Any,
-    ) -> httpx.Response:
-        """Retry loop shared by `_request_get` (Flink gateway) and artifact GETs (control plane).
-
-        `send_raw(url, raise_for_status=False, **kwargs)` must issue the request without
-        translating httpx exceptions, so `call_with_retries` can see their types. Once retries are
-        exhausted, transport errors become OperationalError; the final response is returned as-is
-        when `raise_for_status` is False (callers that map specific codes, e.g. 404).
-        """
-
-        def _get_or_flag_retryable_status() -> httpx.Response:
-            response = send_raw(url, raise_for_status=False, **kwargs)
-            if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
-                raise _RetryableStatusError(response)
-            return response
-
-        try:
-            try:
-                response = call_with_retries(
-                    _get_or_flag_retryable_status,
-                    exceptions=(*DEFAULT_RETRYABLE_EXCEPTIONS, _RetryableStatusError),
-                )
-            except _RetryableStatusError as e:
-                response = e.response
-        except httpx.RequestError as e:
-            self._wrap_request_error(e)
-
-        if raise_for_status:
-            self._raise_for_status_as_operational_error(response)
-        return response
-
-    def _tableflow_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Issue a request against a genuine Tableflow route (enable/get/disable).
-
-        Routes through the lazily-created control-plane client (separate host + auth from the
-        Flink gateway) shared with `_cmk_request` and `_organization_lookup_request` -- one real
-        client/connection-pool, because all three hit the same host under the same resolved
-        credential in every case that matters. This wrapper (and its two siblings) exists so each
-        call site names what it's actually requesting, rather than routing through one
-        ambiguously-named shared method.
-
-        Same error shaping as _request: an HTTP error status becomes OperationalError carrying the
-        status code, unless raise_for_status is False (callers that map specific codes -- 404/409
-        -- to their own exceptions).
-        """
-        return self._send_request(
-            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
-        )
-
-    def _artifact_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Request against a `/artifact/v1` route, on the artifact (global or cloud-key) client.
-
-        GETs are idempotent and so retried (see `_request_get`); mutating methods are sent once.
-        Response bodies are never DEBUG-logged: the presign response carries a live upload URL and
-        its signed form fields, which would let anyone with the log replace the archive.
-        """
-        if method.upper() == "GET":
-            return self._get_with_retries(
-                self._artifact_request_raw, url, raise_for_status, **kwargs
-            )
-        return self._send_request(
-            self._get_cloud_controlplane_client(),
-            url,
-            method,
-            raise_for_status,
-            log_body=False,
-            **kwargs,
-        )
-
-    def _artifact_request_raw(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Artifact counterpart of `_request_raw`: no httpx.RequestError translation, for
-        `_get_with_retries`."""
-        response = self._send_with_reauth_policy(
-            lambda: self._get_cloud_controlplane_client().request(method, url, **kwargs)
-        )
-        logger.debug("Response: %s", _BODY_NOT_LOGGED)
-        if raise_for_status:
-            self._raise_for_status_as_operational_error(response)
-        return response
-
-    def _cmk_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Issue a request against a CMK (Cluster Management for Kafka) route.
-
-        Only ever called by `_lookup_cluster_ids_by_name`, itself only reached from
-        `_resolve_kafka_cluster_id` once `_global_credentials is not None` or the connection is in
-        oauth mode -- CMK doesn't accept a Tableflow-scoped key, so by the time this method runs
-        the resolved credential is always either the global key or the shared control-plane
-        token. Shares the underlying control-plane client with `_tableflow_request` and
-        `_organization_lookup_request`; see that method's docstring for why they're split by name
-        rather than sharing one ambiguous entry point.
-        """
-        return self._send_request(
-            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
-        )
-
-    def _organization_lookup_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Issue a request against the /org/v2 organization-lookup route (#132).
-
-        Only ever called by `_lookup_organization_ids`, itself only reached from the
-        `organization_id` property once `_global_credentials is not None` -- inferring
-        organization_id requires a global key. Shares the underlying control-plane client with
-        `_tableflow_request` and `_cmk_request`; see that method's docstring for why they're split
-        by name rather than sharing one ambiguous entry point.
-        """
-        return self._send_request(
-            self._get_controlplane_client(), url, method, raise_for_status, **kwargs
-        )
-
-    @staticmethod
-    def _extract_error_detail(response: httpx.Response) -> str:
-        """Server-provided error detail from an error response body; see `utils`."""
-        return extract_error_detail(response)
-
-    def _raise_for_status_as_operational_error(
-        self, response: httpx.Response, *, prefix: str = "error sending request"
-    ) -> None:
-        """Translate a 4xx/5xx response into OperationalError, chaining the original
-        httpx.HTTPStatusError and including any server-provided error detail.
-
-        `prefix` is the message lead-in; pass a caller-specific one (e.g. "Error enabling
-        Tableflow") in place of the default.
-        """
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            details = self._extract_error_detail(e.response)
-            raise OperationalError(
-                f"{prefix} '{e.response.status_code}' - {details}",
-                http_status_code=e.response.status_code,
-            ) from e
-
-    def _wrap_request_error(self, e: httpx.RequestError) -> NoReturn:
-        """Translate a network-level transport failure (no HTTP response -- timeout, connection
-        reset/refused, protocol error, etc.) into OperationalError. httpx's own str() for these
-        tends to be terse ("reset", "All connection attempts failed") and doesn't name the
-        exception's type, so the type name is included explicitly rather than losing it.
-
-        httpx timeouts (connect/read/write/pool) become the OperationalError subclass
-        `RequestTimeoutError`, so polling loops can tell one slow response from a hard failure
-        (#236)."""
-        error_cls = (
-            RequestTimeoutError if isinstance(e, httpx.TimeoutException) else OperationalError
-        )
-        raise error_cls(f"error sending request: {type(e).__name__}: {e}") from e
-
-    def _request_raw(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Issue a Flink-gateway request without translating httpx.RequestError.
-
-        Exists solely so `_request_get`'s internal retried callable can see the raw exception
-        type to decide whether `call_with_retries` should retry it -- see `_request_get`'s
-        docstring. Any other caller wanting the DB-API guarantee that every exception is one of
-        this driver's own `Error` subclasses must call `_request` instead, never this method.
-        """
-        if self._closed:
-            raise InterfaceError("Connection is closed")
-
-        response = self._send_with_reauth_policy(
-            lambda: self._get_flink_client().request(method, url, **kwargs)
-        )
-        logger.debug("Response: %s", response.content)
-        if raise_for_status:
-            self._raise_for_status_as_operational_error(response)
-        return response
-
-    def _send_request(
-        self,
-        client: httpx.Client,
-        url: str,
-        method: str,
-        raise_for_status: bool,
-        *,
-        log_body: bool = True,
-        **kwargs: Any,
-    ) -> httpx.Response:
-        """Shared request/response handling for the control-plane clients (Tableflow, Connect).
-
-        Same error shaping as `_request`: network-level failures (no HTTP response) are wrapped as
-        OperationalError via `_wrap_request_error`. Unlike `_request_get`, there's no retry loop
-        here to worry about preserving raw-exception visibility for -- see `_request_raw`'s
-        docstring for the one place that still needs it.
-
-        `log_body=False` keeps the response body out of the DEBUG log, for responses carrying
-        secrets (see `_artifact_request`).
-        """
-        try:
-            response = self._send_with_reauth_policy(lambda: client.request(method, url, **kwargs))
-            logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
-            if raise_for_status:
-                self._raise_for_status_as_operational_error(response)
-            return response
-        except httpx.RequestError as e:
-            self._wrap_request_error(e)
-
     def _send_with_reauth_policy(self, do_request: Callable[[], httpx.Response]) -> httpx.Response:
         """Run one HTTP call, applying `self._reauth_policy` if it raises `ReauthenticationRequired`
         -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
@@ -2329,7 +2096,7 @@ class Connection:
         propagates as-is, and is not retried further.
 
         The sole chokepoint for this: every HTTP call this `Connection` makes, Flink or
-        control-plane, funnels through here via `_request_raw` or `_send_request`.
+        control-plane, funnels through here as every `ServiceClient`'s `send_policy`.
         """
         try:
             return do_request()
@@ -2339,152 +2106,102 @@ class Connection:
             oauth_reauthenticate()
             return do_request()
 
-    def _make_controlplane_client(self, auth: httpx.Auth) -> httpx.Client:
-        """Build a control-plane httpx client authenticated with the given auth.
+    def _build_controlplane_client(self) -> httpx.Client:
+        """Build the control-plane httpx client; run by `_controlplane` on first use.
 
-        Shared by the Tableflow and Connect surfaces, which target the same control-plane host
-        but may carry distinct dedicated credentials when no global key is supplied (API-key
-        mode) or the same shared control-plane token view (oauth mode).
+        Carries no auth of its own: every surface targets the same host but authenticates with its
+        own credential, so each request supplies it (see `_controlplane_request`).
         """
-        client_kwargs: dict[str, Any] = {
-            "auth": auth,
-            "base_url": self._controlplane_endpoint,
-            "headers": {
+        return httpx.Client(
+            base_url=self._controlplane_endpoint,
+            headers={
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
-            "timeout": self._http_timeout_secs,
-        }
-        return httpx.Client(**client_kwargs)
+            timeout=self._http_timeout_secs,
+        )
 
-    def _get_flink_client(self) -> httpx.Client:
-        """Return the Flink gateway httpx client, building it on first use.
+    def _build_dataplane_client(self) -> httpx.Client:
+        """Build the Flink gateway httpx client; run by `_dataplane` on first use.
 
         Deferred rather than built in __init__ because base_url embeds organization_id, which
         for a global key that omitted it is resolved lazily via the organization_id property --
         construction must never block on that network call.
         """
-        if self._flink_client is None:
-            base_url = (
-                f"{self._flink_endpoint}/sql/v1/organizations/{self.organization_id}"
-                f"/environments/{self.environment_id}"
-            )
-            self._flink_client = httpx.Client(
-                auth=self._flink_auth,
-                base_url=base_url,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": self._http_user_agent,
-                },
-                timeout=self._http_timeout_secs,
-            )
-        return self._flink_client
+        base_url = (
+            f"{self._flink_endpoint}/sql/v1/organizations/{self.organization_id}"
+            f"/environments/{self.environment_id}"
+        )
+        return httpx.Client(
+            auth=self._flink_auth,
+            base_url=base_url,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": self._http_user_agent,
+            },
+            timeout=self._http_timeout_secs,
+        )
 
-    def _get_controlplane_client(self) -> httpx.Client:
-        """Return the shared control-plane httpx client, creating it on first use.
+    def _auth_for(self, surface: ControlPlaneSurface) -> httpx.Auth:
+        """The credential for one control-plane surface.
 
-        Shared by `_tableflow_request`, `_cmk_request`, and `_organization_lookup_request` (one
-        client/connection-pool, since all three hit the same host under the same resolved
-        credential). The ProgrammingError below is worded for Tableflow specifically because it's
-        provably the only caller that can ever trigger it: both the CMK and org-lookup call paths
-        (`_resolve_kafka_cluster_id`, the `organization_id` property) already require either
-        `_global_credentials` to be set or oauth mode (`self._oauth`) before they ever reach this
-        method, which guarantees `_controlplane_auth` is not None by the time they get here.
+        A global key covers every surface; without one each takes only its own dedicated key pair
+        (a Tableflow-scoped key isn't valid for artifact routes, and so on). Under oauth mode they
+        all share one control-plane token view.
 
         Raises:
             InterfaceError: If the connection is closed.
-            ProgrammingError: If no global key and no Tableflow key pair were supplied, so no
-                credential can authenticate the control plane.
+            ProgrammingError: If no usable credential exists for the surface; worded for BYOIDC
+                (which the control plane never accepts) or for the missing key pair.
         """
         if self._closed:
             raise InterfaceError("Connection is closed")
-        if self._controlplane_auth is None:
-            if self._byoidc:
-                raise ProgrammingError(
-                    "Tableflow is not reachable with a BYOIDC bearer token: Confluent's "
-                    "authorization model accepts only API keys on the control plane. Use an "
-                    "API-key connection (global or tableflow_api_key/tableflow_api_secret) for "
-                    "Tableflow."
-                )
+        auth = self._surface_auth[surface]
+        if auth is not None:
+            return auth
+        spec = surface.value
+        accepted = spec.key_pair if spec.global_only else f"global or {spec.key_pair}"
+        if self._byoidc:
             raise ProgrammingError(
-                "Tableflow requires a global API key or a tableflow_api_key/tableflow_api_secret "
-                "pair; neither was supplied to connect()."
+                f"{spec.subject} {'are' if spec.plural else 'is'} not reachable with a BYOIDC "
+                "bearer token: Confluent's authorization model accepts only API keys on the "
+                f"control plane. Use an API-key connection ({accepted}) for {spec.subject}."
             )
-        if self._controlplane_client is None:
-            self._controlplane_client = self._make_controlplane_client(self._controlplane_auth)
-        return self._controlplane_client
-
-    def _get_connect_controlplane_client(self) -> httpx.Client:
-        """Return the Connect control-plane httpx client, creating it on first use.
-
-        Distinct from the Tableflow client: a dedicated connect_api_key (when no global key is
-        supplied) targets the Connect routes specifically.
-
-        Raises:
-            InterfaceError: If the connection is closed.
-            ProgrammingError: If no global key and no Connect key pair were supplied, so no
-                credential can authenticate the Connect routes.
-        """
-        if self._closed:
-            raise InterfaceError("Connection is closed")
-        if self._connect_auth is None:
-            if self._byoidc:
-                raise ProgrammingError(
-                    "Connectors are not reachable with a BYOIDC bearer token: Confluent's "
-                    "authorization model accepts only API keys on the control plane. Use an "
-                    "API-key connection (global or connect_api_key/connect_api_secret) for "
-                    "Connectors."
-                )
+        verb = "require" if spec.plural else "requires"
+        if spec.global_only:
             raise ProgrammingError(
-                "Connectors require a global API key or a connect_api_key/connect_api_secret "
-                "pair; neither was supplied to connect()."
+                f"{spec.subject} {verb} a global API key ({spec.key_pair}) or auth='oauth'; "
+                "neither was supplied to connect()."
             )
-        if self._connect_controlplane_client is None:
-            self._connect_controlplane_client = self._make_controlplane_client(self._connect_auth)
-        return self._connect_controlplane_client
+        raise ProgrammingError(
+            f"{spec.subject} {verb} a global API key or a {spec.key_pair} pair; neither was "
+            "supplied to connect()."
+        )
 
-    def _get_cloud_controlplane_client(self) -> httpx.Client:
-        """Return the Artifact control-plane httpx client, creating it on first use.
-
-        Distinct from the Tableflow client: a Tableflow-scoped key isn't valid for artifact
-        routes, so a dedicated cloud_api_key (when no global key is supplied) targets them.
-
-        Raises:
-            InterfaceError: If the connection is closed.
-            ProgrammingError: If no global key and no cloud key pair were supplied, so no
-                credential can authenticate the Artifact routes.
-        """
-        if self._closed:
-            raise InterfaceError("Connection is closed")
-        if self._cloud_auth is None:
-            if self._byoidc:
-                raise ProgrammingError(
-                    "Artifacts are not reachable with a BYOIDC bearer token: Confluent's "
-                    "authorization model accepts only API keys on the control plane. Use an "
-                    "API-key connection (global or cloud_api_key/cloud_api_secret) for "
-                    "Artifacts."
-                )
-            raise ProgrammingError(
-                "Artifacts require a global API key or a cloud_api_key/cloud_api_secret "
-                "pair; neither was supplied to connect()."
-            )
-        if self._cloud_controlplane_client is None:
-            self._cloud_controlplane_client = self._make_controlplane_client(self._cloud_auth)
-        return self._cloud_controlplane_client
+    def _controlplane_request(
+        self,
+        surface: ControlPlaneSurface,
+        url: str,
+        method: str = "GET",
+        raise_for_status: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send a request to one control-plane surface, carrying that surface's credential."""
+        return self._controlplane.request(
+            url,
+            method,
+            raise_for_status,
+            auth=self._auth_for(surface),
+            log_body=surface.value.log_body,
+            **kwargs,
+        )
 
     def connect_controlplane_request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
-        """Public ControlPlaneContext hook -- issues a Connect control-plane request for
-        ConnectorApi.
-
-        Routes through the connect-authed client, distinct from the shared client backing
-        `_tableflow_request` / `_cmk_request` / `_organization_lookup_request`. Same error
-        shaping: an HTTP error status becomes OperationalError carrying the status code, unless
-        raise_for_status is False (ConnectorApi maps 404/409 to its own exceptions).
-        """
-        return self._send_request(
-            self._get_connect_controlplane_client(), url, method, raise_for_status, **kwargs
+        """Public ControlPlaneContext hook -- issues a Connect request for ConnectorApi."""
+        return self._controlplane_request(
+            ControlPlaneSurface.CONNECT, url, method, raise_for_status, **kwargs
         )
 
     def resolve_kafka_cluster_id(self) -> str:
@@ -2495,7 +2212,9 @@ class Connection:
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> httpx.Response:
         """ArtifactsContext hook."""
-        return self._artifact_request(url, method, raise_for_status, **kwargs)
+        return self._controlplane_request(
+            ControlPlaneSurface.ARTIFACTS, url, method, raise_for_status, **kwargs
+        )
 
     # Both captured labels are plain DNS labels; hosts are case-insensitive.
     _FLINK_ENDPOINT_CLOUD_RE = re.compile(
@@ -2633,14 +2352,18 @@ class Connection:
             kafka_cluster_id=kafka_cluster_id,
         )
         logger.info(f"Enabling Tableflow for table '{table_name}'")
-        response = self._tableflow_request(
-            self._TABLEFLOW_TOPICS_PATH, method="POST", json=payload, raise_for_status=False
+        response = self._controlplane_request(
+            ControlPlaneSurface.TABLEFLOW,
+            self._TABLEFLOW_TOPICS_PATH,
+            method="POST",
+            json=payload,
+            raise_for_status=False,
         )
         if response.status_code == 409:
             raise TableflowTopicAlreadyExistsError(
                 f"Tableflow is already enabled for table '{table_name}'", table_name=table_name
             )
-        self._raise_for_status_as_operational_error(response, prefix="Error enabling Tableflow")
+        raise_for_status_as_operational_error(response, prefix="Error enabling Tableflow")
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2665,7 +2388,8 @@ class Connection:
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
-        response = self._tableflow_request(
+        response = self._controlplane_request(
+            ControlPlaneSurface.TABLEFLOW,
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             params=self._tableflow_topic_params(),
             raise_for_status=False,
@@ -2674,9 +2398,7 @@ class Connection:
             raise TableflowTopicNotFoundError(
                 f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
             )
-        self._raise_for_status_as_operational_error(
-            response, prefix="Error reading Tableflow topic"
-        )
+        raise_for_status_as_operational_error(response, prefix="Error reading Tableflow topic")
         return TableflowTopic.from_response(response.json())
 
     def update_tableflow(
@@ -2739,7 +2461,8 @@ class Connection:
             kafka_cluster_id=self._resolve_kafka_cluster_id(),
         )
         logger.info(f"Updating Tableflow for table '{table_name}'")
-        response = self._tableflow_request(
+        response = self._controlplane_request(
+            ControlPlaneSurface.TABLEFLOW,
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             method="PATCH",
             json=payload,
@@ -2749,9 +2472,7 @@ class Connection:
             raise TableflowTopicNotFoundError(
                 f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
             )
-        self._raise_for_status_as_operational_error(
-            response, prefix="Error updating Tableflow topic"
-        )
+        raise_for_status_as_operational_error(response, prefix="Error updating Tableflow topic")
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2786,7 +2507,8 @@ class Connection:
             OperationalError: On other API errors, or on wait timeout.
         """
         logger.info(f"Disabling Tableflow for table '{table_name}'")
-        response = self._tableflow_request(
+        response = self._controlplane_request(
+            ControlPlaneSurface.TABLEFLOW,
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             method="DELETE",
             params=self._tableflow_topic_params(),
@@ -2796,7 +2518,7 @@ class Connection:
             raise TableflowTopicNotFoundError(
                 f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
             )
-        self._raise_for_status_as_operational_error(response, prefix="Error disabling Tableflow")
+        raise_for_status_as_operational_error(response, prefix="Error disabling Tableflow")
 
         if wait_for_removal:
             self._wait_for_tableflow_removal(table_name, timeout)
@@ -2877,12 +2599,15 @@ class Connection:
         it up once via CMK by matching `database` against cluster display names, then caches it.
 
         Raises:
+            InterfaceError: If the connection is closed.
             ProgrammingError: If no id was seeded and CMK resolution isn't possible -- under BYOIDC
                 (the CMK route doesn't accept a BYOIDC bearer token), with no global key and no
                 oauth login (auth="oauth" lifts the global-key requirement), or with no database
                 name.
             OperationalError: If no cluster, or more than one cluster, matches the database name.
         """
+        if self._closed:
+            raise InterfaceError("Connection is closed")
         if self._resolved_kafka_cluster_id is not None:
             return self._resolved_kafka_cluster_id
 
@@ -2924,7 +2649,9 @@ class Connection:
         ids: list[str] = []
         params: dict[str, str | int] = {"environment": self.environment_id, "page_size": 100}
         while True:
-            response = self._cmk_request("/cmk/v2/clusters", params=params).json()
+            response = self._controlplane_request(
+                ControlPlaneSurface.CMK, "/cmk/v2/clusters", params=params
+            ).json()
             for cluster in response.get("data", []):
                 if cluster.get("spec", {}).get("display_name") == name:
                     ids.append(cluster["id"])
@@ -2963,8 +2690,8 @@ class Connection:
         ids: list[str] = []
         params: dict[str, str | int] = {"page_size": 100}
         while True:
-            response = self._organization_lookup_request(
-                "/org/v2/organizations", params=params
+            response = self._controlplane_request(
+                ControlPlaneSurface.ORGANIZATION, "/org/v2/organizations", params=params
             ).json()
             ids.extend(org["id"] for org in response.get("data", []))
             next_page_token = self._get_next_page_token(response.get("metadata", {}).get("next"))

@@ -26,7 +26,7 @@ from confluent_sql import (
     ReauthenticationRequired,
     connect,
 )
-from confluent_sql.connection import Connection
+from confluent_sql.connection import Connection, ControlPlaneSurface
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.provider import OAuthMetrics
 from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
@@ -288,22 +288,12 @@ class TestOauthAuthWiring:
         conn = _oauth_connect()
         assert conn._flink_auth is _provider(conn).data_plane_auth
 
-    def test_oauth_controlplane_auth_is_providers_control_plane_auth(self):
+    @pytest.mark.parametrize("surface", list(ControlPlaneSurface))
+    def test_oauth_surface_auth_is_providers_control_plane_auth(self, surface):
+        """One control-plane token reaches Tableflow, Connect, Artifacts, and CMK alike -- every
+        surface shares the very same object."""
         conn = _oauth_connect()
-        assert conn._controlplane_auth is _provider(conn).control_plane_auth
-
-    def test_oauth_connect_auth_is_providers_control_plane_auth(self):
-        """One control-plane token reaches Tableflow, Connect, and CMK alike -- both control-plane
-        slots share the very same object."""
-        conn = _oauth_connect()
-        assert conn._connect_auth is _provider(conn).control_plane_auth
-        assert conn._connect_auth is conn._controlplane_auth
-
-    def test_oauth_cloud_auth_is_providers_control_plane_auth(self):
-        """Artifact routes share the same control-plane token as Tableflow and Connect."""
-        conn = _oauth_connect()
-        assert conn._cloud_auth is _provider(conn).control_plane_auth
-        assert conn._cloud_auth is conn._controlplane_auth
+        assert conn._auth_for(surface) is _provider(conn).control_plane_auth
 
     def test_oauth_global_credentials_is_none(self):
         conn = _oauth_connect()
@@ -325,9 +315,8 @@ class TestOauthAuthWiring:
             cloud_provider="aws",
             cloud_region="us-east-1",
         )
-        assert isinstance(conn._controlplane_auth, httpx.BasicAuth)
-        assert isinstance(conn._connect_auth, httpx.BasicAuth)
-        assert isinstance(conn._cloud_auth, httpx.BasicAuth)
+        for surface in ControlPlaneSurface:
+            assert isinstance(conn._auth_for(surface), httpx.BasicAuth)
 
 
 class TestOauthMetrics:
@@ -369,10 +358,9 @@ class TestOauthCmkCapabilityGain:
             )
 
         # Install the client directly (as test_connection_byoidc_unit.py does for the Flink
-        # client) rather than driving _get_controlplane_client()'s own lazy construction, so the
-        # mock transport is in place before any request fires.
-        conn._controlplane_client = httpx.Client(
-            auth=conn._controlplane_auth,
+        # client) rather than driving the control-plane ServiceClient's own lazy construction, so
+        # the mock transport is in place before any request fires.
+        conn._controlplane._client = httpx.Client(
             base_url=conn._controlplane_endpoint,
             transport=httpx.MockTransport(handler),
         )
@@ -382,16 +370,15 @@ class TestOauthCmkCapabilityGain:
             conn.close()
 
     def test_tableflow_and_connect_clients_build_successfully_under_oauth(self):
-        """Neither guard's ProgrammingError fires under oauth mode -- _controlplane_auth and
-        _connect_auth are never None here."""
+        """No surface's ProgrammingError fires under oauth mode -- every surface has a credential,
+        and the one control-plane client builds."""
         conn = _oauth_connect()
         try:
-            controlplane_client = conn._get_controlplane_client()
-            connect_client = conn._get_connect_controlplane_client()
+            _ = conn._controlplane.httpx_client
+            auths = [conn._auth_for(surface) for surface in ControlPlaneSurface]
         finally:
             conn.close()
-        assert controlplane_client.auth is _provider(conn).control_plane_auth
-        assert connect_client.auth is _provider(conn).control_plane_auth
+        assert all(auth is _provider(conn).control_plane_auth for auth in auths)
 
 
 class TestOauthOrganizationId:
@@ -474,7 +461,7 @@ def _connection_with_flaky_flink_auth(
     )
     conn._reauth_policy = reauth  # noqa: SLF001
     auth = _FlakyReauthAuth()
-    conn._flink_client = httpx.Client(  # noqa: SLF001
+    conn._dataplane._client = httpx.Client(  # noqa: SLF001
         auth=auth,
         base_url="https://flink.example.confluent.cloud",
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
@@ -521,7 +508,7 @@ class TestReauthPolicy:
         reauth_mock = Mock()
         monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
         try:
-            response = conn._request("/some/path")
+            response = conn._dataplane.request("/some/path")
         finally:
             conn.close()
 
@@ -535,7 +522,7 @@ class TestReauthPolicy:
         monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
         try:
             with pytest.raises(ReauthenticationRequired):
-                conn._request("/some/path")
+                conn._dataplane.request("/some/path")
         finally:
             conn.close()
 
@@ -543,21 +530,50 @@ class TestReauthPolicy:
         assert auth.calls == 1
 
     def test_artifact_get_honors_the_auto_policy(self, monkeypatch):
-        """Artifact GETs take their own raw path (`_artifact_request_raw`), which must go through
+        """Artifact GETs take the retrying path (via `_send_untranslated`), which must go through
         `_send_with_reauth_policy` like every other request path."""
         conn, auth = _connection_with_flaky_flink_auth("auto")
-        conn._cloud_controlplane_client = httpx.Client(  # noqa: SLF001
-            auth=auth,
+        conn._controlplane._client = httpx.Client(  # noqa: SLF001
             base_url="https://api.example.confluent.cloud",
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
         )
+        conn._surface_auth[ControlPlaneSurface.ARTIFACTS] = auth  # noqa: SLF001
         reauth_mock = Mock()
         monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
         try:
-            response = conn._artifact_request("/artifact/v1/flink-artifacts")  # noqa: SLF001
+            response = conn.artifact_controlplane_request("/artifact/v1/flink-artifacts")
         finally:
             conn.close()
 
         assert response.status_code == 200
         reauth_mock.assert_called_once_with()
         assert auth.calls == 2
+
+    @pytest.mark.parametrize("policy", ["auto", "raise"])
+    def test_retried_control_plane_get_applies_the_reauth_policy_once(
+        self, monkeypatch, policy: Literal["auto", "raise"]
+    ):
+        """`ReauthenticationRequired` is not a transport error, so the GET retry layer must neither
+        swallow nor repeat it: `auto` reauthenticates exactly once inside the one attempt, and
+        `raise` propagates after a single attempt."""
+        conn, auth = _connection_with_flaky_flink_auth(policy)
+        conn._controlplane._client = httpx.Client(  # noqa: SLF001
+            base_url="https://api.example.confluent.cloud",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        )
+        conn._surface_auth[ControlPlaneSurface.CONNECT] = auth  # noqa: SLF001
+        reauth_mock = Mock()
+        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        try:
+            if policy == "raise":
+                with pytest.raises(ReauthenticationRequired):
+                    conn.connect_controlplane_request("/connect/v1/some/path")
+                reauth_mock.assert_not_called()
+                assert auth.calls == 1
+            else:
+                response = conn.connect_controlplane_request("/connect/v1/some/path")
+                assert response.status_code == 200
+                reauth_mock.assert_called_once_with()
+                assert auth.calls == 2
+        finally:
+            conn.close()
