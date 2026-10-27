@@ -541,7 +541,7 @@ class TestReauthPolicy:
         reauth_mock = Mock()
         monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
         try:
-            response = conn.artifact_controlplane_request("/artifact/v1/flink-artifacts")
+            response = conn.get_artifacts_api()._request("/artifact/v1/flink-artifacts")
         finally:
             conn.close()
 
@@ -567,11 +567,11 @@ class TestReauthPolicy:
         try:
             if policy == "raise":
                 with pytest.raises(ReauthenticationRequired):
-                    conn.connect_controlplane_request("/connect/v1/some/path")
+                    conn.get_connector_api()._request("/connect/v1/some/path")
                 reauth_mock.assert_not_called()
                 assert auth.calls == 1
             else:
-                response = conn.connect_controlplane_request("/connect/v1/some/path")
+                response = conn.get_connector_api()._request("/connect/v1/some/path")
                 assert response.status_code == 200
                 reauth_mock.assert_called_once_with()
                 assert auth.calls == 2

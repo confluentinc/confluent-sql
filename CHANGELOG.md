@@ -6,6 +6,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ### Changed - Breaking
 
+- Removed the `Connection` methods `connect_controlplane_request()`, `artifact_controlplane_request()`, `resolve_kafka_cluster_id()` and `artifact_scope()`. They were never documented as public: they only existed as hooks for the connector and artifact service APIs, which now receive a request callable, the environment id and (for connectors) a cluster-id resolver or (for artifacts) the cloud, region and endpoint at construction instead (`ConnectorApi`/`ArtifactsApi` are still obtained through `Connection`).
+- Removed the undocumented `Connection.create_connector()`, `get_connector()`, `delete_connector()`, `pause_connector()` and `resume_connector()` passthroughs. Use `Connection.get_connector_api()`, the counterpart of `get_artifacts_api()`, and call `.create()`, `.get()`, `.delete()`, `.pause()` and `.resume()` on it. (#235) The `confluent_sql.service_api` module and the `ControlPlaneContext` and `ArtifactsContext` protocols are removed with them. (#235)
 - `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`).
 
 ### Added

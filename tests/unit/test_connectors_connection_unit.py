@@ -1,4 +1,4 @@
-"""Unit tests for ConnectorApi, driven against a fake ControlPlaneContext (no httpx, no network)."""
+"""Unit tests for ConnectorApi, driven against a fake requester (no httpx, no network)."""
 
 from __future__ import annotations
 
@@ -28,17 +28,12 @@ def _ok_response(body: dict | None = None, status_code: int = 200) -> Mock:
     return response
 
 
-def _error_response(status_code: int, body: str = "") -> Mock:
-    """A response whose raise_for_status() raises an HTTPStatusError of the given code.
-
-    `body` populates `e.response.text` -- the server-side error detail the API methods fold into
-    their OperationalError message.
-    """
+def _error_response(status_code: int) -> Mock:
+    """A response whose raise_for_status() raises an HTTPStatusError of the given code."""
     response = Mock()
     response.status_code = status_code
     inner = Mock()
     inner.status_code = status_code
-    inner.text = body
     response.raise_for_status = Mock(
         side_effect=httpx.HTTPStatusError("boom", request=Mock(), response=inner)
     )
@@ -73,7 +68,7 @@ def _status_body(state: str, trace: str = "") -> dict:
 
 
 class FakeControlPlane:
-    """A ~20-line stand-in satisfying ControlPlaneContext, routing by HTTP method / `/status` path.
+    """A ~20-line stand-in for the Connect requester, routing by HTTP method / `/status` path.
 
     Responses are queued per logical operation (create/read/status/delete) and popped in order, so
     a test can script a state transition by queueing several `status` responses.
@@ -82,7 +77,7 @@ class FakeControlPlane:
     environment_id = "env-123"
 
     def __init__(self) -> None:
-        self._queues: dict[str, list[Mock | Exception]] = {
+        self._queues: dict[str, list[Mock | httpx.Response | Exception]] = {
             "create": [],
             "read": [],
             "status": [],
@@ -94,10 +89,10 @@ class FakeControlPlane:
     def resolve_kafka_cluster_id(self) -> str:
         return "lkc-abc"
 
-    def queue(self, key: str, *responses: Mock | Exception) -> None:
+    def queue(self, key: str, *responses: Mock | httpx.Response | Exception) -> None:
         self._queues[key].extend(responses)
 
-    def connect_controlplane_request(
+    def request(
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> Mock:
         self.requests.append((method, url))
@@ -128,6 +123,14 @@ class FakeControlPlane:
         return sum(1 for m, _ in self.requests if m == method)
 
 
+def _api(ctx: FakeControlPlane) -> ConnectorApi:
+    return ConnectorApi(
+        ctx.request,
+        environment_id=ctx.environment_id,
+        resolve_kafka_cluster_id=ctx.resolve_kafka_cluster_id,
+    )
+
+
 @pytest.fixture()
 def no_sleep(mocker):
     """Neutralize backoff pacing so wait loops iterate instantly; yields up to 20 times."""
@@ -145,7 +148,7 @@ class TestConnectorApiCreate:
             _ok_response(_status_body("PROVISIONING")),
             _ok_response(_status_body("RUNNING")),
         )
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         connector = api.create("MyDatagen", config=_create_config())
 
@@ -156,7 +159,7 @@ class TestConnectorApiCreate:
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
         ctx.queue("status", _ok_response(_status_body("PROVISIONING")))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         connector = api.create("MyDatagen", config=_create_config(), wait_for_running=False)
 
@@ -168,7 +171,7 @@ class TestConnectorApiCreate:
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
         ctx.queue("status", _ok_response(_status_body("RUNNING")))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         connector = api.create("MyDatagen", config=_create_config())
 
@@ -176,21 +179,10 @@ class TestConnectorApiCreate:
         assert ctx.count("status") == 1
         no_sleep.assert_not_called()
 
-    def test_generic_error_raises_operational_not_already_exists(self) -> None:
-        ctx = FakeControlPlane()
-        ctx.queue("create", _error_response(500, body='{"message":"kafka.api.key invalid"}'))
-        api = ConnectorApi(ctx)
-
-        with pytest.raises(OperationalError) as exc:
-            api.create("MyDatagen", config=_create_config())
-        assert not isinstance(exc.value, ConnectorAlreadyExistsError)
-        assert exc.value.http_status_code == 500
-        assert "kafka.api.key invalid" in str(exc.value)
-
     def test_409_raises_already_exists(self) -> None:
         ctx = FakeControlPlane()
         ctx.queue("create", _error_response(409))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(ConnectorAlreadyExistsError) as exc:
             api.create("MyDatagen", config=_create_config())
@@ -207,7 +199,7 @@ class TestConnectorApiCreate:
             _ok_response(_status_body("RUNNING")),
         )
 
-        connector = ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+        connector = _api(ctx).create("MyDatagen", config=_create_config())
 
         assert connector.state is ConnectorState.RUNNING
         assert ctx.count("status") == 3
@@ -223,7 +215,7 @@ class TestConnectorApiCreate:
             _ok_response(_status_body("RUNNING")),
         )
 
-        connector = ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+        connector = _api(ctx).create("MyDatagen", config=_create_config())
 
         assert connector.state is ConnectorState.RUNNING
         assert ctx.count("create") == 1
@@ -239,7 +231,7 @@ class TestConnectorApiCreate:
         ctx.queue("status", _ok_response(_status_body("PROVISIONING")), slow, slow)
 
         with pytest.raises(OperationalError, match="did not reach") as exc:
-            ConnectorApi(ctx).create("MyDatagen", config=_create_config())
+            _api(ctx).create("MyDatagen", config=_create_config())
 
         assert exc.value.__cause__ is slow
 
@@ -250,7 +242,7 @@ class TestConnectorApiCreate:
             "status",
             _ok_response(_status_body("FAILED", trace="java.lang.RuntimeException: nope")),
         )
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(OperationalError, match="java.lang.RuntimeException: nope"):
             api.create("MyDatagen", config=_create_config())
@@ -260,7 +252,7 @@ class TestConnectorApiCreate:
         ctx = FakeControlPlane()
         ctx.queue("create", _ok_response(_read_body(), status_code=201))
         ctx.queue("status", _ok_response(_status_body("PROVISIONING")))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(OperationalError, match="did not reach RUNNING"):
             api.create("MyDatagen", config=_create_config(), timeout=5)
@@ -273,7 +265,7 @@ class TestConnectorApiGet:
         ctx = FakeControlPlane()
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _ok_response(_status_body("RUNNING")))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         connector = api.get("MyDatagen")
 
@@ -284,7 +276,7 @@ class TestConnectorApiGet:
         ctx = FakeControlPlane()
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _ok_response(_status_body("RUNNING")))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         api.get("MyDatagen")
 
@@ -296,44 +288,23 @@ class TestConnectorApiGet:
     def test_404_raises_not_found_without_status_call(self) -> None:
         ctx = FakeControlPlane()
         ctx.queue("read", _error_response(404))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(ConnectorNotFoundError) as exc:
             api.get("MyDatagen")
         assert exc.value.connector_name == "MyDatagen"
         assert ctx.count("status") == 0
 
-    def test_generic_read_error_raises_operational(self) -> None:
-        ctx = FakeControlPlane()
-        ctx.queue("read", _error_response(500, body="upstream read boom"))
-        api = ConnectorApi(ctx)
-
-        with pytest.raises(OperationalError) as exc:
-            api.get("MyDatagen")
-        assert exc.value.http_status_code == 500
-        assert "upstream read boom" in str(exc.value)
-
     def test_status_404_after_successful_read_raises_not_found(self) -> None:
         # A connector deleted between the base read and the /status read: status 404s.
         ctx = FakeControlPlane()
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _error_response(404))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(ConnectorNotFoundError) as exc:
             api.get("MyDatagen")
         assert exc.value.connector_name == "MyDatagen"
-
-    def test_generic_status_error_raises_operational(self) -> None:
-        ctx = FakeControlPlane()
-        ctx.queue("read", _ok_response(_read_body()))
-        ctx.queue("status", _error_response(500, body="status boom"))
-        api = ConnectorApi(ctx)
-
-        with pytest.raises(OperationalError) as exc:
-            api.get("MyDatagen")
-        assert exc.value.http_status_code == 500
-        assert "status boom" in str(exc.value)
 
 
 class TestConnectorApiDelete:
@@ -343,7 +314,7 @@ class TestConnectorApiDelete:
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _error_response(404))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         assert api.delete("MyDatagen") is None
         assert ctx.count("read") == 1
@@ -351,21 +322,11 @@ class TestConnectorApiDelete:
     def test_404_raises_not_found(self) -> None:
         ctx = FakeControlPlane()
         ctx.queue("delete", _error_response(404))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(ConnectorNotFoundError) as exc:
             api.delete("MyDatagen")
         assert exc.value.connector_name == "MyDatagen"
-
-    def test_generic_error_raises_operational(self) -> None:
-        ctx = FakeControlPlane()
-        ctx.queue("delete", _error_response(500, body="delete boom"))
-        api = ConnectorApi(ctx)
-
-        with pytest.raises(OperationalError) as exc:
-            api.delete("MyDatagen")
-        assert exc.value.http_status_code == 500
-        assert "delete boom" in str(exc.value)
 
     def test_removal_survives_timed_out_probe_and_poll(self, no_sleep) -> None:
         """Both the unpaced first probe and a paced poll may time out once (#236): the DELETE
@@ -379,7 +340,7 @@ class TestConnectorApiDelete:
             RequestTimeoutError("error sending request: ReadTimeout: slow"),
             _error_response(404),
         )
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         api.delete("MyDatagen")
 
@@ -393,7 +354,7 @@ class TestConnectorApiDelete:
         ctx.queue("read", slow, slow)
 
         with pytest.raises(OperationalError, match="was not removed within") as exc:
-            ConnectorApi(ctx).delete("MyDatagen")
+            _api(ctx).delete("MyDatagen")
 
         assert exc.value.__cause__ is slow
 
@@ -402,7 +363,7 @@ class TestConnectorApiDelete:
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _ok_response(_read_body()), _error_response(404))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         api.delete("MyDatagen")
 
@@ -411,7 +372,7 @@ class TestConnectorApiDelete:
     def test_wait_false_skips_polling(self, no_sleep) -> None:
         ctx = FakeControlPlane()
         ctx.queue("delete", _ok_response())
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         api.delete("MyDatagen", wait_for_removal=False)
 
@@ -424,7 +385,7 @@ class TestConnectorApiDelete:
         ctx.queue("delete", _ok_response())
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _ok_response(_status_body("RUNNING")))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(OperationalError, match="was not removed"):
             api.delete("MyDatagen", timeout=5)
@@ -443,7 +404,7 @@ class TestConnectorApiDelete:
         ctx.queue("status", _ok_response(_status_body("RUNNING")))
 
         with pytest.raises(OperationalError):
-            ConnectorApi(ctx).delete("MyDatagen", timeout=5)
+            _api(ctx).delete("MyDatagen", timeout=5)
 
         sleeper.assert_called_once_with(5, started_at=before_first_read)
 
@@ -473,7 +434,7 @@ class TestConnectorApiActions:
         ctx.queue("action", _ok_response(status_code=202))
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _ok_response(_status_body(target)))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         getattr(api, action)("MyDatagen")
 
@@ -499,7 +460,7 @@ class TestConnectorApiActions:
             _ok_response(_status_body(transient)),
             _ok_response(_status_body(target)),
         )
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         connector = getattr(api, action)("MyDatagen")
 
@@ -540,7 +501,7 @@ class TestConnectorApiActions:
         ctx.queue("read", *reads)
         ctx.queue("status", *statuses)
 
-        connector = getattr(ConnectorApi(ctx), action)("MyDatagen")
+        connector = getattr(_api(ctx), action)("MyDatagen")
 
         assert connector.state is ConnectorState(target)
         assert sum(1 for _, u in ctx.requests if u.endswith(suffix)) == 1
@@ -558,7 +519,7 @@ class TestConnectorApiActions:
         ctx.queue("action", _ok_response(status_code=202))
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _ok_response(_status_body(transient)))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         connector = getattr(api, action)("MyDatagen", **{wait_kwarg: False})
 
@@ -576,29 +537,11 @@ class TestConnectorApiActions:
     ) -> None:
         ctx = FakeControlPlane()
         ctx.queue("action", _error_response(404))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(ConnectorNotFoundError) as exc:
             getattr(api, action)("MyDatagen")
         assert exc.value.connector_name == "MyDatagen"
-
-    @pytest.mark.parametrize(
-        ("action", "method", "suffix", "target", "transient", "wait_kwarg"),
-        _ACTIONS,
-        ids=_ACTION_IDS,
-    )
-    def test_generic_error_raises_operational(
-        self, action, method, suffix, target, transient, wait_kwarg
-    ) -> None:
-        ctx = FakeControlPlane()
-        ctx.queue("action", _error_response(500, body="action boom"))
-        api = ConnectorApi(ctx)
-
-        with pytest.raises(OperationalError) as exc:
-            getattr(api, action)("MyDatagen")
-        assert not isinstance(exc.value, ConnectorNotFoundError)
-        assert exc.value.http_status_code == 500
-        assert "action boom" in str(exc.value)
 
     @pytest.mark.parametrize(
         ("action", "method", "suffix", "target", "transient", "wait_kwarg"),
@@ -615,7 +558,7 @@ class TestConnectorApiActions:
             "status",
             _ok_response(_status_body("FAILED", trace="java.lang.RuntimeException: nope")),
         )
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(OperationalError, match="java.lang.RuntimeException: nope"):
             getattr(api, action)("MyDatagen")
@@ -633,7 +576,71 @@ class TestConnectorApiActions:
         ctx.queue("action", _ok_response(status_code=202))
         ctx.queue("read", _ok_response(_read_body()))
         ctx.queue("status", _ok_response(_status_body(transient)))
-        api = ConnectorApi(ctx)
+        api = _api(ctx)
 
         with pytest.raises(OperationalError, match=f"did not reach {target}"):
             getattr(api, action)("MyDatagen", timeout=5)
+
+
+def _detailed_error(status_code: int, detail: str) -> httpx.Response:
+    """A real error response carrying the server's `errors[].detail` body."""
+    return httpx.Response(
+        status_code,
+        json={"errors": [{"detail": detail}]},
+        request=httpx.Request("GET", "https://api.example.invalid/connect/v1/x"),
+    )
+
+
+# (id, queue key the failing request is served from, call that issues it, expected message prefix)
+FAILING_CALLS = [
+    ("create", "create", lambda api: api.create("c", config=_create_config()), "creating"),
+    ("delete", "delete", lambda api: api.delete("c"), "deleting"),
+    ("pause", "action", lambda api: api.pause("c"), "'pause'"),
+    ("resume", "action", lambda api: api.resume("c"), "'resume'"),
+    ("get-read", "read", lambda api: api.get("c"), "reading connector"),
+    ("get-status", "status", lambda api: api.get("c"), "reading connector status"),
+]
+FAILING_CALL_PARAMS = [pytest.param(*c[1:], id=c[0]) for c in FAILING_CALLS]
+
+
+class TestConnectorApiErrors:
+    """Every non-404/409 API error carries the status code and the server's own detail; 404 and
+    409 map to the connector-specific exceptions."""
+
+    def _failing(self, key: str, response: httpx.Response) -> FakeControlPlane:
+        ctx = FakeControlPlane()
+        if key == "status":  # `get` reads the base spec first, so let that succeed
+            ctx.queue("read", _ok_response(_read_body()))
+        ctx.queue(key, response)
+        return ctx
+
+    @pytest.mark.parametrize(("key", "call", "describes"), FAILING_CALL_PARAMS)
+    def test_server_error_includes_status_code_and_detail(self, key, call, describes) -> None:
+        ctx = self._failing(key, _detailed_error(500, "connector plugin unavailable"))
+
+        with pytest.raises(OperationalError, match=r"'500' - connector plugin unavailable") as e:
+            call(_api(ctx))
+
+        assert e.value.http_status_code == 500
+        assert describes in str(e.value)
+        assert '"errors"' not in str(e.value)  # the extracted detail, not the raw JSON body
+
+    @pytest.mark.parametrize(
+        ("key", "call", "describes"),
+        [p for p in FAILING_CALL_PARAMS if p.id != "create"],
+    )
+    def test_404_is_connector_not_found(self, key, call, describes) -> None:
+        ctx = self._failing(key, _detailed_error(404, "no such connector"))
+
+        with pytest.raises(ConnectorNotFoundError) as exc_info:
+            call(_api(ctx))
+
+        assert exc_info.value.connector_name == "c"
+
+    def test_409_on_create_is_already_exists(self) -> None:
+        ctx = self._failing("create", _detailed_error(409, "taken"))
+
+        with pytest.raises(ConnectorAlreadyExistsError) as exc_info:
+            _api(ctx).create("c", config=_create_config())
+
+        assert exc_info.value.connector_name == "c"
