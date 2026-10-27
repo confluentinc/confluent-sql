@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from confluent_sql import InterfaceError, OperationalError, ProgrammingError
+from confluent_sql import InterfaceError, ProgrammingError
 from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 
 pytestmark = pytest.mark.unit
@@ -64,94 +64,31 @@ class TestConnectControlplaneClient:
             conn._auth_for(ControlPlaneSurface.CONNECT)
 
 
-class TestControlPlaneContextSatisfaction:
-    """Connection satisfies the ControlPlaneContext protocol ConnectorApi depends on."""
+class TestConnectorApiComposition:
+    """What `Connection` hands the `ConnectorApi` it composes."""
 
-    def test_resolve_kafka_cluster_id_delegates(self) -> None:
+    def test_api_receives_the_connections_environment_and_cluster_resolver(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-9")
-        assert conn.resolve_kafka_cluster_id() == "lkc-9"
+        api = conn.get_connector_api()
+        assert api._connectors_path() == "/connect/v1/environments/env-1/clusters/lkc-9/connectors"
 
-    def test_connect_controlplane_request_carries_the_connect_credential(self) -> None:
+    def test_api_requests_carry_the_connect_credential(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         client = Mock()
         client.request = Mock(return_value=Mock(content=b"{}"))
         conn._controlplane._client = client
-        conn.connect_controlplane_request(
+        conn.get_connector_api()._request(
             "/x", method="POST", json={"a": 1}, raise_for_status=False
         )
         client.request.assert_called_once_with(
             "POST", "/x", json={"a": 1}, auth=conn._auth_for(ControlPlaneSurface.CONNECT)
         )
 
-    def test_connect_controlplane_request_http_error_becomes_operational(self) -> None:
+
+class TestGetConnectorApi:
+    def test_api_is_composed_lazily(self) -> None:
+        assert _connect(connect_api_key="ck", connect_api_secret="cs")._connector_api is None
+
+    def test_api_is_composed_once_and_cached(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        response = Mock()
-        inner = Mock()
-        inner.status_code = 500
-        response.raise_for_status = Mock(
-            side_effect=httpx.HTTPStatusError("boom", request=Mock(), response=inner)
-        )
-        client = Mock()
-        client.request = Mock(return_value=response)
-        conn._controlplane._client = client
-        with pytest.raises(OperationalError):
-            conn.connect_controlplane_request("/x")
-
-
-class TestConnectorPassthroughs:
-    """The three Connection methods are one-line delegations to a lazily-composed ConnectorApi."""
-
-    def test_create_connector_delegates(self) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        api = Mock()
-        conn._connector_api = api
-        config = {"connector.class": "DatagenSource"}
-
-        result = conn.create_connector("c1", config=config, wait_for_running=False, timeout=10)
-
-        api.create.assert_called_once_with("c1", config=config, wait_for_running=False, timeout=10)
-        assert result is api.create.return_value
-
-    def test_get_connector_delegates(self) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        api = Mock()
-        conn._connector_api = api
-
-        result = conn.get_connector("c1")
-
-        api.get.assert_called_once_with("c1")
-        assert result is api.get.return_value
-
-    def test_delete_connector_delegates(self) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        api = Mock()
-        conn._connector_api = api
-
-        conn.delete_connector("c1", wait_for_removal=False, timeout=10)
-
-        api.delete.assert_called_once_with("c1", wait_for_removal=False, timeout=10)
-
-    @pytest.mark.parametrize(
-        ("method_name", "api_attr", "wait_kwarg"),
-        [
-            ("pause_connector", "pause", "wait_for_paused"),
-            ("resume_connector", "resume", "wait_for_running"),
-        ],
-    )
-    def test_action_connector_delegates(
-        self, method_name: str, api_attr: str, wait_kwarg: str
-    ) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        api = Mock()
-        conn._connector_api = api
-
-        result = getattr(conn, method_name)("c1", **{wait_kwarg: False, "timeout": 10})
-
-        getattr(api, api_attr).assert_called_once_with("c1", **{wait_kwarg: False, "timeout": 10})
-        assert result is getattr(api, api_attr).return_value
-
-    def test_connector_api_lazily_composed_with_self_as_context(self) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        first = conn._get_connector_api()
-        assert first is conn._get_connector_api()
-        assert first._context is conn
+        assert conn.get_connector_api() is conn.get_connector_api()

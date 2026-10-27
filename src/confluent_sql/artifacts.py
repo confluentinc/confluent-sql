@@ -4,16 +4,17 @@ Flink artifact types, request builders and lifecycle orchestration (`/artifact/v
 Uploading is three steps -- request a presigned URL, POST the file to it (a plain object-store form
 post, so no Confluent credentials), create the artifact with the resulting `upload_id`.
 `ArtifactsApi.create` runs all three; the first two are private. `ArtifactsApi` is reached through
-`Connection.get_artifacts_api()` and depends on the narrow `ArtifactsContext` protocol rather than
-`Connection`.
+`Connection.get_artifacts_api()`, which hands it a `Requester` for the Artifacts surface plus the
+connection's environment and scope, so it never depends on `Connection` itself.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import PurePath
-from typing import NamedTuple, Protocol, Union
+from typing import NamedTuple, Union
 from urllib.parse import quote
 
 import httpx
@@ -23,10 +24,11 @@ from .exceptions import (
     ArtifactNotFoundError,
     InterfaceError,
     OperationalError,
+    ProgrammingError,
 )
 from .polling import poll_until
 from .retry import call_with_retries
-from .service_api import ServiceApi
+from .service_client import Requester
 from .types import StrAnyDict
 from .utils import ExtensibleEnum, extract_error_detail, next_page_token
 
@@ -367,24 +369,68 @@ class ArtifactScope(NamedTuple):
     region: str
 
 
-class ArtifactsContext(Protocol):
-    """What `ArtifactsApi` needs from its host connection."""
-
-    environment_id: str
-
-    def artifact_scope(self) -> ArtifactScope: ...
-
-    def artifact_controlplane_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
-    ) -> httpx.Response: ...
+# Both captured labels are plain DNS labels; hosts are case-insensitive.
+_FLINK_ENDPOINT_CLOUD_RE = re.compile(
+    r"^https://flink\.([a-z0-9-]+)\.([a-z0-9-]+)\.(?:private\.)?confluent\.cloud$",
+    re.IGNORECASE,
+)
 
 
-class ArtifactsApi(ServiceApi[ArtifactsContext]):
+def resolve_artifact_scope(
+    cloud_provider: str | None, cloud_region: str | None, endpoint: str | None
+) -> ArtifactScope:
+    """The `ArtifactScope` for a connection: its `cloud_provider`/`cloud_region` arguments (honored
+    even alongside an explicit `endpoint`, e.g. for private-link endpoints), else parsed from a
+    standard `https://flink.<region>.<cloud>.confluent.cloud` endpoint.
+
+    Raises:
+        ProgrammingError: If neither source yields both a cloud and a region.
+    """
+    cloud, region = cloud_provider, cloud_region
+    if not (cloud and region):
+        match = _FLINK_ENDPOINT_CLOUD_RE.match(endpoint or "")
+        if match:
+            region, cloud = (label.lower() for label in match.groups())
+    if not (cloud and region):
+        raise ProgrammingError(
+            "Artifacts are scoped to a cloud and region, which can't be determined from this "
+            "connection's endpoint. Pass cloud_provider and cloud_region to connect() (they're "
+            "honored alongside endpoint, e.g. for private-link endpoints), or use a standard "
+            "https://flink.<region>.<cloud>.confluent.cloud endpoint."
+        )
+    return ArtifactScope(cloud.upper(), region)
+
+
+class ArtifactsApi:
     """Artifact lifecycle, obtained from `Connection.get_artifacts_api()`. Create is
-    synchronous; delete blocks by default (`wait_for_removal`)."""
+    synchronous; delete blocks by default (`wait_for_removal`).
+
+    `request` sends to the Artifacts routes (retrying GETs, never logging bodies -- see
+    `Connection`). The scope is resolved from `cloud_provider`/`cloud_region`/`endpoint` (see
+    `resolve_artifact_scope`) on each use rather than at construction, so a connection whose scope
+    can't be determined still gets its API and fails only when an artifact call needs it.
+    """
 
     _ARTIFACTS_PATH = "/artifact/v1/flink-artifacts"
     _PRESIGN_PATH = "/artifact/v1/presigned-upload-url"
+
+    def __init__(
+        self,
+        request: Requester,
+        *,
+        environment_id: str,
+        cloud_provider: str | None,
+        cloud_region: str | None,
+        endpoint: str | None,
+    ) -> None:
+        self._request = request
+        self._environment_id = environment_id
+        self._cloud_provider = cloud_provider
+        self._cloud_region = cloud_region
+        self._endpoint = endpoint
+
+    def _artifact_scope(self) -> ArtifactScope:
+        return resolve_artifact_scope(self._cloud_provider, self._cloud_region, self._endpoint)
 
     def _artifact_path(self, artifact_id: str) -> str:
         """The item path, with `artifact_id` percent-encoded so it can't alter the route (e.g.
@@ -394,24 +440,22 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         return f"{self._ARTIFACTS_PATH}/{quote(artifact_id, safe='')}"
 
     def _scope_params(self, *, with_environment: bool = True) -> dict[str, str]:
-        context = self.get_context()
-        cloud, region = context.artifact_scope()
+        cloud, region = self._artifact_scope()
         params = {Fields.CLOUD: cloud, Fields.REGION: region}
         if with_environment:
-            params[Fields.ENVIRONMENT] = context.environment_id
+            params[Fields.ENVIRONMENT] = self._environment_id
         return params
 
     def _get_upload_url(self, content_format: ArtifactContentFormat | str) -> PresignedUploadUrl:
         """Request a presigned upload target."""
-        context = self.get_context()
-        cloud, region = context.artifact_scope()
+        cloud, region = self._artifact_scope()
         payload = build_presign_payload(
             content_format=_normalize_content_format(content_format),
             cloud=cloud,
             region=region,
-            environment=context.environment_id,
+            environment=self._environment_id,
         )
-        response = context.artifact_controlplane_request(
+        response = self._request(
             self._PRESIGN_PATH, method="POST", json=payload, raise_for_status=False
         )
         self._raise_for_status(response, prefix="Error requesting artifact upload URL")
@@ -498,7 +542,7 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         Raises:
             InterfaceError: On a bad argument, or if `file` can't be read.
             ProgrammingError: If no global or cloud API key is available, or the cloud/region
-                can't be determined (see `Connection.artifact_scope`).
+                can't be determined (see `resolve_artifact_scope`).
             ArtifactAlreadyExistsError: If `display_name` is taken (HTTP 409, or the API's HTTP 400
                 "name should be unique").
             OperationalError: On other API errors, or if the upload fails.
@@ -518,21 +562,20 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         target = self._get_upload_url(fmt)
         self._upload(target, file, upload_timeout=upload_timeout, retry=upload_retry)
 
-        context = self.get_context()
-        cloud, region = context.artifact_scope()
+        cloud, region = self._artifact_scope()
         payload = build_create_payload(
             display_name=display_name,
             upload_id=target.upload_id,
             cloud=cloud,
             region=region,
-            environment=context.environment_id,
+            environment=self._environment_id,
             content_format=fmt,
             runtime_language=lang,
             description=description,
             documentation_link=documentation_link,
             class_name=class_name,
         )
-        response = context.artifact_controlplane_request(
+        response = self._request(
             self._ARTIFACTS_PATH,
             method="POST",
             params=self._scope_params(with_environment=False),
@@ -563,11 +606,11 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         Raises:
             InterfaceError: If `artifact_id` is unusable, or the connection is closed.
             ProgrammingError: If no global or cloud API key is available, or the cloud/region
-                can't be determined (see `Connection.artifact_scope`).
+                can't be determined (see `resolve_artifact_scope`).
             ArtifactNotFoundError: If the artifact doesn't exist (HTTP 404).
             OperationalError: On other API errors, a network failure, or an unparseable response.
         """
-        response = self.get_context().artifact_controlplane_request(
+        response = self._request(
             self._artifact_path(artifact_id),
             params=self._scope_params(),
             raise_for_status=False,
@@ -593,7 +636,7 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         Raises:
             InterfaceError: If `runtime_language` is unknown, or the connection is closed.
             ProgrammingError: If no global or cloud API key is available, or the cloud/region
-                can't be determined (see `Connection.artifact_scope`).
+                can't be determined (see `resolve_artifact_scope`).
             OperationalError: On API errors, a network failure, an unparseable response, or a
                 server that repeats the previous page token.
         """
@@ -605,9 +648,7 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         artifacts: list[FlinkArtifact] = []
         last_token: str | None = None
         while True:
-            response = self.get_context().artifact_controlplane_request(
-                self._ARTIFACTS_PATH, params=params, raise_for_status=False
-            )
+            response = self._request(self._ARTIFACTS_PATH, params=params, raise_for_status=False)
             self._raise_for_status(response, prefix="Error listing artifacts")
             body = _json_body(response, what="artifact list")
             try:
@@ -654,12 +695,12 @@ class ArtifactsApi(ServiceApi[ArtifactsContext]):
         Raises:
             InterfaceError: If `artifact_id` is unusable, or the connection is closed.
             ProgrammingError: If no global or cloud API key is available, or the cloud/region
-                can't be determined (see `Connection.artifact_scope`).
+                can't be determined (see `resolve_artifact_scope`).
             ArtifactNotFoundError: If the artifact doesn't exist (HTTP 404).
             OperationalError: On other API errors or a network failure, or if the artifact is
                 still present after `timeout` seconds.
         """
-        response = self.get_context().artifact_controlplane_request(
+        response = self._request(
             self._artifact_path(artifact_id),
             method="DELETE",
             params=self._scope_params(),

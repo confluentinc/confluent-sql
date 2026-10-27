@@ -9,20 +9,20 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from collections import namedtuple
 from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
+from functools import partial
 from typing import Any, Literal
 
 import httpx
 
-from .artifacts import ArtifactsApi, ArtifactScope
+from .artifacts import ArtifactsApi
 from .auth import FlinkBearerAuth
-from .connectors import Connector, ConnectorApi
+from .connectors import ConnectorApi
 from .cursor import Cursor
 from .exceptions import (
     InterfaceError,
@@ -66,7 +66,7 @@ from .tableflow import (
     build_update_payload,
     normalize_table_formats,
 )
-from .types import PropertiesDict, RowPythonTypes, StrAnyDict
+from .types import PropertiesDict, RowPythonTypes
 from .utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT
 from .utils import next_page_token as parse_next_page_token
 
@@ -521,7 +521,7 @@ class Connection:
     _cloud_provider: str | None
     _cloud_region: str | None
     """Cloud/region as passed to connect() (None when only an endpoint was given) -- see
-    `artifact_scope`."""
+    `artifacts.resolve_artifact_scope`."""
     _resolved_kafka_cluster_id: str | None
     """Cached `lkc-…` id for `database`; pre-seeded by database_kafka_cluster_id, else from CMK."""
     _row_type_registry: RowTypeRegistry
@@ -893,7 +893,7 @@ class Connection:
         self._connector_api = None
         self._artifacts_api = None
         # Kept even alongside an explicit endpoint: the endpoint still decides where requests go,
-        # but `artifact_scope` prefers these over parsing the host, which private-link
+        # but `resolve_artifact_scope` prefers these over parsing the host, which private-link
         # endpoints (extra domain label) don't allow.
         self._cloud_provider = cloud_provider or None
         self._cloud_region = cloud_region or None
@@ -919,12 +919,6 @@ class Connection:
             self._closed = True
             for service_client in self._service_clients:
                 service_client.close()
-            if self._artifacts_api is not None:
-                self._artifacts_api._close()
-                self._artifacts_api = None
-            if self._connector_api is not None:
-                self._connector_api._close()
-                self._connector_api = None
         else:
             logger.info("Trying to close a closed connection, ignoring")
 
@@ -1499,15 +1493,11 @@ class Connection:
         response = self._dataplane.request(
             f"/statements/{statement_name}", method="DELETE", raise_for_status=False
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise OperationalError(
-                    "Error deleting statement", http_status_code=e.response.status_code
-                ) from e
-            # If the response is 404, it means we don't need to delete the statement.
+        if response.status_code == 404:
+            # The statement is already gone, so there is nothing to delete.
             logger.info(f"Statement '{statement_name}' not found while deleting, ignoring")
+        else:
+            raise_for_status_as_operational_error(response, prefix="Error deleting statement")
 
         if isinstance(statement, Statement):
             # Mark the Statement object as deleted for if the caller still is interested in its
@@ -1586,17 +1576,12 @@ class Connection:
             headers={"Content-Type": "application/json-patch+json"},
             raise_for_status=False,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise StatementNotFoundError(
-                    f"Statement '{statement_name}' not found while stopping",
-                    statement_name=statement_name,
-                ) from e
-            raise OperationalError(
-                "Error stopping statement", http_status_code=e.response.status_code
-            ) from e
+        if response.status_code == 404:
+            raise StatementNotFoundError(
+                f"Statement '{statement_name}' not found while stopping",
+                statement_name=statement_name,
+            )
+        raise_for_status_as_operational_error(response, prefix="Error stopping statement")
 
         pending_stopped_statement = Statement.from_response(self, response.json())
 
@@ -2196,108 +2181,33 @@ class Connection:
             **kwargs,
         )
 
-    def connect_controlplane_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """Public ControlPlaneContext hook -- issues a Connect request for ConnectorApi."""
-        return self._controlplane_request(
-            ControlPlaneSurface.CONNECT, url, method, raise_for_status, **kwargs
-        )
-
-    def resolve_kafka_cluster_id(self) -> str:
-        """Public ControlPlaneContext hook -- delegates to the cached CMK resolution."""
-        return self._resolve_kafka_cluster_id()
-
-    def artifact_controlplane_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
-    ) -> httpx.Response:
-        """ArtifactsContext hook."""
-        return self._controlplane_request(
-            ControlPlaneSurface.ARTIFACTS, url, method, raise_for_status, **kwargs
-        )
-
-    # Both captured labels are plain DNS labels; hosts are case-insensitive.
-    _FLINK_ENDPOINT_CLOUD_RE = re.compile(
-        r"^https://flink\.([a-z0-9-]+)\.([a-z0-9-]+)\.(?:private\.)?confluent\.cloud$",
-        re.IGNORECASE,
-    )
-
-    def artifact_scope(self) -> ArtifactScope:
-        """The `ArtifactScope` (cloud, region) for artifact calls. From
-        `connect()`'s cloud_provider/cloud_region arguments (even alongside an explicit `endpoint`),
-        else parsed from a standard Flink `endpoint`; ProgrammingError if neither works."""
-        cloud, region = self._cloud_provider, self._cloud_region
-        if not (cloud and region):
-            match = self._FLINK_ENDPOINT_CLOUD_RE.match(self._flink_endpoint)
-            if match:
-                region, cloud = (label.lower() for label in match.groups())
-        if not (cloud and region):
-            raise ProgrammingError(
-                "Artifacts are scoped to a cloud and region, which can't be determined from this "
-                "connection's endpoint. Pass cloud_provider and cloud_region to connect() (they're "
-                "honored alongside endpoint, e.g. for private-link endpoints), or use a standard "
-                "https://flink.<region>.<cloud>.confluent.cloud endpoint."
-            )
-        return ArtifactScope(cloud.upper(), region)
-
     def get_artifacts_api(self) -> ArtifactsApi:
         """Return the ArtifactsApi for this connection's cloud/region/environment, composing it
         on first use. Raises `InterfaceError` if the connection is closed."""
         if self._closed:
             raise InterfaceError("Connection is closed")
         if self._artifacts_api is None:
-            self._artifacts_api = ArtifactsApi(self)
+            self._artifacts_api = ArtifactsApi(
+                partial(self._controlplane_request, ControlPlaneSurface.ARTIFACTS),
+                environment_id=self.environment_id,
+                cloud_provider=self._cloud_provider,
+                cloud_region=self._cloud_region,
+                endpoint=self._flink_endpoint,
+            )
         return self._artifacts_api
 
-    def _get_connector_api(self) -> ConnectorApi:
-        """Return the ConnectorApi, composing it (with this Connection as context) on first use.
-        Raises `InterfaceError` if the connection is closed."""
+    def get_connector_api(self) -> ConnectorApi:
+        """Return the ConnectorApi for this connection's environment and Kafka cluster, composing
+        it on first use. Raises `InterfaceError` if the connection is closed."""
         if self._closed:
             raise InterfaceError("Connection is closed")
         if self._connector_api is None:
-            self._connector_api = ConnectorApi(self)
+            self._connector_api = ConnectorApi(
+                partial(self._controlplane_request, ControlPlaneSurface.CONNECT),
+                environment_id=self.environment_id,
+                resolve_kafka_cluster_id=self._resolve_kafka_cluster_id,
+            )
         return self._connector_api
-
-    def create_connector(
-        self,
-        name: str,
-        *,
-        config: StrAnyDict,
-        wait_for_running: bool = True,
-        timeout: float = 300,
-    ) -> Connector:
-        """Create a managed connector; see ConnectorApi.create."""
-        return self._get_connector_api().create(
-            name, config=config, wait_for_running=wait_for_running, timeout=timeout
-        )
-
-    def get_connector(self, name: str) -> Connector:
-        """Read a connector's config and lifecycle state; see ConnectorApi.get."""
-        return self._get_connector_api().get(name)
-
-    def delete_connector(
-        self, name: str, *, wait_for_removal: bool = True, timeout: float = 300
-    ) -> None:
-        """Delete a connector; see ConnectorApi.delete."""
-        return self._get_connector_api().delete(
-            name, wait_for_removal=wait_for_removal, timeout=timeout
-        )
-
-    def pause_connector(
-        self, name: str, *, wait_for_paused: bool = True, timeout: float = 300
-    ) -> Connector:
-        """Pause a managed connector; see ConnectorApi.pause."""
-        return self._get_connector_api().pause(
-            name, wait_for_paused=wait_for_paused, timeout=timeout
-        )
-
-    def resume_connector(
-        self, name: str, *, wait_for_running: bool = True, timeout: float = 300
-    ) -> Connector:
-        """Resume a paused connector; see ConnectorApi.resume."""
-        return self._get_connector_api().resume(
-            name, wait_for_running=wait_for_running, timeout=timeout
-        )
 
     def enable_tableflow(
         self,
