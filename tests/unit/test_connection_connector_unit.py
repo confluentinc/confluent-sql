@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError, ProgrammingError
-from confluent_sql.connection import Connection, connect
+from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 
 pytestmark = pytest.mark.unit
 
@@ -33,44 +33,35 @@ def _connect(**overrides: Any) -> Connection:
 
 
 class TestConnectControlplaneClient:
-    """The connect-authed control-plane client is distinct from the Tableflow one."""
+    """The Connect surface's credential: its own dedicated key pair, or the global key."""
 
     def test_no_connect_credentials_raises(self) -> None:
         conn = _connect()  # flink-only creds
         with pytest.raises(ProgrammingError, match="connect_api_key"):
-            conn._get_connect_controlplane_client()
+            conn._auth_for(ControlPlaneSurface.CONNECT)
 
     def test_connect_pair_authenticates(self, mocker) -> None:
         spy = mocker.patch("confluent_sql.connection.httpx.BasicAuth", wraps=httpx.BasicAuth)
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        client = conn._get_connect_controlplane_client()
-        assert str(client.base_url) == "https://api.confluent.cloud"
+        assert conn._auth_for(ControlPlaneSurface.CONNECT) is not None
         spy.assert_called_with(username="ck", password="cs")
 
-    def test_distinct_from_tableflow_client_with_different_creds(self) -> None:
+    def test_connect_credential_differs_from_tableflow_with_different_creds(self) -> None:
         conn = _connect(
             tableflow_api_key="tk",
             tableflow_api_secret="ts",
             connect_api_key="ck",
             connect_api_secret="cs",
         )
-        assert conn._get_connect_controlplane_client() is not conn._get_controlplane_client()
-
-    def test_connect_client_cached(self) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        assert conn._get_connect_controlplane_client() is conn._get_connect_controlplane_client()
-
-    def test_close_closes_created_connect_client(self) -> None:
-        conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        client = conn._get_connect_controlplane_client()
-        conn.close()
-        assert client.is_closed
+        assert conn._auth_for(ControlPlaneSurface.CONNECT) is not conn._auth_for(
+            ControlPlaneSurface.TABLEFLOW
+        )
 
     def test_closed_connection_raises(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         conn.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn._get_connect_controlplane_client()
+            conn._auth_for(ControlPlaneSurface.CONNECT)
 
 
 class TestControlPlaneContextSatisfaction:
@@ -80,15 +71,17 @@ class TestControlPlaneContextSatisfaction:
         conn = _connect(database_kafka_cluster_id="lkc-9")
         assert conn.resolve_kafka_cluster_id() == "lkc-9"
 
-    def test_connect_controlplane_request_routes_through_connect_client(self) -> None:
+    def test_connect_controlplane_request_carries_the_connect_credential(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         client = Mock()
         client.request = Mock(return_value=Mock(content=b"{}"))
-        conn._get_connect_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        conn._controlplane._client = client
         conn.connect_controlplane_request(
             "/x", method="POST", json={"a": 1}, raise_for_status=False
         )
-        client.request.assert_called_once_with("POST", "/x", json={"a": 1})
+        client.request.assert_called_once_with(
+            "POST", "/x", json={"a": 1}, auth=conn._auth_for(ControlPlaneSurface.CONNECT)
+        )
 
     def test_connect_controlplane_request_http_error_becomes_operational(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
@@ -100,7 +93,7 @@ class TestControlPlaneContextSatisfaction:
         )
         client = Mock()
         client.request = Mock(return_value=response)
-        conn._get_connect_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        conn._controlplane._client = client
         with pytest.raises(OperationalError):
             conn.connect_controlplane_request("/x")
 

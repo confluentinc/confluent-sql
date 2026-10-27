@@ -180,7 +180,7 @@ class CallbackServer:
     def wait_for_code(self, *, timeout: float = DEFAULT_LOGIN_TIMEOUT_SECS) -> str:
         """Block until the auth service's redirect delivers an authorization code, and return it.
 
-        Blocks on an `Event` rather than polling with `sleep_with_backoff`: unlike the driver's
+        Blocks on an `Event` rather than polling with `poll_until`: unlike the driver's
         server-side lifecycle waits, the condition here is signalled in-process by our own handler
         thread, so there is nothing to poll.
 
