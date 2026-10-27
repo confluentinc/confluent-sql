@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
-from .exceptions import InterfaceError, NotSupportedError
+from .exceptions import InterfaceError, NotSupportedError, RequestTimeoutError
 from .execution_mode import ExecutionMode
 from .statement import Op, Schema, Statement
 from .types import StrAnyDict, SupportedPythonTypes
@@ -40,6 +40,13 @@ if TYPE_CHECKING:
     from .connection import Connection
 
 logger = logging.getLogger(__name__)
+
+MAX_CONSECUTIVE_PAGE_TIMEOUTS = 3
+"""How many results-page GETs in a row may time out (an httpx timeout, `RequestTimeoutError`)
+before a blocking read -- iteration, `fetchall()`, a snapshot fetch -- gives up and raises the last
+one. A single slow page is "no news yet" to a reader that blocks by contract (#236); a server that
+times out this many times running is genuinely unresponsive. Any successful fetch, even an empty
+page, resets the count."""
 
 ReaderOutput = TypeVar("ReaderOutput")
 """Type that a result reader produces as output from its __iter__ method."""
@@ -512,10 +519,15 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
           _fetch_next_page() to (try) to get it.
         - Raises StopIteration only when no more results will ever be available
         - In streaming mode, this means iteration will block/wait for new data
+        - A single results page that times out (`RequestTimeoutError`) is retried, since
+          blocking is this method's contract; `MAX_CONSECUTIVE_PAGE_TIMEOUTS` timeouts in a row
+          raise the last one. The failed fetch leaves reader state untouched, so the retry (or a
+          caller's own retry after the raise) asks for the same page again.
 
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
         """
+        consecutive_timeouts = 0
         while True:
             # If buffer has results, return one immediately
             if len(self._results) > 0:
@@ -534,7 +546,18 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             #
             # (This is not a completely hard loop because _fetch_next_page() internally
             # pauses to avoid hammering the server with requests when data currently available.)
-            self._fetch_next_page()
+            try:
+                self._fetch_next_page()
+            except RequestTimeoutError as e:
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= MAX_CONSECUTIVE_PAGE_TIMEOUTS:
+                    raise
+                logger.info(
+                    f"Results page fetch timed out ({consecutive_timeouts} in a row), "
+                    f"will retry: {e}"
+                )
+            else:
+                consecutive_timeouts = 0
 
     def _fetch_next_page(self) -> None:
         """Try to fetch and process the next page of results.

@@ -104,6 +104,23 @@ class OperationalError(DatabaseError):
         self.http_status_code = http_status_code
 
 
+class RequestTimeoutError(OperationalError):
+    """
+    Exception raised when a single HTTP request to Confluent Cloud timed out (connect, read, write
+    or connection-pool wait) before any response arrived.
+
+    This is a subclass of OperationalError. It says nothing about the server-side resource the
+    request was about -- only that this one request got no answer in time -- so loops that poll a
+    resource within their own deadline (e.g. waiting for a statement to become ready) treat it as
+    "no news yet" and poll again rather than failing.
+
+    Caution for mutating requests (POST/PATCH/DELETE): a timeout does NOT imply the server did not
+    receive and act on the request -- especially a read timeout, where the request was fully sent
+    and only the response was missed. Never treat it as proof the request had no effect or as
+    permission to blindly re-issue it.
+    """
+
+
 class ComputePoolExhaustedError(OperationalError):
     """
     Exception raised when a statement cannot be executed due to compute pool exhaustion.

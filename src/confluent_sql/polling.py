@@ -5,9 +5,17 @@ statement state transitions, so the timing mechanics (and their tuning) live in 
 than being copied into each poller.
 """
 
+import logging
 import random
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import TypeVar
+
+from .exceptions import OperationalError, RequestTimeoutError
+
+_T = TypeVar("_T")
+
+logger = logging.getLogger(__name__)
 
 _POLL_BASE_DELAY_SECS = 1.0
 """Delay before the first retry sleep."""
@@ -55,3 +63,45 @@ def sleep_with_backoff(timeout_secs: float, *, started_at: float | None = None) 
         time.sleep(min(delay * random.uniform(*_POLL_JITTER_BAND), _POLL_MAX_DELAY_SECS, remaining))
         delay = min(delay * _POLL_DELAY_GROWTH, _POLL_MAX_DELAY_SECS)
         yield
+
+
+def poll_until(
+    attempt: Callable[[], _T | None],
+    *,
+    timeout: float,
+    on_timeout: Callable[[], OperationalError],
+    immediate: bool = True,
+) -> _T:
+    """Run a whole server-polling wait: call attempt() until it yields a result or timeout elapses.
+
+    attempt() returns the final result once the awaited condition holds, or None for "not yet". It
+    raises to fail the wait outright (e.g. a resource that went FAILED); every exception but
+    RequestTimeoutError propagates untouched.
+
+    A RequestTimeoutError -- one slow HTTP response, e.g. a cold compute pool -- is "no news yet",
+    not a failure (#236): the wait carries on and the deadline still bounds it. If the deadline
+    passes, on_timeout()'s error is raised, chained to the last such slow poll (if any) so a
+    persistently unresponsive server stays diagnosable.
+
+    immediate=True (the default) makes the first attempt right away, with its latency charged
+    against the timeout. Pass immediate=False when the caller already holds fresh state and only
+    wants to fetch after the first paced sleep.
+    """
+    last_timeout: RequestTimeoutError | None = None
+
+    def tolerant_attempt() -> _T | None:
+        nonlocal last_timeout
+        try:
+            return attempt()
+        except RequestTimeoutError as e:
+            logger.info(f"Poll timed out, will retry: {e}")
+            last_timeout = e
+            return None
+
+    started_at = time.monotonic()
+    if immediate and (result := tolerant_attempt()) is not None:
+        return result
+    for _ in sleep_with_backoff(timeout, started_at=started_at):
+        if (result := tolerant_attempt()) is not None:
+            return result
+    raise on_timeout() from last_timeout
