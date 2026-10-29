@@ -514,11 +514,11 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         - In streaming mode, this means iteration will block/wait for new data
         - A single results page that times out (`RequestTimeoutError`) is retried, since
           blocking is this method's contract, for up to the connection's
-          `timeouts.statement_results_wallclock_secs` of wall-clock time since the first of a run of
-          timed-out fetches (however many attempts that takes); then the last one is raised. A
-          successful fetch, even an empty page, ends the run. The failed fetch leaves reader
-          state untouched, so the retry (or a caller's own retry after the raise) asks for the
-          same page again.
+          `timeouts.statement_results_response_wallclock_secs` of wall-clock time since the first
+          of a run of timed-out fetches (however many attempts that takes); then the last one is
+          raised. A successful fetch, even an empty page, ends the run. The failed fetch leaves
+          reader state untouched, so the retry (or a caller's own retry after the raise) asks for
+          the same page again.
 
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
@@ -549,7 +549,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
                 if timeout_run_started_at is None:
                     timeout_run_started_at = fetch_started_at
                 run_secs = time.monotonic() - timeout_run_started_at
-                if run_secs >= self._connection.timeouts.statement_results_wallclock_secs:
+                if run_secs >= self._connection.timeouts.statement_results_response_wallclock_secs:
                     raise
                 logger.info(
                     f"Results page fetch timed out ({run_secs:.1f}s into a run of timeouts), "

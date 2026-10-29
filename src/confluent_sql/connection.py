@@ -386,9 +386,9 @@ def connect(  # noqa: PLR0913
         timeouts: A `Timeouts` grouping the driver's timeout settings:
                        `httpx_request_timeout_secs`, the timeout for each HTTP request (default
                        10s; with `auth="oauth"` it also bounds the token chain, see `Timeouts`),
-                       and `statement_results_wallclock_secs`, the most wall-clock time spent
-                       getting one response to a fetch of statement results, across timed-out
-                       attempts (default 30s; see `Timeouts`). Override one with e.g.
+                       and `statement_results_response_wallclock_secs`, the most wall-clock time
+                       spent getting one response to a fetch of statement results, across
+                       timed-out attempts (default 30s; see `Timeouts`). Override one with e.g.
                        `dataclasses.replace(DEFAULT_TIMEOUTS, httpx_request_timeout_secs=5)`.
                        Defaults to `DEFAULT_TIMEOUTS`.
 
