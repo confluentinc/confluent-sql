@@ -28,9 +28,9 @@ from .exceptions import (
 )
 from .polling import poll_until
 from .retry import call_with_retries
-from .service_client import Requester
+from .service_client import Requester, raise_for_status_as_operational_error
 from .types import StrAnyDict
-from .utils import ExtensibleEnum, extract_error_detail, next_page_token
+from .utils import ExtensibleEnum, next_page_token
 
 ArtifactFile = Union[str, "os.PathLike[str]"]
 """Path of the archive to upload."""
@@ -458,7 +458,9 @@ class ArtifactsApi:
         response = self._request(
             self._PRESIGN_PATH, method="POST", json=payload, raise_for_status=False
         )
-        self._raise_for_status(response, prefix="Error requesting artifact upload URL")
+        raise_for_status_as_operational_error(
+            response, prefix="Error requesting artifact upload URL"
+        )
         return PresignedUploadUrl.from_response(_json_body(response, what="presigned upload URL"))
 
     def _upload(
@@ -592,7 +594,7 @@ class ArtifactsApi:
                 display_name=display_name,
                 http_status_code=response.status_code,
             )
-        self._raise_for_status(response, prefix="Error creating artifact")
+        raise_for_status_as_operational_error(response, prefix="Error creating artifact")
         return FlinkArtifact.from_response(_json_body(response, what="artifact response"))
 
     def get(self, artifact_id: str) -> FlinkArtifact:
@@ -616,7 +618,7 @@ class ArtifactsApi:
             raise_for_status=False,
         )
         self._raise_if_not_found(response, artifact_id)
-        self._raise_for_status(response, prefix="Error reading artifact")
+        raise_for_status_as_operational_error(response, prefix="Error reading artifact")
         return FlinkArtifact.from_response(_json_body(response, what="artifact response"))
 
     def list(
@@ -649,7 +651,7 @@ class ArtifactsApi:
         last_token: str | None = None
         while True:
             response = self._request(self._ARTIFACTS_PATH, params=params, raise_for_status=False)
-            self._raise_for_status(response, prefix="Error listing artifacts")
+            raise_for_status_as_operational_error(response, prefix="Error listing artifacts")
             body = _json_body(response, what="artifact list")
             try:
                 # The API reports an empty collection as an explicit JSON null, so None is
@@ -707,7 +709,7 @@ class ArtifactsApi:
             raise_for_status=False,
         )
         self._raise_if_not_found(response, artifact_id)
-        self._raise_for_status(response, prefix="Error deleting artifact")
+        raise_for_status_as_operational_error(response, prefix="Error deleting artifact")
         if wait_for_removal:
             self._wait_for_removal(artifact_id, timeout)
 
@@ -726,14 +728,6 @@ class ArtifactsApi:
                 f"Artifact '{artifact_id}' was not removed within {timeout} seconds"
             ),
         )
-
-    @staticmethod
-    def _raise_for_status(response: httpx.Response, *, prefix: str) -> None:
-        if not response.is_success:
-            raise OperationalError(
-                f"{prefix} '{response.status_code}' - {extract_error_detail(response)}",
-                http_status_code=response.status_code,
-            )
 
     @staticmethod
     def _raise_if_not_found(response: httpx.Response, artifact_id: str) -> None:
