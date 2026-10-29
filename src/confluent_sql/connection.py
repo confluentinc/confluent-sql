@@ -383,13 +383,14 @@ def connect(  # noqa: PLR0913
                        between 1-100 characters. Defaults to
                        "Confluent-SQL-Dbapi/v<version> (https://confluent.io; support@confluent.io)"
                        where version is from __version__.py
-        timeouts: A `Timeouts` grouping the driver's timeout settings: `http_secs`, the timeout
-                       for each HTTP request (default 10s; with `auth="oauth"` it also bounds
-                       the token chain, see `Timeouts`), and `result_page_secs`, the wall-clock
-                       window over which a blocking result read keeps retrying a results page
-                       that keeps timing out (default 30s). Override one with e.g.
-                       `dataclasses.replace(DEFAULT_TIMEOUTS, http_secs=5)`. Defaults to
-                       `DEFAULT_TIMEOUTS`.
+        timeouts: A `Timeouts` grouping the driver's timeout settings:
+                       `httpx_request_timeout_secs`, the timeout for each HTTP request (default
+                       10s; with `auth="oauth"` it also bounds the token chain, see `Timeouts`),
+                       and `statement_results_wallclock_secs`, the most wall-clock time spent
+                       getting one response to a fetch of statement results, across timed-out
+                       attempts (default 30s; see `Timeouts`). Override one with e.g.
+                       `dataclasses.replace(DEFAULT_TIMEOUTS, httpx_request_timeout_secs=5)`.
+                       Defaults to `DEFAULT_TIMEOUTS`.
 
     Returns:
         A Connection object representing the database connection
@@ -816,7 +817,7 @@ class Connection:
             provider = acquire(
                 oauth_cfg,
                 organization_id or None,
-                http_timeout_secs=timeouts.http_secs,
+                http_timeout_secs=timeouts.httpx_request_timeout_secs,
                 http_user_agent=self._http_user_agent,
                 provider_factory=oauth_provider_factory,
             )
@@ -1735,9 +1736,9 @@ class Connection:
     def http_timeout_secs(self) -> float:
         """
         Get the timeout (in seconds) applied to each HTTP request; shorthand for
-        `timeouts.http_secs`.
+        `timeouts.httpx_request_timeout_secs`.
         """
-        return self.timeouts.http_secs
+        return self.timeouts.httpx_request_timeout_secs
 
     @property
     def http_user_agent(self) -> str:
@@ -2097,7 +2098,7 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
-            timeout=self.timeouts.http_secs,
+            timeout=self.timeouts.httpx_request_timeout_secs,
         )
 
     def _build_dataplane_client(self) -> httpx.Client:
@@ -2118,7 +2119,7 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
-            timeout=self.timeouts.http_secs,
+            timeout=self.timeouts.httpx_request_timeout_secs,
         )
 
     def _auth_for(self, surface: ControlPlaneSurface) -> httpx.Auth:

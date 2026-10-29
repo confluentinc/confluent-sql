@@ -117,7 +117,9 @@ class TestControlplaneClient:
 
     def test_http_timeout_applied_to_controlplane_client(self) -> None:
         conn = _connect(
-            tableflow_api_key="tk", tableflow_api_secret="ts", timeouts=Timeouts(http_secs=10.0)
+            tableflow_api_key="tk",
+            tableflow_api_secret="ts",
+            timeouts=Timeouts(httpx_request_timeout_secs=10.0),
         )
         assert conn._controlplane.httpx_client.timeout.read == 10.0
 

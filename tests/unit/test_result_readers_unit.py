@@ -378,7 +378,7 @@ class TestBlockingIterationToleratesPageTimeouts:
         mock_statement_with_schema.can_fetch_results.return_value = True
         mock_statement_with_schema.type_converter.to_python_row.side_effect = lambda row: row
         mock_connection.statement_results_page_fetch_pause_secs = 0.0
-        mock_connection.timeouts.result_page_secs = self.WINDOW_SECS
+        mock_connection.timeouts.statement_results_wallclock_secs = self.WINDOW_SECS
         mock_connection._get_statement_results.side_effect = list(pages)
         return AppendOnlyResultReader(
             connection=mock_connection,
