@@ -15,6 +15,8 @@ from typing import Any, TypeVar
 
 import httpx
 
+from .context import BACKGROUND, Context
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -52,6 +54,7 @@ def call_with_retries(
     *args: Any,
     max_retries: int = 3,
     exceptions: tuple[type[BaseException], ...] = DEFAULT_RETRYABLE_EXCEPTIONS,
+    ctx: Context = BACKGROUND,
     **kwargs: Any,
 ) -> T:
     """Call func(*args, **kwargs), retrying up to max_retries times on the given exceptions.
@@ -59,6 +62,13 @@ def call_with_retries(
     Sleeps a short exponential backoff with jitter between attempts and logs one INFO line per
     retry naming the attempt number. After max_retries retries (max_retries + 1 total attempts),
     the original exception from the final attempt is re-raised.
+
+    `ctx` bounds the whole call in wall-clock time (it is consumed here, not forwarded to func): a
+    retry happens only if the deadline outlasts its backoff sleep, so no sleep runs past the
+    deadline and no attempt is begun that has no time left. When the deadline is what stops the
+    retries, the last attempt's own exception is raised, exactly as when max_retries runs out. The
+    first attempt is always made, even under an already-expired ctx. Bounding each attempt itself
+    is func's job (see `ServiceClient`, which caps its requests' timeouts at the ctx's remainder).
     """
     delay = _RETRY_BASE_DELAY_SECS
     attempt = 0
@@ -70,6 +80,15 @@ def call_with_retries(
             if attempt > max_retries:
                 raise
             sleep_secs = delay * random.uniform(*_RETRY_JITTER_BAND)
+            remaining = ctx.remaining_secs()
+            if remaining is not None and remaining <= sleep_secs:
+                logger.info(
+                    "Not retrying %s: deadline (%.3fs left) is nearer than the %.3fs backoff",
+                    getattr(func, "__name__", repr(func)),
+                    remaining,
+                    sleep_secs,
+                )
+                raise
             logger.info(
                 'Retrying %s after transient error (attempt %d/%d): "%s"; sleeping %.3fs',
                 getattr(func, "__name__", repr(func)),
@@ -78,5 +97,7 @@ def call_with_retries(
                 e,
                 sleep_secs,
             )
+            # No re-check of the deadline after the sleep: if the OS wakes us late, the next attempt
+            # is still clamped to a tiny remainder by the caller. This is not a realtime engine.
             time.sleep(sleep_secs)
             delay *= _RETRY_DELAY_GROWTH

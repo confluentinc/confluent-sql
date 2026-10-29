@@ -428,8 +428,10 @@ class TestBlockingIterationToleratesPageTimeouts:
     def _timing_out_reader(self, mock_connection, mock_statement_with_schema, clock, mode, *pages):
         """Like `_reader`, but a `_SlowPage` advances the fake clock before raising."""
         replay = iter(pages)
+        self.fetch_remaining_secs: list[float | None] = []
 
-        def fetch(*_args):
+        def fetch(*_args, ctx):
+            self.fetch_remaining_secs.append(ctx.remaining_secs())
             page = next(replay)
             if isinstance(page, self._SlowPage):
                 clock[0] += page.secs
@@ -472,6 +474,61 @@ class TestBlockingIterationToleratesPageTimeouts:
         # 10s + 10s + 10s reaches the 30s window on the third slow page.
         assert exc_info.value is slow[2].error
         assert mock_connection._get_statement_results.call_count == 3
+
+    def test_every_fetch_in_a_run_is_bounded_by_the_runs_deadline(
+        self, mock_connection, mock_statement_with_schema, fake_clock
+    ):
+        """The window is a `Context` handed to each page fetch, so the request itself is capped at
+        the time left: a fetch started near the end of the window cannot run past it."""
+        reader = self._timing_out_reader(
+            mock_connection,
+            mock_statement_with_schema,
+            fake_clock,
+            ExecutionMode.SNAPSHOT,
+            *self._slow(2, 10.0),
+            (self._rows(1), None),
+        )
+
+        assert list(reader) == [(1, "n1", 100)]
+        assert self.fetch_remaining_secs == [self.WINDOW_SECS, 20.0, 10.0]
+
+    def test_a_response_starts_a_fresh_window_for_the_next_fetch(
+        self, mock_connection, mock_statement_with_schema, fake_clock
+    ):
+        reader = self._timing_out_reader(
+            mock_connection,
+            mock_statement_with_schema,
+            fake_clock,
+            ExecutionMode.STREAMING_QUERY,
+            *self._slow(1, 10.0),
+            ([], self.PAGE_TOKEN),  # an empty page is still a response: it ends the run
+            *self._slow(1, 10.0),
+            (self._rows(1), None),
+        )
+
+        assert list(reader) == [(1, "n1", 100)]
+        assert self.fetch_remaining_secs == [self.WINDOW_SECS, 20.0, self.WINDOW_SECS, 20.0]
+
+    def test_the_pacing_pause_is_not_charged_to_the_window(
+        self, mock_connection, mock_statement_with_schema, fake_clock, monkeypatch
+    ):
+        """The deliberate pause between fetches is not server response time: even one longer than
+        the whole window must leave the next fetch its full window, not a 1ms timeout."""
+        monkeypatch.setattr(
+            time, "sleep", lambda secs: fake_clock.__setitem__(0, fake_clock[0] + secs)
+        )
+        reader = self._timing_out_reader(
+            mock_connection,
+            mock_statement_with_schema,
+            fake_clock,
+            ExecutionMode.STREAMING_QUERY,
+            ([], self.PAGE_TOKEN),
+            (self._rows(1), None),
+        )
+        mock_connection.statement_results_page_fetch_pause_secs = self.WINDOW_SECS + 10.0
+
+        assert list(reader) == [(1, "n1", 100)]
+        assert self.fetch_remaining_secs == [self.WINDOW_SECS, self.WINDOW_SECS]
 
     def test_a_successful_page_restarts_the_window(
         self, mock_connection, mock_statement_with_schema, fake_clock
