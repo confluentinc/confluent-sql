@@ -340,6 +340,32 @@ class TestConnectionStopStatement:
         assert request_mock.call_count == 3
         assert [call.args[0] for call in request_mock.call_args_list] == ["PATCH", "GET", "GET"]
 
+    def test_blocking_wait_caps_each_poll_at_the_waits_budget(
+        self,
+        invalid_credential_connection: Connection,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Inside the wait, each poll's httpx timeouts are capped at the time the wait has left;
+        the PATCH that starts the stop is outside the wait and is not."""
+        mocker.patch("time.sleep")
+        request_mock = mocker.patch.object(
+            invalid_credential_connection._dataplane.httpx_client, "request"
+        )
+        request_mock.side_effect = [
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPING", stopped=True)),
+            _ok_response(statement_response_factory(name="stmt-1", phase="STOPPED", stopped=True)),
+        ]
+
+        invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=True, timeout=5)
+
+        patch_call, *poll_calls = request_mock.call_args_list
+        assert "timeout" not in patch_call.kwargs
+        assert len(poll_calls) == 2
+        for poll in poll_calls:
+            assert 0 < poll.kwargs["timeout"].read <= 5
+
     def test_blocking_survives_a_timed_out_poll(
         self,
         invalid_credential_connection: Connection,
