@@ -97,5 +97,7 @@ def call_with_retries(
                 e,
                 sleep_secs,
             )
+            # No re-check of the deadline after the sleep: if the OS wakes us late, the next attempt
+            # is still clamped to a tiny remainder by the caller. This is not a realtime engine.
             time.sleep(sleep_secs)
             delay *= _RETRY_DELAY_GROWTH

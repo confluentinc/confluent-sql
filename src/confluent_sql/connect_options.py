@@ -62,9 +62,10 @@ class Timeouts:
     """The most wall-clock time the driver spends getting one response to a fetch of statement
     results from the server, however many timed-out attempts that takes. It applies to blocking
     reads (iterating a cursor, `fetchall()`, snapshot `fetchone()`/`fetchmany()`), which retry a
-    fetch that times out; counted from the first timeout of a run, after which the last
-    `RequestTimeoutError` is raised. A response, even an empty one, ends the run, and a multi-fetch
-    call starts it afresh for each fetch.
+    fetch that times out; counted from the run's first attempt (after any
+    `statement_results_page_fetch_pause_millis` pause, which is not charged to it), after which
+    the last `RequestTimeoutError` is raised. A response, even an empty one, ends the run, and a
+    multi-fetch call starts it afresh for each fetch.
 
     It is not a cap on how long a read may take overall: a streaming query can wait indefinitely
     for rows, and a fetch that is slow but answers within `httpx_request_timeout_secs` never
