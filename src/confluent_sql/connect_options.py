@@ -7,6 +7,7 @@ overrides only the part it cares about
 to the fields. New groups of like-minded options belong in this module.
 """
 
+import math
 import warnings
 from dataclasses import dataclass
 
@@ -23,8 +24,21 @@ def _require_positive_number(owner: str, name: str, value: object) -> None:
     # almost certainly a programming error rather than a valid timeout.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InterfaceError(f"{owner}.{name} must be a number, got {type(value).__name__}")
-    if value <= 0:
+    # `not value > 0`, not `value <= 0`: every comparison with NaN is false, so the latter would
+    # let NaN through, and a NaN window would then never expire.
+    if not value > 0:
         raise InterfaceError(f"{owner}.{name} must be positive, got {value}")
+    # +inf, and ints beyond float range (math.isfinite raises OverflowError for those), would pass
+    # the check above but overflow in the socket layer on the first request, as a raw OverflowError
+    # far from the cause.
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        raise InterfaceError(
+            f"{owner}.{name} must be finite, got an integer too large for a float"
+        ) from None
+    if not finite:
+        raise InterfaceError(f"{owner}.{name} must be finite, got {value}")
 
 
 @dataclass(frozen=True)

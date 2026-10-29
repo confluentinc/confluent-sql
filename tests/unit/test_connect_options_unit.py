@@ -27,9 +27,23 @@ class TestTimeouts:
     @pytest.mark.parametrize(
         "field", ["httpx_request_timeout_secs", "statement_results_response_wallclock_secs"]
     )
-    @pytest.mark.parametrize("bad", [0, -1, -0.5])
+    @pytest.mark.parametrize("bad", [0, -1, -0.5, float("nan")], ids=["0", "-1", "-0.5", "nan"])
     def test_rejects_non_positive(self, field, bad):
         with pytest.raises(InterfaceError, match=rf"Timeouts\.{field} must be positive, got {bad}"):
+            Timeouts(**{field: bad})
+
+    @pytest.mark.parametrize(
+        "field", ["httpx_request_timeout_secs", "statement_results_response_wallclock_secs"]
+    )
+    @pytest.mark.parametrize(
+        ("bad", "shown"),
+        [(float("inf"), "inf"), (10**400, "an integer too large for a float")],
+        ids=["inf", "huge-int"],
+    )
+    def test_rejects_non_finite(self, field, bad, shown):
+        """+inf and ints beyond float range pass a bare `> 0` check but later overflow in the
+        socket layer with a raw OverflowError, far from the cause."""
+        with pytest.raises(InterfaceError, match=rf"Timeouts\.{field} must be finite, got {shown}"):
             Timeouts(**{field: bad})
 
     @pytest.mark.parametrize(
