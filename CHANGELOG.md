@@ -22,7 +22,7 @@ All notable changes to this dbapi driver will be documented in this file.
     - `ReauthenticationRequired`: the session can only be recovered by a fresh login. Its `reason` is a `ReauthenticationReason`: `ABSOLUTE_EXPIRY` (the ~8h session limit) or `REFRESH_REJECTED`.
 - `RequestTimeoutError`, a subclass of `OperationalError` importable from `confluent_sql`, raised when an individual HTTP request times out. Existing `except OperationalError` handlers keep working. (#236)
 
-- `Timeouts.result_page_secs` (default 30.0), passed as `connect(..., timeouts=Timeouts(result_page_secs=...))`: the wall-clock window over which a blocking result read keeps retrying a results page that keeps timing out, regardless of how many attempts that takes. Override a single field with `dataclasses.replace(DEFAULT_TIMEOUTS, result_page_secs=60)`. (#236)
+- `Timeouts.result_page_secs` (default 30.0), passed as `connect(..., timeouts=Timeouts(result_page_secs=...))`: the wall-clock window over which a blocking result read keeps retrying a results page that keeps timing out, regardless of how many attempts that takes. Override a single field with `dataclasses.replace(DEFAULT_TIMEOUTS, result_page_secs=60)`. A `result_page_secs` no longer than `http_secs` leaves no room for a retry, so `Timeouts` emits a `UserWarning` for it. (#236)
 
 ### Fixed
 

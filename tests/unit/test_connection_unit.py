@@ -2657,7 +2657,7 @@ class TestHttpTimeoutSecs:
             cloud_region="us-east-1",
             flink_api_key="key",
             flink_api_secret="secret",
-            timeouts=Timeouts(http_secs=timeout_value),
+            timeouts=Timeouts(http_secs=timeout_value, result_page_secs=timeout_value * 3),
         )
         assert conn.http_timeout_secs == timeout_value
         # httpx wraps the timeout into a Timeout(connect, read, write, pool) object.
