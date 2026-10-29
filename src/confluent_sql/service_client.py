@@ -21,6 +21,7 @@ from typing import Any, NoReturn, Protocol
 import httpx
 
 from .exceptions import InterfaceError, OperationalError, RequestTimeoutError
+from .polling import remaining_budget_secs
 from .retry import DEFAULT_RETRYABLE_EXCEPTIONS, DEFAULT_RETRYABLE_STATUS_CODES, call_with_retries
 from .utils import extract_error_detail
 
@@ -85,6 +86,11 @@ def _wrap_request_error(e: httpx.RequestError) -> NoReturn:
     (#236)."""
     error_cls = RequestTimeoutError if isinstance(e, httpx.TimeoutException) else OperationalError
     raise error_cls(f"error sending request: {type(e).__name__}: {e}") from e
+
+
+_MIN_CLAMPED_TIMEOUT_SECS = 0.001
+"""Floor for a clamped httpx timeout, so an attempt that starts at (or just past) the deadline
+fails fast as a timeout instead of being handed a zero or negative one."""
 
 
 class ServiceClient:
@@ -188,11 +194,32 @@ class ServiceClient:
         """Send one request without translating httpx.RequestError, so `_get_with_retries` can see
         the raw exception types its retry loop keys on. Never call this outside this class."""
         client = self.httpx_client
+        kwargs = self._clamped_to_poll_budget(client, kwargs)
         response = self._send_policy(lambda: client.request(method, url, **kwargs))
         logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
         if raise_for_status:
             raise_for_status_as_operational_error(response)
         return response
+
+    @staticmethod
+    def _clamped_to_poll_budget(client: httpx.Client, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Inside a `poll_until` wait, cap each of this attempt's httpx timeouts (the caller's
+        `timeout=` if given, else the client's) at the wait's remaining wall-clock budget, so one
+        slow attempt cannot run past the wait's deadline. Never raises a timeout. Evaluated per
+        attempt, so a retried GET's later attempts see a shrinking budget."""
+        remaining = remaining_budget_secs()
+        if remaining is None:
+            return kwargs
+        cap = max(remaining, _MIN_CLAMPED_TIMEOUT_SECS)
+        requested = kwargs.get("timeout", httpx.USE_CLIENT_DEFAULT)
+        base = client.timeout if requested is httpx.USE_CLIENT_DEFAULT else httpx.Timeout(requested)
+        clamped = httpx.Timeout(
+            connect=None if base.connect is None else min(base.connect, cap),
+            read=None if base.read is None else min(base.read, cap),
+            write=None if base.write is None else min(base.write, cap),
+            pool=None if base.pool is None else min(base.pool, cap),
+        )
+        return {**kwargs, "timeout": clamped}
 
     def set_user_agent(self, value: str) -> None:
         """Apply a new User-Agent to the already-built client; a not-yet-built one picks it up from
