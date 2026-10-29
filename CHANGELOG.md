@@ -11,6 +11,7 @@ All notable changes to this dbapi driver will be documented in this file.
 - `connect()` and `Connection.__init__()` no longer accept `http_timeout_secs`. The setting moved into the new frozen `Timeouts` dataclass (`confluent_sql.Timeouts`, defined in the new `confluent_sql.connect_options` module): replace `http_timeout_secs=5` with `timeouts=Timeouts(httpx_request_timeout_secs=5)`. `connect()` defaults `timeouts` to `DEFAULT_TIMEOUTS`; `Connection.__init__()` has no default and requires a `timeouts` keyword argument. Invalid values still raise `InterfaceError`, now naming the field (`Timeouts.httpx_request_timeout_secs must be positive, got 0`). `Connection.http_timeout_secs` remains as a read-only shorthand for `connection.timeouts.httpx_request_timeout_secs`. (#236)
 - `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`).
 
+
 ### Added
 
 - Interactive browser login: `connect(auth="oauth", ...)` signs in once through your browser instead of requiring API keys, and the login is shared by every connection in the process. `organization_id` is optional. While the login is in progress the driver listens on the fixed loopback port `127.0.0.1:26642`, which must be free (otherwise `OAuthLoginError` with reason `PORT_IN_USE`). See the README and `examples/interactive_oauth_login.py` (#150).
