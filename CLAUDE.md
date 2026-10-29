@@ -25,11 +25,14 @@ on the control plane, the surface) they mean and never a retry policy:
   errors (`httpx.NetworkError`, `httpx.RemoteProtocolError`; #137) and transient HTTP statuses
   (429/500/502/503/504, via `DEFAULT_RETRYABLE_STATUS_CODES`; #140), with a short exponential
   backoff before giving up. Timeouts are deliberately not retried; wait loops tolerate them via
-  `poll_until` (#236), which also publishes its deadline (`remaining_budget_secs()`) so that
-  `ServiceClient.request` caps each attempt's httpx timeouts at the time the wait has left (per
-  phase: httpx has no total-request deadline). Timeouts are wall-clock budgets, never attempt
-  counts. Status retries ride a private `_RetryableStatusError` sentinel, so `call_with_retries`
-  itself stays HTTP-agnostic.
+  `poll_until` (#236), which also hands each attempt a Go-style `Context` (`context.py`) carrying
+  the wait's deadline; a blocking result read does the same with its
+  `statement_results_response_wallclock_secs` window. Pass it down explicitly as `ctx=` to the
+  request, and `ServiceClient.request` caps that request's httpx timeouts at the time left (per
+  phase: httpx has no total-request deadline), and a retried GET stops retrying once the deadline
+  cannot outlast the next backoff (`call_with_retries(..., ctx=)`). A new wait's attempt should
+  always forward its `ctx`. Timeouts are wall-clock budgets, never attempt counts. Status retries ride a private
+  `_RetryableStatusError` sentinel, so `call_with_retries` itself stays HTTP-agnostic.
 - **Every other method is sent exactly once**: re-issuing a POST/PATCH/DELETE after a dropped
   connection can double-submit or double-mutate state.
 

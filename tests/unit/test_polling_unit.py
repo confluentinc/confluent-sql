@@ -134,7 +134,7 @@ class TestPollUntil:
         return OperationalError("gave up")
 
     def test_returns_first_attempt_result_without_sleeping(self, fake_clock):
-        result = poll_until(lambda: "done", timeout=10, on_timeout=self._deadline_error)
+        result = poll_until(lambda ctx: "done", timeout=10, on_timeout=self._deadline_error)
 
         assert result == "done"
         assert fake_clock.slept == []
@@ -142,7 +142,7 @@ class TestPollUntil:
     def test_not_immediate_sleeps_before_first_attempt(self, fake_clock):
         attempts_at: list[float] = []
 
-        def attempt() -> str:
+        def attempt(ctx) -> str:
             attempts_at.append(fake_clock.now)
             return "done"
 
@@ -153,7 +153,7 @@ class TestPollUntil:
     def test_polls_until_attempt_yields_a_result(self, fake_clock):
         results = iter([None, None, "done"])
 
-        result = poll_until(lambda: next(results), timeout=60, on_timeout=self._deadline_error)
+        result = poll_until(lambda ctx: next(results), timeout=60, on_timeout=self._deadline_error)
 
         assert result == "done"
         assert len(fake_clock.slept) == 2
@@ -161,7 +161,7 @@ class TestPollUntil:
     def test_slow_poll_is_treated_as_not_done_yet(self, fake_clock):
         outcomes = iter([RequestTimeoutError("slow"), None, RequestTimeoutError("slow"), "done"])
 
-        def attempt() -> str | None:
+        def attempt(ctx) -> str | None:
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -172,7 +172,7 @@ class TestPollUntil:
     def test_deadline_raises_on_timeout_error_chained_to_last_slow_poll(self, fake_clock):
         slow = RequestTimeoutError("slow")
 
-        def attempt() -> str:
+        def attempt(ctx) -> str:
             raise slow
 
         with pytest.raises(OperationalError, match="gave up") as exc_info:
@@ -183,12 +183,12 @@ class TestPollUntil:
 
     def test_deadline_without_slow_polls_has_no_cause(self, fake_clock):
         with pytest.raises(OperationalError, match="gave up") as exc_info:
-            poll_until(lambda: None, timeout=5, on_timeout=self._deadline_error)
+            poll_until(lambda ctx: None, timeout=5, on_timeout=self._deadline_error)
 
         assert exc_info.value.__cause__ is None
 
     def test_other_errors_propagate(self, fake_clock):
-        def attempt() -> str:
+        def attempt(ctx) -> str:
             raise OperationalError("hard failure")
 
         with pytest.raises(OperationalError, match="hard failure"):
@@ -197,7 +197,7 @@ class TestPollUntil:
     def test_slow_first_attempt_is_charged_against_the_budget(self, fake_clock):
         calls = 0
 
-        def attempt() -> None:
+        def attempt(ctx) -> None:
             nonlocal calls
             calls += 1
             fake_clock.now += 10  # the attempt itself consumes the whole budget
@@ -209,22 +209,19 @@ class TestPollUntil:
 
 
 @pytest.mark.unit
-class TestRemainingBudget:
-    """`poll_until` publishes its deadline so the requests made inside an attempt can clamp their
-    own timeouts to the time left (see `ServiceClient.request`)."""
+class TestPollUntilContext:
+    """`poll_until` hands each attempt a `Context` whose deadline is the wait's, so the requests an
+    attempt makes can keep to the wait's wall-clock budget (see `ServiceClient.request`)."""
 
     @staticmethod
     def _on_timeout() -> OperationalError:
         return OperationalError("timed out")
 
-    def test_no_budget_outside_a_poll(self):
-        assert polling.remaining_budget_secs() is None
-
     def test_each_attempt_sees_the_time_left(self, fake_clock):
         seen: list[float | None] = []
 
-        def attempt():
-            seen.append(polling.remaining_budget_secs())
+        def attempt(ctx):
+            seen.append(ctx.remaining_secs())
             fake_clock.now += 2.0  # the attempt itself takes time
             return "done" if len(seen) == 2 else None
 
@@ -238,29 +235,22 @@ class TestRemainingBudget:
         [(10.0, 3.0, 3.0), (2.0, 50.0, 2.0)],
         ids=["inner-shorter", "outer-shorter"],
     )
-    def test_nested_polls_are_bounded_by_the_tighter_deadline(
+    def test_a_nested_wait_given_its_parents_ctx_is_bounded_by_the_tighter_deadline(
         self, fake_clock, outer, inner, expected
     ):
-        def inner_attempt():
-            return polling.remaining_budget_secs()
-
-        def outer_attempt():
-            return poll_until(inner_attempt, timeout=inner, on_timeout=self._on_timeout)
+        def outer_attempt(ctx):
+            return poll_until(
+                lambda inner_ctx: inner_ctx.remaining_secs(),
+                timeout=inner,
+                on_timeout=self._on_timeout,
+                ctx=ctx,
+            )
 
         assert poll_until(outer_attempt, timeout=outer, on_timeout=self._on_timeout) == expected
 
-    @pytest.mark.parametrize("outcome", ["returns", "raises", "times-out"])
-    def test_budget_is_cleared_when_the_poll_ends_however_it_ends(self, fake_clock, outcome):
-        def attempt():
-            if outcome == "raises":
-                raise ValueError("boom")
-            return "done" if outcome == "returns" else None
+    def test_a_wait_with_no_parent_ctx_is_bounded_only_by_its_own_timeout(self, fake_clock):
+        result = poll_until(
+            lambda ctx: ctx.remaining_secs(), timeout=7.0, on_timeout=self._on_timeout
+        )
 
-        expected = {"returns": None, "raises": ValueError, "times-out": OperationalError}[outcome]
-        if expected is None:
-            poll_until(attempt, timeout=1.0, on_timeout=self._on_timeout)
-        else:
-            with pytest.raises(expected):
-                poll_until(attempt, timeout=1.0, on_timeout=self._on_timeout)
-
-        assert polling.remaining_budget_secs() is None
+        assert result == 7.0
