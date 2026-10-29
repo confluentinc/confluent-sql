@@ -509,6 +509,27 @@ class TestBlockingIterationToleratesPageTimeouts:
         assert list(reader) == [(1, "n1", 100)]
         assert self.fetch_remaining_secs == [self.WINDOW_SECS, 20.0, self.WINDOW_SECS, 20.0]
 
+    def test_the_pacing_pause_is_not_charged_to_the_window(
+        self, mock_connection, mock_statement_with_schema, fake_clock, monkeypatch
+    ):
+        """The deliberate pause between fetches is not server response time: even one longer than
+        the whole window must leave the next fetch its full window, not a 1ms timeout."""
+        monkeypatch.setattr(
+            time, "sleep", lambda secs: fake_clock.__setitem__(0, fake_clock[0] + secs)
+        )
+        reader = self._timing_out_reader(
+            mock_connection,
+            mock_statement_with_schema,
+            fake_clock,
+            ExecutionMode.STREAMING_QUERY,
+            ([], self.PAGE_TOKEN),
+            (self._rows(1), None),
+        )
+        mock_connection.statement_results_page_fetch_pause_secs = self.WINDOW_SECS + 10.0
+
+        assert list(reader) == [(1, "n1", 100)]
+        assert self.fetch_remaining_secs == [self.WINDOW_SECS, self.WINDOW_SECS]
+
     def test_a_successful_page_restarts_the_window(
         self, mock_connection, mock_statement_with_schema, fake_clock
     ):

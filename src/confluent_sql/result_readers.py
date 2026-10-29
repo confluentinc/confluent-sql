@@ -515,11 +515,11 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         - In streaming mode, this means iteration will block/wait for new data
         - A single results page that times out (`RequestTimeoutError`) is retried, since
           blocking is this method's contract, for up to the connection's
-          `timeouts.statement_results_response_wallclock_secs` of wall-clock time since the first
-          of a run of timed-out fetches (however many attempts that takes); then the last one is
-          raised. A successful fetch, even an empty page, ends the run. The failed fetch leaves
-          reader state untouched, so the retry (or a caller's own retry after the raise) asks for
-          the same page again.
+          `timeouts.statement_results_response_wallclock_secs` of wall-clock time since the
+          run's first attempt, after the pacing pause (however many attempts that takes); then the
+          last one is raised. A successful fetch, even an empty page, ends the run. The failed
+          fetch leaves reader state untouched, so the retry (or a caller's own retry after the
+          raise) asks for the same page again.
 
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
@@ -545,8 +545,10 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             # pauses to avoid hammering the server with requests when data currently available.)
             # Each fetch is bounded by the run's `Context`, created when a run starts and kept
             # until a response ends it: the request itself is capped at the time the window has
-            # left, so a fetch started near its end cannot run past it.
+            # left, so a fetch started near its end cannot run past it. The window bounds server
+            # response time, so the pacing pause is served before it starts, not charged to it.
             if run_ctx is None:
+                self._pause_before_fetch()
                 run_ctx = BACKGROUND.with_timeout(
                     self._connection.timeouts.statement_results_response_wallclock_secs
                 )
@@ -562,6 +564,18 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             else:
                 run_ctx = None
 
+    def _pause_before_fetch(self) -> None:
+        """Sleep out what is left of the configured pause since the last fetch, if anything, so the
+        endpoint is not hit more often than that. Idempotent: once slept, a repeat call finds the
+        pause elapsed and does nothing."""
+        if self._most_recent_results_fetch_time is None:
+            return
+        elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
+        if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
+            pause_secs = self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
+            time.sleep(pause_secs)
+            self._metrics.paused_before_fetch(pause_secs)
+
     def _fetch_next_page(self, ctx: Context = BACKGROUND) -> None:
         """Try to fetch and process the next page of results, under `ctx` (the blocking read's
         current window; no deadline for a non-blocking fetch).
@@ -576,18 +590,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         if not self._statement.schema:
             raise InterfaceError("Trying to fetch results for a non-query statement")
 
-        if self._most_recent_results_fetch_time is not None:
-            # Should we pause before fetching the next page?
-            elapsed_secs = time.monotonic() - self._most_recent_results_fetch_time
-            if elapsed_secs < self._connection.statement_results_page_fetch_pause_secs:
-                # Sleep the difference between when we last fetched results
-                # and the configured pause time so that we ensure to not
-                # hit the endpoint for this statement more often than
-                # the configured pause time.
-                pause_secs = self._connection.statement_results_page_fetch_pause_secs - elapsed_secs
-                time.sleep(pause_secs)
-                self._metrics.paused_before_fetch(pause_secs)
-
+        self._pause_before_fetch()
         self._metrics.prep_for_fetch()
 
         # Get (possibly empty) list of ChangelogRow results from the server and the next page link,
