@@ -464,3 +464,49 @@ class TestPerAttemptTimeoutClamp:
         for value in self._timeouts(server).values():
             assert value is not None
             assert 0 < value <= expected_max
+
+    @pytest.mark.parametrize(
+        "request_timeout",
+        [None, httpx.Timeout(10.0, read=None), httpx.Timeout(None, connect=1.0)],
+        ids=["none", "unlimited-read", "unlimited-all-but-connect"],
+    )
+    def test_an_unlimited_phase_is_capped_too(self, request_timeout: Any) -> None:
+        """`None` means unlimited to httpx, which must not let a phase outlive the deadline."""
+        server = self._send_with_budget(2.0, timeout=request_timeout)
+
+        for value in self._timeouts(server).values():
+            assert value is not None
+            assert 0 < value <= 2.0
+
+    def test_a_client_with_no_default_timeout_is_capped(self) -> None:
+        server = Server(200)
+        client = ServiceClient(
+            lambda: httpx.Client(
+                base_url="https://x.invalid",
+                timeout=None,
+                transport=httpx.MockTransport(server.handle),
+            )
+        )
+        client.request(URL, ctx=BACKGROUND.with_timeout(2.0))
+
+        for value in self._timeouts(server).values():
+            assert value is not None
+            assert 0 < value <= 2.0
+
+    def test_a_send_replayed_by_the_policy_sees_the_budget_left_by_then(self, mocker) -> None:
+        """The send policy may call back after a long wait (OAuth reauthentication): the replay
+        must be clamped to what is left at that point, not at the first send."""
+        now = [1000.0]
+        mocker.patch("confluent_sql.context.time.monotonic", lambda: now[0])
+
+        def policy(do_request):
+            do_request()
+            now[0] += 1.5  # e.g. a reauthentication that took a while
+            return do_request()
+
+        client, server = make_client(200, 200, send_policy=policy)
+        client.request(URL, ctx=BACKGROUND.with_timeout(2.0))
+
+        first, replay = (r.extensions["timeout"] for r in server.requests)
+        assert max(first.values()) == pytest.approx(2.0)
+        assert max(replay.values()) == pytest.approx(0.5)
