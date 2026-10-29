@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeAlias, TypeVar
 
+from .context import BACKGROUND, Context
 from .exceptions import InterfaceError, NotSupportedError, RequestTimeoutError
 from .execution_mode import ExecutionMode
 from .statement import Op, Schema, Statement
@@ -523,7 +524,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         Note: This blocking behavior differs from fetchone/fetchmany in streaming
         mode, which return immediately with None/empty list if no data is buffered.
         """
-        timeout_run_started_at: float | None = None
+        run_ctx: Context | None = None
         while True:
             # If buffer has results, return one immediately
             if len(self._results) > 0:
@@ -542,24 +543,28 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             #
             # (This is not a completely hard loop because _fetch_next_page() internally
             # pauses to avoid hammering the server with requests when data currently available.)
-            fetch_started_at = time.monotonic()
+            # Each fetch is bounded by the run's `Context`, created when a run starts and kept
+            # until a response ends it: the request itself is capped at the time the window has
+            # left, so a fetch started near its end cannot run past it.
+            if run_ctx is None:
+                run_ctx = BACKGROUND.with_timeout(
+                    self._connection.timeouts.statement_results_response_wallclock_secs
+                )
             try:
-                self._fetch_next_page()
+                self._fetch_next_page(run_ctx)
             except RequestTimeoutError as e:
-                if timeout_run_started_at is None:
-                    timeout_run_started_at = fetch_started_at
-                run_secs = time.monotonic() - timeout_run_started_at
-                if run_secs >= self._connection.timeouts.statement_results_response_wallclock_secs:
+                remaining = run_ctx.remaining_secs()
+                if remaining is not None and remaining <= 0:
                     raise
                 logger.info(
-                    f"Results page fetch timed out ({run_secs:.1f}s into a run of timeouts), "
-                    f"will retry: {e}"
+                    f"Results page fetch timed out ({remaining:.1f}s left), will retry: {e}"
                 )
             else:
-                timeout_run_started_at = None
+                run_ctx = None
 
-    def _fetch_next_page(self) -> None:
-        """Try to fetch and process the next page of results.
+    def _fetch_next_page(self, ctx: Context = BACKGROUND) -> None:
+        """Try to fetch and process the next page of results, under `ctx` (the blocking read's
+        current window; no deadline for a non-blocking fetch).
 
         Pauses momentarily periodically if configured to avoid hard loops
         and possible rate limiting when data isn't available yet in streaming scenarios.
@@ -588,7 +593,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
         # Get (possibly empty) list of ChangelogRow results from the server and the next page link,
         # if any, for the next fetch.
         results, next_page_link = self._connection._get_statement_results(
-            self._statement.name, self._next_page
+            self._statement.name, self._next_page, ctx=ctx
         )
 
         # Do the accounting that we did just fetch results

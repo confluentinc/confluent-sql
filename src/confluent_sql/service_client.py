@@ -20,8 +20,8 @@ from typing import Any, NoReturn, Protocol
 
 import httpx
 
+from .context import BACKGROUND, Context
 from .exceptions import InterfaceError, OperationalError, RequestTimeoutError
-from .polling import remaining_budget_secs
 from .retry import DEFAULT_RETRYABLE_EXCEPTIONS, DEFAULT_RETRYABLE_STATUS_CODES, call_with_retries
 from .utils import extract_error_detail
 
@@ -36,10 +36,18 @@ SendPolicy = Callable[[Callable[[], httpx.Response]], httpx.Response]
 class Requester(Protocol):
     """A bound way to send requests to one API: a `ServiceClient.request`, or that plus the
     credential and logging rule of one control-plane surface. Service APIs depend on this alone,
-    so they need not import (or know about) the host `Connection`."""
+    so they need not import (or know about) the host `Connection`. A request made inside a timed
+    wait passes that wait's `Context` as `ctx=`, which `ServiceClient.request` honors; one made
+    outside any wait runs under `BACKGROUND`."""
 
     def __call__(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
+        self,
+        url: str,
+        method: str = "GET",
+        raise_for_status: bool = True,
+        *,
+        ctx: Context = BACKGROUND,
+        **kwargs: Any,
     ) -> httpx.Response: ...
 
 
@@ -136,6 +144,7 @@ class ServiceClient:
         raise_for_status: bool = True,
         *,
         log_body: bool = True,
+        ctx: Context = BACKGROUND,
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a request, translating every httpx.RequestError into OperationalError (#138).
@@ -146,8 +155,10 @@ class ServiceClient:
         False (callers that map specific codes -- 404/409 -- to their own exceptions); then the
         final response is returned as-is, even after retries are exhausted. `log_body=False` keeps
         the response body out of the DEBUG log, for responses carrying secrets (the Artifacts
-        presign response carries a live upload URL). `kwargs` (params, json, headers, auth,
-        timeout, ...) go to `httpx.Client.request`.
+        presign response carries a live upload URL). `ctx` is the `Context` of the operation this
+        request belongs to, e.g. the one a `poll_until` attempt is handed: each attempt's httpx
+        timeouts are capped at the time its deadline has left, so the request cannot run past it.
+        `kwargs` (params, json, headers, auth, timeout, ...) go to `httpx.Client.request`.
 
         Raises:
             InterfaceError: If the owning connection is closed.
@@ -155,20 +166,20 @@ class ServiceClient:
                 `RequestTimeoutError` when the failure was a single httpx timeout.
         """
         if method.upper() == "GET":
-            return self._get_with_retries(url, raise_for_status, log_body, **kwargs)
+            return self._get_with_retries(url, raise_for_status, log_body, ctx, **kwargs)
         try:
-            return self._send_untranslated(method, url, raise_for_status, log_body, **kwargs)
+            return self._send_untranslated(method, url, raise_for_status, log_body, ctx, **kwargs)
         except httpx.RequestError as e:
             _wrap_request_error(e)
 
     def _get_with_retries(
-        self, url: str, raise_for_status: bool, log_body: bool, **kwargs: Any
+        self, url: str, raise_for_status: bool, log_body: bool, ctx: Context, **kwargs: Any
     ) -> httpx.Response:
         """Retry loop for GETs. Once retries are exhausted, transport errors become
         OperationalError and the final response is returned for `raise_for_status` to judge."""
 
         def _get_or_flag_retryable_status() -> httpx.Response:
-            response = self._send_untranslated("GET", url, False, log_body, **kwargs)
+            response = self._send_untranslated("GET", url, False, log_body, ctx, **kwargs)
             if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
                 raise _RetryableStatusError(response)
             return response
@@ -178,6 +189,7 @@ class ServiceClient:
                 response = call_with_retries(
                     _get_or_flag_retryable_status,
                     exceptions=(*DEFAULT_RETRYABLE_EXCEPTIONS, _RetryableStatusError),
+                    ctx=ctx,
                 )
             except _RetryableStatusError as e:
                 response = e.response
@@ -189,12 +201,18 @@ class ServiceClient:
         return response
 
     def _send_untranslated(
-        self, method: str, url: str, raise_for_status: bool, log_body: bool, **kwargs: Any
+        self,
+        method: str,
+        url: str,
+        raise_for_status: bool,
+        log_body: bool,
+        ctx: Context,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Send one request without translating httpx.RequestError, so `_get_with_retries` can see
         the raw exception types its retry loop keys on. Never call this outside this class."""
         client = self.httpx_client
-        kwargs = self._clamped_to_poll_budget(client, kwargs)
+        kwargs = self._clamped_to_ctx(client, ctx, kwargs)
         response = self._send_policy(lambda: client.request(method, url, **kwargs))
         logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
         if raise_for_status:
@@ -202,12 +220,14 @@ class ServiceClient:
         return response
 
     @staticmethod
-    def _clamped_to_poll_budget(client: httpx.Client, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Inside a `poll_until` wait, cap each of this attempt's httpx timeouts (the caller's
-        `timeout=` if given, else the client's) at the wait's remaining wall-clock budget, so one
-        slow attempt cannot run past the wait's deadline. Never raises a timeout. Evaluated per
-        attempt, so a retried GET's later attempts see a shrinking budget."""
-        remaining = remaining_budget_secs()
+    def _clamped_to_ctx(
+        client: httpx.Client, ctx: Context, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Given a `ctx` with a deadline, cap each of this attempt's httpx timeouts (the caller's
+        `timeout=` if given, else the client's) at the time that deadline has left, so one slow
+        attempt cannot run past it. Never raises a timeout. Evaluated per attempt, so a retried
+        GET's later attempts see a shrinking budget."""
+        remaining = ctx.remaining_secs()
         if remaining is None:
             return kwargs
         cap = max(remaining, _MIN_CLAMPED_TIMEOUT_SECS)

@@ -14,12 +14,12 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError
+from confluent_sql.context import BACKGROUND
 from confluent_sql.exceptions import (
     ReauthenticationReason,
     ReauthenticationRequired,
     RequestTimeoutError,
 )
-from confluent_sql.polling import poll_until
 from confluent_sql.service_client import ServiceClient
 
 pytestmark = pytest.mark.unit
@@ -364,9 +364,37 @@ class TestPerRequestAuth:
         assert server.call_count == 2
 
 
+class TestGetRetriesStopAtTheCtxDeadline:
+    """A retried GET under a `ctx` keeps to its deadline end to end: attempts are clamped (see
+    below) and the retry loop itself stops when the deadline cannot outlast the next backoff."""
+
+    def test_a_transport_error_is_not_retried_past_an_expired_ctx(self) -> None:
+        client, server = make_client(httpx.ReadError("reset"), httpx.ReadError("reset"), 200)
+
+        with pytest.raises(OperationalError):
+            client.request(URL, ctx=BACKGROUND.with_timeout(-1.0))
+
+        assert server.call_count == 1
+
+    def test_a_retryable_status_is_not_retried_past_an_expired_ctx(self) -> None:
+        client, server = make_client(503, 200)
+
+        with pytest.raises(OperationalError) as exc_info:
+            client.request(URL, ctx=BACKGROUND.with_timeout(-1.0))
+
+        assert exc_info.value.http_status_code == 503
+        assert server.call_count == 1
+
+    def test_a_generous_ctx_still_retries_to_success(self) -> None:
+        client, server = make_client(httpx.ReadError("reset"), 503, 200)
+
+        assert client.request(URL, ctx=BACKGROUND.with_timeout(600.0)).status_code == 200
+        assert server.call_count == 3
+
+
 class TestPerAttemptTimeoutClamp:
-    """Inside a `poll_until` wait, no single attempt may run past the wait's deadline: each
-    request's httpx timeouts are clamped to the time left (they are never raised)."""
+    """Given a `ctx` with a deadline, no single attempt may run past it: each request's httpx
+    timeouts are clamped to the time left (they are never raised)."""
 
     CLIENT_TIMEOUT = 10.0
 
@@ -385,43 +413,53 @@ class TestPerAttemptTimeoutClamp:
     def _timeouts(server: Server) -> dict[str, float | None]:
         return server.requests[-1].extensions["timeout"]
 
-    def _send_inside_poll(self, budget: float, **request_kwargs: Any) -> Server:
+    def _send_with_budget(self, budget: float, **request_kwargs: Any) -> Server:
         client, server = self._client()
-        poll_until(
-            lambda: client.request(URL, **request_kwargs),
-            timeout=budget,
-            on_timeout=lambda: OperationalError("timed out"),
-        )
+        client.request(URL, ctx=BACKGROUND.with_timeout(budget), **request_kwargs)
         return server
 
-    def test_unclamped_outside_a_poll(self) -> None:
+    def test_unclamped_when_no_ctx_is_given(self) -> None:
         client, server = self._client()
         client.request(URL)
 
         assert set(self._timeouts(server).values()) == {self.CLIENT_TIMEOUT}
 
+    def test_unclamped_under_the_background_ctx(self) -> None:
+        client, server = self._client()
+        client.request(URL, ctx=BACKGROUND)
+
+        assert set(self._timeouts(server).values()) == {self.CLIENT_TIMEOUT}
+
     @pytest.mark.parametrize("method", ["GET", "POST"])
-    def test_clamped_to_the_remaining_budget_inside_a_poll(self, method: str) -> None:
-        server = self._send_inside_poll(2.0, method=method)
+    def test_clamped_to_the_remaining_budget(self, method: str) -> None:
+        server = self._send_with_budget(2.0, method=method)
 
         for value in self._timeouts(server).values():
             assert value is not None
             assert 0 < value <= 2.0
 
     def test_a_generous_budget_does_not_raise_the_timeout(self) -> None:
-        server = self._send_inside_poll(600.0)
+        server = self._send_with_budget(600.0)
 
         assert set(self._timeouts(server).values()) == {self.CLIENT_TIMEOUT}
+
+    def test_an_expired_budget_still_sends_with_a_tiny_positive_timeout(self) -> None:
+        client, server = self._client()
+        client.request(URL, ctx=BACKGROUND.with_timeout(-5.0))
+
+        for value in self._timeouts(server).values():
+            assert value is not None
+            assert 0 < value < 0.01
 
     @pytest.mark.parametrize(
         ("budget", "expected_max"),
         [(600.0, 3.0), (1.0, 1.0)],
-        ids=["caller-tighter", "poll-tighter"],
+        ids=["caller-tighter", "ctx-tighter"],
     )
     def test_an_explicit_per_request_timeout_is_clamped_too(
         self, budget: float, expected_max: float
     ) -> None:
-        server = self._send_inside_poll(budget, timeout=3.0)
+        server = self._send_with_budget(budget, timeout=3.0)
 
         for value in self._timeouts(server).values():
             assert value is not None

@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from confluent_sql.connection import Connection
+from confluent_sql.context import BACKGROUND, Context
 from confluent_sql.exceptions import InterfaceError, NotSupportedError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import (
@@ -95,7 +96,7 @@ class TestFetchMethods:
         # Mock the _fetch_next_page method to track calls
         fetch_tracker = {"called": False}
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             fetch_tracker["called"] = True
             # Simulate fetching more results
             append_only_reader._results.extend([("fetched_row1",), ("fetched_row2",)])
@@ -137,7 +138,7 @@ class TestFetchMethods:
         # Track calls to _fetch_next_page
         fetch_tracker = {"count": 0}
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             fetch_tracker["count"] += 1
             # Simulate fetching a new page of 2 results each time
             append_only_reader._results.extend(
@@ -183,7 +184,7 @@ class TestFetchMethods:
         """
         fetch_count = 0
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             nonlocal fetch_count
             fetch_count += 1
             # Only return 3 rows even though more were requested
@@ -205,7 +206,7 @@ class TestFetchMethods:
     ):
         """Test that fetchmany returns empty list when no data is available."""
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             # Simulate no results available
             append_only_reader._results = deque()
             append_only_reader._next_page = None
@@ -228,7 +229,7 @@ class TestFetchMethods:
 
         fetch_count = 0
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             nonlocal fetch_count
             fetch_count += 1
             if fetch_count == 1:
@@ -266,7 +267,7 @@ class TestFetchMethods:
 
         fetch_count = 0
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             nonlocal fetch_count
             fetch_count += 1
             # Only return 3 rows even though 5 were requested
@@ -298,7 +299,7 @@ class TestFetchMethods:
         # Set up mock that returns empty on first fetch, data on second
         fetch_count = 0
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             nonlocal fetch_count
             fetch_count += 1
             if fetch_count == 1:
@@ -341,7 +342,7 @@ class TestFetchMethods:
 
         fetch_count = 0
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             nonlocal fetch_count
             fetch_count += 1
             # First fetch returns one row
@@ -381,7 +382,7 @@ class TestFetchMethods:
         # Create a new mock that tracks this specific call
         third_call_fetch_count = 0
 
-        def mock_fetch_for_third_call():
+        def mock_fetch_for_third_call(ctx: Context = BACKGROUND):
             nonlocal third_call_fetch_count
             third_call_fetch_count += 1
             reader._results = deque()  # Return empty results this time
@@ -457,7 +458,7 @@ class TestIteration:
         # Mock the _fetch_next_page method to track calls
         call_tracker = {"called": False}
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             call_tracker["called"] = True
             # Simulate fetching a page of results
             append_only_reader._results = deque([("fetched_row1",), ("fetched_row2",)])
@@ -480,7 +481,7 @@ class TestIteration:
 
     def test_iteration_stops_when_no_more_results(self, append_only_reader: AppendOnlyResultReader):
         # Mock the _fetch_next_page method to simulate no results and no next page
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             append_only_reader._results = deque()
             append_only_reader._next_page = None
             append_only_reader._fetch_next_page_called = True  # Mark that fetch was called
@@ -505,7 +506,7 @@ class TestIteration:
         )
 
         # Mock the _fetch_next_page method to simulate fetching results
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             reader._results = deque([{"value": "row1"}, {"value": "row2"}])
             reader._next_page = None
             reader._fetch_next_page_called = True  # Mark that fetch was called
@@ -555,7 +556,7 @@ class TestFetchNextPage:
         # results with boolean values in the first column, which
         # come to us from Flink results as strings.
         def mock_get_statement_results(
-            statement_name: str, next_url: str | None
+            statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
         ) -> tuple[list[ChangelogRow], str | None]:
             call_tracker["called"] = True
             return [
@@ -583,7 +584,7 @@ class TestFetchNextPage:
         # Mock the _fetch_next_page method to track calls and simulate fetching results
         call_tracker = {"called": False}
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             call_tracker["called"] = True
             append_only_reader._results = deque([("fetched_row1",), ("fetched_row2",)])
             append_only_reader._next_page = None
@@ -610,7 +611,7 @@ class TestFetchNextPage:
         from the server, since that violates the contract of append-only statements."""
 
         def mock_get_statement_results(
-            statement_name: str, next_url: str | None
+            statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
         ) -> tuple[list[ChangelogRow], str | None]:
             return [
                 ChangelogRow(Op.DELETE.value, ["value"])
@@ -681,7 +682,7 @@ class TestChangelogEventReader:
 
         fetch_count = 0
 
-        def mock_fetch_next_page():
+        def mock_fetch_next_page(ctx: Context = BACKGROUND):
             nonlocal fetch_count
             fetch_count += 1
             if fetch_count == 1:
@@ -737,7 +738,7 @@ class TestFetchMetrics:
 
         # Mock the connection's _get_statement_results to return results
         def mock_get_statement_results(
-            statement_name: str, next_url: str | None
+            statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
         ) -> tuple[list[ChangelogRow], str | None]:
             # Return 3 rows on first fetch
             return [
@@ -774,7 +775,7 @@ class TestFetchMetrics:
         call_count = 0
 
         def mock_get_statement_results(
-            statement_name: str, next_url: str | None
+            statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
         ) -> tuple[list[ChangelogRow], str | None]:
             nonlocal call_count
             call_count += 1
@@ -820,7 +821,7 @@ class TestFetchMetrics:
 
         # Mock to return empty results
         def mock_get_statement_results(
-            statement_name: str, next_url: str | None
+            statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
         ) -> tuple[list[ChangelogRow], str | None]:
             return [], None  # Empty page
 
@@ -843,7 +844,7 @@ class TestFetchMetrics:
         fetch_count = 0
 
         def mock_get_statement_results(
-            statement_name: str, next_url: str | None
+            statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
         ) -> tuple[list[ChangelogRow], str | None]:
             nonlocal fetch_count
             fetch_count += 1
