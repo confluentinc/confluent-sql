@@ -24,6 +24,7 @@ from confluent_sql import (
     InterfaceError,
     ReauthenticationReason,
     ReauthenticationRequired,
+    Timeouts,
     connect,
 )
 from confluent_sql.connection import Connection, ControlPlaneSurface
@@ -250,7 +251,7 @@ class TestOauthValidation:
     def test_http_timeout_secs_reaches_the_oauth_provider(self):
         """The provider's private token-chain client must honor the caller's http_timeout_secs,
         not fall back to httpx's implicit default."""
-        conn = _oauth_connect(http_timeout_secs=3.5)
+        conn = _oauth_connect(timeouts=Timeouts(httpx_request_timeout_secs=3.5))
         assert _provider(conn).http_timeout_secs == 3.5
 
     def test_default_http_timeout_secs_reaches_the_oauth_provider(self):
