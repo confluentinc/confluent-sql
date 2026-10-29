@@ -168,10 +168,10 @@ class TestTimeoutsReachTheConnection:
         conn = connection_factory(**self.BASE_KWARGS)
 
         assert conn.timeouts is DEFAULT_TIMEOUTS
-        assert conn.timeouts.result_page_secs == 30.0
+        assert conn.timeouts.statement_results_wallclock_secs == 30.0
 
     def test_configured_timeouts(self, connection_factory: ConnectionFactory):
-        timeouts = Timeouts(http_secs=3.0, result_page_secs=75.5)
+        timeouts = Timeouts(httpx_request_timeout_secs=3.0, statement_results_wallclock_secs=75.5)
         conn = connection_factory(**self.BASE_KWARGS, timeouts=timeouts)
 
         assert conn.timeouts is timeouts
@@ -2630,7 +2630,7 @@ class TestHttpUserAgentProperty:
 
 @pytest.mark.unit
 class TestHttpTimeoutSecs:
-    """`Timeouts.http_secs` as seen through the connection."""
+    """`Timeouts.httpx_request_timeout_secs` as seen through the connection."""
 
     def test_default_reports_confluent_sql_default(self, invalid_credential_connection: Connection):
         """When not provided, the property reports the effective default, not None."""
@@ -2642,7 +2642,7 @@ class TestHttpTimeoutSecs:
     def test_default_http_timeout_secs_is_ten_seconds(self):
         """Pin the exact default value so a silent change here doesn't slip by unnoticed."""
         assert DEFAULT_HTTP_TIMEOUT_SECS == 10.0
-        assert DEFAULT_TIMEOUTS.http_secs == 10.0
+        assert DEFAULT_TIMEOUTS.httpx_request_timeout_secs == 10.0
 
     @pytest.mark.parametrize("timeout_value", [0.5, 1, 10, 30.0, 120])
     def test_custom_timeout_via_constructor(
@@ -2657,7 +2657,10 @@ class TestHttpTimeoutSecs:
             cloud_region="us-east-1",
             flink_api_key="key",
             flink_api_secret="secret",
-            timeouts=Timeouts(http_secs=timeout_value, result_page_secs=timeout_value * 3),
+            timeouts=Timeouts(
+                httpx_request_timeout_secs=timeout_value,
+                statement_results_wallclock_secs=timeout_value * 3,
+            ),
         )
         assert conn.http_timeout_secs == timeout_value
         # httpx wraps the timeout into a Timeout(connect, read, write, pool) object.
