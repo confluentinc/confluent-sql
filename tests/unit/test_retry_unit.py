@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from confluent_sql import retry
+from confluent_sql.context import BACKGROUND
 from confluent_sql.retry import (
     DEFAULT_RETRYABLE_EXCEPTIONS,
     DEFAULT_RETRYABLE_STATUS_CODES,
@@ -23,6 +24,89 @@ def no_sleep(mocker):
 def no_jitter(mocker):
     """Pin jitter to 1.0 so sleep durations are deterministic."""
     return mocker.patch.object(retry.random, "uniform", return_value=1.0)
+
+
+class _FakeClock:
+    """A monotonic clock that only advances when sleep() is called."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, secs: float) -> None:
+        self.slept.append(secs)
+        self.now += secs
+
+
+@pytest.fixture()
+def clock(mocker, no_jitter) -> _FakeClock:
+    """Fake time with jitter pinned, so backoff is exactly 0.1s, 0.2s, 0.4s."""
+    fake = _FakeClock()
+    mocker.patch.object(retry.time, "monotonic", fake.monotonic)
+    mocker.patch.object(retry.time, "sleep", fake.sleep)
+    return fake
+
+
+@pytest.mark.unit
+class TestRetriesStopAtTheCtxDeadline:
+    """Given a `ctx`, a retry happens only if the deadline outlasts the backoff sleep, so no sleep
+    runs past it and no attempt is begun that has no time left; the last attempt's own exception is
+    raised, exactly as when `max_retries` runs out."""
+
+    def test_an_expired_ctx_allows_the_one_attempt_and_no_retry(self, clock):
+        func = Mock(side_effect=httpx.ReadError("boom"))
+
+        with pytest.raises(httpx.ReadError):
+            call_with_retries(func, ctx=BACKGROUND.with_timeout(-1.0))
+
+        func.assert_called_once()
+        assert clock.slept == []
+
+    def test_no_retry_when_the_deadline_is_nearer_than_the_first_backoff(self, clock):
+        func = Mock(side_effect=httpx.ReadError("boom"))
+
+        with pytest.raises(httpx.ReadError):
+            call_with_retries(func, ctx=BACKGROUND.with_timeout(0.05))
+
+        func.assert_called_once()
+        assert clock.slept == []
+
+    def test_retries_continue_while_the_deadline_outlasts_each_sleep_then_stop(self, clock):
+        func = Mock(side_effect=httpx.ReadError("boom"))
+
+        with pytest.raises(httpx.ReadError):
+            call_with_retries(func, ctx=BACKGROUND.with_timeout(0.35))
+
+        # 0.35s of budget: sleep 0.1 (0.25 left), sleep 0.2 (0.05 left), then 0.4 would overrun.
+        assert func.call_count == 3
+        assert clock.slept == [0.1, 0.2]
+
+    def test_a_generous_ctx_leaves_max_retries_as_the_bound(self, clock):
+        func = Mock(side_effect=httpx.ReadError("boom"))
+
+        with pytest.raises(httpx.ReadError):
+            call_with_retries(func, max_retries=3, ctx=BACKGROUND.with_timeout(600.0))
+
+        assert func.call_count == 4
+
+    def test_succeeds_on_a_retry_within_the_deadline(self, clock):
+        func = Mock(side_effect=[httpx.ReadError("blip"), "ok"])
+
+        assert call_with_retries(func, ctx=BACKGROUND.with_timeout(5.0)) == "ok"
+
+    def test_logs_that_the_deadline_stopped_the_retry(self, clock, caplog):
+        func = Mock(side_effect=httpx.ReadError("boom"))
+
+        with (
+            caplog.at_level(logging.INFO, logger="confluent_sql.retry"),
+            pytest.raises(httpx.ReadError),
+        ):
+            call_with_retries(func, ctx=BACKGROUND.with_timeout(0.05))
+
+        assert any("deadline" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.unit

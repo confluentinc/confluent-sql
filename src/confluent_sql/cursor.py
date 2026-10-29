@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from .changelog_compressor import ChangelogCompressor, create_changelog_compressor
+from .context import Context
 from .exceptions import (
     ComputePoolExhaustedError,
     InterfaceError,
@@ -720,19 +721,20 @@ class Cursor:
             )  # pragma: no cover
 
         poll_until(
-            lambda: self._poll_ready_once() or None,
+            lambda ctx: self._poll_ready_once(ctx) or None,
             timeout=timeout,
             on_timeout=lambda: OperationalError(
                 f"Statement submission timed out after {timeout} seconds"
             ),
         )
 
-    def _poll_ready_once(self) -> bool:
+    def _poll_ready_once(self, ctx: Context) -> bool:
         """Refresh self._statement from the server once; return True if results are now fetchable.
 
         Reassigns self._statement with the latest server state, raises if the statement is broken
         (failed/degraded/pool-exhausted), and on readiness installs the appropriate result reader
         before returning True. Returns False if the statement is not yet ready to fetch from.
+        `ctx` is the readiness wait's `Context`, which bounds the request.
         """
         if self._statement is None:
             raise InterfaceError(
@@ -741,7 +743,7 @@ class Cursor:
 
         logger.info(f"Checking statement '{self._statement.name}' status...")
 
-        response = self._connection._get_statement(self._statement.name)
+        response = self._connection._get_statement(self._statement.name, ctx=ctx)
         self._statement = Statement.from_response(self._connection, response)
 
         self._raise_if_statement_is_broken()
