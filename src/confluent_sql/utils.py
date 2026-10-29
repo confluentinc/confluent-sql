@@ -21,7 +21,7 @@ from confluent_sql.__version__ import __version__
 from confluent_sql.exceptions import DataError
 
 DEFAULT_HTTP_TIMEOUT_SECS: float = 10.0
-"""Applied to the httpx client whenever a caller doesn't pass http_timeout_secs explicitly,
+"""Applied to the httpx client whenever a caller doesn't pass `Timeouts.http_secs` explicitly,
 so the effective default is ours to control rather than an implicit dependency on httpx's own
 default (5s). Lives here, a leaf module, so the OAuth provider can share it with `connection.py`
 without an import cycle; `confluent_sql.connection` re-exports it."""

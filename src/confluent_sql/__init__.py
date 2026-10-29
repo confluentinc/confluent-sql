@@ -15,6 +15,7 @@ from .artifacts import (
     UploadRetry,
 )
 from .changelog_compressor import ChangelogCompressor
+from .connect_options import DEFAULT_TIMEOUTS, Timeouts
 from .connection import Connection, connect
 from .connectors import (
     Connector,
@@ -93,6 +94,8 @@ paramstyle = "pyformat"  # Use question mark style parameters
 __all__ = [
     "__version__",
     "connect",
+    "DEFAULT_TIMEOUTS",
+    "Timeouts",
     "Connection",
     "Cursor",
     "ExecutionMode",

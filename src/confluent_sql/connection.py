@@ -22,6 +22,7 @@ import httpx
 
 from .artifacts import ArtifactsApi
 from .auth import FlinkBearerAuth
+from .connect_options import DEFAULT_TIMEOUTS, Timeouts
 from .connectors import ConnectorApi
 from .cursor import Cursor
 from .exceptions import (
@@ -67,7 +68,7 @@ from .tableflow import (
     normalize_table_formats,
 )
 from .types import PropertiesDict, RowPythonTypes
-from .utils import DEFAULT_HTTP_TIMEOUT_SECS, DEFAULT_USER_AGENT
+from .utils import DEFAULT_USER_AGENT
 from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
@@ -250,7 +251,7 @@ def connect(  # noqa: PLR0913
     controlplane_endpoint: str | None = None,
     result_page_fetch_pause_millis: int = 100,
     http_user_agent: str | None = None,
-    http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+    timeouts: Timeouts = DEFAULT_TIMEOUTS,
 ) -> Connection:
     """
     Create a connection to a Confluent SQL service.
@@ -382,13 +383,13 @@ def connect(  # noqa: PLR0913
                        between 1-100 characters. Defaults to
                        "Confluent-SQL-Dbapi/v<version> (https://confluent.io; support@confluent.io)"
                        where version is from __version__.py
-        http_timeout_secs: Timeout in seconds for HTTP requests made by the underlying httpx
-                       client. Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS,
-                       applied to connect, read, write, and pool operations. With
-                       `auth="oauth"` it also bounds every HTTP hop of the token chain (code
-                       exchange, token exchanges, refresh), but only if this connection is the
-                       one that establishes the process's shared login; later connections reuse
-                       that login's provider as-is.
+        timeouts: A `Timeouts` grouping the driver's timeout settings: `http_secs`, the timeout
+                       for each HTTP request (default 10s; with `auth="oauth"` it also bounds
+                       the token chain, see `Timeouts`), and `result_page_secs`, the wall-clock
+                       window over which a blocking result read keeps retrying a results page
+                       that keeps timing out (default 30s). Override one with e.g.
+                       `dataclasses.replace(DEFAULT_TIMEOUTS, http_secs=5)`. Defaults to
+                       `DEFAULT_TIMEOUTS`.
 
     Returns:
         A Connection object representing the database connection
@@ -432,7 +433,7 @@ def connect(  # noqa: PLR0913
         controlplane_endpoint=controlplane_endpoint,
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
-        http_timeout_secs=http_timeout_secs,
+        timeouts=timeouts,
     )
 
 
@@ -552,7 +553,8 @@ class Connection:
     """Base URL for the control plane (Tableflow, Connect, Artifact, CMK), distinct from the Flink
     gateway."""
     _http_user_agent: str
-    _http_timeout_secs: float
+    timeouts: Timeouts
+    """The timeout settings this connection was built with."""
 
     # --- Credentials and transport
     _flink_auth: httpx.Auth
@@ -607,7 +609,7 @@ class Connection:
         controlplane_endpoint: str | None = None,
         statement_results_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
-        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+        timeouts: Timeouts,
     ):
         """
         Initialize a new connection to a Confluent SQL service.
@@ -688,8 +690,8 @@ class Connection:
             http_user_agent: User-Agent header for HTTP requests. String, 1-100 chars.
                            Defaults to the value of DEFAULT_USER_AGENT, which includes the
                            driver name/version, documentation URL, and support email.
-            http_timeout_secs: Timeout in seconds applied to the underlying httpx client.
-                           Must be a positive number. Defaults to DEFAULT_HTTP_TIMEOUT_SECS.
+            timeouts: The `Timeouts` to apply (required; `connect()` supplies `DEFAULT_TIMEOUTS`
+                           when its caller passes none).
         """
 
         # Validate api key vs oauth first, so that we can raise errors about auth misconfiguration
@@ -767,15 +769,7 @@ class Connection:
             http_user_agent if http_user_agent is not None else self.DEFAULT_USER_AGENT
         )
 
-        # Reject bool explicitly: bool is a subclass of int in Python, but a True/False
-        # value here is almost certainly a programming error rather than a valid timeout.
-        if isinstance(http_timeout_secs, bool) or not isinstance(http_timeout_secs, (int, float)):
-            raise InterfaceError(
-                f"http_timeout_secs must be a number, got {type(http_timeout_secs).__name__}"
-            )
-        if http_timeout_secs <= 0:
-            raise InterfaceError(f"http_timeout_secs must be positive, got {http_timeout_secs}")
-        self._http_timeout_secs = http_timeout_secs
+        self.timeouts = timeouts
 
         # Single source of truth for the endpoint-vs-cloud-info gate (#213): connect() no longer
         # duplicates this, so direct Connection() construction and connect() report the same
@@ -822,7 +816,7 @@ class Connection:
             provider = acquire(
                 oauth_cfg,
                 organization_id or None,
-                http_timeout_secs=http_timeout_secs,
+                http_timeout_secs=timeouts.http_secs,
                 http_user_agent=self._http_user_agent,
                 provider_factory=oauth_provider_factory,
             )
@@ -1740,10 +1734,10 @@ class Connection:
     @property
     def http_timeout_secs(self) -> float:
         """
-        Get the effective timeout (in seconds) applied to HTTP requests, which is
-        DEFAULT_HTTP_TIMEOUT_SECS unless a value was supplied at construction time.
+        Get the timeout (in seconds) applied to each HTTP request; shorthand for
+        `timeouts.http_secs`.
         """
-        return self._http_timeout_secs
+        return self.timeouts.http_secs
 
     @property
     def http_user_agent(self) -> str:
@@ -2103,7 +2097,7 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
-            timeout=self._http_timeout_secs,
+            timeout=self.timeouts.http_secs,
         )
 
     def _build_dataplane_client(self) -> httpx.Client:
@@ -2124,7 +2118,7 @@ class Connection:
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
-            timeout=self._http_timeout_secs,
+            timeout=self.timeouts.http_secs,
         )
 
     def _auth_for(self, surface: ControlPlaneSurface) -> httpx.Auth:
