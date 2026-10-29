@@ -19,6 +19,7 @@ from confluent_sql.exceptions import (
     ReauthenticationRequired,
     RequestTimeoutError,
 )
+from confluent_sql.polling import poll_until
 from confluent_sql.service_client import ServiceClient
 
 pytestmark = pytest.mark.unit
@@ -361,3 +362,67 @@ class TestPerRequestAuth:
 
         assert all("Authorization" in r.headers for r in server.requests)
         assert server.call_count == 2
+
+
+class TestPerAttemptTimeoutClamp:
+    """Inside a `poll_until` wait, no single attempt may run past the wait's deadline: each
+    request's httpx timeouts are clamped to the time left (they are never raised)."""
+
+    CLIENT_TIMEOUT = 10.0
+
+    def _client(self) -> tuple[ServiceClient, Server]:
+        server = Server(*[200] * 4)
+        client = ServiceClient(
+            lambda: httpx.Client(
+                base_url="https://x.invalid",
+                timeout=self.CLIENT_TIMEOUT,
+                transport=httpx.MockTransport(server.handle),
+            )
+        )
+        return client, server
+
+    @staticmethod
+    def _timeouts(server: Server) -> dict[str, float | None]:
+        return server.requests[-1].extensions["timeout"]
+
+    def _send_inside_poll(self, budget: float, **request_kwargs: Any) -> Server:
+        client, server = self._client()
+        poll_until(
+            lambda: client.request(URL, **request_kwargs),
+            timeout=budget,
+            on_timeout=lambda: OperationalError("timed out"),
+        )
+        return server
+
+    def test_unclamped_outside_a_poll(self) -> None:
+        client, server = self._client()
+        client.request(URL)
+
+        assert set(self._timeouts(server).values()) == {self.CLIENT_TIMEOUT}
+
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_clamped_to_the_remaining_budget_inside_a_poll(self, method: str) -> None:
+        server = self._send_inside_poll(2.0, method=method)
+
+        for value in self._timeouts(server).values():
+            assert value is not None
+            assert 0 < value <= 2.0
+
+    def test_a_generous_budget_does_not_raise_the_timeout(self) -> None:
+        server = self._send_inside_poll(600.0)
+
+        assert set(self._timeouts(server).values()) == {self.CLIENT_TIMEOUT}
+
+    @pytest.mark.parametrize(
+        ("budget", "expected_max"),
+        [(600.0, 3.0), (1.0, 1.0)],
+        ids=["caller-tighter", "poll-tighter"],
+    )
+    def test_an_explicit_per_request_timeout_is_clamped_too(
+        self, budget: float, expected_max: float
+    ) -> None:
+        server = self._send_inside_poll(budget, timeout=3.0)
+
+        for value in self._timeouts(server).values():
+            assert value is not None
+            assert 0 < value <= expected_max

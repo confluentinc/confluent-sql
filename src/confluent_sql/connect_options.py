@@ -49,7 +49,9 @@ class Timeouts:
 
     httpx_request_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS
     """Timeout for each HTTP request made by the underlying httpx clients, applied to connect,
-    read, write and pool operations. With `auth="oauth"` it also bounds every HTTP hop of the token
+    read, write and pool operations. Inside a timed wait (`Cursor.execute()`, the `wait_for_*` and
+    `timeout=` calls) it is further capped at the time that wait has left, per httpx phase. With
+    `auth="oauth"` it also bounds every HTTP hop of the token
     chain (code exchange, token exchanges, refresh), but only if this connection is the one that
     establishes the process's shared login; later connections reuse that login's provider as-is."""
 

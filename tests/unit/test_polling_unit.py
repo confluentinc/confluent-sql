@@ -206,3 +206,61 @@ class TestPollUntil:
             poll_until(attempt, timeout=10, on_timeout=self._deadline_error)
 
         assert calls == 1
+
+
+@pytest.mark.unit
+class TestRemainingBudget:
+    """`poll_until` publishes its deadline so the requests made inside an attempt can clamp their
+    own timeouts to the time left (see `ServiceClient.request`)."""
+
+    @staticmethod
+    def _on_timeout() -> OperationalError:
+        return OperationalError("timed out")
+
+    def test_no_budget_outside_a_poll(self):
+        assert polling.remaining_budget_secs() is None
+
+    def test_each_attempt_sees_the_time_left(self, fake_clock):
+        seen: list[float | None] = []
+
+        def attempt():
+            seen.append(polling.remaining_budget_secs())
+            fake_clock.now += 2.0  # the attempt itself takes time
+            return "done" if len(seen) == 2 else None
+
+        poll_until(attempt, timeout=10.0, on_timeout=self._on_timeout)
+
+        # 10s at the first attempt; 2s of work plus the 1s base backoff sleep leave 7s.
+        assert seen == [10.0, 7.0]
+
+    @pytest.mark.parametrize(
+        ("outer", "inner", "expected"),
+        [(10.0, 3.0, 3.0), (2.0, 50.0, 2.0)],
+        ids=["inner-shorter", "outer-shorter"],
+    )
+    def test_nested_polls_are_bounded_by_the_tighter_deadline(
+        self, fake_clock, outer, inner, expected
+    ):
+        def inner_attempt():
+            return polling.remaining_budget_secs()
+
+        def outer_attempt():
+            return poll_until(inner_attempt, timeout=inner, on_timeout=self._on_timeout)
+
+        assert poll_until(outer_attempt, timeout=outer, on_timeout=self._on_timeout) == expected
+
+    @pytest.mark.parametrize("outcome", ["returns", "raises", "times-out"])
+    def test_budget_is_cleared_when_the_poll_ends_however_it_ends(self, fake_clock, outcome):
+        def attempt():
+            if outcome == "raises":
+                raise ValueError("boom")
+            return "done" if outcome == "returns" else None
+
+        expected = {"returns": None, "raises": ValueError, "times-out": OperationalError}[outcome]
+        if expected is None:
+            poll_until(attempt, timeout=1.0, on_timeout=self._on_timeout)
+        else:
+            with pytest.raises(expected):
+                poll_until(attempt, timeout=1.0, on_timeout=self._on_timeout)
+
+        assert polling.remaining_budget_secs() is None
