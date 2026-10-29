@@ -169,10 +169,12 @@ class TestTimeoutsReachTheConnection:
         conn = connection_factory(**self.BASE_KWARGS)
 
         assert conn.timeouts is DEFAULT_TIMEOUTS
-        assert conn.timeouts.statement_results_wallclock_secs == 30.0
+        assert conn.timeouts.statement_results_response_wallclock_secs == 30.0
 
     def test_configured_timeouts(self, connection_factory: ConnectionFactory):
-        timeouts = Timeouts(httpx_request_timeout_secs=3.0, statement_results_wallclock_secs=75.5)
+        timeouts = Timeouts(
+            httpx_request_timeout_secs=3.0, statement_results_response_wallclock_secs=75.5
+        )
         conn = connection_factory(**self.BASE_KWARGS, timeouts=timeouts)
 
         assert conn.timeouts is timeouts
@@ -2660,7 +2662,7 @@ class TestHttpTimeoutSecs:
             flink_api_secret="secret",
             timeouts=Timeouts(
                 httpx_request_timeout_secs=timeout_value,
-                statement_results_wallclock_secs=timeout_value * 3,
+                statement_results_response_wallclock_secs=timeout_value * 3,
             ),
         )
         assert conn.http_timeout_secs == timeout_value
