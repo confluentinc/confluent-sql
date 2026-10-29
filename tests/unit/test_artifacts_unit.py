@@ -73,8 +73,16 @@ def _presign_body() -> dict:
     }
 
 
-def _response(body: dict | None = None, status: int = 200) -> httpx.Response:
-    return httpx.Response(status, json=body if body is not None else {})
+def _response(
+    body: dict | None = None, status: int = 200, *, json: object = None, text: str | None = None
+) -> httpx.Response:
+    """A canned response. It carries a request because `raise_for_status()` requires one."""
+    request = httpx.Request("GET", "https://example.test/")
+    if text is not None:
+        return httpx.Response(status, text=text, request=request)
+    if json is not None:
+        return httpx.Response(status, json=json, request=request)
+    return httpx.Response(status, json=body if body is not None else {}, request=request)
 
 
 class FakeContext:
@@ -462,8 +470,8 @@ class TestCreate:
         [
             _response(status=409),
             # What the live API actually sends for a taken name.
-            httpx.Response(
-                400,
+            _response(
+                status=400,
                 json={"errors": [{"detail": "name should be unique per Cloud/Region/Environment"}]},
             ),
         ],
@@ -499,7 +507,7 @@ class TestCreate:
 
 
 class TestMalformedResponses:
-    HTML_PAGE = httpx.Response(200, text="<html>proxy error</html>")
+    HTML_PAGE = _response(text="<html>proxy error</html>")
 
     @pytest.mark.parametrize("form_data", [None, "not-a-dict", 5])
     def test_presigned_url_with_wrong_typed_form_data_is_operational_error(
@@ -525,7 +533,7 @@ class TestMalformedResponses:
     )
     @pytest.mark.parametrize(
         "bad_response",
-        [HTML_PAGE, httpx.Response(200, json=["not", "an", "object"])],
+        [HTML_PAGE, _response(json=["not", "an", "object"])],
         ids=["non-json", "non-object"],
     )
     def test_unparseable_success_body_is_operational_error(
