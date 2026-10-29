@@ -1,5 +1,7 @@
 """Unit tests for result readers module (RowFormatter family)."""
 
+import time
+from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,7 +9,6 @@ import pytest
 from confluent_sql.exceptions import InterfaceError, OperationalError, RequestTimeoutError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import (
-    MAX_CONSECUTIVE_PAGE_TIMEOUTS,
     AppendOnlyResultReader,
     ChangeloggedRow,
     DictRowFormatter,
@@ -377,6 +378,7 @@ class TestBlockingIterationToleratesPageTimeouts:
         mock_statement_with_schema.can_fetch_results.return_value = True
         mock_statement_with_schema.type_converter.to_python_row.side_effect = lambda row: row
         mock_connection.statement_results_page_fetch_pause_secs = 0.0
+        mock_connection.timeouts.statement_results_response_wallclock_secs = self.WINDOW_SECS
         mock_connection._get_statement_results.side_effect = list(pages)
         return AppendOnlyResultReader(
             connection=mock_connection,
@@ -406,41 +408,79 @@ class TestBlockingIterationToleratesPageTimeouts:
             ("test-query", self.PAGE_TOKEN),
         ]
 
-    def test_up_to_the_limit_minus_one_consecutive_timeouts_are_tolerated(
-        self, mock_connection, mock_statement_with_schema
+    # The tolerance is a wall-clock window, not an attempt count: how many slow pages fit in it
+    # depends only on how long each one took.
+    WINDOW_SECS = 30.0
+
+    @dataclass
+    class _SlowPage:
+        """A page fetch that takes `secs` of (fake) time and then times out."""
+
+        secs: float
+        error: RequestTimeoutError
+
+    @pytest.fixture(autouse=True)
+    def fake_clock(self, monkeypatch):
+        clock = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        return clock
+
+    def _timing_out_reader(self, mock_connection, mock_statement_with_schema, clock, mode, *pages):
+        """Like `_reader`, but a `_SlowPage` advances the fake clock before raising."""
+        replay = iter(pages)
+
+        def fetch(*_args):
+            page = next(replay)
+            if isinstance(page, self._SlowPage):
+                clock[0] += page.secs
+                raise page.error
+            return page
+
+        reader = self._reader(mock_connection, mock_statement_with_schema, mode)
+        mock_connection._get_statement_results.side_effect = fetch
+        return reader
+
+    def _slow(self, count: int, secs: float) -> list:
+        return [self._SlowPage(secs, RequestTimeoutError(f"slow-{i}")) for i in range(count)]
+
+    def test_many_quick_timeouts_inside_the_window_are_tolerated(
+        self, mock_connection, mock_statement_with_schema, fake_clock
     ):
-        timeouts = [RequestTimeoutError("slow")] * (MAX_CONSECUTIVE_PAGE_TIMEOUTS - 1)
-        reader = self._reader(
+        # Ten timeouts in a row would have blown the old three-attempt limit.
+        reader = self._timing_out_reader(
             mock_connection,
             mock_statement_with_schema,
+            fake_clock,
             ExecutionMode.SNAPSHOT,
-            *timeouts,
+            *self._slow(10, 1.0),
             (self._rows(1), None),
         )
 
         assert list(reader) == [(1, "n1", 100)]
 
-    def test_the_limit_of_consecutive_timeouts_raises_the_last_one(
-        self, mock_connection, mock_statement_with_schema
+    def test_timeouts_spanning_the_window_raise_the_last_one(
+        self, mock_connection, mock_statement_with_schema, fake_clock
     ):
-        timeouts = [RequestTimeoutError(f"slow-{i}") for i in range(MAX_CONSECUTIVE_PAGE_TIMEOUTS)]
-        reader = self._reader(
-            mock_connection, mock_statement_with_schema, ExecutionMode.SNAPSHOT, *timeouts
+        slow = self._slow(5, 10.0)
+        reader = self._timing_out_reader(
+            mock_connection, mock_statement_with_schema, fake_clock, ExecutionMode.SNAPSHOT, *slow
         )
 
         with pytest.raises(RequestTimeoutError) as exc_info:
             next(reader)
 
-        assert exc_info.value is timeouts[-1]
-        assert mock_connection._get_statement_results.call_count == MAX_CONSECUTIVE_PAGE_TIMEOUTS
+        # 10s + 10s + 10s reaches the 30s window on the third slow page.
+        assert exc_info.value is slow[2].error
+        assert mock_connection._get_statement_results.call_count == 3
 
-    def test_a_successful_page_resets_the_consecutive_count(
-        self, mock_connection, mock_statement_with_schema
+    def test_a_successful_page_restarts_the_window(
+        self, mock_connection, mock_statement_with_schema, fake_clock
     ):
-        streak = [RequestTimeoutError("slow")] * (MAX_CONSECUTIVE_PAGE_TIMEOUTS - 1)
-        reader = self._reader(
+        streak = self._slow(2, 10.0)  # 20s of the 30s window, twice over
+        reader = self._timing_out_reader(
             mock_connection,
             mock_statement_with_schema,
+            fake_clock,
             ExecutionMode.STREAMING_QUERY,
             *streak,
             ([], self.PAGE_TOKEN),  # an empty page still counts as a successful fetch

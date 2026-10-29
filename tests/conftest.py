@@ -6,8 +6,7 @@ from typing import TypeAlias
 
 import pytest
 
-from confluent_sql import Connection, connect
-from confluent_sql.connection import DEFAULT_HTTP_TIMEOUT_SECS
+from confluent_sql import DEFAULT_TIMEOUTS, Connection, Timeouts, connect
 
 
 def pytest_runtest_setup(item):
@@ -66,7 +65,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
         controlplane_endpoint: str | None = None,
         result_page_fetch_pause_millis: int = 100,
         http_user_agent: str | None = None,
-        http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
+        timeouts: Timeouts = DEFAULT_TIMEOUTS,
         endpoint: str | None = None,
     ) -> Connection:
         if global_api_key is None:
@@ -110,7 +109,7 @@ def connection_factory() -> Generator[ConnectionFactory, None, None]:
             controlplane_endpoint=controlplane_endpoint,
             result_page_fetch_pause_millis=result_page_fetch_pause_millis,
             http_user_agent=http_user_agent,
-            http_timeout_secs=http_timeout_secs,
+            timeouts=timeouts,
             endpoint=endpoint,
         )
 
