@@ -1,6 +1,7 @@
 import pytest
 
 from confluent_sql import polling
+from confluent_sql.context import BACKGROUND
 from confluent_sql.exceptions import OperationalError, RequestTimeoutError
 from confluent_sql.polling import poll_until, sleep_with_backoff
 
@@ -254,3 +255,18 @@ class TestPollUntilContext:
         )
 
         assert result == 7.0
+
+    def test_a_tighter_parent_deadline_also_bounds_the_pacing(self, fake_clock):
+        """An attempt that never finishes must not keep a wait going past its parent's deadline
+        just because its own `timeout` is longer."""
+        parent = BACKGROUND.with_timeout(2.0)
+        seen: list[float | None] = []
+
+        def attempt(ctx):
+            seen.append(ctx.remaining_secs())
+
+        with pytest.raises(OperationalError, match="timed out"):
+            poll_until(attempt, timeout=50.0, on_timeout=self._on_timeout, ctx=parent)
+
+        assert fake_clock.now == pytest.approx(2.0)
+        assert all(remaining is not None and remaining >= 0 for remaining in seen)

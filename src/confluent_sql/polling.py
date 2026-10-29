@@ -100,6 +100,9 @@ def poll_until(
     """
     started_at = time.monotonic()
     wait_ctx = ctx.with_timeout(timeout)
+    # Pace against the wait's own deadline, not `timeout`: a tighter parent ends the wait sooner.
+    parent_secs = ctx.remaining_secs()
+    budget_secs = timeout if parent_secs is None else min(timeout, parent_secs)
     last_timeout: RequestTimeoutError | None = None
 
     def tolerant_attempt() -> _T | None:
@@ -113,7 +116,7 @@ def poll_until(
 
     if immediate and (result := tolerant_attempt()) is not None:
         return result
-    for _ in sleep_with_backoff(timeout, started_at=started_at):
+    for _ in sleep_with_backoff(budget_secs, started_at=started_at):
         if (result := tolerant_attempt()) is not None:
             return result
     raise on_timeout() from last_timeout

@@ -212,8 +212,13 @@ class ServiceClient:
         """Send one request without translating httpx.RequestError, so `_get_with_retries` can see
         the raw exception types its retry loop keys on. Never call this outside this class."""
         client = self.httpx_client
-        kwargs = self._clamped_to_ctx(client, ctx, kwargs)
-        response = self._send_policy(lambda: client.request(method, url, **kwargs))
+
+        def send() -> httpx.Response:
+            # Clamped per actual send, so a replay by the send policy (after an OAuth
+            # reauthentication, say) sees the time left by then.
+            return client.request(method, url, **self._clamped_to_ctx(client, ctx, kwargs))
+
+        response = self._send_policy(send)
         logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
         if raise_for_status:
             raise_for_status_as_operational_error(response)
@@ -225,8 +230,8 @@ class ServiceClient:
     ) -> dict[str, Any]:
         """Given a `ctx` with a deadline, cap each of this attempt's httpx timeouts (the caller's
         `timeout=` if given, else the client's) at the time that deadline has left, so one slow
-        attempt cannot run past it. Never raises a timeout. Evaluated per attempt, so a retried
-        GET's later attempts see a shrinking budget."""
+        attempt cannot run past it. An unlimited (`None`) phase is capped too. Never raises a
+        timeout. Evaluated per send, so a retried GET's later attempts see a shrinking budget."""
         remaining = ctx.remaining_secs()
         if remaining is None:
             return kwargs
@@ -234,10 +239,10 @@ class ServiceClient:
         requested = kwargs.get("timeout", httpx.USE_CLIENT_DEFAULT)
         base = client.timeout if requested is httpx.USE_CLIENT_DEFAULT else httpx.Timeout(requested)
         clamped = httpx.Timeout(
-            connect=None if base.connect is None else min(base.connect, cap),
-            read=None if base.read is None else min(base.read, cap),
-            write=None if base.write is None else min(base.write, cap),
-            pool=None if base.pool is None else min(base.pool, cap),
+            connect=cap if base.connect is None else min(base.connect, cap),
+            read=cap if base.read is None else min(base.read, cap),
+            write=cap if base.write is None else min(base.write, cap),
+            pool=cap if base.pool is None else min(base.pool, cap),
         )
         return {**kwargs, "timeout": clamped}
 
