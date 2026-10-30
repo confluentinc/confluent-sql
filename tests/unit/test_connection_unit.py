@@ -117,6 +117,7 @@ class TestHTTPStatusErrorHandling:
         response_mock = Mock()
         response_mock.status_code = 500
         response_mock.json.side_effect = ValueError("Invalid JSON")
+        response_mock.text = ""
 
         def raise_http_error():
             raise httpx.HTTPStatusError("Server Error", request=Mock(), response=response_mock)
