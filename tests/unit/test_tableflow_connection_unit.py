@@ -18,6 +18,7 @@ from confluent_sql import (
     TableflowTopicConfig,
     TableflowTopicNotFoundError,
     TableFormat,
+    Timeouts,
 )
 from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 from confluent_sql.exceptions import RequestTimeoutError
@@ -115,7 +116,11 @@ class TestControlplaneClient:
             _ = conn._controlplane.httpx_client
 
     def test_http_timeout_applied_to_controlplane_client(self) -> None:
-        conn = _connect(tableflow_api_key="tk", tableflow_api_secret="ts", http_timeout_secs=10.0)
+        conn = _connect(
+            tableflow_api_key="tk",
+            tableflow_api_secret="ts",
+            timeouts=Timeouts(httpx_request_timeout_secs=10.0),
+        )
         assert conn._controlplane.httpx_client.timeout.read == 10.0
 
     def test_close_closes_created_controlplane_client(self) -> None:
