@@ -4,9 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from confluent_sql.exceptions import InterfaceError
+from confluent_sql.exceptions import InterfaceError, OperationalError, RequestTimeoutError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.result_readers import (
+    MAX_CONSECUTIVE_PAGE_TIMEOUTS,
     AppendOnlyResultReader,
     ChangeloggedRow,
     DictRowFormatter,
@@ -355,3 +356,144 @@ class TestIsExhausted:
 
         # Should not be exhausted (more pages available)
         assert reader._is_exhausted() is False
+
+
+@pytest.mark.unit
+class TestBlockingIterationToleratesPageTimeouts:
+    """One slow results GET (an httpx timeout, surfaced as RequestTimeoutError) is "no news yet" to
+    a reader that is blocking by contract -- iteration, fetchall(), snapshot fetches -- not a
+    failure (#236's shape, for result pages). The non-blocking streaming fetch path makes at most
+    one request and keeps surfacing the error, since its caller owns the polling loop."""
+
+    PAGE_TOKEN = "page-2"
+
+    @staticmethod
+    def _rows(*ids: int) -> list[ChangeloggedRow]:
+        return [ChangeloggedRow(Op.INSERT, (i, f"n{i}", i * 100)) for i in ids]
+
+    def _reader(self, mock_connection, mock_statement_with_schema, mode, *pages):
+        """A reader whose result-page fetches replay `pages`: each an exception to raise or a
+        (rows, next_page) result to return."""
+        mock_statement_with_schema.can_fetch_results.return_value = True
+        mock_statement_with_schema.type_converter.to_python_row.side_effect = lambda row: row
+        mock_connection.statement_results_page_fetch_pause_secs = 0.0
+        mock_connection._get_statement_results.side_effect = list(pages)
+        return AppendOnlyResultReader(
+            connection=mock_connection,
+            statement=mock_statement_with_schema,
+            execution_mode=mode,
+            as_dict=False,
+        )
+
+    def test_iteration_survives_a_timed_out_page_and_refetches_the_same_page(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        reader = self._reader(
+            mock_connection,
+            mock_statement_with_schema,
+            ExecutionMode.STREAMING_QUERY,
+            ([], self.PAGE_TOKEN),
+            RequestTimeoutError("slow"),
+            (self._rows(1, 2), None),
+        )
+
+        assert [row for row in reader] == [(1, "n1", 100), (2, "n2", 200)]
+
+        calls = mock_connection._get_statement_results.call_args_list
+        assert [c.args for c in calls] == [
+            ("test-query", None),
+            ("test-query", self.PAGE_TOKEN),
+            ("test-query", self.PAGE_TOKEN),
+        ]
+
+    def test_up_to_the_limit_minus_one_consecutive_timeouts_are_tolerated(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        timeouts = [RequestTimeoutError("slow")] * (MAX_CONSECUTIVE_PAGE_TIMEOUTS - 1)
+        reader = self._reader(
+            mock_connection,
+            mock_statement_with_schema,
+            ExecutionMode.SNAPSHOT,
+            *timeouts,
+            (self._rows(1), None),
+        )
+
+        assert list(reader) == [(1, "n1", 100)]
+
+    def test_the_limit_of_consecutive_timeouts_raises_the_last_one(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        timeouts = [RequestTimeoutError(f"slow-{i}") for i in range(MAX_CONSECUTIVE_PAGE_TIMEOUTS)]
+        reader = self._reader(
+            mock_connection, mock_statement_with_schema, ExecutionMode.SNAPSHOT, *timeouts
+        )
+
+        with pytest.raises(RequestTimeoutError) as exc_info:
+            next(reader)
+
+        assert exc_info.value is timeouts[-1]
+        assert mock_connection._get_statement_results.call_count == MAX_CONSECUTIVE_PAGE_TIMEOUTS
+
+    def test_a_successful_page_resets_the_consecutive_count(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        streak = [RequestTimeoutError("slow")] * (MAX_CONSECUTIVE_PAGE_TIMEOUTS - 1)
+        reader = self._reader(
+            mock_connection,
+            mock_statement_with_schema,
+            ExecutionMode.STREAMING_QUERY,
+            *streak,
+            ([], self.PAGE_TOKEN),  # an empty page still counts as a successful fetch
+            *streak,
+            (self._rows(1), None),
+        )
+
+        assert list(reader) == [(1, "n1", 100)]
+
+    def test_snapshot_fetchmany_and_fetchall_block_through_a_timeout(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        reader = self._reader(
+            mock_connection,
+            mock_statement_with_schema,
+            ExecutionMode.SNAPSHOT,
+            RequestTimeoutError("slow"),
+            (self._rows(1, 2, 3), None),
+        )
+
+        assert reader.fetchmany(2) == [(1, "n1", 100), (2, "n2", 200)]
+        assert reader.fetchall() == [(3, "n3", 300)]
+
+    def test_other_operational_errors_are_not_tolerated(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        reader = self._reader(
+            mock_connection,
+            mock_statement_with_schema,
+            ExecutionMode.SNAPSHOT,
+            OperationalError("boom"),
+            (self._rows(1), None),
+        )
+
+        with pytest.raises(OperationalError, match="boom") as exc_info:
+            next(reader)
+
+        assert not isinstance(exc_info.value, RequestTimeoutError)
+        assert mock_connection._get_statement_results.call_count == 1
+
+    def test_nonblocking_streaming_fetch_still_surfaces_the_timeout_and_stays_retryable(
+        self, mock_connection, mock_statement_with_schema
+    ):
+        reader = self._reader(
+            mock_connection,
+            mock_statement_with_schema,
+            ExecutionMode.STREAMING_QUERY,
+            RequestTimeoutError("slow"),
+            (self._rows(1), None),
+        )
+
+        with pytest.raises(RequestTimeoutError):
+            reader.fetchone()
+        assert mock_connection._get_statement_results.call_count == 1  # one request, no retry
+
+        assert reader.fetchone() == (1, "n1", 100)  # the caller's own retry works: state intact
