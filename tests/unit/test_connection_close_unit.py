@@ -58,7 +58,7 @@ SERVICE_API_SPECS = [
     ),
     ServiceApiSpec(
         name="connectors",
-        get_from=lambda conn: conn._get_connector_api(),
+        get_from=lambda conn: conn.get_connector_api(),
         cache_attr="_connector_api",
         call_needing_connection=lambda api: api.get("my-connector"),
     ),

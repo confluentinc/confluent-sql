@@ -21,8 +21,8 @@ The module is split into two layers plus a seam:
 - A pure, I/O-free layer -- the output models above, the `ConnectorState` enum, and
   `build_create_payload`. Mirrors the `tableflow.py` precedent and is unit-testable with zero mocks.
 - An orchestration layer -- `ConnectorApi` -- holding the HTTP+poll choreography.
-- `ControlPlaneContext`, a narrow protocol `ConnectorApi` depends on instead of `Connection`, so
-  `connection` imports `connectors` and never the reverse.
+- A `Requester` (plus the environment id and a cluster-id resolver) handed to `ConnectorApi` by
+  `Connection`, so `connection` imports `connectors` and never the reverse.
 
 The Connect v1 wire shape splits what Tableflow kept together: a connector's lifecycle *state*
 (`connector.state`) is returned only by the `/status` sub-resource, never by the create response or
@@ -31,10 +31,9 @@ the base read. So building a complete `Connector` always merges a config read wi
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
-
-import httpx
+from typing import TYPE_CHECKING
 
 from .exceptions import (
     ConnectorAlreadyExistsError,
@@ -43,9 +42,12 @@ from .exceptions import (
     OperationalError,
 )
 from .polling import poll_until
-from .service_api import ServiceApi
+from .service_client import Requester, raise_for_status_as_operational_error
 from .types import StrAnyDict
 from .utils import ExtensibleEnum
+
+if TYPE_CHECKING:
+    import httpx
 
 _REQUIRED_CONFIG_KEYS = ("connector.class", "kafka.api.key", "kafka.api.secret")
 """Config keys the Connect v1 create body marks required (besides `name`, which we inject)."""
@@ -199,45 +201,34 @@ class Connector:
         )
 
 
-class ControlPlaneContext(Protocol):
-    """The narrow surface `ConnectorApi` needs from its host connection.
-
-    Depending on this protocol rather than on `Connection` is what keeps the import graph acyclic
-    (`connection` imports `connectors`, never the reverse) and lets `ConnectorApi` be tested
-    against a tiny fake. The host supplies the environment, resolves the Kafka cluster id, and
-    issues authenticated control-plane requests; `ConnectorApi` owns everything connector-specific
-    on top.
-    """
-
-    environment_id: str
-
-    def resolve_kafka_cluster_id(self) -> str:
-        """Return the `lkc-…` id of the Kafka cluster the connectors run against."""
-        ...
-
-    def connect_controlplane_request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: object
-    ) -> httpx.Response:
-        """Issue a request against the connector control-plane routes, authed for Connect."""
-        ...
-
-
-class ConnectorApi(ServiceApi[ControlPlaneContext]):
+class ConnectorApi:
     """Lifecycle choreography for managed connectors against the Connect v1 API.
 
-    Covers create / read / delete plus the pause / resume actions. Holds the stateful
-    HTTP + polling work behind `Connection`'s flat passthroughs. Blocks by default per the repo's
-    `wait_for_<settled-state>` convention, polling via `sleep_with_backoff`. Because the wire
-    returns lifecycle state only from the `/status` sub-resource, a complete `Connector` always
-    pairs a config read with a status read.
+    Obtained from `Connection.get_connector_api()`. Covers create / read / delete plus the
+    pause / resume actions, holding the stateful HTTP + polling work. Blocks by default per the
+    repo's `wait_for_<settled-state>` convention, polling via `poll_until`. Because the
+    wire returns lifecycle state only from the `/status` sub-resource, a complete `Connector`
+    always pairs a config read with a status read.
+
+    `request` sends to the Connect routes, authenticated for Connect; `resolve_kafka_cluster_id`
+    returns the `lkc-…` id of the Kafka cluster the connectors run against, called per use.
     """
+
+    def __init__(
+        self,
+        request: Requester,
+        *,
+        environment_id: str,
+        resolve_kafka_cluster_id: Callable[[], str],
+    ) -> None:
+        self._request = request
+        self._environment_id = environment_id
+        self._resolve_kafka_cluster_id = resolve_kafka_cluster_id
 
     def _connectors_path(self) -> str:
         """The base `/connect/v1/.../connectors` collection path for this connection's cluster."""
-        context = self.get_context()
-        env = context.environment_id
-        cluster = context.resolve_kafka_cluster_id()
-        return f"/connect/v1/environments/{env}/clusters/{cluster}/connectors"
+        cluster = self._resolve_kafka_cluster_id()
+        return f"/connect/v1/environments/{self._environment_id}/clusters/{cluster}/connectors"
 
     def create(
         self,
@@ -256,26 +247,20 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         Raises:
             InterfaceError: If `config` is missing a required key (`connector.class`,
                 `kafka.api.key`, `kafka.api.secret`) or its `name` disagrees with `name`.
-            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+            ProgrammingError: If the connection can't authenticate the Connect routes (no Connect
                 credential) or resolve the Kafka cluster id.
             ConnectorAlreadyExistsError: If a connector with this name exists (HTTP 409).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
         """
         payload = build_create_payload(name=name, config=config)
-        response = self.get_context().connect_controlplane_request(
+        response = self._request(
             self._connectors_path(), method="POST", json=payload, raise_for_status=False
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 409:
-                raise ConnectorAlreadyExistsError(
-                    f"Connector '{name}' already exists", connector_name=name
-                ) from e
-            raise OperationalError(
-                f"Error creating connector: {e.response.text}",
-                http_status_code=e.response.status_code,
-            ) from e
+        if response.status_code == 409:
+            raise ConnectorAlreadyExistsError(
+                f"Connector '{name}' already exists", connector_name=name
+            )
+        raise_for_status_as_operational_error(response, prefix="Error creating connector")
 
         spec = ConnectorSpec.from_response(response.json())
         if wait_for_running:
@@ -286,7 +271,7 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         """Read a connector's config and lifecycle state, merging the base read with `/status`.
 
         Raises:
-            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+            ProgrammingError: If the connection can't authenticate the Connect routes (no Connect
                 credential) or resolve the Kafka cluster id.
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors.
@@ -298,25 +283,15 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         """Delete a connector and, by default, block until the base read 404s.
 
         Raises:
-            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+            ProgrammingError: If the connection can't authenticate the Connect routes (no Connect
                 credential) or resolve the Kafka cluster id.
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
-        response = self.get_context().connect_controlplane_request(
+        response = self._request(
             f"{self._connectors_path()}/{name}", method="DELETE", raise_for_status=False
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ConnectorNotFoundError(
-                    f"Connector '{name}' does not exist", connector_name=name
-                ) from e
-            raise OperationalError(
-                f"Error deleting connector: {e.response.text}",
-                http_status_code=e.response.status_code,
-            ) from e
+        self._check_found_and_ok(response, name, prefix="Error deleting connector")
 
         if wait_for_removal:
             self._wait_for_removal(name, timeout)
@@ -328,7 +303,7 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         settled `Connector` is read back via `get`.
 
         Raises:
-            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+            ProgrammingError: If the connection can't authenticate the Connect routes (no Connect
                 credential) or resolve the Kafka cluster id.
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
@@ -345,7 +320,7 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         settled `Connector` is read back via `get`.
 
         Raises:
-            ProgrammingError: If the context can't authenticate the Connect routes (no Connect
+            ProgrammingError: If the connection can't authenticate the Connect routes (no Connect
                 credential) or resolve the Kafka cluster id.
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
@@ -353,23 +328,21 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
         self._connector_action(name, "resume")
         return self._settle_after_action(name, ConnectorState.RUNNING, wait_for_running, timeout)
 
+    @staticmethod
+    def _check_found_and_ok(response: httpx.Response, name: str, *, prefix: str) -> None:
+        """404 -> ConnectorNotFoundError; any other error status -> OperationalError carrying the
+        status code and the server's own detail (`prefix` leads the message)."""
+        if response.status_code == 404:
+            raise ConnectorNotFoundError(f"Connector '{name}' does not exist", connector_name=name)
+        raise_for_status_as_operational_error(response, prefix=prefix)
+
     def _connector_action(self, name: str, action: str) -> None:
         """Issue a `PUT` lifecycle action sub-request (`pause`/`resume`); 404 ->
         ConnectorNotFoundError, other HTTP errors -> OperationalError."""
-        response = self.get_context().connect_controlplane_request(
+        response = self._request(
             f"{self._connectors_path()}/{name}/{action}", method="PUT", raise_for_status=False
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ConnectorNotFoundError(
-                    f"Connector '{name}' does not exist", connector_name=name
-                ) from e
-            raise OperationalError(
-                f"Error sending '{action}' to connector: {e.response.text}",
-                http_status_code=e.response.status_code,
-            ) from e
+        self._check_found_and_ok(response, name, prefix=f"Error sending '{action}' to connector")
 
     def _settle_after_action(
         self, name: str, target: ConnectorState, wait: bool, timeout: float
@@ -388,39 +361,15 @@ class ConnectorApi(ServiceApi[ControlPlaneContext]):
     def _read_spec(self, name: str) -> ConnectorSpec:
         """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
         errors -> OperationalError."""
-        response = self.get_context().connect_controlplane_request(
-            f"{self._connectors_path()}/{name}", raise_for_status=False
-        )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ConnectorNotFoundError(
-                    f"Connector '{name}' does not exist", connector_name=name
-                ) from e
-            raise OperationalError(
-                f"Error reading connector: {e.response.text}",
-                http_status_code=e.response.status_code,
-            ) from e
+        response = self._request(f"{self._connectors_path()}/{name}", raise_for_status=False)
+        self._check_found_and_ok(response, name, prefix="Error reading connector")
         return ConnectorSpec.from_response(response.json())
 
     def _fetch_status(self, name: str) -> ConnectorStatus:
         """`GET .../connectors/{name}/status` -> parsed status; 404 -> ConnectorNotFoundError, other
         HTTP errors -> OperationalError."""
-        response = self.get_context().connect_controlplane_request(
-            f"{self._connectors_path()}/{name}/status", raise_for_status=False
-        )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise ConnectorNotFoundError(
-                    f"Connector '{name}' does not exist", connector_name=name
-                ) from e
-            raise OperationalError(
-                f"Error reading connector status: {e.response.text}",
-                http_status_code=e.response.status_code,
-            ) from e
+        response = self._request(f"{self._connectors_path()}/{name}/status", raise_for_status=False)
+        self._check_found_and_ok(response, name, prefix="Error reading connector status")
         return ConnectorStatus.from_response(response.json())
 
     def _wait_for_state(

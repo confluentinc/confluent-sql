@@ -117,6 +117,7 @@ class TestHTTPStatusErrorHandling:
         response_mock = Mock()
         response_mock.status_code = 500
         response_mock.json.side_effect = ValueError("Invalid JSON")
+        response_mock.text = ""
 
         def raise_http_error():
             raise httpx.HTTPStatusError("Server Error", request=Mock(), response=response_mock)
@@ -174,6 +175,31 @@ class TestConnectionDeleteStatementErrors:
             invalid_credential_connection.delete_statement("statement-with-error")
         assert exc_info.value.http_status_code == 500
 
+    def test_delete_statement_error_includes_the_server_detail(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        """The server's own explanation reaches the caller, as with every other request error."""
+        mocker.patch.object(
+            invalid_credential_connection._dataplane.httpx_client,
+            "request",
+            return_value=_detailed_error_response(500, "compute pool exhausted"),
+        )
+
+        with pytest.raises(OperationalError, match="compute pool exhausted") as exc_info:
+            invalid_credential_connection.delete_statement("stmt-1")
+        assert exc_info.value.http_status_code == 500
+
+    def test_delete_statement_ignores_a_real_404_response(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        mocker.patch.object(
+            invalid_credential_connection._dataplane.httpx_client,
+            "request",
+            return_value=_detailed_error_response(404, "no such statement"),
+        )
+
+        invalid_credential_connection.delete_statement("ghost")  # does not raise
+
 
 def _ok_response(statement_json: dict) -> Mock:
     """A 200 response mock whose .json() returns the given statement dict."""
@@ -196,6 +222,15 @@ def _http_error_response(status_code: int) -> Mock:
 
     response_mock.raise_for_status = _raise
     return response_mock
+
+
+def _detailed_error_response(status_code: int, detail: str) -> httpx.Response:
+    """A real error response carrying the server's `errors[].detail` body."""
+    return httpx.Response(
+        status_code,
+        json={"errors": [{"detail": detail}]},
+        request=httpx.Request("GET", "https://flink.example.invalid/statements/s"),
+    )
 
 
 @pytest.mark.unit
@@ -435,6 +470,32 @@ class TestConnectionStopStatement:
         with pytest.raises(OperationalError, match="Error stopping statement") as exc_info:
             invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
         assert exc_info.value.http_status_code == 500
+
+    def test_other_http_error_includes_the_server_detail(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        mocker.patch.object(
+            invalid_credential_connection._dataplane.httpx_client,
+            "request",
+            return_value=_detailed_error_response(500, "compute pool exhausted"),
+        )
+
+        with pytest.raises(OperationalError, match="compute pool exhausted") as exc_info:
+            invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
+        assert exc_info.value.http_status_code == 500
+
+    def test_real_404_response_raises_statement_not_found(
+        self, invalid_credential_connection: Connection, mocker
+    ):
+        mocker.patch.object(
+            invalid_credential_connection._dataplane.httpx_client,
+            "request",
+            return_value=_detailed_error_response(404, "no such statement"),
+        )
+
+        with pytest.raises(StatementNotFoundError) as exc_info:
+            invalid_credential_connection.stop_statement("ghost", wait_for_stopped=False)
+        assert exc_info.value.statement_name == "ghost"
 
     def test_blocking_returns_without_polling_when_patch_already_failed(
         self,

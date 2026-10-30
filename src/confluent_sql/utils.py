@@ -68,15 +68,22 @@ def decode_sql_hex_literal(encoded: Any) -> bytes:
 def extract_error_detail(response: httpx.Response) -> str:
     """Extract server-provided error detail from an error response body.
 
-    Falls back to "no more details" both when the body doesn't parse or carries
-    no non-empty detail (an `errors` list that's empty, or whose entries omit `detail`).
+    Understands three body shapes, in order of preference: the `errors[].detail` list (Flink,
+    Tableflow, Artifacts), a top-level `message` string (Connect), and a non-JSON body, whose
+    stripped text is used as-is. Falls back to "no more details" when none of these yields a
+    non-empty string (e.g. an `errors` list that's empty, or whose entries omit `detail`).
     """
     try:
-        errors = response.json().get("errors", [])
-        details = "; ".join(err["detail"] for err in errors if err.get("detail"))
+        body = response.json()
     except Exception:
-        details = ""
-    return details or "no more details"
+        # Not JSON (e.g. a proxy's plain-text 502): the raw text is the only explanation there is.
+        return response.text.strip() or "no more details"
+    try:
+        details = "; ".join(err["detail"] for err in body.get("errors", []) if err.get("detail"))
+        message = body.get("message")
+    except Exception:
+        return "no more details"
+    return details or (message if isinstance(message, str) and message else "no more details")
 
 
 def next_page_token(next_url: str | None) -> str | None:
