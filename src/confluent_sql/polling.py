@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Iterator
 from typing import TypeVar
 
+from .context import BACKGROUND, Context
 from .exceptions import OperationalError, RequestTimeoutError
 
 _T = TypeVar("_T")
@@ -47,7 +48,9 @@ def sleep_with_backoff(timeout_secs: float, *, started_at: float | None = None) 
 
     What this does NOT bound is the caller's own in-flight work: a GET that begins just before the
     deadline still runs to completion, so total wall time can exceed timeout_secs by up to one unit
-    of caller work. The helper paces the sleeping; it cannot interrupt the caller.
+    of caller work. The helper paces the sleeping; it cannot interrupt the caller. (`poll_until`
+    closes that gap for HTTP work: it hands each attempt a `Context` carrying the deadline, which
+    the attempt passes as `ctx=` to `ServiceClient.request`, which caps its timeouts to it.)
 
     started_at lets a caller that did a timed first attempt (e.g. a network poll) fold that elapsed
     time into the budget: pass the time.monotonic() captured before that attempt so it is charged
@@ -66,17 +69,25 @@ def sleep_with_backoff(timeout_secs: float, *, started_at: float | None = None) 
 
 
 def poll_until(
-    attempt: Callable[[], _T | None],
+    attempt: Callable[[Context], _T | None],
     *,
     timeout: float,
     on_timeout: Callable[[], OperationalError],
     immediate: bool = True,
+    ctx: Context = BACKGROUND,
 ) -> _T:
-    """Run a whole server-polling wait: call attempt() until it yields a result or timeout elapses.
+    """Run a whole server-polling wait: call attempt(ctx) until it yields a result or timeout
+    elapses.
 
-    attempt() returns the final result once the awaited condition holds, or None for "not yet". It
-    raises to fail the wait outright (e.g. a resource that went FAILED); every exception but
+    attempt(ctx) returns the final result once the awaited condition holds, or None for "not yet".
+    It raises to fail the wait outright (e.g. a resource that went FAILED); every exception but
     RequestTimeoutError propagates untouched.
+
+    The `Context` handed to each attempt carries the wait's deadline. An attempt that makes HTTP
+    requests passes it down as `ctx=`, and `ServiceClient.request` caps each request's timeouts at
+    the time left, so one slow request cannot overrun the wait by up to a full request timeout. The
+    `ctx` parameter is the wait's parent: pass the enclosing wait's context when nesting, and the
+    tighter of the two deadlines applies.
 
     A RequestTimeoutError -- one slow HTTP response, e.g. a cold compute pool -- is "no news yet",
     not a failure (#236): the wait carries on and the deadline still bounds it. If the deadline
@@ -87,21 +98,25 @@ def poll_until(
     against the timeout. Pass immediate=False when the caller already holds fresh state and only
     wants to fetch after the first paced sleep.
     """
+    started_at = time.monotonic()
+    wait_ctx = ctx.with_timeout(timeout)
+    # Pace against the wait's own deadline, not `timeout`: a tighter parent ends the wait sooner.
+    parent_secs = ctx.remaining_secs()
+    budget_secs = timeout if parent_secs is None else min(timeout, parent_secs)
     last_timeout: RequestTimeoutError | None = None
 
     def tolerant_attempt() -> _T | None:
         nonlocal last_timeout
         try:
-            return attempt()
+            return attempt(wait_ctx)
         except RequestTimeoutError as e:
             logger.info(f"Poll timed out, will retry: {e}")
             last_timeout = e
             return None
 
-    started_at = time.monotonic()
     if immediate and (result := tolerant_attempt()) is not None:
         return result
-    for _ in sleep_with_backoff(timeout, started_at=started_at):
+    for _ in sleep_with_backoff(budget_secs, started_at=started_at):
         if (result := tolerant_attempt()) is not None:
             return result
     raise on_timeout() from last_timeout

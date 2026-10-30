@@ -24,6 +24,7 @@ from .artifacts import ArtifactsApi
 from .auth import FlinkBearerAuth
 from .connect_options import DEFAULT_TIMEOUTS, Timeouts
 from .connectors import ConnectorApi
+from .context import BACKGROUND, Context
 from .cursor import Cursor
 from .exceptions import (
     InterfaceError,
@@ -1620,9 +1621,9 @@ class Connection:
         if statement.phase.is_terminal:
             return statement
 
-        def poll() -> Statement | None:
+        def poll(ctx: Context) -> Statement | None:
             nonlocal statement
-            statement = self.get_statement(statement.name)
+            statement = Statement.from_response(self, self._get_statement(statement.name, ctx=ctx))
             raise_if_failed(statement)
             return statement if statement.phase.is_terminal else None
 
@@ -1963,7 +1964,7 @@ class Connection:
         res = self._dataplane.request("/statements", method="POST", json=payload)
         return res.json()
 
-    def _get_statement(self, statement_name: str) -> dict[str, Any]:
+    def _get_statement(self, statement_name: str, ctx: Context = BACKGROUND) -> dict[str, Any]:
         """
         INTERNAL USE ONLY. Get raw statement API response.
 
@@ -1972,6 +1973,7 @@ class Connection:
 
         Args:
             statement_name: The name of the statement to check
+            ctx: The `Context` of the wait this read is part of, if any; bounds the request.
 
         Returns:
             Dictionary containing the statement status and details
@@ -1981,7 +1983,7 @@ class Connection:
             OperationalError: If other API errors occur
         """
         try:
-            return self._dataplane.request(f"/statements/{statement_name}").json()
+            return self._dataplane.request(f"/statements/{statement_name}", ctx=ctx).json()
         except OperationalError as e:
             # Check if this is a 404 error
             if e.http_status_code == 404:
@@ -1993,7 +1995,7 @@ class Connection:
             raise
 
     def _get_statement_results(
-        self, statement_name: str, next_url: str | None
+        self, statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
     ) -> tuple[list[ChangelogRow], str | None]:
         """
         Try to get a page of results for a statement.
@@ -2002,6 +2004,8 @@ class Connection:
             statement_name: The name of the statement
             next_url: Optional full URL to fetch the next page of results from. If None, then
                         the results endpoint for the statement will be used.
+            ctx: The `Context` bounding the request (a blocking read's current window); defaults
+                        to one with no deadline.
 
         Returns:
             A 2-tuple: (list of results in changelog row format, optional url to fetch next page.)
@@ -2015,7 +2019,7 @@ class Connection:
             next_url = f"/statements/{statement_name}/results"
 
         try:
-            response = self._dataplane.request(next_url).json()
+            response = self._dataplane.request(next_url, ctx=ctx).json()
         except OperationalError as e:
             # Check if this is a 404 error indicating the statement was deleted
             if e.http_status_code == 404:
@@ -2164,15 +2168,19 @@ class Connection:
         url: str,
         method: str = "GET",
         raise_for_status: bool = True,
+        *,
+        ctx: Context = BACKGROUND,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Send a request to one control-plane surface, carrying that surface's credential."""
+        """Send a request to one control-plane surface, carrying that surface's credential, under
+        `ctx` (the `Context` of the wait it is part of, or `BACKGROUND`)."""
         return self._controlplane.request(
             url,
             method,
             raise_for_status,
             auth=self._auth_for(surface),
             log_body=surface.value.log_body,
+            ctx=ctx,
             **kwargs,
         )
 
@@ -2293,11 +2301,17 @@ class Connection:
             TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
             OperationalError: On other API errors.
         """
+        return self._get_tableflow(table_name, BACKGROUND)
+
+    def _get_tableflow(self, table_name: str, ctx: Context) -> TableflowTopic:
+        """`get_tableflow`, bounded by `ctx`: the `Context` of the wait it is part of, or
+        `BACKGROUND`."""
         response = self._controlplane_request(
             ControlPlaneSurface.TABLEFLOW,
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             params=self._tableflow_topic_params(),
             raise_for_status=False,
+            ctx=ctx,
         )
         if response.status_code == 404:
             raise TableflowTopicNotFoundError(
@@ -2459,9 +2473,9 @@ class Connection:
         if topic.phase is TableflowPhase.RUNNING:
             return topic
 
-        def poll() -> TableflowTopic | None:
+        def poll(ctx: Context) -> TableflowTopic | None:
             nonlocal topic
-            topic = self.get_tableflow(topic.spec.display_name)
+            topic = self._get_tableflow(topic.spec.display_name, ctx)
             raise_if_failed(topic)
             return topic if topic.phase is TableflowPhase.RUNNING else None
 
@@ -2482,9 +2496,9 @@ class Connection:
             OperationalError: If the topic is not removed within timeout.
         """
 
-        def is_removed() -> bool | None:
+        def is_removed(ctx: Context) -> bool | None:
             try:
-                self.get_tableflow(table_name)
+                self._get_tableflow(table_name, ctx)
             except TableflowTopicNotFoundError:
                 return True
             return None

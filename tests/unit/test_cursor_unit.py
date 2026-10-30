@@ -478,6 +478,31 @@ class TestExecute:
         assert mock_connection_cursor._statement.phase.name == "RUNNING"
         assert mock_connection_cursor._statement.is_bounded  # Verify the bug condition
 
+    def test_readiness_polls_carry_the_waits_ctx(
+        self,
+        mock_connection_cursor: Cursor,
+        statement_response_factory: StatementResponseFactory,
+        mocker,
+    ):
+        """Each poll's request is handed a `ctx` bounded by the execute() timeout, so a slow
+        request cannot run past the wait's deadline."""
+        mock_connection_cursor._execution_mode = ExecutionMode.STREAMING_QUERY
+        mock_connection_cursor._connection._get_statement.return_value = (  # type: ignore
+            statement_response_factory(
+                sql_statement="SELECT * FROM source_table",
+                sql_kind="SELECT",
+                is_bounded=True,
+                phase="RUNNING",
+                is_append_only=True,
+            )
+        )
+        mocker.patch("time.sleep", return_value=None)
+
+        mock_connection_cursor.execute("SELECT * FROM source_table", timeout=5)
+
+        poll = mock_connection_cursor._connection._get_statement.call_args  # type: ignore
+        assert 0 < poll.kwargs["ctx"].remaining_secs() <= 5
+
     def test_snapshot_mode_bounded_append_only_becomes_ready_at_running(
         self,
         mock_connection_cursor: Cursor,
@@ -576,7 +601,7 @@ class TestExecute:
         # Simulate statement progressing: RUNNING -> RUNNING -> COMPLETED
         call_count = [0]
 
-        def get_statement_side_effect(statement_name):  # noqa: ARG001
+        def get_statement_side_effect(statement_name, ctx=None):  # noqa: ARG001
             call_count[0] += 1
             if call_count[0] <= 2:
                 # First two calls: return RUNNING phase
@@ -629,7 +654,7 @@ class TestExecute:
 
         call_count = [0]
 
-        def get_statement_side_effect(statement_name):  # noqa: ARG001
+        def get_statement_side_effect(statement_name, ctx=None):  # noqa: ARG001
             call_count[0] += 1
             # Always return RUNNING - should return on first call for non-DDL statements
             return statement_response_factory(
@@ -674,7 +699,7 @@ class TestExecute:
 
         call_count = [0]
 
-        def get_statement_side_effect(statement_name):  # noqa: ARG001
+        def get_statement_side_effect(statement_name, ctx=None):  # noqa: ARG001
             call_count[0] += 1
             # Always return FAILED
             return statement_response_factory(
@@ -715,7 +740,7 @@ class TestExecute:
 
         call_count = [0]
 
-        def get_statement_side_effect(statement_name):  # noqa: ARG001
+        def get_statement_side_effect(statement_name, ctx=None):  # noqa: ARG001
             call_count[0] += 1
             # Always return RUNNING with is_bounded=False (normal case)
             return statement_response_factory(
