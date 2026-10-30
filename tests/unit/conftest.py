@@ -8,7 +8,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
-from confluent_sql import Connection, Cursor, oauth
+from confluent_sql import DEFAULT_TIMEOUTS, Connection, Cursor, oauth
 from confluent_sql.connection import RowTypeRegistry
 from confluent_sql.statement import ChangelogRow, Op, Statement
 
@@ -266,6 +266,8 @@ def mock_connection_factory(mocker, statement_response_factory) -> MockConnectio
         mock_conn.closing_cursor = types.MethodType(Connection.closing_cursor, mock_conn)
 
         mock_conn._row_type_registry = RowTypeRegistry()
+        # Only a class-level annotation, so the autospec would not have it.
+        mock_conn.timeouts = DEFAULT_TIMEOUTS
 
         return mock_conn
 
