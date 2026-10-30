@@ -20,6 +20,14 @@ class TestTimeouts:
             httpx_request_timeout_secs=5, statement_results_response_wallclock_secs=30.0
         )
 
+    @pytest.mark.parametrize("good", [5, 0.5, 10**6], ids=["int", "float", "big-int"])
+    def test_accepts_int_and_float(self, good):
+        """The `float` annotation covers plain ints too (PEP 484 numeric promotion)."""
+        timeouts = Timeouts(
+            httpx_request_timeout_secs=good, statement_results_response_wallclock_secs=10**7
+        )
+        assert timeouts.httpx_request_timeout_secs == good
+
     def test_is_immutable(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             DEFAULT_TIMEOUTS.httpx_request_timeout_secs = 1  # type: ignore[misc]

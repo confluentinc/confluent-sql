@@ -19,9 +19,11 @@ DEFAULT_STATEMENT_RESULTS_RESPONSE_WALLCLOCK_SECS: float = 30.0
 results fetches amounted to."""
 
 
-def _require_positive_number(owner: str, name: str, value: object) -> None:
-    # Reject bool explicitly: bool is a subclass of int in Python, but a True/False value here is
-    # almost certainly a programming error rather than a valid timeout.
+def _require_positive_number(owner: str, name: str, value: float) -> None:
+    # Annotated `float`, but still checked at runtime: a dataclass doesn't enforce its field types,
+    # so a caller that isn't type-checked can hand `Timeouts` anything. Reject bool explicitly:
+    # bool is a subclass of int in Python, but a True/False value here is almost certainly a
+    # programming error rather than a valid timeout.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InterfaceError(f"{owner}.{name} must be a number, got {type(value).__name__}")
     # `not value > 0`, not `value <= 0`: every comparison with NaN is false, so the latter would
