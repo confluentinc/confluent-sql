@@ -1,4 +1,4 @@
-"""Unit tests for Connection.close() breaking the reference cycles with its service APIs."""
+"""Unit tests for Connection.close() and the service APIs it composes."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 
 from confluent_sql import InterfaceError
 from confluent_sql.connection import Connection, connect
-from confluent_sql.service_api import ServiceApi
 
 pytestmark = pytest.mark.unit
 
@@ -37,7 +36,7 @@ class ServiceApiSpec:
     cache_attr: str
     """The Connection attribute that caches the composed service API."""
     call_needing_connection: Callable[[Any], Any]
-    """A service API call that needs the host connection (fails fast, before any request)."""
+    """A service API call that reaches the connection (it fails on the first request)."""
 
 
 @dataclass(frozen=True)
@@ -78,39 +77,12 @@ def service_case(request: pytest.FixtureRequest) -> ComposedServiceApi:
     )
 
 
-class TestServiceApi:
-    def test_get_context_returns_the_context(self) -> None:
-        context = object()
-        assert ServiceApi(context).get_context() is context
-
-    def test_close_drops_the_context_and_get_context_raises(self) -> None:
-        service_api = ServiceApi(object())
-        service_api._close()
-        assert service_api._context is None
-        with pytest.raises(InterfaceError, match="Connection is closed"):
-            service_api.get_context()
-
-    def test_close_is_idempotent(self) -> None:
-        service_api = ServiceApi(object())
-        service_api._close()
-        service_api._close()
-        assert service_api._context is None
-
-
-class TestConnectionCloseBreaksCycles:
-    def test_close_clears_service_api_back_reference_and_cache(
-        self, service_case: ComposedServiceApi
-    ) -> None:
-        conn, api = service_case.conn, service_case.api
-        assert api._context is conn
-        assert getattr(conn, service_case.cache_attr) is api
-        conn.close()
-        assert api._context is None
-        assert getattr(conn, service_case.cache_attr) is None
-
+class TestConnectionClose:
     def test_held_service_api_raises_interface_error_after_close(
         self, service_case: ComposedServiceApi
     ) -> None:
+        """The API holds no connection reference; its requests fail once the connection is closed
+        (the credential lookup is the first thing a request does)."""
         service_case.conn.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
             service_case.call_needing_connection(service_case.api)
@@ -124,7 +96,7 @@ class TestConnectionCloseBreaksCycles:
     def test_second_close_is_a_noop(self, service_case: ComposedServiceApi) -> None:
         service_case.conn.close()
         service_case.conn.close()
-        assert getattr(service_case.conn, service_case.cache_attr) is None
+        assert service_case.conn.is_closed
 
     @pytest.mark.parametrize("spec", SERVICE_API_SPECS, ids=lambda spec: spec.name)
     def test_service_api_is_unreachable_through_connection_after_close(
@@ -135,10 +107,3 @@ class TestConnectionCloseBreaksCycles:
         with pytest.raises(InterfaceError, match="Connection is closed"):
             spec.get_from(conn)
         assert getattr(conn, spec.cache_attr) is None
-
-    def test_connector_call_after_close_does_not_recompose_the_api(self) -> None:
-        conn = _connect()
-        conn.close()
-        with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn.get_connector("my-connector")
-        assert conn._connector_api is None

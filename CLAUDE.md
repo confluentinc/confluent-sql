@@ -3,33 +3,42 @@
 Guidance for any Claude working in this repository. Keep it short and concrete; add a convention
 here only once the codebase actually follows it in more than one place.
 
-## HTTP request routing: idempotent GETs vs mutating requests
+## HTTP request routing: `ServiceClient`
 
-`Connection` exposes two ways to issue an HTTP request (`src/confluent_sql/connection.py`):
+Every HTTP request this driver makes goes through a `ServiceClient`
+(`src/confluent_sql/service_client.py`), one per plane, held by `Connection`:
 
-- `_request_get(url, **kwargs)` — for idempotent GETs. Forwards `kwargs` (`params`, `headers`,
-  `timeout`, etc.) to `_request`, forcing `method="GET"`, and wraps the whole call in
-  `call_with_retries()` (`src/confluent_sql/retry.py`), which retries both transient transport
-  errors (`httpx.NetworkError`, `httpx.RemoteProtocolError`; #137) and transient HTTP response
-  statuses (429/500/502/503/504, via `DEFAULT_RETRYABLE_STATUS_CODES`; #140) with a short
-  exponential backoff before giving up. Status-code retries are wired in via a private
-  `_RetryableStatusError` sentinel raised inside `_request_get` -- `call_with_retries` itself
-  stays HTTP-agnostic, unchanged from #137.
-- `_request(url, method="GET", ...)` — for everything else, including POST/PATCH/DELETE.
+- `_dataplane` — the Flink gateway (statements and results).
+- `_controlplane` — everything else: Tableflow, the CMK cluster lookup, the `/org/v2` organization
+  lookup, Connect, Artifacts. One client and pool, built without credentials. Each request names
+  the API it calls as a `ControlPlaneSurface` (`TABLEFLOW`, `CONNECT`, `ARTIFACTS`, `CMK`,
+  `ORGANIZATION`) through `Connection._controlplane_request(surface, url, ...)`, which attaches
+  that surface's credential (`_auth_for`, from `_surface_auth`) and applies its logging rule
+  (Artifacts never logs response bodies: the presign response carries a live upload URL). CMK and
+  organization lookups are global-key-only. A new surface is a new enum member, not a new client.
 
-**Every idempotent GET call site must go through `_request_get`, not `_request` directly.**
-Re-issuing a GET after a dropped connection is safe; re-issuing a POST/PATCH/DELETE is not — it
-can double-submit or double-mutate state. When adding a new GET call site (e.g. a future
-`list_connectors()` or similar read-only endpoint), route it through `_request_get`. When adding a
-mutating call site, use `_request` directly and do not wrap it in retry logic.
+`ServiceClient.request(url, method="GET", raise_for_status=True, *, log_body=True, **kwargs)` is the
+only way to send a request, and it decides retry from the method, so callers pick the plane (and,
+on the control plane, the surface) they mean and never a retry policy:
 
-This distinction was introduced in #137 (see `CHANGELOG.md` 0.4.1) after a reported
-`ECONNRESET` while polling a single statement via `get_statement()`/`_get_statement()`; the same
-PR additionally retries `list_statements()`'s page-fetch loop and result-page fetching, since
-those are equally idempotent GETs even though they weren't the reported failure. #140 extended
-the same call sites to also retry on retryable HTTP status codes, not just transport exceptions.
-The reasoning, and the case for a plain function over a decorator, is captured in `retry.py`'s
-module docstring and `_request_get`'s docstring.
+- **GET is retried** via `call_with_retries()` (`src/confluent_sql/retry.py`) on transient transport
+  errors (`httpx.NetworkError`, `httpx.RemoteProtocolError`; #137) and transient HTTP statuses
+  (429/500/502/503/504, via `DEFAULT_RETRYABLE_STATUS_CODES`; #140), with a short exponential
+  backoff before giving up. Timeouts are deliberately not retried; wait loops tolerate them via
+  `poll_until` (#236). Status retries ride a private `_RetryableStatusError` sentinel, so
+  `call_with_retries` itself stays HTTP-agnostic.
+- **Every other method is sent exactly once**: re-issuing a POST/PATCH/DELETE after a dropped
+  connection can double-submit or double-mutate state.
+
+Never reach for the raw `httpx.Client` (`ServiceClient.httpx_client`) to send a request; that
+bypasses retries, error translation (every `httpx.RequestError` becomes `OperationalError`, #138;
+timeouts become `RequestTimeoutError`) and the reauth policy. Don't add a family of request
+methods on `Connection`: the plane's `ServiceClient` (or `_controlplane_request`) is the entry point.
+
+The retry design was introduced in #137 (see `CHANGELOG.md` 0.4.1) after a reported `ECONNRESET`
+while polling a single statement; #140 added status retries and #235 extended them from the Flink
+gateway to every control-plane GET. The reasoning, and the case for a plain function over a
+decorator, is captured in `retry.py`'s module docstring.
 
 ## Blocking vs. non-blocking lifecycle methods
 
@@ -50,8 +59,10 @@ enable/disable a Tableflow sink, etc.) follow a uniform shape:
 - **While waiting, raise on terminal failure and on timeout** — surface the failure detail
   (`OperationalError`, e.g. a statement/topic that went FAILED), don't silently return a broken
   resource.
-- **Implement the wait by polling with `sleep_with_backoff`** from `polling.py`; don't hand-roll a
-  sleep loop.
+- **Implement the wait with `poll_until`** from `polling.py`: it owns the backoff, the deadline and
+  the `timeout` error, and treats one request timeout (`RequestTimeoutError`) as "no news yet"
+  rather than a failure (#236). Don't hand-roll a sleep loop, and don't call `sleep_with_backoff`
+  directly.
 
 Exemplars: `Connection.stop_statement` / `Cursor.stop_statement` (`wait_for_stopped=True`),
 `Connection.enable_tableflow` (`wait_for_running=True`), `Connection.disable_tableflow`

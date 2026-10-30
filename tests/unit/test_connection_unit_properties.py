@@ -43,7 +43,7 @@ class TestExecuteStatementProperties:
             "status": {"phase": "RUNNING"},
         }
         return mocker.patch.object(
-            connection._get_flink_client(), "request", return_value=mock_response
+            connection._dataplane.httpx_client, "request", return_value=mock_response
         )
 
     def test_properties_none_uses_defaults(self, invalid_credential_connection, mocker):
