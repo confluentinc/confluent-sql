@@ -10,7 +10,7 @@ import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError, connect
 from confluent_sql.auth import FlinkBearerAuth
-from confluent_sql.connection import Connection
+from confluent_sql.connection import Connection, ControlPlaneSurface
 from confluent_sql.execution_mode import ExecutionMode
 
 pytestmark = pytest.mark.unit
@@ -130,7 +130,7 @@ class TestByoidcAuthWiring:
             cloud_provider="aws",
             cloud_region="us-east-1",
         )
-        assert isinstance(conn._get_controlplane_client().auth, httpx.BasicAuth)
+        assert isinstance(conn._auth_for(ControlPlaneSurface.TABLEFLOW), httpx.BasicAuth)
 
 
 class TestByoidcFlinkRequest:
@@ -146,13 +146,13 @@ class TestByoidcFlinkRequest:
             captured["request"] = request
             return httpx.Response(200, json={"data": [], "metadata": {}})
 
-        # Build base_url the way _get_flink_client() does rather than instantiating a real client
-        # (with its own connection pool) just to read it back and then discard it unclosed.
+        # Build base_url the way _build_dataplane_client() does rather than instantiating a real
+        # client (with its own connection pool) just to read it back and then discard it unclosed.
         base_url = (
             f"{conn._flink_endpoint}/sql/v1/organizations/{conn.organization_id}"
             f"/environments/{conn.environment_id}"
         )
-        conn._flink_client = httpx.Client(
+        conn._dataplane._client = httpx.Client(
             auth=conn._flink_auth,
             base_url=base_url,
             transport=httpx.MockTransport(handler),
@@ -161,7 +161,7 @@ class TestByoidcFlinkRequest:
         try:
             conn.list_statements()
         finally:
-            conn.close()  # closes the live _flink_client the test installed above
+            conn.close()  # closes the live _dataplane client the test installed above
 
         request = captured["request"]
         assert request.headers["Authorization"] == "Bearer tok-xyz"
@@ -173,15 +173,11 @@ class TestByoidcControlPlaneFailsClosed:
     """Every control-plane surface fails closed under BYOIDC with an honest, API-key-naming
     error."""
 
-    def test_tableflow_client_raises_byoidc_programming_error(self):
+    @pytest.mark.parametrize("surface", list(ControlPlaneSurface))
+    def test_every_surface_raises_byoidc_programming_error(self, surface):
         conn = _byoidc_connect()
         with pytest.raises(ProgrammingError, match="BYOIDC bearer token"):
-            conn._get_controlplane_client()
-
-    def test_connect_client_raises_byoidc_programming_error(self):
-        conn = _byoidc_connect()
-        with pytest.raises(ProgrammingError, match="BYOIDC bearer token"):
-            conn._get_connect_controlplane_client()
+            conn._auth_for(surface)
 
     def test_cmk_cluster_id_resolution_raises_byoidc_programming_error(self):
         conn = _byoidc_connect(database="mydb")

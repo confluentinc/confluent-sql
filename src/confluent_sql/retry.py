@@ -31,14 +31,14 @@ recovering from a blip; pass a custom `exceptions` tuple to opt in."""
 
 DEFAULT_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 """HTTP statuses worth retrying on an idempotent GET: 429 (rate limited) and 500/502/503/504
-(gateway/server transients). Consumed by `Connection._request_get`, not by `call_with_retries`
+(gateway/server transients). Consumed by `ServiceClient`, not by `call_with_retries`
 itself, which has no HTTP-specific knowledge. 408 (Request Timeout) is deliberately excluded --
 same "don't compound latency on a timeout" reasoning as excluding httpx.TimeoutException from
 DEFAULT_RETRYABLE_EXCEPTIONS above. Honoring a Retry-After header on 429/503 is out of scope."""
 
 _RETRY_BASE_DELAY_SECS = 0.1
 """Delay before the first retry sleep -- tuned for sub-second transient network blips rather than
-the multi-second server-state polling that polling.sleep_with_backoff paces."""
+the multi-second server-state polling that `polling.poll_until` paces."""
 
 _RETRY_DELAY_GROWTH = 2.0
 """Multiplier applied to the delay after each retry."""

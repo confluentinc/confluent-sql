@@ -10,7 +10,7 @@ import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
 from confluent_sql.artifacts import ArtifactScope
-from confluent_sql.connection import Connection, connect
+from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 
 pytestmark = pytest.mark.unit
 
@@ -35,8 +35,8 @@ def _basic_authorization(key: str, secret: str) -> str:
 
 
 def _artifact_authorization(conn: Connection) -> str:
-    """The Authorization header the artifact client would send."""
-    auth = conn._get_cloud_controlplane_client().auth
+    """The Authorization header artifact requests would carry."""
+    auth = conn._auth_for(ControlPlaneSurface.ARTIFACTS)
     assert auth is not None
     request = httpx.Request("GET", "https://example.invalid")
     return next(auth.auth_flow(request)).headers["Authorization"]
@@ -184,7 +184,7 @@ class TestArtifactRequestRetries:
         conn = _connect()
         client = Mock()
         client.request.side_effect = list(responses)
-        conn._get_cloud_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        conn._controlplane._client = client
         return conn, client
 
     @staticmethod
@@ -225,7 +225,7 @@ class TestArtifactResponseLogging:
         conn = _connect()
         client = Mock()
         client.request.return_value = Mock(status_code=200, content=secret.encode())
-        conn._get_cloud_controlplane_client = Mock(return_value=client)  # type: ignore[method-assign]
+        conn._controlplane._client = client
         with caplog.at_level("DEBUG", logger="confluent_sql"):
             conn.artifact_controlplane_request("/artifact/v1/x", method=method)
         assert secret not in caplog.text
