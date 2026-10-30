@@ -49,7 +49,10 @@ class Timeouts:
 
     httpx_request_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS
     """Timeout for each HTTP request made by the underlying httpx clients, applied to connect,
-    read, write and pool operations. With `auth="oauth"` it also bounds every HTTP hop of the token
+    read, write and pool operations. Inside a timed wait (`Cursor.execute()`, the `wait_for_*` and
+    `timeout=` calls), or a blocking result read's `statement_results_response_wallclock_secs`
+    window, it is further capped at the time that has left, per httpx phase. With
+    `auth="oauth"` it also bounds every HTTP hop of the token
     chain (code exchange, token exchanges, refresh), but only if this connection is the one that
     establishes the process's shared login; later connections reuse that login's provider as-is."""
 
@@ -59,19 +62,21 @@ class Timeouts:
     """The most wall-clock time the driver spends getting one response to a fetch of statement
     results from the server, however many timed-out attempts that takes. It applies to blocking
     reads (iterating a cursor, `fetchall()`, snapshot `fetchone()`/`fetchmany()`), which retry a
-    fetch that times out; counted from the first timeout of a run, after which the last
-    `RequestTimeoutError` is raised. A response, even an empty one, ends the run, and a multi-fetch
-    call starts it afresh for each fetch.
+    fetch that times out; counted from the run's first attempt (after any
+    `statement_results_page_fetch_pause_millis` pause, which is not charged to it), after which
+    the last `RequestTimeoutError` is raised. A response, even an empty one, ends the run, and a
+    multi-fetch call starts it afresh for each fetch.
 
     It is not a cap on how long a read may take overall: a streaming query can wait indefinitely
     for rows, and a fetch that is slow but answers within `httpx_request_timeout_secs` never
     counts against it.
 
-    Each timed-out attempt takes up to `httpx_request_timeout_secs`, so a window of that or less is
-    used up by the first timeout and that timeout is raised without any retry. That is a legitimate
-    way to turn the tolerance off, but is more often `httpx_request_timeout_secs` raised without
-    this, so it draws a `UserWarning`. Leave headroom: the default is three times the default
-    `httpx_request_timeout_secs`."""
+    The window is a `Context` deadline: each attempt's request is capped at what is left of it, so
+    the last attempt cannot run past it. A window of `httpx_request_timeout_secs` or less is
+    therefore used up by the first attempt, and that timeout is raised without any retry. That is a
+    legitimate way to turn the tolerance off, but is more often `httpx_request_timeout_secs`
+    raised without this, so it draws a `UserWarning`. Leave headroom: the default is three times
+    the default `httpx_request_timeout_secs`."""
 
     def __post_init__(self) -> None:
         _require_positive_number(
