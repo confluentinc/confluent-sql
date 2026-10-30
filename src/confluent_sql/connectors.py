@@ -359,7 +359,7 @@ class ConnectorApi:
             return self.get(name)
         return self._wait_for_state(name, target, timeout)
 
-    def _read_spec(self, name: str, ctx: Context = BACKGROUND) -> ConnectorSpec:
+    def _read_spec(self, name: str, *, ctx: Context = BACKGROUND) -> ConnectorSpec:
         """`GET .../connectors/{name}` -> parsed spec; 404 -> ConnectorNotFoundError, other HTTP
         errors -> OperationalError. `ctx` is the `Context` of the wait this read is part of, if
         any."""
@@ -369,7 +369,7 @@ class ConnectorApi:
         self._check_found_and_ok(response, name, prefix="Error reading connector")
         return ConnectorSpec.from_response(response.json())
 
-    def _fetch_status(self, name: str, ctx: Context = BACKGROUND) -> ConnectorStatus:
+    def _fetch_status(self, name: str, *, ctx: Context = BACKGROUND) -> ConnectorStatus:
         """`GET .../connectors/{name}/status` -> parsed status; 404 -> ConnectorNotFoundError, other
         HTTP errors -> OperationalError. `ctx` is the `Context` of the wait this read is part of, if
         any."""
@@ -416,8 +416,8 @@ class ConnectorApi:
         def poll(ctx: Context) -> Connector | None:
             nonlocal spec
             if spec is None:
-                spec = self._read_spec(name, ctx)
-            return settled(Connector(spec=spec, status=self._fetch_status(name, ctx)))
+                spec = self._read_spec(name, ctx=ctx)
+            return settled(Connector(spec=spec, status=self._fetch_status(name, ctx=ctx)))
 
         return poll_until(
             poll,
@@ -436,7 +436,7 @@ class ConnectorApi:
 
         def is_removed(ctx: Context) -> bool | None:
             try:
-                self._read_spec(name, ctx)
+                self._read_spec(name, ctx=ctx)
             except ConnectorNotFoundError:
                 return True
             return None

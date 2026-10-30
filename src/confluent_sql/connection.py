@@ -1964,7 +1964,7 @@ class Connection:
         res = self._dataplane.request("/statements", method="POST", json=payload)
         return res.json()
 
-    def _get_statement(self, statement_name: str, ctx: Context = BACKGROUND) -> dict[str, Any]:
+    def _get_statement(self, statement_name: str, *, ctx: Context = BACKGROUND) -> dict[str, Any]:
         """
         INTERNAL USE ONLY. Get raw statement API response.
 
@@ -1995,7 +1995,7 @@ class Connection:
             raise
 
     def _get_statement_results(
-        self, statement_name: str, next_url: str | None, ctx: Context = BACKGROUND
+        self, statement_name: str, next_url: str | None, *, ctx: Context = BACKGROUND
     ) -> tuple[list[ChangelogRow], str | None]:
         """
         Try to get a page of results for a statement.

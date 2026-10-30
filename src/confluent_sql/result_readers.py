@@ -553,7 +553,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
                     self._connection.timeouts.statement_results_response_wallclock_secs
                 )
             try:
-                self._fetch_next_page(run_ctx)
+                self._fetch_next_page(ctx=run_ctx)
             except RequestTimeoutError as e:
                 remaining = run_ctx.remaining_secs()
                 if remaining is not None and remaining <= 0:
@@ -576,7 +576,7 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
             time.sleep(pause_secs)
             self._metrics.paused_before_fetch(pause_secs)
 
-    def _fetch_next_page(self, ctx: Context = BACKGROUND) -> None:
+    def _fetch_next_page(self, *, ctx: Context = BACKGROUND) -> None:
         """Try to fetch and process the next page of results, under `ctx` (the blocking read's
         current window; no deadline for a non-blocking fetch).
 
