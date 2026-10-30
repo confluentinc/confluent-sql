@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .context import BACKGROUND, Context
 from .exceptions import (
     ArtifactAlreadyExistsError,
     ArtifactNotFoundError,
@@ -612,10 +613,15 @@ class ArtifactsApi:
             ArtifactNotFoundError: If the artifact doesn't exist (HTTP 404).
             OperationalError: On other API errors, a network failure, or an unparseable response.
         """
+        return self._get(artifact_id, BACKGROUND)
+
+    def _get(self, artifact_id: str, ctx: Context) -> FlinkArtifact:
+        """`get`, bounded by `ctx`: the `Context` of the wait it is part of, or `BACKGROUND`."""
         response = self._request(
             self._artifact_path(artifact_id),
             params=self._scope_params(),
             raise_for_status=False,
+            ctx=ctx,
         )
         self._raise_if_not_found(response, artifact_id)
         raise_for_status_as_operational_error(response, prefix="Error reading artifact")
@@ -714,9 +720,9 @@ class ArtifactsApi:
             self._wait_for_removal(artifact_id, timeout)
 
     def _wait_for_removal(self, artifact_id: str, timeout: float) -> None:
-        def is_removed() -> bool | None:
+        def is_removed(ctx: Context) -> bool | None:
             try:
-                self.get(artifact_id)
+                self._get(artifact_id, ctx)
             except ArtifactNotFoundError:
                 return True
             return None
