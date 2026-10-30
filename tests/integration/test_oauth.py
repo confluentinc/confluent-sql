@@ -93,7 +93,7 @@ class TestOauth:
 
     def test_cmk_cluster_resolution(self, oauth_connection: Connection):
         """The CMK cluster lookup (Tableflow/CMK control-plane client) resolves the database."""
-        assert oauth_connection.resolve_kafka_cluster_id().startswith("lkc-")
+        assert oauth_connection._resolve_kafka_cluster_id().startswith("lkc-")
 
     def test_tableflow_route_authenticated(self, oauth_connection: Connection):
         """A Tableflow read of a nonexistent topic is a 404, not an auth failure."""
@@ -103,7 +103,7 @@ class TestOauth:
     def test_connector_route_authenticated(self, oauth_connection: Connection):
         """A Connect read of a nonexistent connector is a 404, not an auth failure."""
         with pytest.raises(ConnectorNotFoundError):
-            oauth_connection.get_connector(f"no-such-connector-{uuid.uuid4().hex}")
+            oauth_connection.get_connector_api().get(f"no-such-connector-{uuid.uuid4().hex}")
 
     def test_artifact_route_authenticated(self, oauth_connection: Connection):
         """Listing artifacts (cloud/artifact control-plane client) succeeds, empty or not."""

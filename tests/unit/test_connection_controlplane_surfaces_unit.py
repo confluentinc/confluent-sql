@@ -76,11 +76,11 @@ SURFACE_CALLS = [
     ),
     (
         ControlPlaneSurface.CONNECT,
-        lambda conn, **kw: conn.connect_controlplane_request("/x", **kw),
+        lambda conn, **kw: conn.get_connector_api()._request("/x", **kw),
     ),
     (
         ControlPlaneSurface.ARTIFACTS,
-        lambda conn, **kw: conn.artifact_controlplane_request("/x", **kw),
+        lambda conn, **kw: conn.get_artifacts_api()._request("/x", **kw),
     ),
 ]
 SURFACE_IDS = ["tableflow", "connectors-api", "artifacts-api"]
