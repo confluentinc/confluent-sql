@@ -12,15 +12,16 @@ Unlike Go's it carries only a deadline: there is no cancellation, and no values.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 
+@dataclass(frozen=True, slots=True, repr=False)
 class Context:
-    """An immutable carrier of an optional wall-clock deadline (a `time.monotonic()` instant)."""
+    """An immutable carrier of an optional wall-clock deadline (a `time.monotonic()` instant).
 
-    __slots__ = ("_deadline",)
+    Frozen, so the shared `BACKGROUND` singleton cannot be mutated by a caller."""
 
-    def __init__(self, deadline: float | None = None) -> None:
-        self._deadline = deadline
+    deadline: float | None = None
 
     @classmethod
     def background(cls) -> Context:
@@ -30,14 +31,14 @@ class Context:
     def with_timeout(self, secs: float) -> Context:
         """A child that ends `secs` from now, or when this one does if that is sooner."""
         deadline = time.monotonic() + secs
-        if self._deadline is not None:
-            deadline = min(deadline, self._deadline)
+        if self.deadline is not None:
+            deadline = min(deadline, self.deadline)
         return Context(deadline)
 
     def remaining_secs(self) -> float | None:
-        """Seconds until the deadline (zero or negative once it has passed), or None if there is
-        no deadline."""
-        return None if self._deadline is None else self._deadline - time.monotonic()
+        """Seconds until the deadline (zero once it has passed, never negative), or None if there
+        is no deadline."""
+        return None if self.deadline is None else max(0.0, self.deadline - time.monotonic())
 
     def __repr__(self) -> str:
         remaining = self.remaining_secs()

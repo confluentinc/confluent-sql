@@ -1,5 +1,7 @@
 """Unit tests for `Context`: a Go-style carrier of a wall-clock deadline, passed down explicitly."""
 
+import dataclasses
+
 import pytest
 
 from confluent_sql import context as context_module
@@ -35,11 +37,22 @@ class TestContext:
         clock.now += 4.0
         assert ctx.remaining_secs() == 6.0
 
-    def test_remaining_goes_negative_once_expired(self, clock):
+    @pytest.mark.parametrize("elapsed", [1.0, 3.0], ids=["at-deadline", "past-deadline"])
+    def test_remaining_stops_at_zero_once_expired(self, clock, elapsed):
         ctx = BACKGROUND.with_timeout(1.0)
-        clock.now += 3.0
+        clock.now += elapsed
 
-        assert ctx.remaining_secs() == -2.0
+        assert ctx.remaining_secs() == 0.0
+
+    def test_a_negative_timeout_is_already_expired(self, clock):
+        assert BACKGROUND.with_timeout(-5.0).remaining_secs() == 0.0
+
+    def test_is_immutable_so_background_cannot_be_mutated(self):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            BACKGROUND.deadline = 1.0  # type: ignore[misc]
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            BACKGROUND.with_timeout(1.0).deadline = None  # type: ignore[misc]
+        assert BACKGROUND.remaining_secs() is None
 
     @pytest.mark.parametrize(
         ("parent_secs", "child_secs", "expected"),
