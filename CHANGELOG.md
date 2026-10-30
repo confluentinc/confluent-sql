@@ -4,6 +4,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+## 0.8.0, 2026-10-30
+
 ### Changed - Breaking
 
 - `Connection.__init__`'s positional parameters are reordered: `organization_id` now comes after `cloud_provider`/`cloud_region`/`endpoint` (previously it was second, right after `environment_id`).
