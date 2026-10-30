@@ -567,15 +567,12 @@ class TestGetListUpdateDelete:
         ctx = FakeContext(_response(_artifact_body()))
         artifact = _api(ctx).get(ARTIFACT_ID)
         assert artifact.display_name == "my-udf"
-        assert ctx.requests == [
-            (
-                "GET",
-                f"/artifact/v1/flink-artifacts/{ARTIFACT_ID}",
-                {
-                    "params": {"cloud": CLOUD, "region": REGION, "environment": ENV_ID},
-                },
-            )
-        ]
+        [(method, url, kwargs)] = ctx.requests
+        assert (method, url) == ("GET", f"/artifact/v1/flink-artifacts/{ARTIFACT_ID}")
+        # The public get() is outside any timed wait, so it runs under a deadline-free context.
+        request_ctx = kwargs.pop("ctx")
+        assert request_ctx.remaining_secs() is None
+        assert kwargs == {"params": {"cloud": CLOUD, "region": REGION, "environment": ENV_ID}}
 
     @pytest.mark.parametrize("operation", ["get", "delete"])
     @pytest.mark.parametrize("bad_id", ["", ".", ".."])
@@ -666,6 +663,20 @@ class TestGetListUpdateDelete:
         ctx = FakeContext(_response(status=204), _response(_artifact_body()), _response(status=404))
         _api(ctx).delete(ARTIFACT_ID)
         assert [r[0] for r in ctx.requests] == ["DELETE", "GET", "GET"]
+
+    def test_delete_wait_reads_carry_the_waits_ctx(self, mocker) -> None:
+        """The reads that confirm removal are handed a `ctx` bounded by the wait's timeout; the
+        DELETE itself is outside the wait."""
+        mocker.patch("confluent_sql.polling.sleep_with_backoff", return_value=iter([None] * 3))
+        ctx = FakeContext(_response(status=204), _response(_artifact_body()), _response(status=404))
+
+        _api(ctx).delete(ARTIFACT_ID, timeout=30)
+
+        delete_call, *reads = ctx.requests
+        assert "ctx" not in delete_call[2]
+        assert len(reads) == 2
+        for _method, _url, kwargs in reads:
+            assert 0 < kwargs["ctx"].remaining_secs() <= 30
 
     def test_delete_wait_survives_timed_out_probe_and_poll(self, mocker) -> None:
         """Both the unpaced first read and a paced poll may time out once (#236): the DELETE

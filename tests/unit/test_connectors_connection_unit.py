@@ -85,6 +85,7 @@ class FakeControlPlane:
             "action": [],
         }
         self.requests: list[tuple[str, str]] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     def resolve_kafka_cluster_id(self) -> str:
         return "lkc-abc"
@@ -96,6 +97,7 @@ class FakeControlPlane:
         self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
     ) -> Mock:
         self.requests.append((method, url))
+        self.kwargs.append(kwargs)
         if url.endswith(("/pause", "/resume")):
             key = "action"
         elif method == "POST":
@@ -129,6 +131,35 @@ def _api(ctx: FakeControlPlane) -> ConnectorApi:
         environment_id=ctx.environment_id,
         resolve_kafka_cluster_id=ctx.resolve_kafka_cluster_id,
     )
+
+
+class TestWaitsHandRequestsTheirCtx:
+    """Each request inside a wait is handed a `ctx` bounded by the wait's timeout, so a slow request
+    cannot run past the wait's deadline."""
+
+    def test_state_wait_polls(self, no_sleep) -> None:
+        ctx = FakeControlPlane()
+        ctx.queue("read", _ok_response(_read_body()))
+        ctx.queue(
+            "status",
+            _ok_response(_status_body("PROVISIONING")),
+            _ok_response(_status_body("RUNNING")),
+        )
+
+        _api(ctx)._wait_for_state("MyDatagen", ConnectorState.RUNNING, 30)
+
+        assert len(ctx.kwargs) == 3  # one spec read, two status reads
+        for kwargs in ctx.kwargs:
+            assert 0 < kwargs["ctx"].remaining_secs() <= 30
+
+    def test_removal_wait_polls(self, no_sleep) -> None:
+        ctx = FakeControlPlane()
+        ctx.queue("read", _error_response(404))
+
+        _api(ctx)._wait_for_removal("MyDatagen", 30)
+
+        assert len(ctx.kwargs) == 1
+        assert 0 < ctx.kwargs[0]["ctx"].remaining_secs() <= 30
 
 
 @pytest.fixture()
