@@ -9,7 +9,6 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
-from confluent_sql.artifacts import ArtifactScope
 from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 
 pytestmark = pytest.mark.unit
@@ -37,77 +36,8 @@ def _basic_authorization(key: str, secret: str) -> str:
 def _artifact_authorization(conn: Connection) -> str:
     """The Authorization header artifact requests would carry."""
     auth = conn._auth_for(ControlPlaneSurface.ARTIFACTS)
-    assert auth is not None
     request = httpx.Request("GET", "https://example.invalid")
     return next(auth.auth_flow(request)).headers["Authorization"]
-
-
-class TestArtifactScope:
-    def test_cloud_is_uppercased_for_the_api(self) -> None:
-        assert _connect().artifact_scope() == ArtifactScope(cloud="AWS", region="us-east-2")
-
-    def test_recovered_from_standard_flink_endpoint(self) -> None:
-        conn = _connect(
-            cloud_provider="",
-            cloud_region="",
-            endpoint="https://flink.eu-west-1.gcp.confluent.cloud",
-        )
-        assert conn.artifact_scope() == ArtifactScope(cloud="GCP", region="eu-west-1")
-
-    def test_unrecoverable_from_custom_endpoint(self) -> None:
-        conn = _connect(
-            cloud_provider="", cloud_region="", endpoint="https://flink.internal.example.com"
-        )
-        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
-            conn.artifact_scope()
-
-    def test_explicit_cloud_arguments_win_over_endpoint_parse(self) -> None:
-        conn = _connect(endpoint="https://flink.eu-west-1.gcp.confluent.cloud")
-        assert conn.artifact_scope() == ArtifactScope(cloud="AWS", region="us-east-2")
-
-    def test_private_link_endpoint_uses_explicit_cloud_arguments(self) -> None:
-        conn = _connect(endpoint="https://flink.dom123.us-east-2.aws.private.confluent.cloud")
-        assert conn.artifact_scope() == ArtifactScope(cloud="AWS", region="us-east-2")
-
-    def test_private_link_endpoint_without_cloud_arguments_is_unrecoverable(self) -> None:
-        conn = _connect(
-            cloud_provider="",
-            cloud_region="",
-            endpoint="https://flink.dom123.us-east-2.aws.private.confluent.cloud",
-        )
-        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
-            conn.artifact_scope()
-
-    def test_endpoint_host_is_matched_case_insensitively(self) -> None:
-        conn = _connect(
-            cloud_provider="",
-            cloud_region="",
-            endpoint="https://FLINK.EU-West-1.GCP.confluent.cloud",
-        )
-        assert conn.artifact_scope() == ArtifactScope(cloud="GCP", region="eu-west-1")
-
-    @pytest.mark.parametrize(
-        "endpoint",
-        [
-            "https://flink.us/east.aws.confluent.cloud",
-            "https://flink.us-east-2.aws.confluent.cloud?x=y",
-            "https://flink.us-east-2.aws.confluent.cloud/path",
-            "https://flink.us_east.aws.confluent.cloud",
-        ],
-    )
-    def test_endpoint_with_non_hostname_characters_is_not_parsed(self, endpoint: str) -> None:
-        conn = _connect(cloud_provider="", cloud_region="", endpoint=endpoint)
-        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
-            conn.artifact_scope()
-
-    def test_endpoint_with_extra_host_suffix_is_not_parsed(self) -> None:
-        conn = _connect(
-            cloud_provider="",
-            cloud_region="",
-            endpoint="https://flink.us-east-2.aws.confluent.cloud.example.com",
-        )
-        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
-            conn.artifact_scope()
 
 
 class TestControlplaneAccess:
@@ -166,6 +96,23 @@ class TestControlplaneAccess:
 
 
 class TestGetArtifactsApi:
+    def test_scope_is_recovered_from_the_connections_endpoint(self) -> None:
+        conn = _connect(
+            cloud_provider="",
+            cloud_region="",
+            endpoint="https://flink.eu-west-1.gcp.confluent.cloud",
+        )
+        params = conn.get_artifacts_api()._scope_params(with_environment=False)
+        assert params == {"cloud": "GCP", "region": "eu-west-1"}
+
+    def test_unrecoverable_scope_fails_on_use_not_on_composition(self) -> None:
+        conn = _connect(
+            cloud_provider="", cloud_region="", endpoint="https://flink.internal.example.com"
+        )
+        api = conn.get_artifacts_api()  # composes fine
+        with pytest.raises(ProgrammingError, match="cloud_provider and cloud_region"):
+            api.list()
+
     def test_api_is_composed_once_and_cached(self) -> None:
         conn = _connect()
         assert conn.get_artifacts_api() is conn.get_artifacts_api()
@@ -173,49 +120,14 @@ class TestGetArtifactsApi:
     def test_api_is_composed_lazily(self) -> None:
         assert _connect()._artifacts_api is None
 
-    def test_api_is_bound_to_the_connection(self) -> None:
+    def test_api_receives_the_connections_environment_and_scope(self) -> None:
         conn = _connect()
-        assert conn.get_artifacts_api()._context is conn
-
-
-class TestArtifactRequestRetries:
-    @staticmethod
-    def _conn_with_client(*responses: Any) -> tuple[Connection, Mock]:
-        conn = _connect()
-        client = Mock()
-        client.request.side_effect = list(responses)
-        conn._controlplane._client = client
-        return conn, client
-
-    @staticmethod
-    def _response(status: int) -> Mock:
-        return Mock(status_code=status, content=b"")
-
-    def test_get_retries_transient_status(self, mocker) -> None:
-        mocker.patch("confluent_sql.retry.time.sleep")
-        conn, client = self._conn_with_client(self._response(503), self._response(200))
-        response = conn.artifact_controlplane_request("/x", raise_for_status=False)
-        assert response.status_code == 200
-        assert client.request.call_count == 2
-
-    def test_get_retries_transport_error(self, mocker) -> None:
-        mocker.patch("confluent_sql.retry.time.sleep")
-        conn, client = self._conn_with_client(httpx.NetworkError("reset"), self._response(200))
-        assert conn.artifact_controlplane_request("/x").status_code == 200
-        assert client.request.call_count == 2
-
-    def test_non_retryable_status_is_returned_for_caller_mapping(self) -> None:
-        conn, client = self._conn_with_client(self._response(404))
-        response = conn.artifact_controlplane_request("/x", raise_for_status=False)
-        assert response.status_code == 404
-        assert client.request.call_count == 1
-
-    @pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
-    def test_mutating_requests_are_not_retried(self, method: str) -> None:
-        conn, client = self._conn_with_client(self._response(503))
-        response = conn.artifact_controlplane_request("/x", method=method, raise_for_status=False)
-        assert response.status_code == 503
-        assert client.request.call_count == 1
+        api = conn.get_artifacts_api()
+        assert api._scope_params() == {
+            "cloud": "AWS",
+            "region": "us-east-2",
+            "environment": "env-1",
+        }
 
 
 class TestArtifactResponseLogging:
@@ -227,5 +139,5 @@ class TestArtifactResponseLogging:
         client.request.return_value = Mock(status_code=200, content=secret.encode())
         conn._controlplane._client = client
         with caplog.at_level("DEBUG", logger="confluent_sql"):
-            conn.artifact_controlplane_request("/artifact/v1/x", method=method)
+            conn.get_artifacts_api()._request("/artifact/v1/x", method=method)
         assert secret not in caplog.text

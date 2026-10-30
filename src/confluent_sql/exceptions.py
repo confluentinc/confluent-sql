@@ -254,8 +254,8 @@ class ConnectorNotFoundError(OperationalError):
     """
     Exception raised when a connector does not exist.
 
-    Raised on an HTTP 404 from get_connector() or delete_connector() -- i.e. the connector was
-    never created (or has already been removed). delete_connector(wait_for_removal=True) polls
+    Raised on an HTTP 404 from `ConnectorApi.get()` or `.delete()` -- i.e. the connector was
+    never created (or has already been removed). `.delete(wait_for_removal=True)` polls
     against this 404 to confirm teardown.
 
     Attributes:
@@ -271,7 +271,7 @@ class ConnectorAlreadyExistsError(OperationalError):
     """
     Exception raised when creating a connector whose name is already taken.
 
-    Raised on an HTTP 409 from create_connector().
+    Raised on an HTTP 409 from `ConnectorApi.create()`.
 
     Attributes:
         connector_name: The name of the connector that already existed.
