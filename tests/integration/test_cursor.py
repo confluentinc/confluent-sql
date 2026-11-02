@@ -14,7 +14,8 @@ from confluent_sql import (
     StatementDeletedError,
     StatementProperties,
 )
-from confluent_sql.exceptions import NotSupportedError
+from confluent_sql.exceptions import NotSupportedError, OperationalError
+from confluent_sql.polling import poll_until
 from confluent_sql.statement import Op, Phase, Statement, StatementWarning
 
 logger = logging.getLogger(__name__)
@@ -1271,6 +1272,10 @@ class TestChangelogCompressorKeyedSinkAggregation(_SinkAggregationTestBase):
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
 
 
+DELETION_VISIBLE_TIMEOUT_SECS = 30
+"""Budget for a deleted statement (phase DELETING) to start answering /results with a 404."""
+
+
 @pytest.mark.integration
 class TestStreamingQueries:
     """Streaming cursor behavior: bounded/append-only queries, iteration, and external deletion."""
@@ -1310,21 +1315,47 @@ class TestStreamingQueries:
         # Now explicitly delete the statement using the connection API
         populated_table_connection.delete_statement(statement_name)
 
-        # The next attempt to get a snapshot should raise StatementDeletedError
-        # when fetching results (404 from the server)
-        with pytest.raises(StatementDeletedError) as exc_info:
-            next(snapshot_iter)
-            # If we get here, the generator did not raise - it might have returned
-            # another snapshot. Try one more time to ensure we hit the deletion.
-            next(snapshot_iter)
+        # delete_statement() returns once the DELETE is accepted, but the statement then sits in
+        # phase DELETING for a variable time (0.3s to 1.6s observed, see #288), during which
+        # /results still answers 200 with an empty page. So the deletion becomes visible to the
+        # snapshot generator only eventually: poll for it under a wall-clock budget rather than
+        # assuming the next fetch or two will see it.
+        def next_snapshot_or_deleted(_ctx):
+            try:
+                next(snapshot_iter)
+            except StatementDeletedError as e:
+                return e
+            return None  # still readable; the deletion has not landed yet
+
+        deleted_error = poll_until(
+            next_snapshot_or_deleted,
+            timeout=DELETION_VISIBLE_TIMEOUT_SECS,
+            on_timeout=lambda: OperationalError(
+                f"Statement {statement_name} still readable "
+                f"{DELETION_VISIBLE_TIMEOUT_SECS}s after delete_statement()"
+            ),
+        )
 
         # Verify the exception details
-        assert exc_info.value.statement_name == statement_name
-        assert statement_name in str(exc_info.value)
+        assert deleted_error.statement_name == statement_name
+        assert statement_name in str(deleted_error)
 
-        # Verify the statement is actually deleted by trying to get statement status
-        with pytest.raises(StatementDeletedError):
-            populated_table_connection._get_statement_results(statement_name, None)
+        # The statement is gone for direct result fetches too. (Already true once the generator
+        # saw it, but poll anyway rather than assume the two views agree to the millisecond.)
+        def results_fetch_sees_deletion(ctx):
+            try:
+                populated_table_connection._get_statement_results(statement_name, None, ctx=ctx)
+            except StatementDeletedError:
+                return True
+            return None
+
+        assert poll_until(
+            results_fetch_sees_deletion,
+            timeout=DELETION_VISIBLE_TIMEOUT_SECS,
+            on_timeout=lambda: OperationalError(
+                f"Statement {statement_name} results still fetchable after deletion"
+            ),
+        )
 
     # NOTE: We will add a test for StatementStoppedError (the base exception) in the future
     # when we implement an explicit stop_statement() operation. That test will verify that
