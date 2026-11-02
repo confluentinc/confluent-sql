@@ -16,11 +16,12 @@ import pytest
 from confluent_sql import InterfaceError, OperationalError
 from confluent_sql.context import BACKGROUND
 from confluent_sql.exceptions import (
+    ProgrammingError,
     ReauthenticationReason,
     ReauthenticationRequired,
     RequestTimeoutError,
 )
-from confluent_sql.service_client import ServiceClient
+from confluent_sql.service_client import ServiceClient, apply_status_policy
 
 pytestmark = pytest.mark.unit
 
@@ -390,6 +391,164 @@ class TestGetRetriesStopAtTheCtxDeadline:
 
         assert client.request(URL, ctx=BACKGROUND.with_timeout(600.0)).status_code == 200
         assert server.call_count == 3
+
+
+class _Mapped(Exception):
+    """What a `status_exceptions` factory builds in these tests; keeps the response it was given."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        super().__init__(f"mapped {response.status_code}")
+        self.response = response
+
+
+ALL_METHODS = ["GET", *MUTATING_METHODS]
+
+
+class TestStatusExceptions:
+    """`status_exceptions` maps a status to a caller-built exception; every other non-2xx status
+    gets the standard `OperationalError` translation, led by `error_prefix`."""
+
+    @pytest.mark.parametrize("method", ALL_METHODS)
+    def test_a_mapped_status_raises_the_factorys_exception(self, method: str) -> None:
+        client, server = make_client(404)
+
+        with pytest.raises(_Mapped) as exc_info:
+            client.request(URL, method, status_exceptions={404: _Mapped})
+
+        assert exc_info.value.response.status_code == 404
+        assert server.call_count == 1
+
+    @pytest.mark.parametrize("method", ALL_METHODS)
+    def test_an_unmapped_status_falls_through_with_the_error_prefix(self, method: str) -> None:
+        client, _ = make_client(403)
+
+        with pytest.raises(OperationalError, match=r"^Error doing it '403' - body-text$") as info:
+            client.request(
+                URL, method, status_exceptions={404: _Mapped}, error_prefix="Error doing it"
+            )
+
+        assert info.value.http_status_code == 403
+        assert isinstance(info.value.__cause__, httpx.HTTPStatusError)
+
+    @pytest.mark.parametrize("method", ALL_METHODS)
+    def test_error_prefix_alone_leads_the_message(self, method: str) -> None:
+        client, _ = make_client(403)
+
+        with pytest.raises(OperationalError, match=r"^Error doing it '403'"):
+            client.request(URL, method, error_prefix="Error doing it")
+
+    def test_the_default_prefix_is_unchanged(self) -> None:
+        client, _ = make_client(403)
+
+        with pytest.raises(OperationalError, match=r"^error sending request '403' - body-text$"):
+            client.request(URL, status_exceptions={404: _Mapped})
+
+    @pytest.mark.parametrize("method", ALL_METHODS)
+    def test_a_success_is_returned_untouched(self, method: str) -> None:
+        client, server = make_client(200)
+
+        response = client.request(
+            URL, method, status_exceptions={404: _Mapped}, error_prefix="Error doing it"
+        )
+
+        assert response.status_code == 200
+        assert server.call_count == 1
+
+    def test_a_mapped_retryable_status_fires_only_once_get_retries_are_spent(self) -> None:
+        client, server = make_client(*[503] * TOTAL_ATTEMPTS)
+
+        with pytest.raises(_Mapped):
+            client.request(URL, status_exceptions={503: _Mapped})
+
+        assert server.call_count == TOTAL_ATTEMPTS
+
+    def test_a_mapped_retryable_status_that_recovers_never_fires(self) -> None:
+        client, server = make_client(503, 200)
+
+        assert client.request(URL, status_exceptions={503: _Mapped}).status_code == 200
+        assert server.call_count == 2
+
+    @pytest.mark.parametrize("method", MUTATING_METHODS)
+    def test_a_mapped_retryable_status_on_a_mutation_fires_after_one_send(
+        self, method: str
+    ) -> None:
+        client, server = make_client(503, 200)
+
+        with pytest.raises(_Mapped):
+            client.request(URL, method, status_exceptions={503: _Mapped})
+
+        assert server.call_count == 1
+
+    def test_ctx_still_bounds_the_retries_before_the_mapping_fires(self) -> None:
+        client, server = make_client(503, 200)
+
+        with pytest.raises(_Mapped):
+            client.request(URL, status_exceptions={503: _Mapped}, ctx=BACKGROUND.with_timeout(-1.0))
+
+        assert server.call_count == 1
+
+    def test_ctx_is_not_forwarded_to_httpx_alongside_the_new_arguments(self) -> None:
+        client, server = make_client(200)
+
+        client.request(
+            URL, status_exceptions={404: _Mapped}, error_prefix="x", ctx=BACKGROUND.with_timeout(5)
+        )
+
+        assert server.requests[0].extensions["timeout"]["read"] <= 5
+
+
+class TestStatusExceptionsRejectedWithoutRaising:
+    """With `raise_for_status=False` the caller owns every status, so a mapping or a prefix
+    contradicts it: reject at call time, before anything is sent, not only when an error status
+    happens to arrive."""
+
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    @pytest.mark.parametrize(
+        "extra",
+        [{"status_exceptions": {404: _Mapped}}, {"status_exceptions": {}}, {"error_prefix": "x"}],
+        ids=["mapping", "empty-mapping", "prefix"],
+    )
+    def test_the_combination_is_a_programming_error_and_nothing_is_sent(
+        self, method: str, extra: dict[str, Any]
+    ) -> None:
+        client, server = make_client(200)
+
+        with pytest.raises(ProgrammingError, match="raise_for_status"):
+            client.request(URL, method, raise_for_status=False, **extra)
+
+        assert server.call_count == 0
+
+    def test_raise_for_status_false_alone_is_still_fine(self) -> None:
+        client, _ = make_client(404)
+
+        assert client.request(URL, raise_for_status=False).status_code == 404
+
+
+class TestApplyStatusPolicy:
+    """The one translation step, shared by `ServiceClient.request` and test fakes standing in for
+    a `Requester`."""
+
+    @staticmethod
+    def _response(status: int) -> httpx.Response:
+        return httpx.Response(status, text="body-text", request=httpx.Request("GET", "http://x/"))
+
+    def test_a_success_passes(self) -> None:
+        apply_status_policy(self._response(200), {404: _Mapped}, "Error")
+
+    def test_a_mapped_status_raises_the_factorys_exception(self) -> None:
+        with pytest.raises(_Mapped):
+            apply_status_policy(self._response(404), {404: _Mapped}, "Error")
+
+    def test_a_mapping_never_applies_to_a_success_status(self) -> None:
+        apply_status_policy(self._response(200), {200: _Mapped}, "Error")
+
+    def test_an_unmapped_status_becomes_an_operational_error_with_the_prefix(self) -> None:
+        with pytest.raises(OperationalError, match=r"^Error '500' - body-text$"):
+            apply_status_policy(self._response(500), {404: _Mapped}, "Error")
+
+    def test_no_mapping_and_no_prefix_use_the_default_translation(self) -> None:
+        with pytest.raises(OperationalError, match=r"^error sending request '500'"):
+            apply_status_policy(self._response(500))
 
 
 class TestPerAttemptTimeoutClamp:

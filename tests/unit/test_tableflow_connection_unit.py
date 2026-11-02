@@ -22,6 +22,7 @@ from confluent_sql import (
 )
 from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 from confluent_sql.exceptions import RequestTimeoutError
+from confluent_sql.service_client import apply_status_policy
 from confluent_sql.tableflow import TableflowTopic
 
 pytestmark = pytest.mark.unit
@@ -66,6 +67,22 @@ def _error_response(status_code: int) -> Mock:
 
     response.raise_for_status = _raise
     return response
+
+
+def _request_answering(response: Mock) -> Mock:
+    """A stand-in for `Connection._controlplane_request` that answers with `response`, applying the
+    `status_exceptions` / `error_prefix` the caller passed just as the real `ServiceClient.request`
+    would."""
+
+    def serve(*args: Any, status_exceptions=None, error_prefix=None, **kwargs: Any) -> Mock:
+        apply_status_policy(response, status_exceptions, error_prefix)
+        return response
+
+    return Mock(side_effect=serve)
+
+
+def _failing_request(status_code: int) -> Mock:
+    return _request_answering(_error_response(status_code))
 
 
 def _topic_body(*, display_name: str = "orders", phase: str = "PENDING") -> dict:
@@ -282,7 +299,7 @@ class TestEnableTableflow:
 
     def test_409_raises_already_exists(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(409))
+        conn._controlplane_request = _failing_request(409)
         with pytest.raises(TableflowTopicAlreadyExistsError) as exc:
             conn.enable_tableflow(
                 "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
@@ -372,7 +389,7 @@ class TestEnableTableflow:
 
     def test_other_error_status_raises_operational(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(422))
+        conn._controlplane_request = _failing_request(422)
         with pytest.raises(OperationalError) as exc:
             conn.enable_tableflow(
                 "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
@@ -391,7 +408,7 @@ class TestEnableTableflow:
             raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
 
         response.raise_for_status = _raise
-        conn._controlplane_request = Mock(return_value=response)
+        conn._controlplane_request = _request_answering(response)
         with pytest.raises(OperationalError, match="bad storage config"):
             conn.enable_tableflow(
                 "orders", table_formats=TableFormat.ICEBERG, storage=ManagedStorage()
@@ -425,14 +442,14 @@ class TestGetTableflow:
 
     def test_404_raises_not_found(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(404))
+        conn._controlplane_request = _failing_request(404)
         with pytest.raises(TableflowTopicNotFoundError) as exc:
             conn.get_tableflow("orders")
         assert exc.value.table_name == "orders"
 
     def test_other_error_status_raises_operational(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(500))
+        conn._controlplane_request = _failing_request(500)
         with pytest.raises(OperationalError) as exc:
             conn.get_tableflow("orders")
         assert exc.value.http_status_code == 500
@@ -449,7 +466,7 @@ class TestGetTableflow:
             raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
 
         response.raise_for_status = _raise
-        conn._controlplane_request = Mock(return_value=response)
+        conn._controlplane_request = _request_answering(response)
         with pytest.raises(OperationalError, match="internal server error"):
             conn.get_tableflow("orders")
 
@@ -468,13 +485,13 @@ class TestDisableTableflow:
 
     def test_404_raises_not_found(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(404))
+        conn._controlplane_request = _failing_request(404)
         with pytest.raises(TableflowTopicNotFoundError):
             conn.disable_tableflow("orders")
 
     def test_other_error_status_raises_operational(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(500))
+        conn._controlplane_request = _failing_request(500)
         with pytest.raises(OperationalError) as exc:
             conn.disable_tableflow("orders")
         assert exc.value.http_status_code == 500
@@ -491,7 +508,7 @@ class TestDisableTableflow:
             raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
 
         response.raise_for_status = _raise
-        conn._controlplane_request = Mock(return_value=response)
+        conn._controlplane_request = _request_answering(response)
         with pytest.raises(OperationalError, match="cannot disable right now"):
             conn.disable_tableflow("orders")
 
@@ -654,7 +671,7 @@ class TestUpdateTableflow:
 
     def test_404_raises_not_found(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(404))
+        conn._controlplane_request = _failing_request(404)
         with pytest.raises(TableflowTopicNotFoundError) as exc:
             conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
         assert exc.value.table_name == "orders"
@@ -671,7 +688,7 @@ class TestUpdateTableflow:
             raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
 
         response.raise_for_status = _raise
-        conn._controlplane_request = Mock(return_value=response)
+        conn._controlplane_request = _request_answering(response)
         with pytest.raises(OperationalError, match="bad retention_ms") as exc:
             conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
         assert exc.value.http_status_code == 422
@@ -690,14 +707,14 @@ class TestUpdateTableflow:
             raise httpx.HTTPStatusError("boom", request=Mock(), response=inner)
 
         response.raise_for_status = _raise
-        conn._controlplane_request = Mock(return_value=response)
+        conn._controlplane_request = _request_answering(response)
         with pytest.raises(OperationalError, match="no more details") as exc:
             conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
         assert exc.value.http_status_code == 422
 
     def test_other_error_status_falls_back_when_body_unparseable(self) -> None:
         conn = _connect(database_kafka_cluster_id="lkc-1")
-        conn._controlplane_request = Mock(return_value=_error_response(500))
+        conn._controlplane_request = _failing_request(500)
         with pytest.raises(OperationalError, match="no more details") as exc:
             conn.update_tableflow("orders", table_formats=TableFormat.ICEBERG)
         assert exc.value.http_status_code == 500
