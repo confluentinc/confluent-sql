@@ -98,7 +98,7 @@ class TestOauth:
     def test_tableflow_route_authenticated(self, oauth_connection: Connection):
         """A Tableflow read of a nonexistent topic is a 404, not an auth failure."""
         with pytest.raises(TableflowTopicNotFoundError):
-            oauth_connection.get_tableflow(f"no_such_table_{uuid.uuid4().hex}")
+            oauth_connection.get_tableflow_api().get(f"no_such_table_{uuid.uuid4().hex}")
 
     def test_connector_route_authenticated(self, oauth_connection: Connection):
         """A Connect read of a nonexistent connector is a 404, not an auth failure."""

@@ -124,9 +124,10 @@ class TestTableflowLifecycle:
         # Create the Flink table (and its backing Kafka topic) Tableflow will materialize.
         conn.execute_snapshot_ddl(f"CREATE TABLE `{table}` (id INT, description STRING)")
 
+        tableflow = conn.get_tableflow_api()
         tableflow_enabled = False
         try:
-            topic = conn.enable_tableflow(
+            topic = tableflow.enable(
                 table,
                 table_formats=TableFormat.ICEBERG,
                 storage=ManagedStorage(),
@@ -140,14 +141,14 @@ class TestTableflowLifecycle:
             # INSERT is DML, not DDL -- run it through a regular cursor, not execute_snapshot_ddl.
             with conn.closing_cursor() as cursor:
                 cursor.execute(f"INSERT INTO `{table}` VALUES (1, 'one'), (2, 'two')")
-            refreshed = conn.get_tableflow(table)
+            refreshed = tableflow.get(table)
             assert refreshed.phase is TableflowPhase.RUNNING
             assert refreshed.status.failing_table_formats == []
         finally:
             # Gate the DROP on confirmed Tableflow removal: dropping the table drops its backing
             # topic, which would otherwise race an active materialization.
             if tableflow_enabled:
-                conn.disable_tableflow(table, wait_for_removal=True)
+                tableflow.disable(table, wait_for_removal=True)
                 with pytest.raises(confluent_sql.TableflowTopicNotFoundError):
-                    conn.get_tableflow(table)
+                    tableflow.get(table)
             # The table itself is dropped by the tableflow_table_name fixture teardown.
