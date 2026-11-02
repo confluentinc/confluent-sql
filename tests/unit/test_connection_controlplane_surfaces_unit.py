@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from confluent_sql import InterfaceError, ProgrammingError, connect
+from confluent_sql import InterfaceError, OperationalError, ProgrammingError, connect
 from confluent_sql.connection import Connection, ControlPlaneSurface
 
 pytestmark = pytest.mark.unit
@@ -140,6 +140,38 @@ class TestSurfaceRetries:
 
         assert response.status_code == 503
         assert len(requests) == 1
+
+
+class _Mapped(Exception):
+    pass
+
+
+class TestSurfaceStatusExceptions:
+    """`status_exceptions` / `error_prefix` reach `ServiceClient.request` through every surface's
+    requester, including the `Requester` handed to the connectors and artifacts APIs."""
+
+    @pytest.mark.parametrize(("surface", "call"), SURFACE_CALLS, ids=SURFACE_IDS)
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_a_mapped_status_raises_the_factorys_exception(self, surface, call, method) -> None:
+        conn = _connect()
+        _record_requests(conn, 404)
+
+        with pytest.raises(_Mapped):
+            call(conn, method=method, status_exceptions={404: lambda response: _Mapped()})
+
+    @pytest.mark.parametrize(("surface", "call"), SURFACE_CALLS, ids=SURFACE_IDS)
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_an_unmapped_status_uses_the_error_prefix(self, surface, call, method) -> None:
+        conn = _connect()
+        _record_requests(conn, 403)
+
+        with pytest.raises(OperationalError, match=r"^Error doing it '403'"):
+            call(
+                conn,
+                method=method,
+                status_exceptions={404: lambda response: _Mapped()},
+                error_prefix="Error doing it",
+            )
 
 
 class TestSurfaceResponseLogging:
