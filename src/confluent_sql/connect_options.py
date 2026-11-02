@@ -56,9 +56,10 @@ class Timeouts:
     chain (code exchange, token exchanges, refresh), but only if this connection is the one that
     establishes the process's shared login; later connections reuse that login's provider as-is.
 
-    It is also the effective bound on a streaming-mode `fetchone()`/`fetchmany()`, which make one
-    uncapped, untolerated page request: a timeout there is raised as `RequestTimeoutError` (per
-    httpx phase, so a call can run somewhat longer than this value)."""
+    It is also the timeout of each attempt at a streaming-mode `fetchone()`/`fetchmany()` page
+    request, per httpx phase, so not a cap on the call: a timeout is raised at once as
+    `RequestTimeoutError`, but transport errors and 429/5xx statuses are retried (up to 3 times)
+    with no overall deadline."""
 
     statement_results_response_wallclock_secs: float = (
         DEFAULT_STATEMENT_RESULTS_RESPONSE_WALLCLOCK_SECS
