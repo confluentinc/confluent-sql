@@ -54,7 +54,11 @@ class Timeouts:
     window, it is further capped at the time that has left, per httpx phase. With
     `auth="oauth"` it also bounds every HTTP hop of the token
     chain (code exchange, token exchanges, refresh), but only if this connection is the one that
-    establishes the process's shared login; later connections reuse that login's provider as-is."""
+    establishes the process's shared login; later connections reuse that login's provider as-is.
+
+    It is also the effective bound on a streaming-mode `fetchone()`/`fetchmany()`, which make one
+    uncapped, untolerated page request: a timeout there is raised as `RequestTimeoutError` (per
+    httpx phase, so a call can run somewhat longer than this value)."""
 
     statement_results_response_wallclock_secs: float = (
         DEFAULT_STATEMENT_RESULTS_RESPONSE_WALLCLOCK_SECS
