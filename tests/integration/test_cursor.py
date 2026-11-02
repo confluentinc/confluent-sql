@@ -14,7 +14,7 @@ from confluent_sql import (
     StatementDeletedError,
     StatementProperties,
 )
-from confluent_sql.exceptions import NotSupportedError, OperationalError
+from confluent_sql.exceptions import NotSupportedError, OperationalError, RequestTimeoutError
 from confluent_sql.polling import poll_until
 from confluent_sql.statement import Op, Phase, Statement, StatementWarning
 
@@ -1321,10 +1321,16 @@ class TestStreamingQueries:
         # snapshot generator only eventually: poll for it under a wall-clock budget rather than
         # assuming the next fetch or two will see it.
         def next_snapshot_or_deleted(_ctx):
+            nonlocal snapshot_iter
             try:
                 next(snapshot_iter)
             except StatementDeletedError as e:
                 return e
+            except RequestTimeoutError:
+                # An exception escaping a generator finishes it, and poll_until retries timeouts,
+                # so hand the retry a fresh generator (all state lives in the compressor).
+                snapshot_iter = compressor.snapshots()
+                raise
             return None  # still readable; the deletion has not landed yet
 
         deleted_error = poll_until(
