@@ -222,8 +222,8 @@ class TableflowTopicNotFoundError(OperationalError):
     """
     Exception raised when a Tableflow topic does not exist for a table's Kafka topic.
 
-    Raised on an HTTP 404 from get_tableflow() or disable_tableflow() -- i.e. Tableflow was
-    never enabled (or has already been removed) for the named table. disable_tableflow(
+    Raised on an HTTP 404 from TableflowApi.get() or disable() -- i.e. Tableflow was
+    never enabled (or has already been removed) for the named table. TableflowApi.disable(
     wait_for_removal=True) polls against this 404 to confirm teardown.
 
     Attributes:
@@ -239,7 +239,7 @@ class TableflowTopicAlreadyExistsError(OperationalError):
     """
     Exception raised when enabling Tableflow on a topic that already has it enabled.
 
-    Raised on an HTTP 409 from enable_tableflow().
+    Raised on an HTTP 409 from TableflowApi.enable().
 
     Attributes:
         table_name: The Flink table / Kafka topic name that already had Tableflow enabled.

@@ -27,10 +27,12 @@ conn = confluent_sql.connect(
 )
 table_name = os.getenv("CONFLUENT_TABLEFLOW_TABLE", "orders")
 
+tableflow = conn.get_tableflow_api()
+
 try:
     # wait_for_running=True is the default: blocks until the topic reaches RUNNING, raising
     # OperationalError if it goes FAILED instead.
-    topic = conn.enable_tableflow(
+    topic = tableflow.enable(
         table_name,
         table_formats=TableFormat.ICEBERG,
         storage=ManagedStorage(),
@@ -39,12 +41,12 @@ try:
     print(f"formats: {topic.spec.table_formats}")
     assert topic.phase is TableflowPhase.RUNNING
 
-    topic = conn.get_tableflow(table_name)
+    topic = tableflow.get(table_name)
     print(f"current state: phase={topic.phase}, formats={topic.spec.table_formats}")
 
-    # wait_for_removal=True is the default: blocks until get_tableflow(...) 404s, so a following
+    # wait_for_removal=True is the default: blocks until tableflow.get(...) 404s, so a following
     # DROP TABLE on the underlying topic is safe to issue right after this returns.
-    conn.disable_tableflow(table_name)
+    tableflow.disable(table_name)
     print(f"disabled Tableflow on {table_name!r}")
 finally:
     conn.close()
