@@ -82,7 +82,7 @@ enable/disable a Tableflow sink, etc.) follow a uniform shape:
   directly.
 
 Exemplars: `Connection.stop_statement` / `Cursor.stop_statement` (`wait_for_stopped=True`),
-`Connection.enable_tableflow` (`wait_for_running=True`), `Connection.disable_tableflow`
+`TableflowApi.enable` (`wait_for_running=True`), `TableflowApi.disable`
 (`wait_for_removal=True`). The DDL convenience methods (`execute_snapshot_ddl`,
 `execute_streaming_ddl`) block unconditionally and offer no opt-out — that's also acceptable when a
 non-blocking variant would be meaningless.

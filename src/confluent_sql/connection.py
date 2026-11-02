@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 from collections import namedtuple
-from collections.abc import Callable, Collection, Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
@@ -33,8 +33,6 @@ from .exceptions import (
     ReauthenticationRequired,
     StatementDeletedError,
     StatementNotFoundError,
-    TableflowTopicAlreadyExistsError,
-    TableflowTopicNotFoundError,
 )
 from .execution_mode import ExecutionMode
 from .oauth import (
@@ -61,17 +59,7 @@ from .statement_properties import (
     StatementProperties,
     validate_properties_dict,
 )
-from .tableflow import (
-    Fields,
-    TableflowPhase,
-    TableflowStorage,
-    TableflowTopic,
-    TableflowTopicConfig,
-    TableFormat,
-    build_create_payload,
-    build_update_payload,
-    normalize_table_formats,
-)
+from .tableflow import TableflowApi
 from .types import PropertiesDict, RowPythonTypes
 from .utils import DEFAULT_USER_AGENT
 from .utils import next_page_token as parse_next_page_token
@@ -480,16 +468,6 @@ class ControlPlaneSurface(Enum):
     )
 
 
-def _tableflow_not_found(table_name: str) -> StatusExceptions:
-    """The 404 -> `TableflowTopicNotFoundError` mapping shared by the Tableflow calls that address
-    one topic."""
-    return {
-        404: lambda _response: TableflowTopicNotFoundError(
-            f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-        )
-    }
-
-
 class Connection:
     """
     A connection to a Confluent SQL service.
@@ -503,9 +481,6 @@ class Connection:
     # Also the host for artifact routes (`/artifact/v1`); `controlplane_endpoint` redirects them.
     _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
     """Control-plane host (Tableflow, Connect, Artifact, CMK) -- distinct from the Flink gateway."""
-
-    _TABLEFLOW_TOPICS_PATH = "/tableflow/v1/tableflow-topics"
-    """Control-plane base path for the Tableflow-topics resource (enable/get/disable)."""
 
     environment_id: str
     compute_pool_id: str | None
@@ -591,6 +566,8 @@ class Connection:
     # --- Lazily composed service APIs
     _artifacts_api: ArtifactsApi | None
     """Lazily composed on first `get_artifacts_api()` call; None until then."""
+    _tableflow_api: TableflowApi | None
+    """Lazily composed on first `get_tableflow_api()` call; None until then."""
     _connector_api: ConnectorApi | None
     """Lazily composed on first connector method call; None until then."""
 
@@ -901,6 +878,7 @@ class Connection:
             }
             self._global_credentials = global_pair
         self._connector_api = None
+        self._tableflow_api = None
         self._artifacts_api = None
         # Kept even alongside an explicit endpoint: the endpoint still decides where requests go,
         # but `resolve_artifact_scope` prefers these over parsing the host, which private-link
@@ -2231,293 +2209,18 @@ class Connection:
             )
         return self._connector_api
 
-    def enable_tableflow(
-        self,
-        table_name: str,
-        *,
-        table_formats: TableFormat | str | Collection[TableFormat],
-        storage: TableflowStorage,
-        config: TableflowTopicConfig | None = None,
-        wait_for_running: bool = True,
-        timeout: float = 300,
-    ) -> TableflowTopic:
-        """Enable Tableflow on the Kafka topic backing a Flink table -- add an Iceberg/Delta sink.
-
-        `POST /tableflow/v1/tableflow-topics`. The topic is created asynchronously; by default this
-        blocks until it reaches RUNNING (mirroring stop_statement's wait-by-default behavior).
-
-        Args:
-            table_name: The Flink table, which is the backing Kafka topic name, which becomes
-                spec.display_name. Passed straight through (no escaping/casing translation).
-            table_formats: Which format(s) to materialize to. A single TableFormat (e.g.
-                TableFormat.ICEBERG) for the common case, or a collection for both
-                ({TableFormat.ICEBERG, TableFormat.DELTA}). Required; at least one.
-            storage: The storage backend -- ManagedStorage() (zero-config), ByobAwsStorage,
-                AzureAdlsStorage, or GcsStorage. Required.
-            config: Optional topic-level config (retention, error-handling), shared across all
-                enabled formats.
-            wait_for_running: If True (default), poll until the topic reaches RUNNING, raising on
-                FAILED. If False, return as soon as the create is accepted (topic in PENDING).
-            timeout: Maximum seconds to wait when wait_for_running is True.
-
-        Returns:
-            The TableflowTopic -- RUNNING when waited (the default), otherwise the just-accepted
-            topic (typically PENDING).
-
-        Raises:
-            InterfaceError: If table_formats is empty or names an unknown format.
-            ProgrammingError: If no control-plane credential is available, or the cluster id
-                can't be resolved without a global key or an interactive OAuth connection.
-            TableflowTopicAlreadyExistsError: If Tableflow is already enabled (HTTP 409).
-            OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
-        """
-        # Validate the formats argument before any network work, so a bad argument fails fast
-        # rather than after the (possibly CMK-resolving) cluster-id lookup.
-        wire_formats = normalize_table_formats(table_formats)
-        kafka_cluster_id = self._resolve_kafka_cluster_id()
-        payload = build_create_payload(
-            table_name=table_name,
-            table_formats=wire_formats,
-            storage=storage,
-            config=config,
-            environment_id=self.environment_id,
-            kafka_cluster_id=kafka_cluster_id,
-        )
-        logger.info(f"Enabling Tableflow for table '{table_name}'")
-        response = self._controlplane_request(
-            ControlPlaneSurface.TABLEFLOW,
-            self._TABLEFLOW_TOPICS_PATH,
-            method="POST",
-            json=payload,
-            status_exceptions={
-                409: lambda _response: TableflowTopicAlreadyExistsError(
-                    f"Tableflow is already enabled for table '{table_name}'",
-                    table_name=table_name,
-                )
-            },
-            error_prefix="Error enabling Tableflow",
-        )
-
-        topic = TableflowTopic.from_response(response.json())
-        if wait_for_running:
-            return self._wait_for_tableflow_running(topic, timeout)
-        return topic
-
-    def get_tableflow(self, table_name: str) -> TableflowTopic:
-        """Read the current Tableflow state for a table's topic (phase and the rest of status).
-
-        `GET /tableflow/v1/tableflow-topics/{display_name}`.
-
-        Args:
-            table_name: The Flink table / Kafka topic name (the {display_name} path segment).
-
-        Returns:
-            The full TableflowTopic (phase, spec, status).
-
-        Raises:
-            ProgrammingError: If the Kafka cluster id can't be resolved -- no
-                database_kafka_cluster_id was supplied and CMK resolution is unavailable
-                (no global key and no interactive OAuth connection).
-            TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
-            OperationalError: On other API errors.
-        """
-        return self._get_tableflow(table_name, BACKGROUND)
-
-    def _get_tableflow(self, table_name: str, ctx: Context) -> TableflowTopic:
-        """`get_tableflow`, bounded by `ctx`: the `Context` of the wait it is part of, or
-        `BACKGROUND`."""
-        response = self._controlplane_request(
-            ControlPlaneSurface.TABLEFLOW,
-            f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
-            params=self._tableflow_topic_params(),
-            status_exceptions=_tableflow_not_found(table_name),
-            error_prefix="Error reading Tableflow topic",
-            ctx=ctx,
-        )
-        return TableflowTopic.from_response(response.json())
-
-    def update_tableflow(
-        self,
-        table_name: str,
-        *,
-        table_formats: TableFormat | str | Collection[TableFormat] | None = None,
-        config: TableflowTopicConfig | None = None,
-        wait_for_running: bool = True,
-        timeout: float = 300,
-    ) -> TableflowTopic:
-        """Update an already-enabled Tableflow topic's `table_formats`/`config`.
-
-        `PATCH /tableflow/v1/tableflow-topics/{display_name}`. `table_formats`/`config` are the
-        only fields updatable this way -- `storage`/`display_name` are `x-immutable`; a caller
-        needing to change either has no in-place path and must recreate the topic instead.
-
-        `None` means "leave unchanged," for this method's own two arguments and for each of
-        `config`'s own sub-fields (same convention `config.to_spec()` already uses for create) --
-        not "clear it": none of `retention_ms`/`data_retention_ms`/`error_handling` can actually
-        be unset via this API (each has a server-enforced default, and the server rejects an
-        explicit null for any of them), so there's no supported way to request a delete, and this
-        method doesn't attempt one. This method itself doesn't diff against the topic's current
-        live state -- that's the caller's job (comparing against `get_tableflow`'s response);
-        it just sends whatever `table_formats`/`config` it's given, same as `enable_tableflow`.
-
-        Args:
-            table_name: The Flink table / Kafka topic name (the {display_name} path segment).
-            table_formats: New table_formats, replacing the full list -- or None to leave
-                unchanged.
-            config: New topic-level config -- or None to leave unchanged. Only fields actually
-                set on it (not None) are changed; the rest are left as-is.
-            wait_for_running: If True (default), poll until the topic reaches RUNNING, raising on
-                FAILED. If False, return as soon as the update is accepted.
-            timeout: Maximum seconds to wait when wait_for_running is True.
-
-        Returns:
-            The TableflowTopic -- RUNNING when waited (the default), otherwise the just-accepted
-            topic (typically PENDING while formats/config changes roll out).
-
-        Raises:
-            InterfaceError: If table_formats and config are both None (nothing to update), or if
-                table_formats is empty or names an unknown format.
-            ProgrammingError: If no control-plane credential is available, or the cluster id
-                can't be resolved without a global key.
-            TableflowTopicNotFoundError: If Tableflow is not enabled for the topic (HTTP 404).
-            OperationalError: On other API errors, on FAILED during a wait, or on wait timeout.
-        """
-        # Validate/normalize before any network work (including the possibly CMK-resolving
-        # cluster-id lookup below), same as enable_tableflow.
-        wire_formats = normalize_table_formats(table_formats) if table_formats is not None else None
-        config_spec = config.to_spec() if config is not None else None
-        if not wire_formats and not config_spec:
-            raise InterfaceError("update_tableflow requires at least one of table_formats/config")
-
-        payload = build_update_payload(
-            table_formats=wire_formats,
-            config_spec=config_spec,
-            environment_id=self.environment_id,
-            kafka_cluster_id=self._resolve_kafka_cluster_id(),
-        )
-        logger.info(f"Updating Tableflow for table '{table_name}'")
-        response = self._controlplane_request(
-            ControlPlaneSurface.TABLEFLOW,
-            f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
-            method="PATCH",
-            json=payload,
-            status_exceptions=_tableflow_not_found(table_name),
-            error_prefix="Error updating Tableflow topic",
-        )
-
-        topic = TableflowTopic.from_response(response.json())
-        if wait_for_running:
-            return self._wait_for_tableflow_running(topic, timeout)
-        return topic
-
-    def disable_tableflow(
-        self,
-        table_name: str,
-        *,
-        wait_for_removal: bool = True,
-        timeout: float = 300,
-    ) -> None:
-        """Tear down Tableflow on a table's topic -- remove the sink.
-
-        `DELETE /tableflow/v1/tableflow-topics/{display_name}`. All-or-nothing in v1 (no
-        per-format disable). Deletion is asynchronous; by default this blocks until the topic is
-        confirmed gone.
-
-        Args:
-            table_name: The Flink table / Kafka topic name (the {display_name} path segment).
-            wait_for_removal: If True (default), poll get_tableflow until it 404s, confirming the
-                topic is gone. Leaving this True before a DROP TABLE keeps the drop from racing an
-                active materialization. If False, return as soon as the DELETE is accepted.
-            timeout: Maximum seconds to wait when wait_for_removal is True.
-
-        Raises:
-            ProgrammingError: If the Kafka cluster id can't be resolved -- no
-                database_kafka_cluster_id was supplied and CMK resolution is unavailable
-                (no global key and no interactive OAuth connection).
-            TableflowTopicNotFoundError: If Tableflow was not enabled for the topic (HTTP 404).
-            OperationalError: On other API errors, or on wait timeout.
-        """
-        logger.info(f"Disabling Tableflow for table '{table_name}'")
-        self._controlplane_request(
-            ControlPlaneSurface.TABLEFLOW,
-            f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
-            method="DELETE",
-            params=self._tableflow_topic_params(),
-            status_exceptions=_tableflow_not_found(table_name),
-            error_prefix="Error disabling Tableflow",
-        )
-
-        if wait_for_removal:
-            self._wait_for_tableflow_removal(table_name, timeout)
-
-    def _tableflow_topic_params(self) -> dict[str, str]:
-        """The environment + cluster query params the per-topic GET/DELETE routes require."""
-        return {
-            Fields.ENVIRONMENT: self.environment_id,
-            f"spec.{Fields.KAFKA_CLUSTER}": self._resolve_kafka_cluster_id(),
-        }
-
-    def _wait_for_tableflow_running(self, topic: TableflowTopic, timeout: float) -> TableflowTopic:
-        """Poll until the topic reaches RUNNING, refreshing via get_tableflow.
-
-        Raises:
-            OperationalError: If the topic transitions to FAILED (surfacing the error message and
-                failing formats), or if RUNNING is not reached within timeout.
-        """
-
-        def raise_if_failed(candidate: TableflowTopic) -> None:
-            if candidate.phase is TableflowPhase.FAILED:
-                failing = "; ".join(
-                    f"{f.format.value}: {f.error_message}"
-                    for f in candidate.status.failing_table_formats
-                )
-                detail = candidate.status.error_message or ""
-                raise OperationalError(
-                    f"Tableflow for '{candidate.spec.display_name}' transitioned to FAILED: "
-                    f"{detail} {failing}".strip()
-                )
-
-        raise_if_failed(topic)
-        if topic.phase is TableflowPhase.RUNNING:
-            return topic
-
-        def poll(ctx: Context) -> TableflowTopic | None:
-            nonlocal topic
-            topic = self._get_tableflow(topic.spec.display_name, ctx)
-            raise_if_failed(topic)
-            return topic if topic.phase is TableflowPhase.RUNNING else None
-
-        return poll_until(
-            poll,
-            timeout=timeout,
-            immediate=False,
-            on_timeout=lambda: OperationalError(
-                f"Tableflow for '{topic.spec.display_name}' did not reach RUNNING within "
-                f"{timeout} seconds"
-            ),
-        )
-
-    def _wait_for_tableflow_removal(self, table_name: str, timeout: float) -> None:
-        """Poll get_tableflow until it 404s, confirming the topic is gone.
-
-        Raises:
-            OperationalError: If the topic is not removed within timeout.
-        """
-
-        def is_removed(ctx: Context) -> bool | None:
-            try:
-                self._get_tableflow(table_name, ctx)
-            except TableflowTopicNotFoundError:
-                return True
-            return None
-
-        poll_until(
-            is_removed,
-            timeout=timeout,
-            on_timeout=lambda: OperationalError(
-                f"Tableflow for '{table_name}' was not removed within {timeout} seconds"
-            ),
-        )
+    def get_tableflow_api(self) -> TableflowApi:
+        """Return the TableflowApi for this connection's environment and Kafka cluster, composing
+        it on first use. Raises `InterfaceError` if the connection is closed."""
+        if self._closed:
+            raise InterfaceError("Connection is closed")
+        if self._tableflow_api is None:
+            self._tableflow_api = TableflowApi(
+                partial(self._controlplane_request, ControlPlaneSurface.TABLEFLOW),
+                environment_id=self.environment_id,
+                resolve_kafka_cluster_id=self._resolve_kafka_cluster_id,
+            )
+        return self._tableflow_api
 
     def _resolve_kafka_cluster_id(self) -> str:
         """Resolve the `lkc-…` id of the connection's database (Kafka cluster), cached for reuse.
