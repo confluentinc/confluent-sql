@@ -4,6 +4,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+## 0.8.0, 2026-10-30
+
 ### Changed - Breaking
 
 - Removed the `Connection` methods `connect_controlplane_request()`, `artifact_controlplane_request()`, `resolve_kafka_cluster_id()` and `artifact_scope()`. They were never documented as public: they only existed as hooks for the connector and artifact service APIs, which now receive a request callable, the environment id and (for connectors) a cluster-id resolver or (for artifacts) the cloud, region and endpoint at construction instead (`ConnectorApi`/`ArtifactsApi` are still obtained through `Connection`).
