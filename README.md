@@ -101,7 +101,7 @@ The driver stamps `Authorization: Bearer <external_access_token>` and `Confluent
 Things to know:
 
 - **`external_access_token` and `identity_pool_id` are a pair** and are **mutually exclusive** with every API-key parameter (`global_*`, `flink_*`, `tableflow_*`, `connect_*`). Supplying a bearer token alongside any API key is rejected.
-- **Flink data plane only.** Confluent's authorization model does not accept a raw external token on any control-plane route this driver calls. So under BYOIDC the control-plane surfaces — Tableflow (`enable_tableflow` / `get_tableflow` / `disable_tableflow`), Connectors, and the CMK cluster-id lookup that resolves a `database` name to its `lkc-…` id — fail closed with a clear error. Use an API-key connection for those, and pass `database_kafka_cluster_id` to `connect()` if you need the driver to know the cluster id without the CMK lookup.
+- **Flink data plane only.** Confluent's authorization model does not accept a raw external token on any control-plane route this driver calls. So under BYOIDC the control-plane surfaces — Tableflow (`TableflowApi`), Connectors, and the CMK cluster-id lookup that resolves a `database` name to its `lkc-…` id — fail closed with a clear error. Use an API-key connection for those, and pass `database_kafka_cluster_id` to `connect()` if you need the driver to know the cluster id without the CMK lookup.
 - **`organization_id` is required** under BYOIDC. Inferring it needs a control-plane call an external token can't make, so it must be supplied explicitly.
 - **No token refresh.** The token is used verbatim on every request. When it expires, requests begin failing (surfaced as `OperationalError`) and the connection is effectively dead — open a fresh connection with a fresh token.
 
