@@ -333,9 +333,37 @@ class Cursor:
             - If may_have_results is False: End of results reached. No more data will
               arrive.
 
+        Timeouts in streaming mode:
+            "Non-blocking" means at most one server request, not "returns immediately". If
+            rows are already buffered locally, they are returned with no I/O. Otherwise the
+            one page fetch runs with no deadline beyond the connection's
+            `Timeouts.httpx_request_timeout_secs` (default 10s), which httpx applies to
+            each of connect, read, write and pool wait separately -- so one call can take
+            longer than that figure -- and it may first sleep out what is left of
+            `result_page_fetch_pause_millis` (default 100ms) since the previous fetch.
+
+            A fetch that times out is not retried here: `RequestTimeoutError` (an
+            `OperationalError`) is raised straight to the caller. Transient transport
+            errors and 429/5xx statuses are still retried (up to 3 times, with a short
+            backoff) before surfacing, and that retrying is not bounded by any overall
+            deadline either. The `Timeouts.statement_results_response_wallclock_secs`
+            tolerance applies only to blocking reads, not to this path.
+
+            The failed fetch leaves the cursor untouched, so it is safe to call
+            fetchone() again: the same page is requested again. A polling loop that
+            wants to ride out a slow server can catch `RequestTimeoutError` and carry on.
+
+            For a blocking read that tolerates slow responses, use
+            `next(cursor, None)` (or iterate the cursor) instead: iteration always blocks,
+            in streaming mode too, waiting for rows to arrive and retrying a timed-out
+            page for up to `statement_results_response_wallclock_secs`.
+
         Example (streaming mode):
             while True:
-                row = cursor.fetchone()
+                try:
+                    row = cursor.fetchone()
+                except RequestTimeoutError:
+                    continue  # One slow response; the same page is requested again
                 if row is not None:
                     process_row(row)
                 elif not cursor.may_have_results:
@@ -349,6 +377,11 @@ class Cursor:
 
         Raises:
             InterfaceError: If cursor is closed or in DDL mode.
+            RequestTimeoutError: In streaming mode, if the page fetch timed out. In snapshot
+                mode, only once timeouts have gone on for
+                `Timeouts.statement_results_response_wallclock_secs`.
+            StatementDeletedError: If the statement has been deleted.
+            OperationalError: If the results request otherwise fails.
         """
         self._raise_if_closed()
         self._raise_if_ddl_mode()
@@ -373,9 +406,20 @@ class Cursor:
             - If may_have_results is False: End of results reached. No more data will
               arrive.
 
+        Timeouts in streaming mode:
+            Same as fetchone(): a streaming fetch makes at most one page request, which can
+            still take up to the connection's `Timeouts.httpx_request_timeout_secs` per
+            httpx phase (plus a brief pacing sleep), and a timeout is raised as
+            `RequestTimeoutError` rather than retried. The cursor is left untouched, so
+            calling again re-requests the same page. See fetchone() for details, and for
+            `next(cursor)` / iteration as the blocking alternative.
+
         Example (streaming mode):
             while cursor.may_have_results:
-                rows = cursor.fetchmany(10)
+                try:
+                    rows = cursor.fetchmany(10)
+                except RequestTimeoutError:
+                    continue  # One slow response; the same page is requested again
                 if rows:
                     for row in rows:
                         process_row(row)
@@ -393,6 +437,11 @@ class Cursor:
 
         Raises:
             InterfaceError: If cursor is closed or in DDL mode.
+            RequestTimeoutError: In streaming mode, if the page fetch timed out. In snapshot
+                mode, only once timeouts have gone on for
+                `Timeouts.statement_results_response_wallclock_secs`.
+            StatementDeletedError: If the statement has been deleted.
+            OperationalError: If the results request otherwise fails.
         """
         self._raise_if_closed()
         self._raise_if_ddl_mode()

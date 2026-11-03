@@ -212,6 +212,10 @@ class ResultReader(Generic[ReaderOutput], abc.ABC):
        - Non-blocking in streaming mode (at most one server request)
        - Suitable for polling patterns in streaming applications
        - Use may_have_results to distinguish temporary vs permanent emptiness
+       - "Non-blocking" means one request, not an instant return: that request can take up to
+         the connection's `Timeouts.httpx_request_timeout_secs` (per httpx phase), after a
+         possible brief pacing sleep. A timeout is raised as `RequestTimeoutError`, not retried,
+         and leaves reader state untouched so the next call asks for the same page again.
 
     Recommendations:
     - For snapshot queries: Use either approach (both block until complete)
