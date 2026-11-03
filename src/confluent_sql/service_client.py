@@ -15,19 +15,23 @@ one after a dropped connection could double-submit or double-mutate state. Calle
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, NoReturn, Protocol
 
 import httpx
 
 from .context import BACKGROUND, Context
-from .exceptions import InterfaceError, OperationalError, RequestTimeoutError
+from .exceptions import InterfaceError, OperationalError, ProgrammingError, RequestTimeoutError
 from .retry import DEFAULT_RETRYABLE_EXCEPTIONS, DEFAULT_RETRYABLE_STATUS_CODES, call_with_retries
 from .utils import extract_error_detail
 
 logger = logging.getLogger(__name__)
 
 _BODY_NOT_LOGGED = "<body not logged>"
+
+StatusExceptions = Mapping[int, Callable[[httpx.Response], Exception]]
+"""HTTP status -> factory building the exception to raise for it. The factory is handed the
+response and *returns* the exception (the framework raises it): a lambda cannot contain `raise`."""
 
 SendPolicy = Callable[[Callable[[], httpx.Response]], httpx.Response]
 """Wraps the one-shot send of a single HTTP call, e.g. to apply the connection's reauth policy."""
@@ -46,6 +50,8 @@ class Requester(Protocol):
         method: str = "GET",
         raise_for_status: bool = True,
         *,
+        status_exceptions: StatusExceptions | None = None,
+        error_prefix: str | None = None,
         ctx: Context = BACKGROUND,
         **kwargs: Any,
     ) -> httpx.Response: ...
@@ -81,6 +87,30 @@ def raise_for_status_as_operational_error(
             f"{prefix} '{e.response.status_code}' - {details}",
             http_status_code=e.response.status_code,
         ) from e
+
+
+def apply_status_policy(
+    response: httpx.Response,
+    status_exceptions: StatusExceptions | None = None,
+    error_prefix: str | None = None,
+) -> None:
+    """Raise for an error response: the exception `status_exceptions` builds for its status, if
+    mapped; otherwise the standard `OperationalError` translation, led by `error_prefix` (or the
+    default lead-in when None). A 2xx response returns normally.
+
+    This is the single translation step `ServiceClient.request` ends in; test fakes standing in for
+    a `Requester` call it too, so they exercise the real mapping.
+    """
+    if status_exceptions is not None:
+        status = response.status_code
+        factory = status_exceptions.get(status)
+        if factory is not None and not 200 <= status < 300:
+            raise factory(response)
+    # Falls through for an unmapped error; a success is left to `raise_for_status` to wave through.
+    if error_prefix is None:
+        raise_for_status_as_operational_error(response)
+    else:
+        raise_for_status_as_operational_error(response, prefix=error_prefix)
 
 
 def _wrap_request_error(e: httpx.RequestError) -> NoReturn:
@@ -143,6 +173,8 @@ class ServiceClient:
         method: str = "GET",
         raise_for_status: bool = True,
         *,
+        status_exceptions: StatusExceptions | None = None,
+        error_prefix: str | None = None,
         log_body: bool = True,
         ctx: Context = BACKGROUND,
         **kwargs: Any,
@@ -150,10 +182,15 @@ class ServiceClient:
         """Send a request, translating every httpx.RequestError into OperationalError (#138).
 
         A GET is idempotent and so retried on transient transport errors (#137) and transient HTTP
-        statuses (#140) with a short backoff; any other method is sent exactly once. An HTTP error
-        status becomes OperationalError carrying `http_status_code`, unless `raise_for_status` is
-        False (callers that map specific codes -- 404/409 -- to their own exceptions); then the
-        final response is returned as-is, even after retries are exhausted. `log_body=False` keeps
+        statuses (#140) with a short backoff; any other method is sent exactly once.
+
+        An HTTP error status is translated by `apply_status_policy`: a status in `status_exceptions`
+        raises the exception its factory builds from the response; any other becomes
+        OperationalError carrying `http_status_code`, its message led by `error_prefix`. This runs
+        once the request is finished, so a factory mapped to a retryable status (e.g. 503) fires
+        only after a GET's retries are exhausted. With `raise_for_status=False` the final response
+        is returned as-is and the caller owns every status; combining that with `status_exceptions`
+        or `error_prefix` contradicts it and is rejected up front. `log_body=False` keeps
         the response body out of the DEBUG log, for responses carrying secrets (the Artifacts
         presign response carries a live upload URL). `ctx` is the `Context` of the operation this
         request belongs to, e.g. the one a `poll_until` attempt is handed: each attempt's httpx
@@ -161,25 +198,36 @@ class ServiceClient:
         `kwargs` (params, json, headers, auth, timeout, ...) go to `httpx.Client.request`.
 
         Raises:
+            ProgrammingError: If `status_exceptions` or `error_prefix` is given with
+                `raise_for_status=False`.
             InterfaceError: If the owning connection is closed.
-            OperationalError: On a transport failure or (with `raise_for_status`) an HTTP error;
-                `RequestTimeoutError` when the failure was a single httpx timeout.
+            OperationalError: On a transport failure or (with `raise_for_status`) an unmapped HTTP
+                error; `RequestTimeoutError` when the failure was a single httpx timeout.
         """
+        if not raise_for_status and (status_exceptions is not None or error_prefix is not None):
+            raise ProgrammingError(
+                "status_exceptions and error_prefix have no effect with raise_for_status=False; "
+                "either drop them or let the request raise"
+            )
         if method.upper() == "GET":
-            return self._get_with_retries(url, raise_for_status, log_body, ctx, **kwargs)
-        try:
-            return self._send_untranslated(method, url, raise_for_status, log_body, ctx, **kwargs)
-        except httpx.RequestError as e:
-            _wrap_request_error(e)
+            response = self._get_with_retries(url, log_body, ctx, **kwargs)
+        else:
+            try:
+                response = self._send_untranslated(method, url, log_body, ctx, **kwargs)
+            except httpx.RequestError as e:
+                _wrap_request_error(e)
+        if raise_for_status:
+            apply_status_policy(response, status_exceptions, error_prefix)
+        return response
 
     def _get_with_retries(
-        self, url: str, raise_for_status: bool, log_body: bool, ctx: Context, **kwargs: Any
+        self, url: str, log_body: bool, ctx: Context, **kwargs: Any
     ) -> httpx.Response:
         """Retry loop for GETs. Once retries are exhausted, transport errors become
-        OperationalError and the final response is returned for `raise_for_status` to judge."""
+        OperationalError and the final response is returned for `request` to judge."""
 
         def _get_or_flag_retryable_status() -> httpx.Response:
-            response = self._send_untranslated("GET", url, False, log_body, ctx, **kwargs)
+            response = self._send_untranslated("GET", url, log_body, ctx, **kwargs)
             if response.status_code in DEFAULT_RETRYABLE_STATUS_CODES:
                 raise _RetryableStatusError(response)
             return response
@@ -196,15 +244,12 @@ class ServiceClient:
         except httpx.RequestError as e:
             _wrap_request_error(e)
 
-        if raise_for_status:
-            raise_for_status_as_operational_error(response)
         return response
 
     def _send_untranslated(
         self,
         method: str,
         url: str,
-        raise_for_status: bool,
         log_body: bool,
         ctx: Context,
         **kwargs: Any,
@@ -220,8 +265,6 @@ class ServiceClient:
 
         response = self._send_policy(send)
         logger.debug("Response: %s", response.content if log_body else _BODY_NOT_LOGGED)
-        if raise_for_status:
-            raise_for_status_as_operational_error(response)
         return response
 
     @staticmethod

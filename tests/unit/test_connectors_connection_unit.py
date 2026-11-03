@@ -15,6 +15,7 @@ from confluent_sql.exceptions import (
     OperationalError,
     RequestTimeoutError,
 )
+from confluent_sql.service_client import StatusExceptions, apply_status_policy
 
 pytestmark = pytest.mark.unit
 
@@ -94,7 +95,14 @@ class FakeControlPlane:
         self._queues[key].extend(responses)
 
     def request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
+        self,
+        url: str,
+        method: str = "GET",
+        raise_for_status: bool = True,
+        *,
+        status_exceptions: StatusExceptions | None = None,
+        error_prefix: str | None = None,
+        **kwargs: Any,
     ) -> Mock:
         self.requests.append((method, url))
         self.kwargs.append(kwargs)
@@ -114,6 +122,8 @@ class FakeControlPlane:
         served = queue.pop(0)
         if isinstance(served, Exception):
             raise served
+        if raise_for_status:
+            apply_status_policy(served, status_exceptions, error_prefix)
         return served
 
     def count(self, key: str) -> int:

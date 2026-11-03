@@ -48,7 +48,11 @@ from .oauth import (
 from .oauth import reauthenticate as oauth_reauthenticate
 from .oauth.holder import ProviderFactory
 from .polling import poll_until
-from .service_client import ServiceClient, raise_for_status_as_operational_error
+from .service_client import (
+    ServiceClient,
+    StatusExceptions,
+    raise_for_status_as_operational_error,
+)
 from .statement import LABEL_PREFIX as STATEMENT_LABEL_PREFIX
 from .statement import ChangelogRow, Statement
 from .statement_properties import (
@@ -474,6 +478,16 @@ class ControlPlaneSurface(Enum):
     ORGANIZATION = _SurfaceSpec(
         "Organization lookups", True, "global_api_key/global_api_secret", global_only=True
     )
+
+
+def _tableflow_not_found(table_name: str) -> StatusExceptions:
+    """The 404 -> `TableflowTopicNotFoundError` mapping shared by the Tableflow calls that address
+    one topic."""
+    return {
+        404: lambda _response: TableflowTopicNotFoundError(
+            f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
+        )
+    }
 
 
 class Connection:
@@ -1570,14 +1584,14 @@ class Connection:
             method="PATCH",
             content=json.dumps(patch_ops),
             headers={"Content-Type": "application/json-patch+json"},
-            raise_for_status=False,
+            status_exceptions={
+                404: lambda _response: StatementNotFoundError(
+                    f"Statement '{statement_name}' not found while stopping",
+                    statement_name=statement_name,
+                )
+            },
+            error_prefix="Error stopping statement",
         )
-        if response.status_code == 404:
-            raise StatementNotFoundError(
-                f"Statement '{statement_name}' not found while stopping",
-                statement_name=statement_name,
-            )
-        raise_for_status_as_operational_error(response, prefix="Error stopping statement")
 
         pending_stopped_statement = Statement.from_response(self, response.json())
 
@@ -2169,15 +2183,20 @@ class Connection:
         method: str = "GET",
         raise_for_status: bool = True,
         *,
+        status_exceptions: StatusExceptions | None = None,
+        error_prefix: str | None = None,
         ctx: Context = BACKGROUND,
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a request to one control-plane surface, carrying that surface's credential, under
-        `ctx` (the `Context` of the wait it is part of, or `BACKGROUND`)."""
+        `ctx` (the `Context` of the wait it is part of, or `BACKGROUND`). `status_exceptions` and
+        `error_prefix` are as for `ServiceClient.request`."""
         return self._controlplane.request(
             url,
             method,
             raise_for_status,
+            status_exceptions=status_exceptions,
+            error_prefix=error_prefix,
             auth=self._auth_for(surface),
             log_body=surface.value.log_body,
             ctx=ctx,
@@ -2270,13 +2289,14 @@ class Connection:
             self._TABLEFLOW_TOPICS_PATH,
             method="POST",
             json=payload,
-            raise_for_status=False,
+            status_exceptions={
+                409: lambda _response: TableflowTopicAlreadyExistsError(
+                    f"Tableflow is already enabled for table '{table_name}'",
+                    table_name=table_name,
+                )
+            },
+            error_prefix="Error enabling Tableflow",
         )
-        if response.status_code == 409:
-            raise TableflowTopicAlreadyExistsError(
-                f"Tableflow is already enabled for table '{table_name}'", table_name=table_name
-            )
-        raise_for_status_as_operational_error(response, prefix="Error enabling Tableflow")
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2310,14 +2330,10 @@ class Connection:
             ControlPlaneSurface.TABLEFLOW,
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             params=self._tableflow_topic_params(),
-            raise_for_status=False,
+            status_exceptions=_tableflow_not_found(table_name),
+            error_prefix="Error reading Tableflow topic",
             ctx=ctx,
         )
-        if response.status_code == 404:
-            raise TableflowTopicNotFoundError(
-                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-            )
-        raise_for_status_as_operational_error(response, prefix="Error reading Tableflow topic")
         return TableflowTopic.from_response(response.json())
 
     def update_tableflow(
@@ -2385,13 +2401,9 @@ class Connection:
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             method="PATCH",
             json=payload,
-            raise_for_status=False,
+            status_exceptions=_tableflow_not_found(table_name),
+            error_prefix="Error updating Tableflow topic",
         )
-        if response.status_code == 404:
-            raise TableflowTopicNotFoundError(
-                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-            )
-        raise_for_status_as_operational_error(response, prefix="Error updating Tableflow topic")
 
         topic = TableflowTopic.from_response(response.json())
         if wait_for_running:
@@ -2426,18 +2438,14 @@ class Connection:
             OperationalError: On other API errors, or on wait timeout.
         """
         logger.info(f"Disabling Tableflow for table '{table_name}'")
-        response = self._controlplane_request(
+        self._controlplane_request(
             ControlPlaneSurface.TABLEFLOW,
             f"{self._TABLEFLOW_TOPICS_PATH}/{table_name}",
             method="DELETE",
             params=self._tableflow_topic_params(),
-            raise_for_status=False,
+            status_exceptions=_tableflow_not_found(table_name),
+            error_prefix="Error disabling Tableflow",
         )
-        if response.status_code == 404:
-            raise TableflowTopicNotFoundError(
-                f"Tableflow is not enabled for table '{table_name}'", table_name=table_name
-            )
-        raise_for_status_as_operational_error(response, prefix="Error disabling Tableflow")
 
         if wait_for_removal:
             self._wait_for_tableflow_removal(table_name, timeout)
