@@ -36,6 +36,17 @@ on the control plane, the surface) they mean and never a retry policy:
 - **Every other method is sent exactly once**: re-issuing a POST/PATCH/DELETE after a dropped
   connection can double-submit or double-mutate state.
 
+A caller that wants a specific status to become a specific exception passes
+`status_exceptions={404: lambda response: SomeNotFoundError(...)}` (status -> factory that *returns*
+the exception; the framework raises it) and an `error_prefix`, rather than `raise_for_status=False`
+plus hand-written checks. Every other error status gets the standard `OperationalError` translation,
+led by `error_prefix`. The mapping is consulted once the request is finished, so a factory mapped to
+a retryable status fires only after a GET's retries are spent. `status_exceptions` / `error_prefix`
+with `raise_for_status=False` is a contradiction and raises `ProgrammingError`; keep
+`raise_for_status=False` only where the status is data (e.g. `delete_statement` treats 404 as
+success) or the condition is not a plain status. Test fakes standing in for a `Requester` call
+`apply_status_policy` so they exercise the real mapping.
+
 Never reach for the raw `httpx.Client` (`ServiceClient.httpx_client`) to send a request; that
 bypasses retries, error translation (every `httpx.RequestError` becomes `OperationalError`, #138;
 timeouts become `RequestTimeoutError`) and the reauth policy. Don't add a family of request

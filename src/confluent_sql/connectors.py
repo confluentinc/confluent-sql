@@ -33,7 +33,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from .context import BACKGROUND, Context
 from .exceptions import (
@@ -43,12 +42,9 @@ from .exceptions import (
     OperationalError,
 )
 from .polling import poll_until
-from .service_client import Requester, raise_for_status_as_operational_error
+from .service_client import Requester, StatusExceptions
 from .types import StrAnyDict
 from .utils import ExtensibleEnum
-
-if TYPE_CHECKING:
-    import httpx
 
 _REQUIRED_CONFIG_KEYS = ("connector.class", "kafka.api.key", "kafka.api.secret")
 """Config keys the Connect v1 create body marks required (besides `name`, which we inject)."""
@@ -255,13 +251,16 @@ class ConnectorApi:
         """
         payload = build_create_payload(name=name, config=config)
         response = self._request(
-            self._connectors_path(), method="POST", json=payload, raise_for_status=False
+            self._connectors_path(),
+            method="POST",
+            json=payload,
+            status_exceptions={
+                409: lambda _response: ConnectorAlreadyExistsError(
+                    f"Connector '{name}' already exists", connector_name=name
+                )
+            },
+            error_prefix="Error creating connector",
         )
-        if response.status_code == 409:
-            raise ConnectorAlreadyExistsError(
-                f"Connector '{name}' already exists", connector_name=name
-            )
-        raise_for_status_as_operational_error(response, prefix="Error creating connector")
 
         spec = ConnectorSpec.from_response(response.json())
         if wait_for_running:
@@ -289,10 +288,12 @@ class ConnectorApi:
             ConnectorNotFoundError: If no connector with this name exists (HTTP 404).
             OperationalError: On other API errors, or on wait timeout.
         """
-        response = self._request(
-            f"{self._connectors_path()}/{name}", method="DELETE", raise_for_status=False
+        self._request(
+            f"{self._connectors_path()}/{name}",
+            method="DELETE",
+            status_exceptions=self._not_found(name),
+            error_prefix="Error deleting connector",
         )
-        self._check_found_and_ok(response, name, prefix="Error deleting connector")
 
         if wait_for_removal:
             self._wait_for_removal(name, timeout)
@@ -330,20 +331,25 @@ class ConnectorApi:
         return self._settle_after_action(name, ConnectorState.RUNNING, wait_for_running, timeout)
 
     @staticmethod
-    def _check_found_and_ok(response: httpx.Response, name: str, *, prefix: str) -> None:
-        """404 -> ConnectorNotFoundError; any other error status -> OperationalError carrying the
-        status code and the server's own detail (`prefix` leads the message)."""
-        if response.status_code == 404:
-            raise ConnectorNotFoundError(f"Connector '{name}' does not exist", connector_name=name)
-        raise_for_status_as_operational_error(response, prefix=prefix)
+    def _not_found(name: str) -> StatusExceptions:
+        """404 -> ConnectorNotFoundError; with the `error_prefix` a caller passes alongside, any
+        other error status -> OperationalError carrying the status code and the server's own
+        detail."""
+        return {
+            404: lambda _response: ConnectorNotFoundError(
+                f"Connector '{name}' does not exist", connector_name=name
+            )
+        }
 
     def _connector_action(self, name: str, action: str) -> None:
         """Issue a `PUT` lifecycle action sub-request (`pause`/`resume`); 404 ->
         ConnectorNotFoundError, other HTTP errors -> OperationalError."""
-        response = self._request(
-            f"{self._connectors_path()}/{name}/{action}", method="PUT", raise_for_status=False
+        self._request(
+            f"{self._connectors_path()}/{name}/{action}",
+            method="PUT",
+            status_exceptions=self._not_found(name),
+            error_prefix=f"Error sending '{action}' to connector",
         )
-        self._check_found_and_ok(response, name, prefix=f"Error sending '{action}' to connector")
 
     def _settle_after_action(
         self, name: str, target: ConnectorState, wait: bool, timeout: float
@@ -364,9 +370,11 @@ class ConnectorApi:
         errors -> OperationalError. `ctx` is the `Context` of the wait this read is part of, if
         any."""
         response = self._request(
-            f"{self._connectors_path()}/{name}", raise_for_status=False, ctx=ctx
+            f"{self._connectors_path()}/{name}",
+            status_exceptions=self._not_found(name),
+            error_prefix="Error reading connector",
+            ctx=ctx,
         )
-        self._check_found_and_ok(response, name, prefix="Error reading connector")
         return ConnectorSpec.from_response(response.json())
 
     def _fetch_status(self, name: str, *, ctx: Context = BACKGROUND) -> ConnectorStatus:
@@ -374,9 +382,11 @@ class ConnectorApi:
         HTTP errors -> OperationalError. `ctx` is the `Context` of the wait this read is part of, if
         any."""
         response = self._request(
-            f"{self._connectors_path()}/{name}/status", raise_for_status=False, ctx=ctx
+            f"{self._connectors_path()}/{name}/status",
+            status_exceptions=self._not_found(name),
+            error_prefix="Error reading connector status",
+            ctx=ctx,
         )
-        self._check_found_and_ok(response, name, prefix="Error reading connector status")
         return ConnectorStatus.from_response(response.json())
 
     def _wait_for_state(

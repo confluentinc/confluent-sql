@@ -30,6 +30,7 @@ from confluent_sql.artifacts import (
     infer_content_format,
     resolve_artifact_scope,
 )
+from confluent_sql.service_client import StatusExceptions, apply_status_policy
 
 pytestmark = pytest.mark.unit
 
@@ -95,13 +96,22 @@ class FakeContext:
         self.requests: list[tuple[str, str, dict]] = []
 
     def request(
-        self, url: str, method: str = "GET", raise_for_status: bool = True, **kwargs: Any
+        self,
+        url: str,
+        method: str = "GET",
+        raise_for_status: bool = True,
+        *,
+        status_exceptions: StatusExceptions | None = None,
+        error_prefix: str | None = None,
+        **kwargs: Any,
     ) -> httpx.Response:
         # Snapshot: the real code reuses (and mutates) one params dict across pages.
         self.requests.append((method, url, copy.deepcopy(kwargs)))
         served = self.responses.pop(0)
         if isinstance(served, Exception):
             raise served
+        if raise_for_status:
+            apply_status_policy(served, status_exceptions, error_prefix)
         return served
 
 
