@@ -62,6 +62,12 @@ SERVICE_API_SPECS = [
         cache_attr="_connector_api",
         call_needing_connection=lambda api: api.get("my-connector"),
     ),
+    ServiceApiSpec(
+        name="tableflow",
+        get_from=lambda conn: conn.get_tableflow_api(),
+        cache_attr="_tableflow_api",
+        call_needing_connection=lambda api: api.get("orders"),
+    ),
 ]
 
 
@@ -92,6 +98,7 @@ class TestConnectionClose:
         conn.close()
         assert conn._artifacts_api is None
         assert conn._connector_api is None
+        assert conn._tableflow_api is None
 
     def test_second_close_is_a_noop(self, service_case: ComposedServiceApi) -> None:
         service_case.conn.close()

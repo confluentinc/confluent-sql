@@ -1,7 +1,7 @@
 """Example of enabling and updating Tableflow on Google Cloud Storage (GCS).
 
 This mirrors ``tableflow_lifecycle_example.py`` but targets a customer-owned GCS bucket via the
-new ``GcsStorage`` backend, and additionally shows the ``update_tableflow`` in-place path and a
+new ``GcsStorage`` backend, and additionally shows the ``TableflowApi.update`` in-place path and a
 non-blocking enable. Tableflow materializes the Kafka topic backing a Flink table into an
 Iceberg/Delta table; here the underlying files land in your own GCS bucket rather than a
 Confluent-managed one.
@@ -48,10 +48,12 @@ gcs = GcsStorage(
     provider_integration_id=os.environ["CONFLUENT_GCS_PROVIDER_INTEGRATION_ID"],  # cspi-...
 )
 
+tableflow = conn.get_tableflow_api()
+
 try:
     # Enable Iceberg on the GCS bucket, with a topic-level config. wait_for_running=True (the
     # default) blocks until the topic reaches RUNNING, raising OperationalError if it goes FAILED.
-    topic = conn.enable_tableflow(
+    topic = tableflow.enable(
         table_name,
         table_formats=TableFormat.ICEBERG,
         storage=gcs,
@@ -71,7 +73,7 @@ try:
 
     # Add DELTA alongside the existing ICEBERG, in place -- no disable/re-enable cycle. Passing
     # only table_formats leaves config untouched; storage is immutable and has no update path.
-    topic = conn.update_tableflow(
+    topic = tableflow.update(
         table_name,
         table_formats={TableFormat.ICEBERG, TableFormat.DELTA},
     )
@@ -79,20 +81,20 @@ try:
 
     # Bump retention without touching the format set. Each of config's own sub-fields is
     # independently "leave unchanged" when None, so this only rewrites retention_ms.
-    conn.update_tableflow(
+    tableflow.update(
         table_name,
         config=TableflowTopicConfig(retention_ms=2_592_000_000),  # 30 days
     )
 
     # A non-blocking enable would look like this (shown, not run, since it's already enabled):
-    #   conn.enable_tableflow(
+    #   tableflow.enable(
     #       other_table,
     #       table_formats=TableFormat.ICEBERG,
     #       storage=gcs,
     #       wait_for_running=False,  # returns immediately with the topic in PENDING
     #   )
 
-    conn.disable_tableflow(table_name)
+    tableflow.disable(table_name)
     print(f"disabled Tableflow on {table_name!r}")
 finally:
     conn.close()
