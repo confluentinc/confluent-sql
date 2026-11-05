@@ -554,6 +554,55 @@ class TestOauthAmbiguityIsALoginFailure:
         lookup.assert_called_once()
 
 
+class TestOauthLoginValidationNeverReauthenticates:
+    """The validation's listing runs inside the login's own `acquire()`, before the holder has
+    published the provider. There is nothing established to re-authenticate, so
+    `ReauthenticationRequired` there must propagate as the authentication failure it is, not be
+    "recovered" by `reauth="auto"` into a ProgrammingError about a missing login."""
+
+    @staticmethod
+    def _lookup_that_is_refused(connection: Connection) -> list[tuple[str, str | None]]:
+        """A listing sent through the real policy chokepoint, as the real request is."""
+
+        def refused() -> httpx.Response:
+            raise ReauthenticationRequired("session dead", ReauthenticationReason.ABSOLUTE_EXPIRY)
+
+        connection._send_with_reauth_policy(refused)
+        raise AssertionError("unreachable: the refused request always raises")
+
+    def test_reauthentication_required_propagates_under_auto_and_the_policy_is_restored(
+        self, monkeypatch
+    ):
+        reauth_mock = Mock()
+        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr(Connection, "_lookup_organizations", self._lookup_that_is_refused)
+        built: list[Connection] = []
+        real_close = Connection.close
+
+        def spy_close(conn):
+            built.append(conn)
+            real_close(conn)
+
+        monkeypatch.setattr(Connection, "close", spy_close)
+        providers: list[FakeOAuthProvider] = []
+
+        with pytest.raises(ReauthenticationRequired):
+            _oauth_connect(
+                organization_id="",
+                reauth="auto",
+                oauth_provider_factory=_recording_factory(providers),
+            )
+
+        reauth_mock.assert_not_called()
+        assert providers[0].closed
+        assert [conn._reauth_policy for conn in built] == ["auto"]
+
+    @pytest.mark.parametrize("policy", ["auto", "raise"])
+    def test_the_configured_policy_survives_a_successful_validation(self, policy):
+        conn = _oauth_connect(organization_id="", reauth=policy)
+        assert conn._reauth_policy == policy
+
+
 class TestOauthClose:
     """Connection.close() under auth="oauth" never closes the shared provider -- it is
     process-shared, so tearing it down here could break another live Connection."""

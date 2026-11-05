@@ -2343,9 +2343,20 @@ class Connection:
 
         Runs inside `acquire()`, so it wires the provider in first: the listing is a control-plane
         request, which needs the provider's credential.
+
+        It also runs before the holder has published the provider, so there is no established login
+        to re-authenticate: under `reauth="auto"`, `ReauthenticationRequired` from the listing would
+        otherwise be "recovered" into a ProgrammingError about a missing login, masking the real
+        authentication failure. So the policy is `"raise"` for the duration, letting it propagate
+        (the holder then discards the failed login), and the configured one is restored after.
+        Nothing else can observe this connection yet, so the temporary swap is safe.
         """
         self._wire_oauth_provider(provider)
-        self._resolve_organization_id()
+        configured_policy, self._reauth_policy = self._reauth_policy, "raise"
+        try:
+            self._resolve_organization_id()
+        finally:
+            self._reauth_policy = configured_policy
 
     def _wire_oauth_provider(self, provider: OAuthProvider) -> None:
         """Adopt the shared OAuth provider's two `httpx.Auth` views as this connection's
