@@ -38,10 +38,11 @@ def _jwt_payload(token: str) -> dict[str, Any]:
 @pytest.fixture(scope="module")
 def cp_token_payload(
     oauth_base_connect_args: dict[str, str],
+    oauth_organization_args: dict[str, str],
 ) -> Generator[dict[str, Any], Any, None]:
     """The decoded CP token payload of one real login, discarded again afterward."""
     oauth_discard_login()
-    conn: Connection = connect(**oauth_base_connect_args)  # type: ignore
+    conn: Connection = connect(**oauth_base_connect_args, **oauth_organization_args)  # type: ignore
     try:
         provider = ProcessOAuthHolder.instance()._provider
         assert isinstance(provider, CCloudOAuth) and provider.token_set is not None

@@ -55,9 +55,13 @@ def _probe(conn: Connection) -> None:
 
 @pytest.mark.integration
 def test_reauth_as_a_different_user_is_refused_then_recovers(
-    fresh_oauth_process, oauth_base_connect_args: dict[str, str]
+    fresh_oauth_process,
+    oauth_base_connect_args: dict[str, str],
+    oauth_organization_args: dict[str, str],
 ):
-    conn: Connection = connect(reauth="auto", **oauth_base_connect_args)  # type: ignore
+    conn: Connection = connect(  # type: ignore
+        reauth="auto", **oauth_base_connect_args, **oauth_organization_args
+    )
     try:
         provider = ProcessOAuthHolder.instance()._provider
         assert isinstance(provider, CCloudOAuth)
