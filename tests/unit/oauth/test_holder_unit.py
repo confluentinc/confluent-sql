@@ -25,6 +25,7 @@ import dataclasses
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -543,6 +544,66 @@ class TestIdentityGuard:
         assert winner_result and winner_result[0].organization_id == DEFAULT_ORG
         assert len(joiner_error) == 1 and isinstance(joiner_error[0], InterfaceError)
         assert len(factory.providers) == 1
+
+
+class TestValidateLogin:
+    """`validate_login`: a hook the winner runs on the freshly logged-in provider. Raising fails
+    the login like any other login failure. The holder stays ignorant of what is being validated
+    (`Connection` uses it to refuse an ambiguous default organization, #311)."""
+
+    def test_the_winner_runs_it_once_on_the_logged_in_provider(self):
+        seen: list[tuple[OAuthProvider, str | None]] = []
+
+        def validate(provider: OAuthProvider) -> None:
+            seen.append((provider, provider.organization_id))
+
+        provider = ProcessOAuthHolder.instance().acquire(
+            CONFIG, provider_factory=RecordingFactory(), validate_login=validate
+        )
+        # Run after login(): the provider already reports its settled organization.
+        assert seen == [(provider, DEFAULT_ORG)]
+
+    def test_a_reusing_caller_never_runs_its_hook(self):
+        factory = RecordingFactory()
+        holder = ProcessOAuthHolder.instance()
+        holder.acquire(CONFIG, provider_factory=factory)
+        validate = Mock()
+        holder.acquire(CONFIG, provider_factory=factory, validate_login=validate)
+        validate.assert_not_called()
+
+    def test_a_raising_hook_fails_the_login_closes_the_provider_and_clears_the_slot(self):
+        factory = RecordingFactory()
+        holder = ProcessOAuthHolder.instance()
+        refusal = ValueError("refused")
+        with pytest.raises(ValueError) as caught:
+            holder.acquire(
+                CONFIG, provider_factory=factory, validate_login=Mock(side_effect=refusal)
+            )
+        assert caught.value is refusal
+        assert factory.providers[0].closed
+
+        later_factory = RecordingFactory()
+        again = holder.acquire(CONFIG, provider_factory=later_factory)
+        assert again is later_factory.providers[0]
+
+    def test_a_different_organization_is_accepted_after_a_refused_login(self):
+        """The refused login leaves no identity behind for the one-identity guard to enforce."""
+        holder = ProcessOAuthHolder.instance()
+        with pytest.raises(ValueError):
+            holder.acquire(
+                CONFIG,
+                provider_factory=RecordingFactory(),
+                validate_login=Mock(side_effect=ValueError("refused")),
+            )
+        provider = holder.acquire(
+            CONFIG, organization_id="org-b", provider_factory=RecordingFactory()
+        )
+        assert provider.organization_id == "org-b"
+
+    def test_module_level_acquire_forwards_it(self):
+        validate = Mock()
+        acquire(CONFIG, provider_factory=RecordingFactory(), validate_login=validate)
+        validate.assert_called_once()
 
 
 class TestLockNotHeldAcrossLogin:
