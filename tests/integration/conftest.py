@@ -68,6 +68,21 @@ def oauth_base_connect_args(load_env_file) -> dict[str, str]:
     }
 
 
+@pytest.fixture(scope="session")
+def oauth_organization_args(load_env_file) -> dict[str, str]:
+    """`organization_id` connect() argument for an OAuth login, from the optional
+    CONFLUENT_ORG_ID, or an empty dict when it is unset.
+
+    A single-organization account needs nothing: omitting the org resolves it. An account that
+    reaches several organizations must name one, or connect() raises AmbiguousOrganizationError
+    (#311), so it sets CONFLUENT_ORG_ID. Tests that connect through their one shared login and
+    do not care which organization it is splat this in; tests exercising the omitted-org
+    behavior itself must not.
+    """
+    organization_id = os.getenv("CONFLUENT_ORG_ID", "")
+    return {"organization_id": organization_id} if organization_id else {}
+
+
 @pytest.fixture
 def fresh_oauth_process(oauth_base_connect_args: dict[str, str]) -> Generator[None, None, None]:
     """Guarantee no process-wide login can short-circuit the test's own, and none leaks out.
