@@ -211,8 +211,10 @@ class ProcessOAuthHolder:
                 cleared, every waiter on the login gets the same exception), so nothing is left
                 established and a later caller starts afresh -- and may name a different
                 organization. Never run for a caller that reuses or joins an established login:
-                that login was already accepted. The holder neither knows nor cares what is being
-                checked (`Connection` uses it to refuse a default organization that is ambiguous).
+                that login was already accepted, however it came to be -- including one made with
+                no validator at all, which every later caller inherits as-is, unchecked. The
+                holder neither knows nor cares what is being checked (`Connection` uses it to
+                refuse a default organization that is ambiguous).
 
         Raises:
             InterfaceError: this caller named a different Confluent Cloud environment (`config`)
