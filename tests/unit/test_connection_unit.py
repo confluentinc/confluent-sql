@@ -11,6 +11,7 @@ import pytest
 
 from confluent_sql import (
     DEFAULT_TIMEOUTS,
+    AmbiguousOrganizationError,
     InterfaceError,
     OperationalError,
     ProgrammingError,
@@ -973,6 +974,35 @@ class TestConnectChecks:
         assert conn.organization_id == "org-99"
         _ = conn._dataplane.httpx_client
         mock_lookup.assert_called_once()
+
+    def test_ambiguous_organizations_raise_on_first_use_and_are_not_cached(self, mocker):
+        """Global key + omitted organization_id + several reachable organizations (#311):
+        connect() itself succeeds, the organization_id property raises AmbiguousOrganizationError
+        naming the candidates, and nothing is cached, so each access lists again and raises again
+        rather than settling on one of them."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "data": [{"id": "org-a", "display_name": "Alpha"}, {"id": "org-b"}],
+            "metadata": {},
+        }
+        mock_lookup = mocker.patch.object(ServiceClient, "request", return_value=mock_response)
+
+        conn = connect(
+            environment_id="env-id",
+            organization_id="",
+            cloud_provider="aws",
+            cloud_region="us-east-1",
+            global_api_key="global-key",
+            global_api_secret="global-secret",
+        )
+        mock_lookup.assert_not_called()
+
+        for expected_lookups in (1, 2):
+            with pytest.raises(AmbiguousOrganizationError) as caught:
+                _ = conn.organization_id
+            assert caught.value.organizations == [("org-a", "Alpha"), ("org-b", None)]
+            assert mock_lookup.call_count == expected_lookups
+        assert conn._organization_id_value is None
 
     def test_supplied_organization_id_skips_org_lookup(self, mocker):
         """A caller-supplied organization_id is used verbatim, with no /org/v2 call at all --

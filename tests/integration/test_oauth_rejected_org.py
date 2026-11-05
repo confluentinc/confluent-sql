@@ -29,7 +29,9 @@ BOGUS_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000000"
 
 @pytest.mark.integration
 def test_bogus_organization_id_is_explained(
-    fresh_oauth_process, oauth_base_connect_args: dict[str, str]
+    fresh_oauth_process,
+    oauth_base_connect_args: dict[str, str],
+    oauth_organization_args: dict[str, str],
 ):
     with pytest.raises(OperationalError) as caught:
         connect(organization_id=BOGUS_ORGANIZATION_ID, **oauth_base_connect_args)  # type: ignore
@@ -41,7 +43,7 @@ def test_bogus_organization_id_is_explained(
 
     # Nothing was established: a follow-up connect without an org must run a fresh login
     # (and so succeed) rather than inherit anything from the failed attempt.
-    conn = connect(**oauth_base_connect_args)  # type: ignore
+    conn = connect(**oauth_base_connect_args, **oauth_organization_args)  # type: ignore
     try:
         assert conn.organization_id
     finally:

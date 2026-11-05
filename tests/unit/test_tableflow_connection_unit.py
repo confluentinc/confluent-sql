@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from confluent_sql import (
+    AmbiguousOrganizationError,
     InterfaceError,
     OperationalError,
     ProgrammingError,
@@ -162,7 +163,7 @@ class TestResolveKafkaClusterId:
 
 
 class TestResolveOrganizationId:
-    """organization_id inference via /org/v2/organizations (#132): pagination, zero-org and
+    """organization_id inference via /org/v2/organizations (#132, #311): pagination, zero-org and
     multi-org error paths. All built against a Connection with a non-empty organization_id so
     construction needs no mocking -- the methods under test are called directly."""
 
@@ -173,11 +174,11 @@ class TestResolveOrganizationId:
         )
         assert conn._resolve_organization_id() == "org-99"
 
-    def test_lookup_paginates(self) -> None:
+    def test_lookup_paginates_and_reads_display_names(self) -> None:
         conn = _connect(global_api_key="gk", global_api_secret="gs")
         page1 = _ok_response(
             {
-                "data": [{"id": "org-1"}],
+                "data": [{"id": "org-1", "display_name": "First"}],
                 "metadata": {
                     "next": "https://api.confluent.cloud/org/v2/organizations?page_token=tok2"
                 },
@@ -185,7 +186,7 @@ class TestResolveOrganizationId:
         )
         page2 = _ok_response({"data": [{"id": "org-2"}], "metadata": {}})
         conn._controlplane_request = Mock(side_effect=[page1, page2])
-        assert conn._lookup_organization_ids() == ["org-1", "org-2"]
+        assert conn._lookup_organizations() == [("org-1", "First"), ("org-2", None)]
         assert conn._controlplane_request.call_count == 2
 
     def test_zero_orgs_raises(self) -> None:
@@ -193,19 +194,28 @@ class TestResolveOrganizationId:
         conn._controlplane_request = Mock(return_value=_ok_response({"data": [], "metadata": {}}))
         with pytest.raises(
             OperationalError,
-            match="No organizations visible to this API key; cannot infer organization_id.",
-        ):
-            conn._resolve_organization_id()
-
-    def test_multiple_orgs_raises_naming_ambiguity(self) -> None:
-        conn = _connect(global_api_key="gk", global_api_secret="gs")
-        conn._controlplane_request = Mock(
-            return_value=_ok_response({"data": [{"id": "org-a"}, {"id": "org-b"}], "metadata": {}})
-        )
-        with pytest.raises(
-            OperationalError,
-            match="Multiple organizations visible to this API key",
+            match="No organizations visible to this credential; cannot infer organization_id.",
         ) as exc:
             conn._resolve_organization_id()
-        assert "organization_id" in str(exc.value)
-        assert "connect()" in str(exc.value)
+        assert not isinstance(exc.value, AmbiguousOrganizationError)
+
+    def test_multiple_orgs_raises_ambiguous_error_naming_candidates(self) -> None:
+        conn = _connect(global_api_key="gk", global_api_secret="gs")
+        conn._controlplane_request = Mock(
+            return_value=_ok_response(
+                {
+                    "data": [{"id": "org-a", "display_name": "Alpha"}, {"id": "org-b"}],
+                    "metadata": {},
+                }
+            )
+        )
+        with pytest.raises(AmbiguousOrganizationError) as exc:
+            conn._resolve_organization_id()
+        assert isinstance(exc.value, OperationalError)
+        assert exc.value.organizations == [("org-a", "Alpha"), ("org-b", None)]
+        assert exc.value.organization_ids == ["org-a", "org-b"]
+        message = str(exc.value)
+        assert 'org-a ("Alpha")' in message
+        assert "org-b" in message
+        assert "organization_id" in message
+        assert "connect()" in message
