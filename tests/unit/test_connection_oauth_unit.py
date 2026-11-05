@@ -21,7 +21,10 @@ import httpx
 import pytest
 
 from confluent_sql import (
+    AmbiguousOrganizationError,
     InterfaceError,
+    InternalError,
+    OperationalError,
     ReauthenticationReason,
     ReauthenticationRequired,
     Timeouts,
@@ -43,6 +46,14 @@ CONFIG = CCloudOAuthConfig(
 DEFAULT_ORG = "org-from-session"
 """What a `FakeOAuthProvider` reports when `login()` is handed no org -- the analogue of
 Confluent Cloud resolving the user's default and reporting it back."""
+
+
+@pytest.fixture(autouse=True)
+def _single_organization_user(monkeypatch):
+    """By default every OAuth connection here belongs to exactly one organization -- the one the
+    fake login settles on -- so an omitted organization_id passes the login's validation (#311)
+    with no network. Tests exercising the multi/zero-organization paths re-patch the lookup."""
+    monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: [(DEFAULT_ORG, None)])
 
 
 class _MarkerAuth(httpx.Auth):
@@ -406,6 +417,141 @@ class TestOauthOrganizationId:
         _oauth_connect(organization_id="org-X")
         conn2 = _oauth_connect(organization_id="")
         assert conn2.organization_id == "org-X"
+
+
+def _recording_factory(providers: list[FakeOAuthProvider]):
+    """An `oauth_provider_factory` that records each provider it builds, so a test can see how many
+    logins were attempted and which were closed."""
+
+    def factory(*args, **kwargs):
+        providers.append(FakeOAuthProvider(*args, **kwargs))
+        return providers[-1]
+
+    return factory
+
+
+class TestOauthOrganizationResolution:
+    """An omitted organization_id is checked against /org/v2/organizations as part of the login
+    itself, exactly the rule a global key applies, rather than taken silently from the login's
+    default (#311)."""
+
+    def test_single_organization_passes_and_the_logins_organization_is_used(self, monkeypatch):
+        """The listing only has to find exactly one organization; the connection then uses the
+        organization the login's tokens are scoped to, never a second opinion from the listing."""
+        lookup = Mock(return_value=[("org-listed", "Listed")])
+        monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: lookup())
+        conn = _oauth_connect(organization_id="")
+        lookup.assert_called_once()
+        assert conn.organization_id == DEFAULT_ORG
+        lookup.assert_called_once()
+
+    def test_multiple_organizations_raise_ambiguous_error_from_connect(self, monkeypatch):
+        monkeypatch.setattr(
+            Connection,
+            "_lookup_organizations",
+            lambda self: [("org-a", "Alpha"), ("org-b", None)],
+        )
+        with pytest.raises(AmbiguousOrganizationError) as exc:
+            _oauth_connect(organization_id="")
+        assert exc.value.organization_ids == ["org-a", "org-b"]
+        assert 'org-a ("Alpha")' in str(exc.value)
+
+    def test_no_organizations_raises_operational_error_from_connect(self, monkeypatch):
+        monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: [])
+        with pytest.raises(OperationalError, match="No organizations visible") as exc:
+            _oauth_connect(organization_id="")
+        assert not isinstance(exc.value, AmbiguousOrganizationError)
+
+    def test_failed_resolution_closes_the_half_built_connection(self, monkeypatch):
+        closed: list[Connection] = []
+        real_close = Connection.close
+
+        def spy_close(self):
+            closed.append(self)
+            real_close(self)
+
+        monkeypatch.setattr(Connection, "close", spy_close)
+        monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: [])
+        with pytest.raises(OperationalError):
+            _oauth_connect(organization_id="")
+        assert len(closed) == 1
+
+    def test_explicit_organization_id_skips_the_lookup(self, monkeypatch):
+        lookup = Mock(side_effect=AssertionError("must not list organizations"))
+        monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: lookup())
+        conn = _oauth_connect(organization_id="org-X")
+        assert conn.organization_id == "org-X"
+        lookup.assert_not_called()
+
+    def test_lookup_goes_through_the_organization_surface_with_the_logins_auth(self, monkeypatch):
+        monkeypatch.undo()  # use the real _lookup_organizations
+        sent: list[tuple[ControlPlaneSurface, httpx.Auth]] = []
+
+        def fake_request(self, surface, url, **kwargs):
+            # What the real _controlplane_request attaches, which the login's validation needs
+            # wired before the connection has finished constructing.
+            sent.append((surface, self._auth_for(surface)))
+            response = Mock()
+            response.json.return_value = {"data": [{"id": "org-1"}], "metadata": {}}
+            return response
+
+        monkeypatch.setattr(Connection, "_controlplane_request", fake_request)
+        conn = _oauth_connect(organization_id="")
+        assert [surface for surface, _ in sent] == [ControlPlaneSurface.ORGANIZATION]
+        assert sent[0][1] is _provider(conn).control_plane_auth
+
+    def test_a_login_that_settles_no_organization_is_a_driver_bug(self):
+        class OrglessProvider(FakeOAuthProvider):
+            def login(self, org_resource_id=None, *, timeout=0.0):
+                pass
+
+        with pytest.raises(InternalError, match="driver bug"):
+            _oauth_connect(organization_id="", oauth_provider_factory=OrglessProvider)
+
+
+class TestOauthAmbiguityIsALoginFailure:
+    """The ambiguity check runs inside the process-wide login, so a failed check fails that login
+    like any other: the half-built provider is closed and the slot cleared. Nothing is left
+    established with an organization the user never chose, so a retry naming one just works."""
+
+    def test_retry_with_an_explicit_org_after_the_ambiguity_error_succeeds(self, monkeypatch):
+        providers: list[FakeOAuthProvider] = []
+        factory = _recording_factory(providers)
+        monkeypatch.setattr(
+            Connection, "_lookup_organizations", lambda self: [("org-a", None), ("org-b", None)]
+        )
+        with pytest.raises(AmbiguousOrganizationError):
+            _oauth_connect(organization_id="", oauth_provider_factory=factory)
+        assert providers[0].closed
+
+        conn = _oauth_connect(organization_id="org-b", oauth_provider_factory=factory)
+        assert conn.organization_id == "org-b"
+        assert len(providers) == 2
+
+    def test_zero_organizations_fails_the_login_too(self, monkeypatch):
+        providers: list[FakeOAuthProvider] = []
+        monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: [])
+        with pytest.raises(OperationalError):
+            _oauth_connect(organization_id="", oauth_provider_factory=_recording_factory(providers))
+        assert providers[0].closed
+
+    def test_omitted_org_inherits_an_established_logins_org_without_listing(self, monkeypatch):
+        """The established login's organization was either named or already validated, so a later
+        connect() that omits it inherits it -- no listing, even for a multi-organization user."""
+        _oauth_connect(organization_id="org-X")
+        monkeypatch.setattr(
+            Connection,
+            "_lookup_organizations",
+            lambda self: pytest.fail("an established login must not be re-validated"),
+        )
+        assert _oauth_connect(organization_id="").organization_id == "org-X"
+
+    def test_a_validated_login_is_not_validated_again(self, monkeypatch):
+        lookup = Mock(return_value=[(DEFAULT_ORG, None)])
+        monkeypatch.setattr(Connection, "_lookup_organizations", lambda self: lookup())
+        _oauth_connect(organization_id="")
+        assert _oauth_connect(organization_id="").organization_id == DEFAULT_ORG
+        lookup.assert_called_once()
 
 
 class TestOauthClose:
