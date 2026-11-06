@@ -11,6 +11,7 @@ import pytest
 
 from confluent_sql import (
     DEFAULT_TIMEOUTS,
+    AmbiguousOrganizationError,
     InterfaceError,
     OperationalError,
     ProgrammingError,
@@ -757,15 +758,14 @@ class TestConnectionInit:
                 endpoint=None,
             )
 
-    def test_global_key_defers_organization_id_direct_construction(self, mocker):
-        """A global key + blank organization_id is *not* an error at construction (#213): __init__
-        must preserve the lazy-inference contract, deferring the /org/v2 lookup to first use rather
-        than raising or making a network call while constructing."""
-        mock_lookup = mocker.patch.object(
-            ServiceClient,
-            "request",
-            Mock(side_effect=AssertionError("must not be called during construction")),
-        )
+    def test_global_key_resolves_organization_id_at_direct_construction(self, mocker):
+        """A global key + blank organization_id is *not* an error at construction (#213), and as
+        under auth="oauth" the /org/v2 lookup happens right there in __init__ (#311), so the
+        organization is settled -- or the ambiguity reported -- before the Connection is handed
+        back, not on some later first use."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
+        mock_lookup = mocker.patch.object(ServiceClient, "request", return_value=mock_response)
         conn = Connection(
             timeouts=DEFAULT_TIMEOUTS,
             environment_id="env-id",
@@ -776,8 +776,8 @@ class TestConnectionInit:
             cloud_region="us-east-1",
             endpoint=None,
         )
-        assert conn._organization_id_value is None
-        mock_lookup.assert_not_called()
+        assert conn._organization_id_value == "org-99"
+        mock_lookup.assert_called_once()
 
 
 @pytest.mark.unit
@@ -831,7 +831,7 @@ class TestConnectChecks:
         )
         assert connection.compute_pool_id is None
 
-    def test_connection_constructible_with_organization_id_omitted(self):
+    def test_connection_constructible_with_organization_id_omitted(self, mocker):
         """Connection() is directly constructible with organization_id omitted entirely -- not
         just passed as "" -- given a global key (#132 regression guard).
 
@@ -840,6 +840,9 @@ class TestConnectChecks:
         called, but positional-or-keyword-declared) environment_id/cloud_provider/cloud_region/
         endpoint parameters ahead of it.
         """
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
+        mocker.patch.object(ServiceClient, "request", return_value=mock_response)
         connection = Connection(
             timeouts=DEFAULT_TIMEOUTS,
             global_api_key="valid-key",
@@ -849,7 +852,7 @@ class TestConnectChecks:
             cloud_region="us-east-1",
             endpoint=None,
         )
-        assert connection._organization_id_value is None
+        assert connection._organization_id_value == "org-99"
 
     def test_requires_organization_id(self, connection_factory: ConnectionFactory):
         """A Flink-only key still requires organization_id (#132 regression guard): the
@@ -908,15 +911,13 @@ class TestConnectChecks:
                 flink_api_secret="",
             )
 
-    def test_construction_does_not_resolve_organization_id(self, mocker):
-        """Global key + omitted organization_id: connect() must not make the /org/v2 network
-        call -- inference is deferred to first use of the connection (#132)."""
-        mock_lookup = mocker.patch.object(
-            ServiceClient,
-            "request",
-            Mock(side_effect=AssertionError("must not be called during construction")),
-        )
-        connect(
+    def test_construction_resolves_organization_id_eagerly(self, mocker):
+        """Global key + omitted organization_id: connect() makes the /org/v2 call itself (#311),
+        matching auth="oauth", so the organization is known the moment connect() returns."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
+        mock_lookup = mocker.patch.object(ServiceClient, "request", return_value=mock_response)
+        conn = connect(
             environment_id="env-id",
             organization_id="",
             cloud_provider="aws",
@@ -924,13 +925,15 @@ class TestConnectChecks:
             global_api_key="global-key",
             global_api_secret="global-secret",
         )
-        mock_lookup.assert_not_called()
+        mock_lookup.assert_called_once()
+        assert conn._organization_id_value == "org-99"
 
-    def test_infers_organization_id_from_global_key_on_first_use(self, mocker):
-        """Global key + omitted organization_id: the org is inferred on first use, and both the
-        Flink client's base_url and the statement-create payload reflect the discovered org."""
+    def test_infers_organization_id_from_global_key_at_connect(self, mocker):
+        """Global key + omitted organization_id: the org is inferred during connect(), and both
+        the Flink client's base_url and the statement-create payload reflect the discovered org."""
         mock_response = mocker.Mock()
         mock_response.json.return_value = {"data": [{"id": "org-99"}], "metadata": {}}
+        mocker.patch.object(ServiceClient, "request", return_value=mock_response)
 
         conn = connect(
             environment_id="env-id",
@@ -940,8 +943,8 @@ class TestConnectChecks:
             global_api_key="global-key",
             global_api_secret="global-secret",
         )
-        mocker.patch.object(conn._controlplane, "request", return_value=mock_response)
 
+        mocker.stopall()  # the lookup is done; let the statement POST reach the httpx client.
         assert conn.organization_id == "org-99"
         assert "/organizations/org-99/" in str(conn._dataplane.httpx_client.base_url)
 
@@ -973,6 +976,30 @@ class TestConnectChecks:
         assert conn.organization_id == "org-99"
         _ = conn._dataplane.httpx_client
         mock_lookup.assert_called_once()
+
+    def test_ambiguous_organizations_raise_from_connect_and_close_the_connection(self, mocker):
+        """Global key + omitted organization_id + several reachable organizations (#311): connect()
+        itself raises AmbiguousOrganizationError naming the candidates -- the same moment and
+        type as under auth="oauth" -- and the half-built Connection is closed rather than leaked."""
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "data": [{"id": "org-a", "display_name": "Alpha"}, {"id": "org-b"}],
+            "metadata": {},
+        }
+        mocker.patch.object(ServiceClient, "request", return_value=mock_response)
+        close_spy = mocker.spy(Connection, "close")
+
+        with pytest.raises(AmbiguousOrganizationError) as caught:
+            connect(
+                environment_id="env-id",
+                organization_id="",
+                cloud_provider="aws",
+                cloud_region="us-east-1",
+                global_api_key="global-key",
+                global_api_secret="global-secret",
+            )
+        assert caught.value.organizations == [("org-a", "Alpha"), ("org-b", None)]
+        close_spy.assert_called_once()
 
     def test_supplied_organization_id_skips_org_lookup(self, mocker):
         """A caller-supplied organization_id is used verbatim, with no /org/v2 call at all --

@@ -41,15 +41,22 @@ pytestmark = pytest.mark.oauth
 
 
 @pytest.fixture(scope="module")
-def oauth_connect_args(oauth_base_connect_args: dict[str, str]) -> dict[str, str]:
+def oauth_connect_args(
+    oauth_base_connect_args: dict[str, str], oauth_organization_args: dict[str, str]
+) -> dict[str, str]:
     """Return the connection arguments for an OAuth-authenticated connection, adding the
-    database (needed to resolve the Kafka cluster id) to the shared base arguments."""
+    database (needed to resolve the Kafka cluster id) to the shared base arguments, plus the
+    organization when CONFLUENT_ORG_ID names one (required for a multi-organization account)."""
     if not os.getenv("CONFLUENT_TEST_DBNAME"):
         pytest.skip(
             "Missing required environment variable(s) for OAuth tests: CONFLUENT_TEST_DBNAME"
         )
 
-    return {**oauth_base_connect_args, "database": os.environ["CONFLUENT_TEST_DBNAME"]}
+    return {
+        **oauth_base_connect_args,
+        **oauth_organization_args,
+        "database": os.environ["CONFLUENT_TEST_DBNAME"],
+    }
 
 
 @pytest.fixture(scope="module")
@@ -57,8 +64,9 @@ def oauth_connection(oauth_connect_args: dict[str, str]) -> Generator[Connection
     """A real Connection authenticated via interactive OAuth login against production.
 
     Skips unless the shared OAuth gating passes (see `oauth_base_connect_args`) and
-    CONFLUENT_TEST_DBNAME is set. organization_id is not supplied; it is discovered from the
-    login session.
+    CONFLUENT_TEST_DBNAME is set. organization_id is supplied only when CONFLUENT_ORG_ID is set
+    (needed by an account in several organizations); otherwise it is resolved by listing the
+    account's one organization.
     """
     conn = connect(**oauth_connect_args)  # type: ignore
 
@@ -75,15 +83,12 @@ class TestOauth:
     def test_oauth_infers_organization_id(
         self, oauth_connection: Connection, oauth_connect_args: dict[str, str]
     ):
-        """An OAuth-authenticated connection can infer its organization_id."""
-        # Not present in the connection arguments
-        assert oauth_connect_args.get("organization_id") is None
-        # But determined after oauth happens.
-        assert (
-            oauth_connection.organization_id
-            and isinstance(oauth_connection.organization_id, str)
-            and len(oauth_connection.organization_id) > 0
-        )
+        """An OAuth-authenticated connection knows its organization_id: the named one when
+        CONFLUENT_ORG_ID is set, else the account's one organization, resolved at connect()."""
+        assert oauth_connection.organization_id
+        assert isinstance(oauth_connection.organization_id, str)
+        if "organization_id" in oauth_connect_args:
+            assert oauth_connection.organization_id == oauth_connect_args["organization_id"]
 
     def test_query_round_trip(self, oauth_connection: Connection):
         """A simple snapshot query submitted over an OAuth login returns its row."""
