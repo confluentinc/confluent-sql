@@ -16,3 +16,7 @@ class TestPackageUnit:
         the public `__all__`."""
         assert oauth_discard_login is discard_login
         assert "oauth_discard_login" in confluent_sql.__all__
+
+    def test_paramstyle_is_format(self):
+        """The driver interpolates `%s` positional placeholders, which DB-API spells `format`."""
+        assert confluent_sql.paramstyle == "format"

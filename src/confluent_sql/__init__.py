@@ -91,7 +91,7 @@ from .variant import UndecodableVariant
 # DB-API v2 module globals
 apilevel = "2.0"
 threadsafety = 1  # Threads may share the module but not connections
-paramstyle = "pyformat"  # Use question mark style parameters
+paramstyle = "format"  # ANSI C printf format codes, e.g. WHERE id = %s
 
 __all__ = [
     "__version__",
