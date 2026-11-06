@@ -44,6 +44,30 @@ def load_env_file():
 
 
 @pytest.fixture(scope="session")
+def global_key_base_connect_args(load_env_file) -> dict[str, str]:
+    """Connection arguments for a global-API-key integration test that leaves `organization_id`
+    out on purpose (#311), or skip. Needs CONFLUENT_GLOBAL_API_KEY/SECRET, CONFLUENT_ENV_ID,
+    CONFLUENT_CLOUD_PROVIDER and CONFLUENT_CLOUD_REGION."""
+    required_vars = [
+        "CONFLUENT_GLOBAL_API_KEY",
+        "CONFLUENT_GLOBAL_API_SECRET",
+        "CONFLUENT_ENV_ID",
+        "CONFLUENT_CLOUD_PROVIDER",
+        "CONFLUENT_CLOUD_REGION",
+    ]
+    if missing := [name for name in required_vars if not os.getenv(name)]:
+        pytest.skip(f"Missing required environment variable(s): {', '.join(missing)}")
+
+    return {
+        "global_api_key": os.environ["CONFLUENT_GLOBAL_API_KEY"],
+        "global_api_secret": os.environ["CONFLUENT_GLOBAL_API_SECRET"],
+        "environment_id": os.environ["CONFLUENT_ENV_ID"],
+        "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
+        "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
+    }
+
+
+@pytest.fixture(scope="session")
 def oauth_base_connect_args(load_env_file) -> dict[str, str]:
     """Connection arguments common to every OAuth integration test, or skip.
 
