@@ -44,6 +44,30 @@ def load_env_file():
 
 
 @pytest.fixture(scope="session")
+def global_key_base_connect_args(load_env_file) -> dict[str, str]:
+    """Connection arguments for a global-API-key integration test that leaves `organization_id`
+    out on purpose (#311), or skip. Needs CONFLUENT_GLOBAL_API_KEY/SECRET, CONFLUENT_ENV_ID,
+    CONFLUENT_CLOUD_PROVIDER and CONFLUENT_CLOUD_REGION."""
+    required_vars = [
+        "CONFLUENT_GLOBAL_API_KEY",
+        "CONFLUENT_GLOBAL_API_SECRET",
+        "CONFLUENT_ENV_ID",
+        "CONFLUENT_CLOUD_PROVIDER",
+        "CONFLUENT_CLOUD_REGION",
+    ]
+    if missing := [name for name in required_vars if not os.getenv(name)]:
+        pytest.skip(f"Missing required environment variable(s): {', '.join(missing)}")
+
+    return {
+        "global_api_key": os.environ["CONFLUENT_GLOBAL_API_KEY"],
+        "global_api_secret": os.environ["CONFLUENT_GLOBAL_API_SECRET"],
+        "environment_id": os.environ["CONFLUENT_ENV_ID"],
+        "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
+        "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
+    }
+
+
+@pytest.fixture(scope="session")
 def oauth_base_connect_args(load_env_file) -> dict[str, str]:
     """Connection arguments common to every OAuth integration test, or skip.
 
@@ -66,6 +90,21 @@ def oauth_base_connect_args(load_env_file) -> dict[str, str]:
         "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
         "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
     }
+
+
+@pytest.fixture(scope="session")
+def oauth_organization_args(load_env_file) -> dict[str, str]:
+    """`organization_id` connect() argument for an OAuth login, from the optional
+    CONFLUENT_ORG_ID, or an empty dict when it is unset.
+
+    A single-organization account needs nothing: omitting the org resolves it. An account that
+    reaches several organizations must name one, or connect() raises AmbiguousOrganizationError
+    (#311), so it sets CONFLUENT_ORG_ID. Tests that connect through their one shared login and
+    do not care which organization it is splat this in; tests exercising the omitted-org
+    behavior itself must not.
+    """
+    organization_id = os.getenv("CONFLUENT_ORG_ID", "")
+    return {"organization_id": organization_id} if organization_id else {}
 
 
 @pytest.fixture

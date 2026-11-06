@@ -27,7 +27,7 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
   - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `external_access_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
 
   The interactive browser login is the simplest way to get started, at the cost of one browser sign-in per process. A Global key works against every route this driver touches. A Flink Region key only works against the core Flink SQL routes (the main DB-API functionality), not other features such as Tableflow, Connectors, or Artifacts.
-- **Organization ID** — required with a Flink Region API key or a BYOIDC bearer token, neither of which can discover it. With a Global API key it may be omitted if the key can see exactly one organization, in which case it's inferred automatically on first use of the connection. With `auth="oauth"` it may always be omitted and defaults to your login's organization.
+- **Organization ID** — required with a Flink Region API key or a BYOIDC bearer token, neither of which can discover it. With a Global API key or `auth="oauth"` it may be omitted if the credential can see exactly one organization, in which case it's inferred during `connect()`; if it can see several, `connect()` raises `AmbiguousOrganizationError` listing them, and you pass `organization_id` to choose.
 
 ### How to Obtain a Flink Region API Key
 

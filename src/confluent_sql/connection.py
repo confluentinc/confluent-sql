@@ -27,7 +27,9 @@ from .connectors import ConnectorApi
 from .context import BACKGROUND, Context
 from .cursor import Cursor
 from .exceptions import (
+    AmbiguousOrganizationError,
     InterfaceError,
+    InternalError,
     OperationalError,
     ProgrammingError,
     ReauthenticationRequired,
@@ -321,13 +323,20 @@ def connect(  # noqa: PLR0913
             `"raise"` would have (both eventually give up with no one at the browser), it just
             spends the login timeout finding that out. Only valid with `auth="oauth"`.
         environment_id: Environment ID
-        organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
-            interactive login's session) or with a global_api_key/global_api_secret pair (inferred
-            on first use). Required with a Flink-only API key, which has no reach to determine it;
-            omitting it there raises `InterfaceError`. Under `auth="oauth"`, supplying it pins the
-            login to that organization for a multi-org user; an organization the logged-in user
-            can't access is rejected at login with an `OperationalError` naming it, and a process
-            holds a single organization identity.
+        organization_id: Organization ID. Optional under `auth="oauth"` or with a
+            global_api_key/global_api_secret pair, in which case the organizations the credential
+            can reach are listed (`GET /org/v2/organizations`) inside `connect()`: exactly one is
+            used, none raises `OperationalError`, and more than one raises
+            `AmbiguousOrganizationError` naming the candidates -- pass `organization_id` to
+            choose. Under `auth="oauth"` the listing is part of the login, so it happens only for
+            the connection that makes the process's login (a failed one is abandoned, so retrying
+            with `organization_id` logs in afresh); later connections inherit the established
+            login's organization. With a global key every `connect()` lists. Required with a
+            Flink-only API key, which has no reach to determine it; omitting it there raises
+            `InterfaceError`. Under `auth="oauth"`, supplying it also scopes the login to that
+            organization for a multi-org user; an organization the logged-in user can't access is
+            rejected at login with an `OperationalError` naming it, and a process holds a single
+            organization identity.
         compute_pool_id: Optional compute pool ID for SQL execution. If omitted, statements
             created on this connection name no pool, so Confluent Cloud Flink runs them in
             the environment+region default compute pool (provisioning if necessary). Individual
@@ -550,7 +559,8 @@ class Connection:
     # --- Credentials and transport
     _flink_auth: httpx.Auth
     """The Flink data-plane authentication: httpx.BasicAuth in API-key mode, FlinkBearerAuth in
-    BYOIDC mode. Widened to the httpx.Auth base so both fit the one polymorphic auth= slot."""
+    BYOIDC mode, or the shared OAuth provider's data-plane view under auth="oauth". Widened to the
+    httpx.Auth base so all three fit the one polymorphic auth= slot."""
     _surface_auth: dict[ControlPlaneSurface, httpx.Auth | None]
     """Each control-plane surface's credential: httpx.BasicAuth over a global or dedicated key pair
     in API-key mode, or the one shared control-plane token view under oauth mode (one token reaches
@@ -656,11 +666,18 @@ class Connection:
                 If your Kafka clusters / Flink tables require private networking, supply the base
                 endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for
                 example, but cases and private networking technologies vary).
-            organization_id: Organization ID. Optional under `auth="oauth"` (discovered from the
-                interactive login's session) or with a global_api_key/global_api_secret pair
-                (inferred on first use). Required with a Flink-only API key, which has no reach to
+            organization_id: Organization ID. Optional under `auth="oauth"` or with a
+                global_api_key/global_api_secret pair, in which case the organizations the
+                credential can reach are listed (`GET /org/v2/organizations`): exactly one is
+                used, none raises `OperationalError`, and more than one raises
+                `AmbiguousOrganizationError` naming the candidates -- pass `organization_id` to
+                choose. Under `auth="oauth"` the listing is part of the login, so it happens
+                inside `connect()` and only for the connection that makes the process's login (a
+                failed one is abandoned, so retrying with `organization_id` logs in afresh); later
+                connections inherit the established login's organization. With a global key it
+                happens on first use. Required with a Flink-only API key, which has no reach to
                 determine it; omitting it there raises `InterfaceError`. Under `auth="oauth"`,
-                supplying it pins the login to that organization for a multi-org user; an
+                supplying it also scopes the login to that organization for a multi-org user; an
                 organization the logged-in user can't access is rejected at login with an
                 `OperationalError` naming it, and a process holds a single organization identity.
             compute_pool_id: Optional compute pool ID for SQL execution. If omitted (None) or
@@ -732,8 +749,8 @@ class Connection:
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
         self.compute_pool_id = compute_pool_id or None
-        # None means "not yet resolved" -- triggers inference on first organization_id access
-        # (see the organization_id property) rather than a connect()-time network call.
+        # None means "omitted, not yet resolved": both _init_oauth() (oauth) and the end of
+        # __init__ (global key) settle it before construction finishes (#311).
         self._organization_id_value = organization_id or None
 
         if statement_results_page_fetch_pause_millis < 0:
@@ -798,32 +815,11 @@ class Connection:
         self._controlplane_endpoint = (
             controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
+
+        self._oauth_provider = None  # unless _init_oauth() wires one in.
         if oauth_cfg is not None:
-            # May block for minutes on a real browser login -- or return immediately, joining one
-            # already in flight, or reusing an already-established one. Every cheap validation
-            # above (including oauth_cfg's own mutual-exclusion checks) has already run, so a bad
-            # parameter combination never pops a browser before failing. organization_id or None
-            # (not the raw parameter) so an omitted org -- spelled "" since organization_id has no
-            # default -- is treated by the holder's one-identity guard as "inherit," never as a
-            # conflicting explicit value.
-            provider = acquire(
-                oauth_cfg,
-                organization_id or None,
-                http_timeout_secs=timeouts.httpx_request_timeout_secs,
-                http_user_agent=self._http_user_agent,
-                provider_factory=oauth_provider_factory,
-            )
-            self._oauth_provider = provider
-            self._flink_auth = provider.data_plane_auth
-            self._byoidc = False
-            # One control-plane token reaches Tableflow, Connect, Artifact, and CMK alike -- the
-            # capability gain over API-key mode, which needs a separate credential per surface.
-            # Safe to share the same httpx.Auth object across every client: it holds no per-client
-            # state, only a reference back to the shared, lock-guarded provider.
-            self._surface_auth = dict.fromkeys(ControlPlaneSurface, provider.control_plane_auth)
-            self._global_credentials = None
+            self._init_oauth(oauth_cfg, organization_id, timeouts, oauth_provider_factory)
         else:
-            self._oauth_provider = None
             # _resolve_flink_auth validates the BYOIDC pair and its mutual exclusion with every
             # API-key parameter *before* _resolve_service_credentials runs, so BYOIDC mode never
             # reaches (and never trips) the "either global or flink" API-key check. In BYOIDC mode
@@ -890,6 +886,17 @@ class Connection:
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
 
         self._row_type_registry = RowTypeRegistry()
+
+        if self._organization_id_value is None:
+            # Only a global key can get here (auth="oauth" settled it in _init_oauth(), and every
+            # other mode requires it up front). Resolved eagerly, as under oauth (#311), so
+            # either mode reports an unusable (e.g. ambiguous) organization from connect() itself
+            # rather than the first time something happens to need it.
+            try:
+                self._organization_id_value = self._resolve_organization_id()
+            except BaseException:
+                self.close()  # release the control-plane client the lookup built
+                raise
 
     @property
     def _service_clients(self) -> tuple[ServiceClient, ...]:
@@ -1643,23 +1650,15 @@ class Connection:
         """
         The connection's Confluent Cloud organization id.
 
-        Returned as supplied to connect()/Connection() if given. If omitted under `auth="oauth"`,
-        the organization the interactive login's session resolved (see `_oauth_provider`) -- no
-        network call here, since `oauth.acquire()` already settled it synchronously in __init__.
-        If omitted under an API-key mode, it must have been omitted alongside a global API key
-        (Connection.__init__ rejects an omitted organization_id with no global key outside oauth,
-        #213), so it is inferred once via GET /org/v2/organizations on first access and cached
-        thereafter -- see _resolve_organization_id().
+        Always settled by the end of __init__: as supplied to connect()/Connection() if given;
+        otherwise, under a global API key (the only API-key mode that may omit it, #213), inferred
+        right there via GET /org/v2/organizations (see _resolve_organization_id(), which raises
+        AmbiguousOrganizationError when the credential can reach more than one organization); and
+        under `auth="oauth"`, the organization of the process's login, which was checked by that
+        same listing when the login was made.
         """
         if self._organization_id_value is None:
-            if self._oauth_provider is not None:
-                self._organization_id_value = self._oauth_provider.organization_id or ""
-            else:
-                # Reaching here (non-oauth, org omitted) means __init__'s gate guaranteed a global
-                # key is present, so _global_credentials is not None and inference can proceed
-                # (#213). The old "no global key -> return ''" fallback is now unreachable and has
-                # been removed.
-                self._organization_id_value = self._resolve_organization_id()
+            raise InternalError("driver bug: organization_id was never settled during __init__")
         return self._organization_id_value
 
     @property
@@ -2100,9 +2099,9 @@ class Connection:
     def _build_dataplane_client(self) -> httpx.Client:
         """Build the Flink gateway httpx client; run by `_dataplane` on first use.
 
-        Deferred rather than built in __init__ because base_url embeds organization_id, which
-        for a global key that omitted it is resolved lazily via the organization_id property --
-        construction must never block on that network call.
+        Deferred rather than built in __init__ so a connection that never runs a statement pays
+        nothing for the gateway client. base_url embeds organization_id, which __init__ has
+        already settled.
         """
         base_url = (
             f"{self._flink_endpoint}/sql/v1/organizations/{self.organization_id}"
@@ -2291,44 +2290,139 @@ class Connection:
             params["page_token"] = next_page_token
         return ids
 
-    def _resolve_organization_id(self) -> str:
-        """Infer organization_id via /org/v2/organizations for a global key that omitted it.
+    def _init_oauth(
+        self,
+        oauth_cfg: CCloudOAuthConfig,
+        organization_id: str,
+        timeouts: Timeouts,
+        provider_factory: ProviderFactory,
+    ) -> None:
+        """The `auth="oauth"` half of `__init__`: log in (or join or reuse the process's login),
+        wire the provider in as this connection's credentials, and settle `organization_id`.
 
-        A global key is org-bound, so this route is expected to return exactly one organization
-        in practice; >1 is a defensive guard against unforeseen behaviour, not the normal case.
+        May block for minutes on a real browser login -- or return immediately, joining one already
+        in flight, or reusing an already-established one. Every cheap validation in `__init__`
+        (including oauth_cfg's own mutual-exclusion checks) has already run, so a bad parameter
+        combination never pops a browser before failing. `organization_id or None` (not the raw
+        parameter) is what the holder sees, so an omitted org -- spelled "" since organization_id
+        has no default -- is treated by its one-identity guard as "inherit," never as a conflicting
+        explicit value.
+
+        An omitted organization is checked as part of the login itself (#311): a login made for no
+        named organization lands on whichever one Confluent Cloud defaults to, which is only right
+        if the user has no other. So the holder's winner runs `_validate_oauth_login`, the same
+        list-and-require-exactly-one rule a global key applies, and a failure refuses the login
+        rather than leaving a default-organization guess established for every connection in the
+        process. A named organization needs no check, and a connection that reuses or joins an
+        established login inherits its (already accepted) organization.
+        """
+        try:
+            provider = acquire(
+                oauth_cfg,
+                organization_id or None,
+                http_timeout_secs=timeouts.httpx_request_timeout_secs,
+                http_user_agent=self._http_user_agent,
+                provider_factory=provider_factory,
+                # Get a callback upon successful login to validate/set the organization if
+                # not provided.
+                validate_login=None if organization_id else self._validate_oauth_login,
+            )
+        except BaseException:
+            self.close()  # release a control-plane client the validation may have built
+            raise
+
+        if self._oauth_provider is None:  # not already wired by _validate_oauth_login() callback.
+            self._wire_oauth_provider(provider)
+
+        if self._organization_id_value is None:
+            # The login's tokens are scoped to this organization, so it is the one to use -- never
+            # a second opinion from the listing that merely vouched for it.
+            if provider.organization_id is None:
+                # Wacky, should never happen.
+                self.close()
+                raise InternalError(
+                    "driver bug: a successful OAuth login settled no organization_id"
+                )
+            # Grab what our organization_id should be from the oauth provider.
+            self._organization_id_value = provider.organization_id
+
+    def _validate_oauth_login(self, provider: OAuthProvider) -> None:
+        """`acquire()`'s `validate_login` hook for an omitted organization: raises (refusing the
+        login) unless exactly one organization is reachable.
+
+        Runs inside `acquire()`, so it wires the provider in first: the listing is a control-plane
+        request, which needs the provider's credential.
+
+        It also runs before the holder has published the provider, so there is no established login
+        to re-authenticate: under `reauth="auto"`, `ReauthenticationRequired` from the listing would
+        otherwise be "recovered" into a ProgrammingError about a missing login, masking the real
+        authentication failure. So the policy is `"raise"` for the duration, letting it propagate
+        (the holder then discards the failed login), and the configured one is restored after.
+        Nothing else can observe this connection yet, so the temporary swap is safe.
+        """
+        self._wire_oauth_provider(provider)
+        configured_policy, self._reauth_policy = self._reauth_policy, "raise"
+        try:
+            self._resolve_organization_id()
+        finally:
+            self._reauth_policy = configured_policy
+
+    def _wire_oauth_provider(self, provider: OAuthProvider) -> None:
+        """Adopt the shared OAuth provider's two `httpx.Auth` views as this connection's
+        credentials: the data-plane view for Flink, the control-plane view for every surface."""
+        self._oauth_provider = provider
+        self._flink_auth = provider.data_plane_auth
+        self._byoidc = False
+        # One control-plane token reaches Tableflow, Connect, Artifact, and CMK alike -- the
+        # capability gain over API-key mode, which needs a separate credential per surface.
+        # Safe to share the same httpx.Auth object across every client: it holds no per-client
+        # state, only a reference back to the shared, lock-guarded provider.
+        self._surface_auth = dict.fromkeys(ControlPlaneSurface, provider.control_plane_auth)
+        self._global_credentials = None
+
+    def _resolve_organization_id(self) -> str:
+        """Infer organization_id via /org/v2/organizations when the caller omitted it.
+
+        The one resolver for every credential path: a global API key and the `auth="oauth"`
+        control-plane token both list every organization the credential can reach. Neither is
+        bound to a single organization -- a global key can see several, and an OAuth user may
+        belong to many -- so the driver never guesses: exactly one is used, anything else is an
+        error the caller must resolve by passing organization_id (#311).
 
         Raises:
-            OperationalError: If the route returns zero organizations (unexpected for a valid
-                global key) or more than one (ambiguous -- caller must disambiguate explicitly).
+            AmbiguousOrganizationError: If more than one organization is reachable; the
+                candidates (ids and display names) are on the exception.
+            OperationalError: If none is reachable (unexpected for a valid credential).
         """
-        orgs = self._lookup_organization_ids()
+        orgs = self._lookup_organizations()
         if not orgs:
+            # Wacky, should never happen -- every user belongs to at least one org!
             raise OperationalError(
-                "No organizations visible to this API key; cannot infer organization_id. "
+                "No organizations visible to this credential; cannot infer organization_id. "
                 "Pass organization_id to connect() to specify it explicitly."
             )
         if len(orgs) > 1:
-            raise OperationalError(
-                "Multiple organizations visible to this API key; pass organization_id to "
-                "connect() to disambiguate."
-            )
-        return orgs[0]
+            # Ambiguous: more than one organization is visible to this credential, and they
+            # didn't tell us which one to use exactly.
+            raise AmbiguousOrganizationError(orgs)
+        return orgs[0][0]
 
-    def _lookup_organization_ids(self) -> list[str]:
-        """List organization ids visible to the current control-plane credential, paginating
-        through /org/v2/organizations."""
-        ids: list[str] = []
+    def _lookup_organizations(self) -> list[tuple[str, str | None]]:
+        """List `(id, display_name)` for each organization visible to the current control-plane
+        credential, paginating through /org/v2/organizations. `display_name` is optional in the
+        API, hence None when absent."""
+        orgs: list[tuple[str, str | None]] = []
         params: dict[str, str | int] = {"page_size": 100}
         while True:
             response = self._controlplane_request(
                 ControlPlaneSurface.ORGANIZATION, "/org/v2/organizations", params=params
             ).json()
-            ids.extend(org["id"] for org in response.get("data", []))
+            orgs.extend((org["id"], org.get("display_name")) for org in response.get("data", []))
             next_page_token = self._get_next_page_token(response.get("metadata", {}).get("next"))
             if next_page_token is None:
                 break
             params["page_token"] = next_page_token
-        return ids
+        return orgs
 
     def _get_next_page_token(self, next_url: str | None) -> str | None:
         """Extract the next page token from the next_url, if present; see `utils`."""

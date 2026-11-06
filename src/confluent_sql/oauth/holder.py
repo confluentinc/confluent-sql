@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Protocol
@@ -71,6 +72,11 @@ class ProviderFactory(Protocol):
     ) -> OAuthProvider: ...
 
 
+LoginValidator = Callable[[OAuthProvider], None]
+"""A hook run on a provider that has just logged in, before it is shared: returning accepts the
+login, raising refuses it -- see `ProcessOAuthHolder.acquire`'s `validate_login`."""
+
+
 def acquire(
     config: CCloudOAuthConfig,
     organization_id: str | None = None,
@@ -79,6 +85,7 @@ def acquire(
     http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
     http_user_agent: str = DEFAULT_USER_AGENT,
     provider_factory: ProviderFactory = CCloudOAuth,
+    validate_login: LoginValidator | None = None,
 ) -> OAuthProvider:
     """Return the process's shared OAuth provider, running the browser login if needed.
 
@@ -94,6 +101,7 @@ def acquire(
         http_timeout_secs=http_timeout_secs,
         http_user_agent=http_user_agent,
         provider_factory=provider_factory,
+        validate_login=validate_login,
     )
 
 
@@ -170,6 +178,7 @@ class ProcessOAuthHolder:
         http_timeout_secs: float = DEFAULT_HTTP_TIMEOUT_SECS,
         http_user_agent: str = DEFAULT_USER_AGENT,
         provider_factory: ProviderFactory = CCloudOAuth,
+        validate_login: LoginValidator | None = None,
     ) -> OAuthProvider:
         """Return the process's shared OAuth provider, running the browser login if needed.
 
@@ -196,6 +205,16 @@ class ProcessOAuthHolder:
             provider_factory: builds the provider the winner logs in, called as
                 `factory(config, http_timeout_secs=..., http_user_agent=...)`. Defaults to
                 `CCloudOAuth`.
+            validate_login: a hook the single-flight winner runs on the provider right after
+                `login()` succeeds and before it is shared. Raising refuses the login: it fails
+                exactly like a failed `login()` (the half-built provider is closed, the slot is
+                cleared, every waiter on the login gets the same exception), so nothing is left
+                established and a later caller starts afresh -- and may name a different
+                organization. Never run for a caller that reuses or joins an established login:
+                that login was already accepted, however it came to be -- including one made with
+                no validator at all, which every later caller inherits as-is, unchecked. The
+                holder neither knows nor cares what is being checked (`Connection` uses it to
+                refuse a default organization that is ambiguous).
 
         Raises:
             InterfaceError: this caller named a different Confluent Cloud environment (`config`)
@@ -205,7 +224,13 @@ class ProcessOAuthHolder:
             Exception: whatever `login()` raised, re-raised on every waiter of a failed login.
         """
         provider = self._obtain(
-            config, organization_id, timeout, http_timeout_secs, http_user_agent, provider_factory
+            config,
+            organization_id,
+            timeout,
+            http_timeout_secs,
+            http_user_agent,
+            provider_factory,
+            validate_login,
         )
 
         # One-identity guard, applied after obtaining the provider by whichever path (reuse / join
@@ -242,6 +267,7 @@ class ProcessOAuthHolder:
         http_timeout_secs: float,
         http_user_agent: str,
         provider_factory: ProviderFactory,
+        validate_login: LoginValidator | None,
     ) -> OAuthProvider:
         """Resolve the shared provider: reuse it, join an in-flight login, or become its winner."""
         with self._lock:
@@ -267,6 +293,7 @@ class ProcessOAuthHolder:
                 http_timeout_secs,
                 http_user_agent,
                 provider_factory,
+                validate_login,
                 flight,
             )
 
@@ -292,6 +319,7 @@ class ProcessOAuthHolder:
         http_timeout_secs: float,
         http_user_agent: str,
         provider_factory: ProviderFactory,
+        validate_login: LoginValidator | None,
         flight: Future[OAuthProvider],
     ) -> OAuthProvider:
         """Run the one browser login and publish its outcome into `flight` for the joiners.
@@ -310,6 +338,8 @@ class ProcessOAuthHolder:
                 config, http_timeout_secs=http_timeout_secs, http_user_agent=http_user_agent
             )
             provider.login(organization_id, timeout=timeout)
+            if validate_login is not None:
+                validate_login(provider)
         except BaseException as e:
             # Discard the half-built provider and clear the slot so the *next* acquire() gets a
             # fresh browser rather than inheriting this failure. Joiners waiting on the flight

@@ -218,6 +218,40 @@ class StatementNotFoundError(OperationalError):
         self.statement_name = statement_name
 
 
+class AmbiguousOrganizationError(OperationalError):
+    """
+    Exception raised when `organization_id` was omitted and more than one organization is
+    reachable with the connection's credential, so the driver cannot tell which one is meant.
+
+    Whether it is ever raised depends on the account and the call. It can only happen when
+    `organization_id` was omitted, and only for a credential that reaches more than one
+    organization: with exactly one, that one is used and nothing is raised. Under either
+    credential path it is possible, differing only in when it surfaces: from `connect()` itself
+    under `auth="oauth"`, but under a global API key only on first use of the connection's
+    organization (typically its first statement), since `connect()` makes no network call there.
+    Pass `organization_id` to `connect()` to choose one of the candidates.
+
+    Attributes:
+        organizations: The candidate organizations, as `(organization_id, display_name)` pairs.
+            `display_name` is None when Confluent Cloud did not report one.
+    """
+
+    def __init__(self, organizations: list[tuple[str, str | None]]):
+        self.organizations = list(organizations)
+        candidates = ", ".join(
+            f'{org_id} ("{name}")' if name else org_id for org_id, name in self.organizations
+        )
+        super().__init__(
+            "Cannot determine which organization to use: multiple organizations are visible to "
+            f"this credential ({candidates}). Pass organization_id to connect() to choose one."
+        )
+
+    @property
+    def organization_ids(self) -> list[str]:
+        """Just the candidate organization ids, in the order Confluent Cloud listed them."""
+        return [org_id for org_id, _ in self.organizations]
+
+
 class TableflowTopicNotFoundError(OperationalError):
     """
     Exception raised when a Tableflow topic does not exist for a table's Kafka topic.
