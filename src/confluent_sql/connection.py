@@ -325,14 +325,14 @@ def connect(  # noqa: PLR0913
         environment_id: Environment ID
         organization_id: Organization ID. Optional under `auth="oauth"` or with a
             global_api_key/global_api_secret pair, in which case the organizations the credential
-            can reach are listed (`GET /org/v2/organizations`): exactly one is used, none raises
-            `OperationalError`, and more than one raises `AmbiguousOrganizationError` naming the
-            candidates -- pass `organization_id` to choose. Under `auth="oauth"` the listing is
-            part of the login, so it happens inside `connect()` and only for the connection that
-            makes the process's login (a failed one is abandoned, so retrying with
-            `organization_id` logs in afresh); later connections inherit the established login's
-            organization. With a global key it happens on first use. Required with a Flink-only
-            API key, which has no reach to determine it; omitting it there raises
+            can reach are listed (`GET /org/v2/organizations`) inside `connect()`: exactly one is
+            used, none raises `OperationalError`, and more than one raises
+            `AmbiguousOrganizationError` naming the candidates -- pass `organization_id` to
+            choose. Under `auth="oauth"` the listing is part of the login, so it happens only for
+            the connection that makes the process's login (a failed one is abandoned, so retrying
+            with `organization_id` logs in afresh); later connections inherit the established
+            login's organization. With a global key every `connect()` lists. Required with a
+            Flink-only API key, which has no reach to determine it; omitting it there raises
             `InterfaceError`. Under `auth="oauth"`, supplying it also scopes the login to that
             organization for a multi-org user; an organization the logged-in user can't access is
             rejected at login with an `OperationalError` naming it, and a process holds a single
@@ -749,9 +749,8 @@ class Connection:
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
         # absence of a default pool rather than carrying an unusable empty string.
         self.compute_pool_id = compute_pool_id or None
-        # None means "not yet resolved" -- triggers inference on first organization_id access
-        # (see the organization_id property) rather than a connect()-time network call. Under
-        # oauth the end of __init__ forces that inference eagerly (#311).
+        # None means "omitted, not yet resolved": both _init_oauth() (oauth) and the end of
+        # __init__ (global key) settle it before construction finishes (#311).
         self._organization_id_value = organization_id or None
 
         if statement_results_page_fetch_pause_millis < 0:
@@ -887,6 +886,17 @@ class Connection:
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
 
         self._row_type_registry = RowTypeRegistry()
+
+        if self._organization_id_value is None:
+            # Only a global key can get here (auth="oauth" settled it in _init_oauth(), and every
+            # other mode requires it up front). Resolved eagerly, as under oauth (#311), so
+            # either mode reports an unusable (e.g. ambiguous) organization from connect() itself
+            # rather than the first time something happens to need it.
+            try:
+                self._organization_id_value = self._resolve_organization_id()
+            except BaseException:
+                self.close()  # release the control-plane client the lookup built
+                raise
 
     @property
     def _service_clients(self) -> tuple[ServiceClient, ...]:
@@ -1640,16 +1650,15 @@ class Connection:
         """
         The connection's Confluent Cloud organization id.
 
-        Returned as supplied to connect()/Connection() if given. If omitted under a global API key
-        (the only API-key mode that may omit it, #213), it is inferred once on first access via
-        GET /org/v2/organizations and cached -- see _resolve_organization_id(), which raises
-        AmbiguousOrganizationError when the credential can reach more than one organization.
-        Under `auth="oauth"` it is always settled by the end of __init__: supplied, or the
-        organization of the process's login, which was checked by that same listing when the
-        login was made.
+        Always settled by the end of __init__: as supplied to connect()/Connection() if given;
+        otherwise, under a global API key (the only API-key mode that may omit it, #213), inferred
+        right there via GET /org/v2/organizations (see _resolve_organization_id(), which raises
+        AmbiguousOrganizationError when the credential can reach more than one organization); and
+        under `auth="oauth"`, the organization of the process's login, which was checked by that
+        same listing when the login was made.
         """
         if self._organization_id_value is None:
-            self._organization_id_value = self._resolve_organization_id()
+            raise InternalError("driver bug: organization_id was never settled during __init__")
         return self._organization_id_value
 
     @property
@@ -2090,9 +2099,9 @@ class Connection:
     def _build_dataplane_client(self) -> httpx.Client:
         """Build the Flink gateway httpx client; run by `_dataplane` on first use.
 
-        Deferred rather than built in __init__ because base_url embeds organization_id, which
-        for a global key that omitted it is resolved lazily via the organization_id property --
-        construction must never block on that network call.
+        Deferred rather than built in __init__ so a connection that never runs a statement pays
+        nothing for the gateway client. base_url embeds organization_id, which __init__ has
+        already settled.
         """
         base_url = (
             f"{self._flink_endpoint}/sql/v1/organizations/{self.organization_id}"
