@@ -223,13 +223,11 @@ class AmbiguousOrganizationError(OperationalError):
     Exception raised when `organization_id` was omitted and more than one organization is
     reachable with the connection's credential, so the driver cannot tell which one is meant.
 
-    Whether it is ever raised depends on the account and the call. It can only happen when
-    `organization_id` was omitted, and only for a credential that reaches more than one
-    organization: with exactly one, that one is used and nothing is raised. Under either
-    credential path it is possible, differing only in when it surfaces: from `connect()` itself
-    under `auth="oauth"`, but under a global API key only on first use of the connection's
-    organization (typically its first statement), since `connect()` makes no network call there.
-    Pass `organization_id` to `connect()` to choose one of the candidates.
+    Whether it is ever raised depends on the account. It can only happen when `organization_id`
+    was omitted, and only for a credential that reaches more than one organization: with exactly
+    one, that one is used and nothing is raised. Under either credential path (`auth="oauth"` or a
+    global API key) it surfaces from `connect()` itself. Pass `organization_id` to `connect()` to
+    choose one of the candidates.
 
     Attributes:
         organizations: The candidate organizations, as `(organization_id, display_name)` pairs.
@@ -250,6 +248,35 @@ class AmbiguousOrganizationError(OperationalError):
     def organization_ids(self) -> list[str]:
         """Just the candidate organization ids, in the order Confluent Cloud listed them."""
         return [org_id for org_id, _ in self.organizations]
+
+
+class AmbiguousClusterError(OperationalError):
+    """
+    Exception raised when more than one Kafka cluster in the environment has the connection's
+    `database` as its display name, so the driver cannot tell which one is meant.
+
+    Raised wherever the driver resolves the database's cluster from its name via CMK: from
+    `connect()` itself when cloud provider and region are being inferred, else on first use of a
+    Tableflow or Connect method. Pass `database_kafka_cluster_id` to `connect()` to choose one of
+    the candidates.
+
+    Attributes:
+        clusters: The candidate clusters, as `(cluster_id, cloud, region)` triples, with the
+            cloud lowercased as it appears in a Flink endpoint ("aws", "gcp", "azure").
+    """
+
+    def __init__(self, database: str, environment_id: str, clusters: list[tuple[str, str, str]]):
+        self.clusters = list(clusters)
+        super().__init__(
+            f"Multiple Kafka clusters named '{database}' found in environment "
+            f"'{environment_id}': {', '.join(self.cluster_ids)}. Pass database_kafka_cluster_id "
+            "to connect() to disambiguate."
+        )
+
+    @property
+    def cluster_ids(self) -> list[str]:
+        """Just the candidate `lkc-…` ids, in the order Confluent Cloud listed them."""
+        return [cluster_id for cluster_id, _, _ in self.clusters]
 
 
 class TableflowTopicNotFoundError(OperationalError):

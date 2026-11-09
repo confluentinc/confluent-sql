@@ -27,7 +27,7 @@ The driver defaults to [snapshot mode](https://docs.confluent.io/cloud/current/f
   - a **BYOIDC bearer token** minted by your own OAuth/OIDC identity provider, passed as `external_access_token` / `identity_pool_id` (see [BYOIDC bearer-token authentication](#byoidc-bearer-token-authentication) below).
 
   The interactive browser login is the simplest way to get started, at the cost of one browser sign-in per process. A Global key works against every route this driver touches. A Flink Region key only works against the core Flink SQL routes (the main DB-API functionality), not other features such as Tableflow, Connectors, or Artifacts.
-- **Organization ID** — required with a Flink Region API key or a BYOIDC bearer token, neither of which can discover it. With a Global API key or `auth="oauth"` it may be omitted if the credential can see exactly one organization, in which case it's inferred during `connect()`; if it can see several, `connect()` raises `AmbiguousOrganizationError` listing them, and you pass `organization_id` to choose.
+- **Organization ID** — required with a Flink Region API key or a BYOIDC bearer token, neither of which can discover it. With a Global API key or `auth="oauth"` it can usually be omitted: see [Inferred connection parameters](#inferred-connection-parameters).
 
 ### How to Obtain a Flink Region API Key
 
@@ -56,12 +56,13 @@ Instead of API keys, sign in once through your browser:
 conn = confluent_sql.connect(
     auth="oauth",
     environment_id="env-...",
-    cloud_provider="aws",
-    cloud_region="us-east-1",
+    database="my_cluster",
 )
 ```
 
-The browser opens once per process; the login is shared by every connection the process opens. `organization_id` is optional and defaults to your login's organization. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py). The resulting login can reach everything your user account can, so all of the driver's functionality, including Tableflow, Connectors, and Artifacts, is available.
+Only `environment_id` and `database` are needed: the organization, the cluster id, and the cloud provider and region are all inferred (see [Inferred connection parameters](#inferred-connection-parameters)).
+
+The browser opens once per process; the login is shared by every connection the process opens. See [examples/interactive_oauth_login.py](examples/interactive_oauth_login.py). The resulting login can reach everything your user account can, so all of the driver's functionality, including Tableflow, Connectors, and Artifacts, is available.
 
 **Callback port.** To catch the browser's redirect after you sign in, the driver listens on `127.0.0.1:26642` (path `/callback-confluent-sql-docs`) while the login is in progress. This port is fixed by the driver's registered OAuth client and cannot be changed, so it must be free; if something else holds it, `connect()` raises `OAuthLoginError` with reason `PORT_IN_USE`. Only one login can be in progress per machine at a time. If you don't finish signing in within five minutes, it raises `OAuthLoginError` with reason `TIMED_OUT`.
 
@@ -105,6 +106,39 @@ Things to know:
 - **`organization_id` is required** under BYOIDC. Inferring it needs a control-plane call an external token can't make, so it must be supplied explicitly.
 - **No token refresh.** The token is used verbatim on every request. When it expires, requests begin failing (surfaced as `OperationalError`) and the connection is effectively dead — open a fresh connection with a fresh token.
 
+## Inferred connection parameters
+
+With a credential that can reach the Confluent Cloud control plane -- a **Global API key** (`global_api_key` / `global_api_secret`) or **`auth="oauth"`** -- most of what `connect()` needs can be looked up for you. The only non-credential inputs required are `environment_id` and `database` (the database's display name):
+
+```python
+# Interactive browser login
+conn = confluent_sql.connect(auth="oauth", environment_id="env-...", database="my_cluster")
+
+# Global API key
+conn = confluent_sql.connect(
+    global_api_key="...", global_api_secret="...", environment_id="env-...", database="my_cluster"
+)
+```
+
+| Parameter | Inferred from | When |
+|---|---|---|
+| `organization_id` | The organizations the credential can reach (`GET /org/v2/organizations`; under OAuth, as part of the login) | During `connect()`. Exactly one is used; none raises `OperationalError`; several raise `AmbiguousOrganizationError` (its `.organizations` lists them), so pass `organization_id` to choose. |
+| `cloud_provider`, `cloud_region` | The cloud and region of the Kafka cluster named by `database` (CMK cluster list) | During `connect()`, which then builds the public Flink endpoint from them. Also used to scope Artifacts calls. |
+| `database_kafka_cluster_id` | The `lkc-…` id of the cluster named by `database` (CMK cluster list) | During `connect()` when cloud and region are being inferred (the same single lookup serves both), otherwise on first use of Tableflow or Connectors. You normally never pass it; see below. |
+
+Because inference happens during `connect()`, an unknown or ambiguous organization or database name fails there, not on the first statement.
+
+**Precedence.** An explicit `endpoint` always wins, then an explicit `cloud_provider` *and* `cloud_region` pair, then inference, and anything you pass explicitly costs no extra requests. Supplying only one of `cloud_provider` / `cloud_region` is an error: inference never "completes" a half-supplied pair. 
+
+**`database_kafka_cluster_id` is optional and rarely needed.** Pass it only to disambiguate, when several clusters share the `database` name (`AmbiguousClusterError`, whose `.clusters` lists the candidates), or to skip the lookup, e.g. to use Tableflow or Connectors with only their dedicated key pair. When you do pass it, the cluster is fetched directly by id, which is cheaper and means `database` is not needed to infer cloud and region.
+
+**What is never inferred.**
+
+- `environment_id` is always required.
+- `database` is required for cloud and region inference (an environment can span regions, so there is nothing else to go on); without it, pass `endpoint` or `cloud_provider` and `cloud_region`.
+- **Private networking.** Inference only yields the public Flink endpoint. If your cluster needs private networking, pass `endpoint` (see [Private Networking Considerations](#private-networking-considerations)).
+- **Flink Region API keys and BYOIDC** have no control-plane reach, so they keep their usual requirements: `organization_id`, plus `cloud_provider` and `cloud_region` (or `endpoint`).
+
 ## Installation
 
 ```bash
@@ -124,7 +158,7 @@ import confluent_sql
 
 # Connect to Confluent Cloud Flink SQL
 connection = confluent_sql.connect(
-    organization_id="your-org-uuid",  # optional if using a Global key -- see Prerequisites
+    organization_id="your-org-uuid",  # optional with a Global key -- see "Inferred connection parameters"
     environment_id="env-123456",
     cloud_provider="aws",
     cloud_region="us-east-2",
@@ -234,7 +268,7 @@ For type support and examples, see **[TYPES.md](https://github.com/confluentinc/
 
 ## Private Networking Considerations
 
-By default, this driver uses the public Confluent Cloud API networking endpoint for the provided cloud provider and region. However, if the Flink database / Kafka cluster you intend to query requires private networking connectivity, then provide the appropriate Flink private networking base URL as the `endpoint` parameter
+By default, this driver uses the public Confluent Cloud API networking endpoint for the provided (or [inferred](#inferred-connection-parameters)) cloud provider and region; inference only ever yields the public endpoint. However, if the Flink database / Kafka cluster you intend to query requires private networking connectivity, then provide the appropriate Flink private networking base URL as the `endpoint` parameter
 to `connect()` or `Connection.__init__()`. Refer to the Confluent Cloud [Flink private networking documentation](https://docs.confluent.io/cloud/current/flink/concepts/flink-private-networking.html) for more information on composing your endpoint URL.
 
 Symptoms of using the public endpoint when private networking is required include:

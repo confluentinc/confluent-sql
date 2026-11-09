@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from confluent_sql import (
+    AmbiguousClusterError,
     AmbiguousOrganizationError,
     InterfaceError,
     OperationalError,
@@ -132,7 +133,7 @@ class TestResolveKafkaClusterId:
                 }
             )
         )
-        with pytest.raises(OperationalError, match="lkc-a, lkc-b") as exc:
+        with pytest.raises(AmbiguousClusterError, match="lkc-a, lkc-b") as exc:
             conn._resolve_kafka_cluster_id()
         assert "database_kafka_cluster_id" in str(exc.value)
 
