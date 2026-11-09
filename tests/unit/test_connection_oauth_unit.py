@@ -773,3 +773,33 @@ class TestReauthPolicy:
                 assert auth.calls == 2
         finally:
             conn.close()
+
+
+class TestOauthCloudInference:
+    """Under auth="oauth", cloud/region are inferred from the database's cluster (#310)."""
+
+    def test_minimal_oauth_connect_infers_endpoint_and_seeds_cluster_id(self, mocker):
+        cluster = {
+            "id": "lkc-9",
+            "spec": {"display_name": "my_cluster", "cloud": "GCP", "region": "europe-west1"},
+        }
+        cmk = mocker.patch.object(
+            Connection,
+            "_controlplane_request",
+            return_value=httpx.Response(
+                200,
+                json={"data": [cluster], "metadata": {}},
+                request=httpx.Request("GET", "https://api.confluent.cloud/cmk/v2/clusters"),
+            ),
+        )
+
+        conn = _oauth_connect(cloud_provider="", cloud_region="", database="my_cluster")
+
+        assert conn._flink_endpoint == "https://flink.europe-west1.gcp.confluent.cloud"
+        assert conn._resolve_kafka_cluster_id() == "lkc-9"
+        cmk.assert_called_once()
+        assert cmk.call_args.args[0] is ControlPlaneSurface.CMK
+
+    def test_oauth_without_database_cannot_infer(self):
+        with pytest.raises(InterfaceError, match="Cloud provider is required"):
+            _oauth_connect(cloud_provider="", cloud_region="")

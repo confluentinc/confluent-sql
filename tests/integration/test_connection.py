@@ -343,7 +343,7 @@ class TestDryRunStatement:
         assert [column.name for column in schema] == ["id"]
 
 
-@pytest.mark.integration
+@pytest.mark.integration_with_mocks
 class TestRetryOnTransientResultFetchErrors:
     """Integration coverage for #137's retry-on-idempotent-GET behavior."""
 
@@ -386,7 +386,7 @@ class TestRetryOnTransientResultFetchErrors:
             assert request_mock.call_count == 3
 
 
-@pytest.mark.integration
+@pytest.mark.integration_with_mocks
 class TestPollToleratesRequestTimeouts:
     """Integration coverage for #236: a slow status poll is "no news yet", not a failure."""
 

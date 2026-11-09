@@ -89,12 +89,27 @@ non-blocking variant would be meaningless.
 
 ## The `oauth` test marker
 
-Every test module exercising the interactive OAuth login -- everything under `tests/unit/oauth/`,
-`test_connection_oauth_unit.py`, and the `tests/integration/test_oauth*.py` modules -- carries
-`pytest.mark.oauth` via module-level `pytestmark`, alongside its `unit`/`integration` marker. A new
-OAuth test module must do the same. It is a topic axis orthogonal to unit/integration:
+Test modules exercising the interactive OAuth login -- everything under `tests/unit/oauth/`,
+`test_connection_oauth_unit.py`, and the `tests/integration/test_oauth*.py` modules -- carry
+`pytest.mark.oauth` via module-level `pytestmark`, alongside their `unit`/`integration` marker. A
+new OAuth-only test module should prefer the same. A module that mixes OAuth and non-OAuth tests
+(e.g. `tests/integration/test_infer_cloud.py`) may instead mark just its OAuth tests with
+`@pytest.mark.oauth`, so the others aren't swept into `-m oauth` runs. It is a topic axis
+orthogonal to unit/integration:
 
 - `uv run pytest -m oauth` -- every OAuth test (integration ones skip without `RUN_OAUTH_TESTS`).
 - `uv run pytest -m "oauth and unit"` -- the fast, browser-free subset.
 - `RUN_OAUTH_TESTS=1 uv run pytest -n0 -m "oauth and integration"` -- the human-in-the-loop browser
   run. `-n0` is mandatory: the loopback callback port is fixed, so parallel workers collide.
+
+## The `integration_with_mocks` test marker
+
+Some integration tests are semi-real: they run against the live service, but wrap a real route or
+client call to inject a fault (a dropped connection, a request timeout) or to augment the real
+answer (a bogus extra organization or same-named cluster, so an ambiguity can be exercised on an
+account that doesn't genuinely have one). Such a test carries just `pytest.mark.integration_with_mocks`;
+the integration `conftest.py` adds `integration` automatically, so `-m integration` still selects it. The pattern:
+capture the real function, call it for real, and only then tamper with what it returns (or fail
+before delegating), so the real route and parsing still run and the test can't pass vacuously.
+This pytest marker isn't so much for actually selecting and running this subset, but rather
+to assist in finding similar technique tests (when being asked to write more)
