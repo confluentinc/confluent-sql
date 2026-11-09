@@ -37,16 +37,10 @@ from .exceptions import (
     StatementNotFoundError,
 )
 from .execution_mode import ExecutionMode
-from .oauth import (
-    PROD,
-    CCloudOAuth,
-    CCloudOAuthConfig,
-    OAuthMetrics,
-    OAuthProvider,
-    acquire,
-)
-from .oauth import reauthenticate as oauth_reauthenticate
-from .oauth.holder import ProviderFactory
+from .oauth.config import PROD, CCloudOAuthConfig
+from .oauth.holder import ProviderFactory, acquire
+from .oauth.holder import reauthenticate as oauth_reauthenticate
+from .oauth.provider import CCloudOAuth, OAuthMetrics, OAuthProvider
 from .polling import poll_until
 from .service_client import (
     ServiceClient,
@@ -306,14 +300,14 @@ def connect(  # noqa: PLR0913
             `auth="oauth"`.
         oauth_config: Deliberately **not** a public API: only Confluent-internal developers
             ever need it, to sign in against a non-production Confluent Cloud environment
-            (`confluent_sql.oauth.config.STAG` / `DEVEL`). Defaults to `confluent_sql.oauth.PROD`.
+            (`confluent_sql.oauth.config.STAG` / `DEVEL`). Defaults to the production environment.
             Only valid when `auth="oauth"`. Subject to change without notice.
         oauth_provider_factory: Internal testing hook for `auth="oauth"`; production callers
-            should never need to pass this. Forwarded to `confluent_sql.oauth.acquire()`.
+            should never need to pass this. Forwarded to the internal login holder.
         reauth: How to recover once an `auth="oauth"` session can no longer be refreshed (the
             ~8h absolute session lifetime, or the token endpoint rejecting the refresh token as
             idle-expired/revoked/already-spent). `"auto"` (default) catches that condition
-            transparently, blocks on `confluent_sql.oauth.reauthenticate()` -- another browser
+            transparently, runs the login again -- another browser
             round-trip -- and retries the request; `auth="oauth"` is inherently a human-present
             mode (login itself requires a browser), so popping one again hours later to keep
             going is unsurprising for the common case. `"raise"` opts back out to surfacing
@@ -537,7 +531,7 @@ class Connection:
     Lifts the control-plane guards' global-key requirement -- see _resolve_kafka_cluster_id and
     _auth_for."""
     _oauth_provider: OAuthProvider | None
-    """The process-wide shared provider acquired via oauth.acquire() when _oauth is True; None
+    """The process-wide shared provider acquired via the login holder when _oauth is True; None
     otherwise. Never closed directly by this Connection -- see close()."""
     _reauth_policy: Literal["auto", "raise"]
     """How to respond when a request raises ReauthenticationRequired -- see connect()'s
@@ -1666,7 +1660,7 @@ class Connection:
         """Timing/counts for the in-loop token refreshes of this connection's OAuth provider
         (auth="oauth"), or None under every other auth mode.
 
-        **Not per-connection telemetry.** `oauth.acquire()` hands out one process-wide shared
+        **Not per-connection telemetry.** The login holder hands out one process-wide shared
         provider (`ProcessOAuthHolder`) -- every `Connection` in the process that logs in
         under the same identity gets the *same* provider, and `Connection.close()` never
         tears it down, so the shared provider and its accumulated metrics outlive any one
@@ -2065,10 +2059,10 @@ class Connection:
         of stamping a request, once its session's refresh token can no longer be used.
 
         `"raise"` lets it propagate untouched. `"auto"` (the default) instead blocks on
-        `oauth.reauthenticate()` -- itself single-flighted process-wide, so concurrent callers
-        hitting the wall together still cost one browser bounce -- and retries `do_request` exactly
-        once; a `reauthenticate()` failure (a denied/timed-out login, a failed token exchange)
-        propagates as-is, and is not retried further.
+        the holder's `reauthenticate()` -- itself single-flighted process-wide, so concurrent
+        callers hitting the wall together still cost one browser bounce -- and retries
+        `do_request` exactly once; a `reauthenticate()` failure (a denied/timed-out login, a
+        failed token exchange) propagates as-is, and is not retried further.
 
         The sole chokepoint for this: every HTTP call this `Connection` makes, Flink or
         control-plane, funnels through here as every `ServiceClient`'s `send_policy`.

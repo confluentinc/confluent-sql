@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from confluent_sql import Connection, connect, oauth_discard_login
-from confluent_sql.oauth import ProcessOAuthHolder
+from confluent_sql.oauth.holder import ProcessOAuthHolder
 from confluent_sql.oauth.provider import CCloudOAuth
 
 pytestmark = pytest.mark.oauth
