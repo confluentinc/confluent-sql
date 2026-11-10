@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from confluent_sql import Connection, OAuthLoginError, OAuthLoginFailure, connect
-from confluent_sql.oauth import ProcessOAuthHolder
+from confluent_sql.oauth.holder import ProcessOAuthHolder
 from confluent_sql.oauth.provider import CCloudOAuth
 from confluent_sql.oauth.token_chain import UserIdentity
 
