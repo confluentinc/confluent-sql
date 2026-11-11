@@ -3,6 +3,7 @@ database's Kafka cluster via CMK at connect() time (#310)."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -10,6 +11,7 @@ import pytest
 
 from confluent_sql import (
     AmbiguousClusterError,
+    ClusterMismatchError,
     InterfaceError,
     OperationalError,
     Timeouts,
@@ -28,9 +30,24 @@ GLOBAL_KEY = {"global_api_key": "gk", "global_api_secret": "gs"}
 
 
 def _cluster(
-    cluster_id: str = "lkc-1", name: str = DB, cloud: str = "AWS", region: str = "us-east-2"
+    cluster_id: str = "lkc-1",
+    name: str = DB,
+    cloud: str = "AWS",
+    region: str = "us-east-2",
+    *,
+    network: bool = False,
+    connection_types: tuple[str, ...] = (),
 ):
-    return {"id": cluster_id, "spec": {"display_name": name, "cloud": cloud, "region": region}}
+    """A CMK cluster. `network` attaches it to a network; `connection_types` are the access
+    points in its `endpoints` map (e.g. "PUBLIC", "PRIVATE_LINK")."""
+    spec: dict[str, Any] = {"display_name": name, "cloud": cloud, "region": region}
+    if network:
+        spec["network"] = {"id": "n-1", "environment": ENV}
+    if connection_types:
+        spec["endpoints"] = {
+            f"ap{i}": {"connection_type": kind} for i, kind in enumerate(connection_types)
+        }
+    return {"id": cluster_id, "spec": spec}
 
 
 class FakeCmk:
@@ -170,6 +187,46 @@ class TestPrecedence:
         assert conn.get_artifacts_api()._artifact_scope() == ArtifactScope("GCP", "eu-west-1")
         assert cmk.calls == []
 
+
+class TestHalfSuppliedPair:
+    """One half of the cloud config is completed from the cluster, and checked against it."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"cloud_provider": "aws"},
+            {"cloud_region": "us-east-2"},
+            {"cloud_provider": "AWS"},
+            {"cloud_region": "US-EAST-2"},
+        ],
+    )
+    def test_missing_half_is_completed_in_one_lookup(self, cmk: FakeCmk, kwargs: dict) -> None:
+        conn = _connect(**kwargs)
+        assert conn._flink_endpoint == "https://flink.us-east-2.aws.confluent.cloud"
+        assert (conn._cloud_provider, conn._cloud_region) == ("aws", "us-east-2")
+        assert cmk.urls == [CLUSTERS_URL]
+
+    @pytest.mark.parametrize(
+        "kwargs,parameter,supplied,actual",
+        [
+            ({"cloud_provider": "gcp"}, "cloud_provider", "gcp", "aws"),
+            ({"cloud_region": "eu-west-1"}, "cloud_region", "eu-west-1", "us-east-2"),
+        ],
+    )
+    def test_wrong_supplied_half_raises_mismatch(
+        self, cmk: FakeCmk, kwargs: dict, parameter: str, supplied: str, actual: str
+    ) -> None:
+        with pytest.raises(ClusterMismatchError) as exc:
+            _connect(**kwargs)
+        assert exc.value.cluster_id == "lkc-1"
+        assert exc.value.mismatches == [(parameter, supplied, actual)]
+        assert exc.value.parameters == [parameter]
+
+    def test_endpoint_beside_half_pair_still_wins_with_no_lookup(self, cmk: FakeCmk) -> None:
+        conn = _connect(endpoint="https://flink.example.com", cloud_provider="gcp")
+        assert conn._flink_endpoint == "https://flink.example.com"
+        assert cmk.calls == []
+
     @pytest.mark.parametrize(
         "kwargs,message",
         [
@@ -177,12 +234,119 @@ class TestPrecedence:
             ({"cloud_region": "us-east-2"}, "Cloud provider is required"),
         ],
     )
-    def test_half_supplied_pair_is_not_completed_by_inference(
-        self, cmk: FakeCmk, kwargs: dict, message: str
+    @pytest.mark.parametrize(
+        "cannot_infer",
+        [
+            {"database": ""},
+            {
+                "global_api_key": "",
+                "global_api_secret": "",
+                "flink_api_key": "fk",
+                "flink_api_secret": "fs",
+            },
+        ],
+        ids=["no-database", "flink-key-only"],
+    )
+    def test_half_pair_that_cannot_be_inferred_is_an_error_with_the_hint(
+        self, cmk: FakeCmk, kwargs: dict, message: str, cannot_infer: dict
     ) -> None:
-        with pytest.raises(InterfaceError, match=message):
-            _connect(**kwargs)
+        with pytest.raises(InterfaceError, match=message) as exc:
+            _connect(**cannot_infer, **kwargs)
+        assert "pass database" in str(exc.value)
         assert cmk.calls == []
+
+
+class TestMismatchError:
+    def test_seeded_id_with_a_different_database_name_raises(self, cmk: FakeCmk) -> None:
+        with pytest.raises(ClusterMismatchError) as exc:
+            _connect(database="some_other_db", database_kafka_cluster_id="lkc-1")
+        assert exc.value.mismatches == [("database", "some_other_db", DB)]
+        assert cmk.urls == [f"{CLUSTERS_URL}/lkc-1"]
+
+    def test_seeded_id_with_matching_database_connects(self, cmk: FakeCmk) -> None:
+        conn = _connect(database=DB, database_kafka_cluster_id="lkc-1")
+        assert conn._flink_endpoint == "https://flink.us-east-2.aws.confluent.cloud"
+
+    def test_every_disagreement_is_reported_together(self, cmk: FakeCmk) -> None:
+        with pytest.raises(ClusterMismatchError) as exc:
+            _connect(
+                database="other",
+                database_kafka_cluster_id="lkc-1",
+                cloud_provider="gcp",
+            )
+        assert exc.value.parameters == ["database", "cloud_provider"]
+        message = str(exc.value)
+        assert "lkc-1" in message
+        assert "other" in message
+        assert "gcp" in message
+
+    def test_full_pair_with_seeded_id_and_wrong_database_is_trusted(self, cmk: FakeCmk) -> None:
+        conn = _connect(
+            database="other",
+            database_kafka_cluster_id="lkc-1",
+            cloud_provider="gcp",
+            cloud_region="eu-west-1",
+        )
+        assert conn._flink_endpoint == "https://flink.eu-west-1.gcp.confluent.cloud"
+        assert cmk.calls == []
+
+    def test_is_an_operational_error_and_exported(self) -> None:
+        error = ClusterMismatchError("lkc-9", [("database", "a", "b")])
+        assert isinstance(error, OperationalError)
+        assert error.cluster_id == "lkc-9"
+        assert "database" in str(error)
+
+    def test_failed_validation_closes_connection(self, cmk: FakeCmk, mocker) -> None:
+        close_spy = mocker.spy(Connection, "close")
+        with pytest.raises(ClusterMismatchError):
+            _connect(cloud_provider="gcp")
+        close_spy.assert_called_once()
+
+
+class TestPrivateNetworkWarning:
+    LOGGER = "confluent_sql.connection"
+
+    @pytest.mark.parametrize(
+        "cluster",
+        [
+            _cluster(network=True, connection_types=("PRIVATE_LINK",)),
+            _cluster(network=True, connection_types=("PRIVATE_NETWORK_INTERFACE",)),
+        ],
+    )
+    def test_private_only_cluster_warns_but_still_infers(
+        self, cmk: FakeCmk, caplog, cluster: dict
+    ) -> None:
+        cmk.clusters = [cluster]
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            conn = _connect()
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "private" in warnings[0].lower()
+        assert "endpoint" in warnings[0]
+        assert conn._flink_endpoint == "https://flink.us-east-2.aws.confluent.cloud"
+
+    @pytest.mark.parametrize(
+        "cluster",
+        [
+            _cluster(),
+            _cluster(network=True, connection_types=("PUBLIC", "PRIVATE_LINK")),
+            _cluster(connection_types=("PRIVATE_LINK",)),
+            _cluster(network=True),
+        ],
+    )
+    def test_clusters_with_public_access_or_no_network_do_not_warn(
+        self, cmk: FakeCmk, caplog, cluster: dict
+    ) -> None:
+        cmk.clusters = [cluster]
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            _connect()
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_warns_on_the_by_id_path_too(self, cmk: FakeCmk, caplog) -> None:
+        cmk.clusters = [_cluster(network=True, connection_types=("PRIVATE_LINK",))]
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
+            _connect(database="", database_kafka_cluster_id="lkc-1")
+        assert [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 class TestGate:
@@ -190,6 +354,7 @@ class TestGate:
         with pytest.raises(InterfaceError, match="database") as exc:
             _connect(database="")
         assert "endpoint" in str(exc.value)
+        assert "pass database" in str(exc.value)
         assert cmk.calls == []
 
     def test_flink_key_only_cannot_infer(self, cmk: FakeCmk) -> None:

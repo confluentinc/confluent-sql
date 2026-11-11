@@ -279,6 +279,43 @@ class AmbiguousClusterError(OperationalError):
         return [cluster_id for cluster_id, _, _ in self.clusters]
 
 
+class ClusterMismatchError(OperationalError):
+    """
+    Exception raised when connection parameters disagree with the Kafka cluster the driver
+    resolved for the connection, so at least one of them is wrong.
+
+    Raised from `connect()` while cloud provider and region are being inferred from the
+    database's cluster (the cluster fetched by `database_kafka_cluster_id`, or found by
+    `database`). It checks only what that lookup already has in hand: a supplied `database` name
+    against the cluster's display name, and a supplied one of `cloud_provider` / `cloud_region`
+    (the other is then filled in from the cluster) against the cluster's. Nothing is checked on
+    paths that make no lookup, such as an explicit `endpoint` or a complete provider+region pair,
+    which are trusted. Correct the named parameters, or omit them to take the cluster's values.
+
+    Attributes:
+        cluster_id: The `lkc-…` id of the cluster the parameters were checked against.
+        mismatches: Each disagreement as a `(parameter, supplied, actual)` triple, where
+            `parameter` is "database", "cloud_provider" or "cloud_region".
+    """
+
+    def __init__(self, cluster_id: str, mismatches: list[tuple[str, str, str]]):
+        self.cluster_id = cluster_id
+        self.mismatches = list(mismatches)
+        details = "; ".join(
+            f"{parameter} '{supplied}' (the cluster's is '{actual}')"
+            for parameter, supplied, actual in self.mismatches
+        )
+        super().__init__(
+            f"Kafka cluster '{cluster_id}' does not match the supplied connection parameters: "
+            f"{details}. Correct them, or omit them to use the cluster's values."
+        )
+
+    @property
+    def parameters(self) -> list[str]:
+        """Just the names of the mismatched parameters, in the order they were checked."""
+        return [parameter for parameter, _, _ in self.mismatches]
+
+
 class TableflowTopicNotFoundError(OperationalError):
     """
     Exception raised when a Tableflow topic does not exist for a table's Kafka topic.

@@ -22,6 +22,7 @@ import pytest
 
 from confluent_sql import (
     AmbiguousOrganizationError,
+    ClusterMismatchError,
     InterfaceError,
     InternalError,
     OperationalError,
@@ -803,3 +804,34 @@ class TestOauthCloudInference:
     def test_oauth_without_database_cannot_infer(self):
         with pytest.raises(InterfaceError, match="Cloud provider is required"):
             _oauth_connect(cloud_provider="", cloud_region="")
+
+    @pytest.mark.parametrize(
+        "supplied,error",
+        [
+            ({"cloud_provider": "gcp"}, None),
+            ({"cloud_provider": "aws"}, ClusterMismatchError),
+        ],
+    )
+    def test_half_supplied_pair_is_completed_or_checked(self, mocker, supplied, error):
+        cluster = {
+            "id": "lkc-9",
+            "spec": {"display_name": "my_cluster", "cloud": "GCP", "region": "europe-west1"},
+        }
+        mocker.patch.object(
+            Connection,
+            "_controlplane_request",
+            return_value=httpx.Response(
+                200,
+                json={"data": [cluster], "metadata": {}},
+                request=httpx.Request("GET", "https://api.confluent.cloud/cmk/v2/clusters"),
+            ),
+        )
+        params = {"cloud_provider": "", "cloud_region": "", "database": "my_cluster", **supplied}
+
+        if error is None:
+            conn = _oauth_connect(**params)
+            assert conn._flink_endpoint == "https://flink.europe-west1.gcp.confluent.cloud"
+        else:
+            with pytest.raises(error) as caught:
+                _oauth_connect(**params)
+            assert caught.value.parameters == ["cloud_provider"]

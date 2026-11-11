@@ -26,7 +26,7 @@ import os
 
 import pytest
 
-from confluent_sql import AmbiguousClusterError, connect
+from confluent_sql import AmbiguousClusterError, ClusterMismatchError, connect
 from confluent_sql.connection import Connection, _ClusterInfo
 
 BOGUS_CLUSTER_ID = "lkc-bogus0"
@@ -34,22 +34,95 @@ BOGUS_CLUSTER_ID = "lkc-bogus0"
 candidate in the error; it is never connected to."""
 
 
-@pytest.mark.integration
-def test_global_key_infers_cloud_and_region(
-    cloud_inference_env: dict[str, str],
-    oauth_organization_args: dict[str, str],
-    assert_cloud_inferred,
-):
+@pytest.fixture
+def global_key_connect_args(
+    cloud_inference_env: dict[str, str], oauth_organization_args: dict[str, str]
+) -> dict[str, str]:
+    """connect() arguments for a global-key connection naming only the environment and database
+    (plus the organization when CONFLUENT_ORG_ID is set), or skip."""
     if not (os.getenv("CONFLUENT_GLOBAL_API_KEY") and os.getenv("CONFLUENT_GLOBAL_API_SECRET")):
         pytest.skip("Missing CONFLUENT_GLOBAL_API_KEY / CONFLUENT_GLOBAL_API_SECRET")
+    return {
+        "global_api_key": os.environ["CONFLUENT_GLOBAL_API_KEY"],
+        "global_api_secret": os.environ["CONFLUENT_GLOBAL_API_SECRET"],
+        "environment_id": cloud_inference_env["environment_id"],
+        "database": cloud_inference_env["database"],
+        **oauth_organization_args,
+    }
 
+
+@pytest.mark.integration
+def test_global_key_infers_cloud_and_region(
+    global_key_connect_args: dict[str, str],
+    cloud_inference_env: dict[str, str],
+    assert_cloud_inferred,
+):
+    conn = connect(**global_key_connect_args)  # type: ignore
+    try:
+        assert_cloud_inferred(conn, cloud_inference_env)
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("supplied_half", ["cloud_provider", "cloud_region"])
+def test_global_key_completes_a_half_supplied_pair(
+    global_key_connect_args: dict[str, str],
+    cloud_inference_env: dict[str, str],
+    assert_cloud_inferred,
+    supplied_half: str,
+):
+    """One correct half is accepted and the other is filled in from the real cluster."""
+    expected = {
+        "cloud_provider": cloud_inference_env["expected_provider"],
+        "cloud_region": cloud_inference_env["expected_region"],
+    }
     conn = connect(
-        global_api_key=os.environ["CONFLUENT_GLOBAL_API_KEY"],
-        global_api_secret=os.environ["CONFLUENT_GLOBAL_API_SECRET"],
-        environment_id=cloud_inference_env["environment_id"],
-        database=cloud_inference_env["database"],
-        **oauth_organization_args,  # type: ignore
+        **global_key_connect_args,  # type: ignore
+        **{supplied_half: expected[supplied_half]},
     )
+    try:
+        assert_cloud_inferred(conn, cloud_inference_env)
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "wrong_half,wrong_value",
+    [("cloud_provider", "azure-not-it"), ("cloud_region", "nowhere-1")],
+)
+def test_global_key_wrong_half_of_a_pair_is_a_mismatch(
+    global_key_connect_args: dict[str, str], wrong_half: str, wrong_value: str
+):
+    with pytest.raises(ClusterMismatchError) as caught:
+        connect(**global_key_connect_args, **{wrong_half: wrong_value})  # type: ignore
+    assert caught.value.parameters == [wrong_half]
+    assert caught.value.mismatches[0][1] == wrong_value
+    assert caught.value.cluster_id.startswith("lkc-")
+
+
+@pytest.mark.integration
+def test_global_key_cluster_id_with_the_wrong_database_name_is_a_mismatch(
+    global_key_connect_args: dict[str, str],
+    cloud_inference_env: dict[str, str],
+    assert_cloud_inferred,
+):
+    """A real cluster id beside a database name it doesn't carry fails at connect(); beside its
+    real name it connects."""
+    found = connect(**global_key_connect_args)  # type: ignore
+    try:
+        cluster_id = found._resolve_kafka_cluster_id()
+    finally:
+        found.close()
+
+    wrong_name = {**global_key_connect_args, "database": "no_such_database_name_here"}
+    with pytest.raises(ClusterMismatchError) as caught:
+        connect(database_kafka_cluster_id=cluster_id, **wrong_name)  # type: ignore
+    assert caught.value.cluster_id == cluster_id
+    assert caught.value.parameters == ["database"]
+
+    conn = connect(database_kafka_cluster_id=cluster_id, **global_key_connect_args)  # type: ignore
     try:
         assert_cloud_inferred(conn, cloud_inference_env)
     finally:
@@ -58,14 +131,11 @@ def test_global_key_infers_cloud_and_region(
 
 @pytest.mark.integration_with_mocks
 def test_duplicate_database_name_is_ambiguous_then_explicit_cluster_id_connects(
+    global_key_connect_args: dict[str, str],
     cloud_inference_env: dict[str, str],
-    oauth_organization_args: dict[str, str],
     assert_cloud_inferred,
     monkeypatch,
 ):
-    if not (os.getenv("CONFLUENT_GLOBAL_API_KEY") and os.getenv("CONFLUENT_GLOBAL_API_SECRET")):
-        pytest.skip("Missing CONFLUENT_GLOBAL_API_KEY / CONFLUENT_GLOBAL_API_SECRET")
-
     real_matches: list[_ClusterInfo] = []
     real_lookup = Connection._lookup_clusters_by_name
 
@@ -75,21 +145,16 @@ def test_duplicate_database_name_is_ambiguous_then_explicit_cluster_id_connects(
         if matches:
             matches = [
                 *matches,
-                _ClusterInfo(BOGUS_CLUSTER_ID, matches[0].cloud, matches[0].region),
+                _ClusterInfo(
+                    BOGUS_CLUSTER_ID, matches[0].cloud, matches[0].region, matches[0].display_name
+                ),
             ]
         return matches
 
     monkeypatch.setattr(Connection, "_lookup_clusters_by_name", lookup_with_bogus_duplicate)
 
-    connect_args = {
-        "global_api_key": os.environ["CONFLUENT_GLOBAL_API_KEY"],
-        "global_api_secret": os.environ["CONFLUENT_GLOBAL_API_SECRET"],
-        "environment_id": cloud_inference_env["environment_id"],
-        "database": cloud_inference_env["database"],
-        **oauth_organization_args,
-    }
     with pytest.raises(AmbiguousClusterError) as caught:
-        connect(**connect_args)  # type: ignore
+        connect(**global_key_connect_args)  # type: ignore
 
     assert real_matches, "the real cluster list returned no cluster for the database"
     assert BOGUS_CLUSTER_ID in caught.value.cluster_ids
@@ -103,7 +168,7 @@ def test_duplicate_database_name_is_ambiguous_then_explicit_cluster_id_connects(
     monkeypatch.undo()
     conn = connect(
         database_kafka_cluster_id=real_matches[0].id,
-        **connect_args,  # type: ignore
+        **global_key_connect_args,  # type: ignore
     )
     try:
         assert_cloud_inferred(conn, cloud_inference_env)

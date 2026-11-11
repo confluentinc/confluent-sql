@@ -123,20 +123,20 @@ conn = confluent_sql.connect(
 | Parameter | Inferred from | When |
 |---|---|---|
 | `organization_id` | The organizations the credential can reach (`GET /org/v2/organizations`; under OAuth, as part of the login) | During `connect()`. Exactly one is used; none raises `OperationalError`; several raise `AmbiguousOrganizationError` (its `.organizations` lists them), so pass `organization_id` to choose. |
-| `cloud_provider`, `cloud_region` | The cloud and region of the Kafka cluster named by `database` (CMK cluster list) | During `connect()`, which then builds the public Flink endpoint from them. Also used to scope Artifacts calls. |
+| `cloud_provider`, `cloud_region` | The cloud and region of the Kafka cluster named by `database` (CMK cluster list) | During `connect()`, which then builds the public Flink endpoint from them. Either may be supplied and the other is filled in. Also used to scope Artifacts calls. |
 | `database_kafka_cluster_id` | The `lkc-…` id of the cluster named by `database` (CMK cluster list) | During `connect()` when cloud and region are being inferred (the same single lookup serves both), otherwise on first use of Tableflow or Connectors. You normally never pass it; see below. |
 
 Because inference happens during `connect()`, an unknown or ambiguous organization or database name fails there, not on the first statement.
 
-**Precedence.** An explicit `endpoint` always wins, then an explicit `cloud_provider` *and* `cloud_region` pair, then inference, and anything you pass explicitly costs no extra requests. Supplying only one of `cloud_provider` / `cloud_region` is an error: inference never "completes" a half-supplied pair. 
+**Precedence.** An explicit `endpoint` always wins, then an explicit `cloud_provider` *and* `cloud_region` pair, then inference, and anything you pass explicitly costs no extra requests. Supplying only one of `cloud_provider` / `cloud_region` makes the driver fill in the other from the cluster, and check the one you gave against it: a wrong one raises `ClusterMismatchError` (its `.mismatches` lists each parameter with what you supplied and what the cluster has), so a typo fails at `connect()`. A complete pair is trusted as given, with no lookup and no check.
 
-**`database_kafka_cluster_id` is optional and rarely needed.** Pass it only to disambiguate, when several clusters share the `database` name (`AmbiguousClusterError`, whose `.clusters` lists the candidates), or to skip the lookup, e.g. to use Tableflow or Connectors with only their dedicated key pair. When you do pass it, the cluster is fetched directly by id, which is cheaper and means `database` is not needed to infer cloud and region.
+**`database_kafka_cluster_id` is optional and rarely needed.** Pass it only to disambiguate, when several clusters share the `database` name (`AmbiguousClusterError`, whose `.clusters` lists the candidates), or to skip the lookup, e.g. to use Tableflow or Connectors with only their dedicated key pair. When you do pass it, the cluster is fetched directly by id, which is cheaper and means `database` is not needed to infer cloud and region. If you pass `database` too, it must match that cluster's name, or `ClusterMismatchError` is raised; that check only happens when the driver looks the cluster up anyway (the cloud/region inference above), never on paths that trust what you gave.
 
 **What is never inferred.**
 
 - `environment_id` is always required.
 - `database` is required for cloud and region inference (an environment can span regions, so there is nothing else to go on); without it, pass `endpoint` or `cloud_provider` and `cloud_region`.
-- **Private networking.** Inference only yields the public Flink endpoint. If your cluster needs private networking, pass `endpoint` (see [Private Networking Considerations](#private-networking-considerations)).
+- **Private networking.** Inference only yields the public Flink endpoint. If your cluster needs private networking, pass `endpoint` (see [Private Networking Considerations](#private-networking-considerations)). When the cluster looks private-only (attached to a network, with no public access point), the driver logs a warning at `connect()` telling you so; it still connects with the public endpoint.
 - **Flink Region API keys and BYOIDC** have no control-plane reach, so they keep their usual requirements: `organization_id`, plus `cloud_provider` and `cloud_region` (or `endpoint`).
 
 ## Installation
