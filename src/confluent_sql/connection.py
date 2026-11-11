@@ -17,6 +17,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from functools import partial
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 
@@ -27,7 +28,9 @@ from .connectors import ConnectorApi
 from .context import BACKGROUND, Context
 from .cursor import Cursor
 from .exceptions import (
+    AmbiguousClusterError,
     AmbiguousOrganizationError,
+    ClusterMismatchError,
     InterfaceError,
     InternalError,
     OperationalError,
@@ -337,16 +340,24 @@ def connect(  # noqa: PLR0913
             statement submission methods may still override or specify a compute pool id on a
             per-statement basis.
         cloud_provider: Cloud provider (e.g., "aws", "gcp", "azure"). Required if endpoint is not
-            provided; must not be provided if endpoint is specified.
+            provided, unless it can be inferred: with a global API key or `auth="oauth"`, and
+            `database`, cloud_provider and cloud_region are read from that Kafka cluster via CMK
+            during connect() (public endpoint only). Give neither, or only one (the other is
+            filled in, and the one you gave is checked against the cluster:
+            `ClusterMismatchError` if it disagrees). A complete pair is trusted, with no lookup.
         cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is not
-            provided; must not be provided if endpoint is specified.
+            provided, under the same inference exception as cloud_provider.
         database: The default Flink database (Kafka cluster) to use when resolving
             table/view/udf names (optional)
         database_kafka_cluster_id: The `lkc-…` id of the Kafka cluster backing `database`
-            (optional). Supplying it lets the Tableflow and connector methods skip the CMK
-            name→id lookup (which needs a global key or `auth="oauth"`), so they work with only
-            their dedicated key pair. Omitted, the id is resolved lazily from `database` via CMK
-            on first such use, which requires a global key or an interactive OAuth connection.
+            (optional, and rarely needed). Ordinarily the id is resolved from `database` via CMK
+            (during connect() when cloud/region are being inferred, else lazily on first use by
+            Tableflow or connector methods), which requires a global key or an interactive OAuth
+            connection. Pass it only to disambiguate when several clusters share the `database`
+            name (`AmbiguousClusterError`), or to skip the lookup, e.g. to use Tableflow or
+            connectors with only their dedicated key pair. When supplied, cloud_provider and
+            cloud_region inference fetches that cluster by id and needs no `database` name; a
+            `database` that is also given must match the cluster (`ClusterMismatchError`).
         local_time_zone: Seeds the read/write `Connection.local_time_zone` property (optional).
             When set, every statement submitted on this connection carries `sql.local-time-zone`
             unless the call's own `properties=`/`StatementProperties` already sets it, which takes
@@ -471,6 +482,37 @@ class ControlPlaneSurface(Enum):
     )
 
 
+@dataclass(frozen=True)
+class _ClusterInfo:
+    """What the CMK cluster list/get returns that the driver uses: the `lkc-…` id, the cluster's
+    cloud and region (lowercased as they appear in a Flink endpoint; CMK reports the cloud
+    uppercase: `AWS|GCP|AZURE`), its display name, and whether it looks reachable only over
+    private networking."""
+
+    id: str
+    cloud: str
+    region: str
+    display_name: str = ""
+    private_only: bool = False
+    """True when the cluster is attached to a network and none of its access points is `PUBLIC`.
+    Needs positive evidence: a cluster whose `endpoints` map is missing or empty is not flagged."""
+
+    @classmethod
+    def from_cmk(cls, cluster: dict[str, Any]) -> _ClusterInfo:
+        spec = cluster.get("spec", {})
+        endpoints = spec.get("endpoints") or {}
+        has_public_endpoint = any(
+            endpoint.get("connection_type") == "PUBLIC" for endpoint in endpoints.values()
+        )
+        return cls(
+            id=cluster["id"],
+            cloud=str(spec.get("cloud", "")).lower(),
+            region=str(spec.get("region", "")),
+            display_name=str(spec.get("display_name", "")),
+            private_only=bool(spec.get("network")) and bool(endpoints) and not has_public_endpoint,
+        )
+
+
 class Connection:
     """
     A connection to a Confluent SQL service.
@@ -484,6 +526,12 @@ class Connection:
     # Also the host for artifact routes (`/artifact/v1`); `controlplane_endpoint` redirects them.
     _DEFAULT_CONTROLPLANE_ENDPOINT = "https://api.confluent.cloud"
     """Control-plane host (Tableflow, Connect, Artifact, CMK) -- distinct from the Flink gateway."""
+
+    _CLOUD_INFERENCE_HINT = (
+        "; alternatively pass database with a global API key or auth='oauth' and the missing "
+        "cloud settings will be inferred from the database's Kafka cluster"
+    )
+    """Appended to the error for a missing cloud provider or region."""
 
     environment_id: str
     compute_pool_id: str | None
@@ -514,11 +562,19 @@ class Connection:
     """Supplied organization_id, or None if it must be inferred -- see the organization_id
     property. Once resolved (supplied or inferred), holds the final value."""
     _cloud_provider: str | None
-    _cloud_region: str | None
-    """Cloud/region as passed to connect() (None when only an endpoint was given) -- see
+    """Cloud provider ("aws", "gcp", "azure") as passed to connect(), or inferred lowercased from
+    the database's cluster via CMK (#310); None when only an endpoint was given. Kept alongside an
+    explicit endpoint, where it wins over parsing the endpoint -- see
     `artifacts.resolve_artifact_scope`."""
+    _cloud_region: str | None
+    """Cloud region (e.g. "us-east-2") as passed to connect(), or inferred from the database's
+    cluster via CMK (#310); None when only an endpoint was given. Without an endpoint it is set
+    together with `_cloud_provider`: a half-supplied pair is completed from the cluster."""
     _resolved_kafka_cluster_id: str | None
     """Cached `lkc-…` id for `database`; pre-seeded by database_kafka_cluster_id, else from CMK."""
+    _database_cluster: _ClusterInfo | None
+    """Cached CMK record for `database`, shared by cluster-id resolution and cloud/region
+    inference so one list call serves both (#310)."""
     _row_type_registry: RowTypeRegistry
     """Registry for user-defined row types, see register_row_type()."""
 
@@ -649,9 +705,11 @@ class Connection:
             reauth: How to recover an `auth="oauth"` session that can no longer be refreshed.
                 See `connect()`.
             environment_id: Environment ID
-            cloud_provider: Cloud provider (required if endpoint is not provided)
+            cloud_provider: Cloud provider (required if endpoint is not provided, unless both it
+                and cloud_region are omitted and inferable from `database` via CMK under a global
+                API key or `auth="oauth"`; see `connect()`)
             cloud_region: Cloud region (e.g., "us-east-2", "us-west-2"). Required if endpoint is
-                not provided.
+                not provided, under the same inference exception as cloud_provider.
             endpoint: The base URL for Confluent Cloud API (optional). If not provided, the
                 endpoint will be constructed based on the cloud_provider and cloud_region
                 parameters in the format "https://flink.{cloud_region}.{cloud_provider}.confluent.cloud".
@@ -679,9 +737,10 @@ class Connection:
                 Flink runs them in the environment+region default compute pool.
             database: The name of the database to use (optional)
             database_kafka_cluster_id: The `lkc-…` id of the Kafka cluster backing `database`
-                (optional). Pre-seeds the Tableflow cluster-id cache so the CMK lookup never
-                fires; otherwise the id is resolved lazily from `database` via CMK (needs a
-                global key or an interactive OAuth connection).
+                (optional, and rarely needed). Ordinarily resolved from `database` via CMK (needs
+                a global key or an interactive OAuth connection). Pre-seeds the cluster-id cache
+                so that lookup never fires: pass it to disambiguate same-named clusters
+                (`AmbiguousClusterError`) or to skip the lookup. See `connect()`.
             local_time_zone: Seeds the read/write `local_time_zone` property (optional). See the
                 property's docstring for the precedence rules and mutation semantics.
             controlplane_endpoint: Base URL for the control plane (Tableflow, Connect, Artifact,
@@ -778,7 +837,15 @@ class Connection:
         # Single source of truth for the endpoint-vs-cloud-info gate (#213): connect() no longer
         # duplicates this, so direct Connection() construction and connect() report the same
         # per-field errors. Per-field wording (rather than one combined message) gives the caller
-        # the more specific complaint.
+        # the more specific complaint. Precedence: endpoint, then a complete provider+region pair
+        # (both trusted, no requests), then (#310) inference from the database's Kafka cluster via
+        # CMK, which fills in whichever half is missing and checks the half that was supplied.
+        explicit_pair = bool(cloud_provider and cloud_region)
+        can_infer = bool(
+            (database or database_kafka_cluster_id)
+            and (oauth_cfg is not None or global_key_provided)
+        )
+        infer_cloud = False
         if endpoint:
             if cloud_provider or cloud_region:
                 logger.warning(
@@ -786,13 +853,26 @@ class Connection:
                     "endpoint; the endpoint is used for requests (cloud_provider/cloud_region "
                     "are only used to scope artifact calls)."
                 )
+        elif explicit_pair:
+            pass
+        elif can_infer:
+            infer_cloud = True
         elif not cloud_provider:
-            raise InterfaceError("Cloud provider is required when endpoint is not provided")
-        elif not cloud_region:
-            raise InterfaceError("Cloud region is required when endpoint is not provided")
+            raise InterfaceError(
+                "Cloud provider is required when endpoint is not provided"
+                + self._CLOUD_INFERENCE_HINT
+            )
+        else:
+            raise InterfaceError(
+                "Cloud region is required when endpoint is not provided"
+                + self._CLOUD_INFERENCE_HINT
+            )
 
-        # Resolve the Flink gateway endpoint the data-plane client will target.
-        if not endpoint:
+        # Resolve the Flink gateway endpoint the data-plane client will target. When inferring,
+        # it is settled at the end of __init__, once the credentials are wired.
+        if infer_cloud:
+            endpoint = ""
+        elif not endpoint:
             # Construct the endpoint URL based on cloud provider and region.
             endpoint = f"https://flink.{cloud_region}.{cloud_provider}.confluent.cloud"
         else:
@@ -878,19 +958,24 @@ class Connection:
         # A supplied cluster id pre-seeds the cache, so the CMK lookup never fires -- letting
         # Tableflow work with only a tableflow key pair (no global key needed for CMK).
         self._resolved_kafka_cluster_id = database_kafka_cluster_id or None
+        self._database_cluster = None
 
         self._row_type_registry = RowTypeRegistry()
 
-        if self._organization_id_value is None:
-            # Only a global key can get here (auth="oauth" settled it in _init_oauth(), and every
-            # other mode requires it up front). Resolved eagerly, as under oauth (#311), so
-            # either mode reports an unusable (e.g. ambiguous) organization from connect() itself
-            # rather than the first time something happens to need it.
-            try:
+        try:
+            if self._organization_id_value is None:
+                # Only a global key can get here (auth="oauth" settled it in _init_oauth(), and
+                # every other mode requires it up front). Resolved eagerly, as under oauth (#311),
+                # so either mode reports an unusable (e.g. ambiguous) organization from connect()
+                # itself rather than the first time something happens to need it.
                 self._organization_id_value = self._resolve_organization_id()
-            except BaseException:
-                self.close()  # release the control-plane client the lookup built
-                raise
+            if infer_cloud:
+                # Eager for the same reason (#310): no cluster / several clusters / no access
+                # surface from connect(), and `_flink_endpoint` stays a plain attribute.
+                self._resolve_cloud_from_cluster()
+        except BaseException:
+            self.close()  # release the control-plane client the lookups built
+            raise
 
     @property
     def _service_clients(self) -> tuple[ServiceClient, ...]:
@@ -2252,24 +2337,43 @@ class Connection:
                 "database_kafka_cluster_id to connect()."
             )
 
-        matches = self._lookup_cluster_ids_by_name(self._database)
+        self._resolved_kafka_cluster_id = self._cluster_for_database().id
+        return self._resolved_kafka_cluster_id
+
+    def _cluster_for_database(self) -> _ClusterInfo:
+        """The CMK cluster record for `database`, looked up once and cached so the `lkc-…` id and
+        cloud/region inference (#310) share a single list call.
+
+        Raises:
+            ProgrammingError: If there is no database name to match.
+            AmbiguousClusterError: If more than one cluster matches the database name.
+            OperationalError: If no cluster matches the database name.
+        """
+        if self._database_cluster is not None:
+            return self._database_cluster
+        if not self._database:
+            raise ProgrammingError(
+                "Cannot look up a Kafka cluster without a database name; pass database or "
+                "database_kafka_cluster_id to connect()."
+            )
+        matches = self._lookup_clusters_by_name(self._database)
         if not matches:
             raise OperationalError(
                 f"No Kafka cluster named '{self._database}' found in environment "
                 f"'{self.environment_id}'."
             )
         if len(matches) > 1:
-            raise OperationalError(
-                f"Multiple Kafka clusters named '{self._database}' found in environment "
-                f"'{self.environment_id}': {', '.join(matches)}. Pass database_kafka_cluster_id "
-                "to connect() to disambiguate."
+            raise AmbiguousClusterError(
+                self._database,
+                self.environment_id,
+                [(c.id, c.cloud, c.region) for c in matches],
             )
-        self._resolved_kafka_cluster_id = matches[0]
-        return self._resolved_kafka_cluster_id
+        self._database_cluster = matches[0]
+        return self._database_cluster
 
-    def _lookup_cluster_ids_by_name(self, name: str) -> list[str]:
-        """List CMK clusters in the environment and return the ids whose display name matches."""
-        ids: list[str] = []
+    def _lookup_clusters_by_name(self, name: str) -> list[_ClusterInfo]:
+        """List CMK clusters in the environment and return those whose display name matches."""
+        found: list[_ClusterInfo] = []
         params: dict[str, str | int] = {"environment": self.environment_id, "page_size": 100}
         while True:
             response = self._controlplane_request(
@@ -2277,12 +2381,77 @@ class Connection:
             ).json()
             for cluster in response.get("data", []):
                 if cluster.get("spec", {}).get("display_name") == name:
-                    ids.append(cluster["id"])
+                    found.append(_ClusterInfo.from_cmk(cluster))
             next_page_token = self._get_next_page_token(response.get("metadata", {}).get("next"))
             if next_page_token is None:
                 break
             params["page_token"] = next_page_token
-        return ids
+        return found
+
+    def _get_cluster_by_id(self, cluster_id: str) -> _ClusterInfo:
+        """Fetch one CMK cluster by `lkc-…` id -- the cheaper lookup when the caller supplied
+        `database_kafka_cluster_id`, and one that needs no database name."""
+        response = self._controlplane_request(
+            ControlPlaneSurface.CMK,
+            f"/cmk/v2/clusters/{quote(cluster_id, safe='')}",
+            params={"environment": self.environment_id},
+            error_prefix=(
+                f"Looking up Kafka cluster '{cluster_id}' in environment '{self.environment_id}'"
+            ),
+        )
+        return _ClusterInfo.from_cmk(response.json())
+
+    def _resolve_cloud_from_cluster(self) -> None:
+        """Settle cloud provider, region and the public Flink endpoint from the database's Kafka
+        cluster (Flink's region is the cluster's), checking what the caller supplied against it
+        (#310). Called during `__init__` when no endpoint and no complete provider+region pair
+        was given, so `_cloud_provider` / `_cloud_region` hold at most one supplied half.
+
+        Seeds the cluster-id cache too when the id wasn't supplied. Private networking is not
+        derivable, so a cluster that looks private-only draws a warning to pass `endpoint`.
+
+        Raises:
+            ClusterMismatchError: If a supplied `database`, `cloud_provider` or `cloud_region`
+                disagrees with the cluster.
+            AmbiguousClusterError: If several clusters match `database`.
+            OperationalError: If the cluster can't be found or the lookup fails.
+        """
+        if self._resolved_kafka_cluster_id is not None:
+            cluster = self._get_cluster_by_id(self._resolved_kafka_cluster_id)
+        else:
+            cluster = self._cluster_for_database()
+            self._resolved_kafka_cluster_id = cluster.id
+        if not (cluster.cloud and cluster.region):
+            raise OperationalError(
+                f"Kafka cluster '{cluster.id}' reports no cloud/region; pass endpoint or "
+                "cloud_provider and cloud_region to connect()."
+            )
+
+        # A display name is matched exactly (as the by-name lookup does); cloud and region are not
+        # case-sensitive ("AWS" is as good as "aws").
+        mismatches: list[tuple[str, str, str]] = []
+        if self._database and self._database != cluster.display_name:
+            mismatches.append(("database", self._database, cluster.display_name))
+        for parameter, supplied, actual in (
+            ("cloud_provider", self._cloud_provider, cluster.cloud),
+            ("cloud_region", self._cloud_region, cluster.region),
+        ):
+            if supplied and supplied.casefold() != actual.casefold():
+                mismatches.append((parameter, supplied, actual))
+        if mismatches:
+            raise ClusterMismatchError(cluster.id, mismatches)
+
+        self._cloud_provider = cluster.cloud
+        self._cloud_region = cluster.region
+        self._flink_endpoint = f"https://flink.{cluster.region}.{cluster.cloud}.confluent.cloud"
+        if cluster.private_only:
+            logger.warning(
+                "Kafka cluster '%s' appears to be reachable only over private networking, but "
+                "the inferred Flink endpoint '%s' is the public one; if statements fail or "
+                "tables go missing, pass the private endpoint as endpoint to connect().",
+                cluster.id,
+                self._flink_endpoint,
+            )
 
     def _init_oauth(
         self,

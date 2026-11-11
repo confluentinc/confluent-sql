@@ -91,6 +91,7 @@ testpaths = "tests"
 markers = [
     "unit: mark a test as a unit test",
     "integration: mark a test as an integration test",
+    "integration_with_mocks: mark an integration test that runs against the real service but wraps a real route or client call to inject a fault or augment its result (e.g. a dropped connection, a bogus extra cluster); implies `integration` automatically",
     "slow: mark a test as a slow (longer than a few seconds integration) test",
     "typeconv: mark a test as a type conversion test",
     "oauth: mark a test as exercising the interactive OAuth login (unit or integration)",

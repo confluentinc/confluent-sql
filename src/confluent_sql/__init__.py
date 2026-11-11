@@ -27,9 +27,11 @@ from .connectors import (
 )
 from .cursor import Cursor
 from .exceptions import (
+    AmbiguousClusterError,
     AmbiguousOrganizationError,
     ArtifactAlreadyExistsError,
     ArtifactNotFoundError,
+    ClusterMismatchError,
     ComputePoolExhaustedError,
     ConnectorAlreadyExistsError,
     ConnectorNotFoundError,
@@ -111,7 +113,9 @@ __all__ = [
     "DatabaseError",
     "DataError",
     "OperationalError",
+    "AmbiguousClusterError",
     "AmbiguousOrganizationError",
+    "ClusterMismatchError",
     "ComputePoolExhaustedError",
     "StatementStoppedError",
     "StatementDeletedError",

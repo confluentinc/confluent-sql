@@ -223,13 +223,11 @@ class AmbiguousOrganizationError(OperationalError):
     Exception raised when `organization_id` was omitted and more than one organization is
     reachable with the connection's credential, so the driver cannot tell which one is meant.
 
-    Whether it is ever raised depends on the account and the call. It can only happen when
-    `organization_id` was omitted, and only for a credential that reaches more than one
-    organization: with exactly one, that one is used and nothing is raised. Under either
-    credential path it is possible, differing only in when it surfaces: from `connect()` itself
-    under `auth="oauth"`, but under a global API key only on first use of the connection's
-    organization (typically its first statement), since `connect()` makes no network call there.
-    Pass `organization_id` to `connect()` to choose one of the candidates.
+    Whether it is ever raised depends on the account. It can only happen when `organization_id`
+    was omitted, and only for a credential that reaches more than one organization: with exactly
+    one, that one is used and nothing is raised. Under either credential path (`auth="oauth"` or a
+    global API key) it surfaces from `connect()` itself. Pass `organization_id` to `connect()` to
+    choose one of the candidates.
 
     Attributes:
         organizations: The candidate organizations, as `(organization_id, display_name)` pairs.
@@ -250,6 +248,72 @@ class AmbiguousOrganizationError(OperationalError):
     def organization_ids(self) -> list[str]:
         """Just the candidate organization ids, in the order Confluent Cloud listed them."""
         return [org_id for org_id, _ in self.organizations]
+
+
+class AmbiguousClusterError(OperationalError):
+    """
+    Exception raised when more than one Kafka cluster in the environment has the connection's
+    `database` as its display name, so the driver cannot tell which one is meant.
+
+    Raised wherever the driver resolves the database's cluster from its name via CMK: from
+    `connect()` itself when cloud provider and region are being inferred, else on first use of a
+    Tableflow or Connect method. Pass `database_kafka_cluster_id` to `connect()` to choose one of
+    the candidates.
+
+    Attributes:
+        clusters: The candidate clusters, as `(cluster_id, cloud, region)` triples, with the
+            cloud lowercased as it appears in a Flink endpoint ("aws", "gcp", "azure").
+    """
+
+    def __init__(self, database: str, environment_id: str, clusters: list[tuple[str, str, str]]):
+        self.clusters = list(clusters)
+        super().__init__(
+            f"Multiple Kafka clusters named '{database}' found in environment "
+            f"'{environment_id}': {', '.join(self.cluster_ids)}. Pass database_kafka_cluster_id "
+            "to connect() to disambiguate."
+        )
+
+    @property
+    def cluster_ids(self) -> list[str]:
+        """Just the candidate `lkc-…` ids, in the order Confluent Cloud listed them."""
+        return [cluster_id for cluster_id, _, _ in self.clusters]
+
+
+class ClusterMismatchError(OperationalError):
+    """
+    Exception raised when connection parameters disagree with the Kafka cluster the driver
+    resolved for the connection, so at least one of them is wrong.
+
+    Raised from `connect()` while cloud provider and region are being inferred from the
+    database's cluster (the cluster fetched by `database_kafka_cluster_id`, or found by
+    `database`). It checks only what that lookup already has in hand: a supplied `database` name
+    against the cluster's display name, and a supplied one of `cloud_provider` / `cloud_region`
+    (the other is then filled in from the cluster) against the cluster's. Nothing is checked on
+    paths that make no lookup, such as an explicit `endpoint` or a complete provider+region pair,
+    which are trusted. Correct the named parameters, or omit them to take the cluster's values.
+
+    Attributes:
+        cluster_id: The `lkc-…` id of the cluster the parameters were checked against.
+        mismatches: Each disagreement as a `(parameter, supplied, actual)` triple, where
+            `parameter` is "database", "cloud_provider" or "cloud_region".
+    """
+
+    def __init__(self, cluster_id: str, mismatches: list[tuple[str, str, str]]):
+        self.cluster_id = cluster_id
+        self.mismatches = list(mismatches)
+        details = "; ".join(
+            f"{parameter} '{supplied}' (the cluster's is '{actual}')"
+            for parameter, supplied, actual in self.mismatches
+        )
+        super().__init__(
+            f"Kafka cluster '{cluster_id}' does not match the supplied connection parameters: "
+            f"{details}. Correct them, or omit them to use the cluster's values."
+        )
+
+    @property
+    def parameters(self) -> list[str]:
+        """Just the names of the mismatched parameters, in the order they were checked."""
+        return [parameter for parameter, _, _ in self.mismatches]
 
 
 class TableflowTopicNotFoundError(OperationalError):

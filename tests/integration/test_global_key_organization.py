@@ -59,7 +59,7 @@ def test_omitted_organization_is_listed_during_connect(
         conn.close()
 
 
-@pytest.mark.integration
+@pytest.mark.integration_with_mocks
 def test_ambiguous_organization_is_reported_then_an_explicit_one_connects(
     global_key_base_connect_args: dict[str, str], monkeypatch
 ):
