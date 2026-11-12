@@ -36,7 +36,7 @@ BOGUS_EXTRA_ORGANIZATION: tuple[str, str | None] = (
 """Appended to a single-organization account's real listing so it looks ambiguous."""
 
 
-@pytest.mark.integration
+@pytest.mark.integration_with_mocks
 def test_ambiguous_organization_is_reported_then_an_explicit_one_connects(
     fresh_oauth_process, oauth_base_connect_args: dict[str, str], monkeypatch
 ):

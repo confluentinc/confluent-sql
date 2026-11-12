@@ -20,6 +20,18 @@ from confluent_sql.cursor import Cursor
 logger = logging.getLogger(__name__)
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items):
+    """Make `integration_with_mocks` imply `integration`, so such a test needs only the one marker.
+
+    `tryfirst` matters: pytest applies `-m` selection in its own collection hook, so the implied
+    marker must already be there for `-m integration` to select these tests.
+    """
+    for item in items:
+        if item.get_closest_marker("integration_with_mocks"):
+            item.add_marker(pytest.mark.integration)
+
+
 def pytest_runtest_setup(item):
     """Ensure that all tests within integration/ are marked as integration tests."""
     is_integration = any(item.iter_markers(name="integration"))
@@ -65,6 +77,45 @@ def global_key_base_connect_args(load_env_file) -> dict[str, str]:
         "cloud_provider": os.environ["CONFLUENT_CLOUD_PROVIDER"],
         "cloud_region": os.environ["CONFLUENT_CLOUD_REGION"],
     }
+
+
+@pytest.fixture(scope="session")
+def cloud_inference_env(load_env_file) -> dict[str, str]:
+    """Environment for the cloud/region inference tests (#310), or skip.
+
+    `environment_id` and `database` are the only non-credential inputs those tests connect with;
+    CONFLUENT_CLOUD_PROVIDER / CONFLUENT_CLOUD_REGION are used only as the expected answer the
+    inferred values are compared against, never passed to connect().
+    """
+    required = {
+        "environment_id": "CONFLUENT_ENV_ID",
+        "database": "CONFLUENT_TEST_DBNAME",
+        "expected_provider": "CONFLUENT_CLOUD_PROVIDER",
+        "expected_region": "CONFLUENT_CLOUD_REGION",
+    }
+    if missing := [var for var in required.values() if not os.getenv(var)]:
+        pytest.skip(f"Missing required environment variable(s): {', '.join(missing)}")
+    return {key: os.environ[var] for key, var in required.items()}
+
+
+@pytest.fixture(scope="session")
+def assert_cloud_inferred() -> Callable[[Connection, dict[str, str]], None]:
+    """Returns a checker asserting a connection inferred the expected cloud/region (#310) and can
+    run a statement through the inferred endpoint."""
+
+    def _check(conn: Connection, expected: dict[str, str]) -> None:
+        provider = expected["expected_provider"].lower()
+        region = expected["expected_region"]
+        assert conn._cloud_provider == provider
+        assert conn._cloud_region == region
+        assert conn._flink_endpoint == f"https://flink.{region}.{provider}.confluent.cloud"
+        # The one lookup also seeded the cluster id, so this costs no further CMK request.
+        assert conn._resolve_kafka_cluster_id().startswith("lkc-")
+        with conn.closing_cursor() as cursor:
+            cursor.execute("SELECT 1 AS inferred_ok")
+            assert cursor.fetchall() == [(1,)]
+
+    return _check
 
 
 @pytest.fixture(scope="session")
