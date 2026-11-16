@@ -4,6 +4,8 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+## 0.9.0, 2026-11-16
+
 ### Changed - Breaking
 
 - The Tableflow methods moved off `Connection` into a new `TableflowApi` client (`confluent_sql.TableflowApi`), obtained from the new `Connection.get_tableflow_api()` like `get_artifacts_api()` and `get_connector_api()`. `Connection.enable_tableflow()`, `get_tableflow()`, `update_tableflow()` and `disable_tableflow()` are removed, with no deprecation shims: call `.enable()`, `.get()`, `.update()` and `.disable()` on the client instead, e.g. `connection.get_tableflow_api().enable("orders", table_formats=..., storage=...)`. Signatures, blocking behavior and exceptions are unchanged. (#289)
