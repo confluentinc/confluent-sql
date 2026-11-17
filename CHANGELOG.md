@@ -4,6 +4,15 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Python 3.15 is now a listed supported version, and CI runs the unit tests on every supported Python (3.11 through 3.15). (#316)
+
+### Changed - Breaking
+
+- The minimum supported Python is now 3.11 (`requires-python = ">=3.11"`); Python 3.10 reached end of life on 2026-10-31. (#316)
+- `TableFormat` and the enums built on `ExtensibleEnum` (`ConnectorState`, `TableflowPhase`, `WarningSeverity`, `ArtifactContentFormat`, `ArtifactRuntimeLanguage`) are now `enum.StrEnum`s: `str(member)` and f-string interpolation yield the wire value (`"ICEBERG"`) instead of `"TableFormat.ICEBERG"`. Equality, hashing and `.value` are unchanged. (#316)
+
 ## 0.9.0, 2026-11-16
 
 ### Changed - Breaking
