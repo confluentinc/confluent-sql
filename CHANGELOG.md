@@ -4,10 +4,6 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
-### Added
-
-- Python 3.15 is now a listed supported version, and CI runs the unit tests on every supported Python (3.11 through 3.15). (#316)
-
 ### Changed - Breaking
 
 - The minimum supported Python is now 3.11 (`requires-python = ">=3.11"`); Python 3.10 reached end of life on 2026-10-31. (#316)
