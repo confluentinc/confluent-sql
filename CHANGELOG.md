@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `Connection.cloud_provider` and `Connection.cloud_region`, read-only properties typed `str | None` exposing the cloud and region the connection resolved: as supplied to `connect()`, or inferred from the database's Kafka cluster (lowercased provider). Both are `None` when the connection was made with only an `endpoint`. (#322)
+
 ### Changed
 
 - `connect()` / `Connection.__init__()` no longer log a warning when `cloud_provider` and/or `cloud_region` are passed alongside `endpoint`. The pair is not redundant: Artifacts scope their calls by it, and it cannot be inferred from a custom (e.g. private link) endpoint. The `endpoint` is still what Flink requests use. (#319)

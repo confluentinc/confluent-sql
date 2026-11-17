@@ -17,8 +17,6 @@ from confluent_sql.exceptions import (
 )
 from confluent_sql.service_client import StatusExceptions, apply_status_policy
 
-pytestmark = pytest.mark.unit
-
 
 def _ok_response(body: dict | None = None, status_code: int = 200) -> Mock:
     """A success response whose raise_for_status() is a no-op and .json() returns body."""

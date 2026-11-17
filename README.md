@@ -130,6 +130,8 @@ Because inference happens during `connect()`, an unknown or ambiguous organizati
 
 **Precedence.** An explicit `endpoint` always wins, then an explicit `cloud_provider` *and* `cloud_region` pair, then inference, and anything you pass explicitly costs no extra requests. Supplying only one of `cloud_provider` / `cloud_region` makes the driver fill in the other from the cluster, and check the one you gave against it: a wrong one raises `ClusterMismatchError` (its `.mismatches` lists each parameter with what you supplied and what the cluster has), so a typo fails at `connect()`. A complete pair is trusted as given, with no lookup and no check.
 
+**Reading the result.** The resolved values are available on the connection as `conn.cloud_provider` and `conn.cloud_region` (both `str | None`, read-only): as you supplied them, or as inferred (the provider lowercased). Both are `None` when you connected with only an `endpoint`, since neither is parsed back out of it.
+
 **`database_kafka_cluster_id` is optional and rarely needed.** Pass it only to disambiguate, when several clusters share the `database` name (`AmbiguousClusterError`, whose `.clusters` lists the candidates), or to skip the lookup, e.g. to use Tableflow or Connectors with only their dedicated key pair. When you do pass it, the cluster is fetched directly by id, which is cheaper and means `database` is not needed to infer cloud and region. If you pass `database` too, it must match that cluster's name, or `ClusterMismatchError` is raised; that check only happens when the driver looks the cluster up anyway (the cloud/region inference above), never on paths that trust what you gave.
 
 **What is never inferred.**

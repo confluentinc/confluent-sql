@@ -569,11 +569,12 @@ class Connection:
     """Cloud provider ("aws", "gcp", "azure") as passed to connect(), or inferred lowercased from
     the database's cluster via CMK (#310); None when only an endpoint was given. Kept alongside an
     explicit endpoint, where it wins over parsing the endpoint -- see
-    `artifacts.resolve_artifact_scope`."""
+    `artifacts.resolve_artifact_scope`. Exposed as the `cloud_provider` property."""
     _cloud_region: str | None
     """Cloud region (e.g. "us-east-2") as passed to connect(), or inferred from the database's
     cluster via CMK (#310); None when only an endpoint was given. Without an endpoint it is set
-    together with `_cloud_provider`: a half-supplied pair is completed from the cluster."""
+    together with `_cloud_provider`: a half-supplied pair is completed from the cluster. Exposed as
+    the `cloud_region` property."""
     _resolved_kafka_cluster_id: str | None
     """Cached `lkc-…` id for `database`; pre-seeded by database_kafka_cluster_id, else from CMK."""
     _database_cluster: _ClusterInfo | None
@@ -1743,6 +1744,28 @@ class Connection:
         if self._organization_id_value is None:
             raise InternalError("driver bug: organization_id was never settled during __init__")
         return self._organization_id_value
+
+    @property
+    def cloud_provider(self) -> str | None:
+        """
+        The cloud provider ("aws", "gcp", "azure") this connection resolved, or None if unknown.
+
+        Settled by the end of __init__: as supplied to connect()/Connection() when given, else
+        (lowercased) inferred from the database's Kafka cluster via CMK (#310). None when only an
+        `endpoint` was given, since the provider is not parsed back out of it. Read-only.
+        """
+        return self._cloud_provider
+
+    @property
+    def cloud_region(self) -> str | None:
+        """
+        The cloud region (e.g. "us-east-2") this connection resolved, or None if unknown.
+
+        Settled by the end of __init__: as supplied to connect()/Connection() when given, else
+        inferred from the database's Kafka cluster via CMK (#310). None when only an `endpoint`
+        was given, since the region is not parsed back out of it. Read-only.
+        """
+        return self._cloud_region
 
     @property
     def oauth_metrics(self) -> OAuthMetrics | None:

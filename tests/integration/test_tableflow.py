@@ -108,7 +108,6 @@ def tableflow_table_name(
             print(f"Error dropping table {name} during teardown: {e}")
 
 
-@pytest.mark.integration
 @pytest.mark.slow
 class TestTableflowLifecycle:
     """End-to-end arc: create table -> enable -> insert -> assert healthy -> disable -> drop."""

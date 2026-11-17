@@ -21,8 +21,6 @@ from confluent_sql.artifacts import ArtifactScope
 from confluent_sql.connection import Connection, ControlPlaneSurface
 from confluent_sql.service_client import apply_status_policy
 
-pytestmark = pytest.mark.unit
-
 ENV = "env-abc123"
 DB = "my_cluster"
 CLUSTERS_URL = "/cmk/v2/clusters"
@@ -167,6 +165,48 @@ class TestInference:
         close_spy.assert_called_once()
 
 
+class TestPublicProperties:
+    """`Connection.cloud_provider` / `cloud_region` expose the resolved values (#322)."""
+
+    @pytest.mark.parametrize(
+        "cloud,region",
+        [("AWS", "us-east-2"), ("GCP", "europe-west1"), ("AZURE", "eastus")],
+    )
+    def test_inferred_values_are_exposed_lowercased(
+        self, cmk: FakeCmk, cloud: str, region: str
+    ) -> None:
+        cmk.clusters = [_cluster(cloud=cloud, region=region)]
+        conn = _connect()
+        assert (conn.cloud_provider, conn.cloud_region) == (cloud.lower(), region)
+
+    def test_seeded_cluster_id_values_are_exposed(self, cmk: FakeCmk) -> None:
+        conn = _connect(database="", database_kafka_cluster_id="lkc-1")
+        assert (conn.cloud_provider, conn.cloud_region) == ("aws", "us-east-2")
+
+    def test_explicit_pair_is_echoed_as_supplied(self, cmk: FakeCmk) -> None:
+        conn = _connect(cloud_provider="gcp", cloud_region="eu-west-1")
+        assert (conn.cloud_provider, conn.cloud_region) == ("gcp", "eu-west-1")
+
+    def test_endpoint_only_leaves_both_unknown(self, cmk: FakeCmk) -> None:
+        conn = _connect(endpoint="https://flink.private.example.com")
+        assert conn.cloud_provider is None
+        assert conn.cloud_region is None
+
+    def test_explicit_pair_beside_endpoint_is_exposed(self, cmk: FakeCmk) -> None:
+        conn = _connect(
+            endpoint="https://flink.dom1.us-east-2.aws.private.confluent.cloud",
+            cloud_provider="gcp",
+            cloud_region="eu-west-1",
+        )
+        assert (conn.cloud_provider, conn.cloud_region) == ("gcp", "eu-west-1")
+
+    @pytest.mark.parametrize("name", ["cloud_provider", "cloud_region"])
+    def test_properties_are_read_only(self, cmk: FakeCmk, name: str) -> None:
+        conn = _connect()
+        with pytest.raises(AttributeError):
+            setattr(conn, name, "other")
+
+
 class TestPrecedence:
     def test_explicit_endpoint_makes_no_cmk_call(self, cmk: FakeCmk) -> None:
         conn = _connect(endpoint="https://flink.private.example.com/")
@@ -203,7 +243,7 @@ class TestHalfSuppliedPair:
     def test_missing_half_is_completed_in_one_lookup(self, cmk: FakeCmk, kwargs: dict) -> None:
         conn = _connect(**kwargs)
         assert conn._flink_endpoint == "https://flink.us-east-2.aws.confluent.cloud"
-        assert (conn._cloud_provider, conn._cloud_region) == ("aws", "us-east-2")
+        assert (conn.cloud_provider, conn.cloud_region) == ("aws", "us-east-2")
         assert cmk.urls == [CLUSTERS_URL]
 
     @pytest.mark.parametrize(

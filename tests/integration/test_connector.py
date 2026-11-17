@@ -123,7 +123,6 @@ def connector_names(
             print(f"Error dropping topic {topic_name} during teardown: {e}")
 
 
-@pytest.mark.integration
 @pytest.mark.slow
 class TestConnectorLifecycle:
     """End-to-end arc: create Datagen source -> wait RUNNING -> assert healthy -> pause -> resume

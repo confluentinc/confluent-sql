@@ -51,7 +51,6 @@ def global_key_connect_args(
     }
 
 
-@pytest.mark.integration
 def test_global_key_infers_cloud_and_region(
     global_key_connect_args: dict[str, str],
     cloud_inference_env: dict[str, str],
@@ -64,7 +63,6 @@ def test_global_key_infers_cloud_and_region(
         conn.close()
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("supplied_half", ["cloud_provider", "cloud_region"])
 def test_global_key_completes_a_half_supplied_pair(
     global_key_connect_args: dict[str, str],
@@ -87,7 +85,6 @@ def test_global_key_completes_a_half_supplied_pair(
         conn.close()
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize(
     "wrong_half,wrong_value",
     [("cloud_provider", "azure-not-it"), ("cloud_region", "nowhere-1")],
@@ -102,7 +99,6 @@ def test_global_key_wrong_half_of_a_pair_is_a_mismatch(
     assert caught.value.cluster_id.startswith("lkc-")
 
 
-@pytest.mark.integration
 def test_global_key_cluster_id_with_the_wrong_database_name_is_a_mismatch(
     global_key_connect_args: dict[str, str],
     cloud_inference_env: dict[str, str],
@@ -177,7 +173,6 @@ def test_duplicate_database_name_is_ambiguous_then_explicit_cluster_id_connects(
         conn.close()
 
 
-@pytest.mark.integration
 @pytest.mark.oauth
 def test_oauth_infers_cloud_and_region(
     fresh_oauth_process,
