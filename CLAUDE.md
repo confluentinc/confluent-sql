@@ -91,7 +91,8 @@ non-blocking variant would be meaningless.
 
 Never write `@pytest.mark.unit` or `@pytest.mark.integration`. The root `tests/conftest.py`
 `pytest_collection_modifyitems` marks each test from its directory (`tests/unit/`, `tests/integration/`),
-and raises a collection error for a test outside both or one carrying the other directory's marker.
+and raises a collection error for a test outside both, or for any explicit `unit`/`integration`
+mark (even one agreeing with the directory): there is one way to do it.
 
 ## The `oauth` test marker
 

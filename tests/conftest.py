@@ -21,8 +21,8 @@ def _marker_for_path(rel_path: Path) -> str | None:
 def pytest_collection_modifyitems(config, items):
     """Mark every test `unit` or `integration` from the directory it lives in (#283).
 
-    Nobody hand-applies those two markers. A test outside both directories, or one that carries
-    the *other* directory's marker explicitly, is a collection error.
+    Nobody hand-applies those two markers: a test outside both directories, or one carrying either
+    marker explicitly (even the one its directory implies), is a collection error.
 
     `tryfirst` matters: pytest applies `-m` selection in its own collection hook, so the markers
     must already be there for `-m unit` / `-m integration` to select anything.
@@ -34,11 +34,12 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError(
                 f"{rel_path} is neither under unit/ nor integration/; every test lives in one."
             )
-        for other in (m for m in _PATH_MARKERS if m != expected):
-            if item.get_closest_marker(other):
+        for explicit in _PATH_MARKERS:
+            if item.get_closest_marker(explicit):
                 raise pytest.UsageError(
-                    f"{item.nodeid} is marked `{other}` but lives under {expected}/; the "
-                    "unit/integration marker comes from the directory, remove the explicit mark."
+                    f"{item.nodeid} is explicitly marked `{explicit}`; remove it. The "
+                    "unit/integration marker is applied automatically from the directory "
+                    f"({expected}/), even when the explicit mark agrees with it."
                 )
         item.add_marker(expected)
 
