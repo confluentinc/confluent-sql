@@ -42,7 +42,7 @@ blocks:
         - name: "Unit Tests"
           matrix:
             - env_var: UV_PYTHON
-              values: ["3.11", "3.12", "3.13", "3.14"]
+              values: ["3.11", "3.12", "3.13", "3.14", "3.15"]
           commands:
             - uv run --frozen pytest -m unit --junitxml=test-results.xml
       epilogue:
