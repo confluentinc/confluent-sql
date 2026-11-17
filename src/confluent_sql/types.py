@@ -7,7 +7,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from math import isinf, isnan
 from types import NoneType
@@ -720,7 +720,7 @@ class TimestampConverter(TypeConverter[datetime, str]):
 
         # If has tzinfo, convert to UTC time w/o tzinfo for Flink TIMESTAMP_LTZ
         if python_value.tzinfo is not None:
-            python_value = python_value.astimezone(tz=timezone.utc).replace(tzinfo=None)
+            python_value = python_value.astimezone(tz=UTC).replace(tzinfo=None)
             # Must explicitly cast in the string forms ...
             flink_type = "timestamp_ltz"
         else:
@@ -760,7 +760,7 @@ class TimestampConverter(TypeConverter[datetime, str]):
         # But if we're dealing with TIMESTAMP_LTZ, we should interpret
         # the timestamp as being in UTC and set tzinfo accordingly.
         if self._column_type.type_name == "TIMESTAMP_WITH_LOCAL_TIME_ZONE":
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
 
         return dt
 

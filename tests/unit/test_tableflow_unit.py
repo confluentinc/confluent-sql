@@ -31,6 +31,12 @@ from confluent_sql.tableflow import (
 pytestmark = pytest.mark.unit
 
 
+class TestTableFormatStringSemantics:
+    def test_members_stringify_to_their_wire_value(self) -> None:
+        assert str(TableFormat.ICEBERG) == "ICEBERG"
+        assert f"{TableFormat.DELTA}" == "DELTA"
+
+
 class TestNormalizeTableFormats:
     """The `table_formats` argument accepts a single TableFormat or a collection of them."""
 

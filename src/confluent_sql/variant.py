@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Any, TypeAlias
 
@@ -102,7 +102,7 @@ def _decode_variant_utc_timestamp(value: str) -> datetime:
     The wire node also carries the session-zone offset, but the driver drops it and
     returns UTC, mirroring how a TIMESTAMP_LTZ column is returned.
     """
-    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(value).replace(tzinfo=UTC)
 
 
 def _decode_variant_boolean(value: str) -> bool:
