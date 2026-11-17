@@ -7,8 +7,6 @@ import pytest
 
 from confluent_sql.utils import ExtensibleEnum, extract_error_detail
 
-pytestmark = pytest.mark.unit
-
 
 class _Color(ExtensibleEnum):
     RED = "RED"

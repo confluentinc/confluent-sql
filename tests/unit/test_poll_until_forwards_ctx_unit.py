@@ -17,8 +17,6 @@ import pytest
 
 import confluent_sql
 
-pytestmark = pytest.mark.unit
-
 SRC = Path(confluent_sql.__file__).parent
 KNOWN_WAIT_SITES = 7
 """statement-ready, stop, Tableflow running, Tableflow removal, connector state, connector removal,

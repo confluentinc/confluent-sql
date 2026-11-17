@@ -14,7 +14,6 @@ from tests.unit.conftest import StatementFactory, StatementResponseFactory, as_d
 """Unit tests over Statement class."""
 
 
-@pytest.mark.unit
 class TestOp:
     @pytest.mark.parametrize(
         "op,expected_str",
@@ -38,7 +37,6 @@ class TestOp:
         assert op.treat_as_delete is is_delete
 
 
-@pytest.mark.unit
 class TestPhaseIsTerminal:
     """Tests for Phase.is_terminal property."""
 
@@ -60,7 +58,6 @@ class TestPhaseIsTerminal:
         assert phase.is_terminal == expected
 
 
-@pytest.mark.unit
 class TestStatementDescriptionProperty:
     """Tests for Statement.description property."""
 
@@ -94,7 +91,6 @@ class TestStatementDescriptionProperty:
         assert statement.description is None
 
 
-@pytest.mark.unit
 class TestStatementProperties:
     """Tests for various Statement properties."""
 
@@ -324,7 +320,6 @@ class TestStatementProperties:
         )
         assert statement.is_deletable == expected
 
-    @pytest.mark.unit
     @pytest.mark.parametrize(
         "phase,expected",
         [
@@ -576,7 +571,6 @@ class TestStatementProperties:
         assert statement.is_pool_exhausted is False
 
 
-@pytest.mark.unit
 class TestWarnings:
     """Tests for Statement.warnings property."""
 
@@ -738,7 +732,6 @@ class TestWarnings:
         )
 
 
-@pytest.mark.unit
 class TestStatementFromResponse:
     """Tests for Statement.from_response class method error paths."""
 
@@ -853,7 +846,6 @@ class TestStatementFromResponse:
         assert field1.field_type.nullable is False
 
 
-@pytest.mark.unit
 class TestSchemaParsing:
     """Tests for parsing Schema from Statement responses with realistic column type descriptions."""
 
@@ -1000,7 +992,6 @@ class TestSchemaParsing:
         # Don't bother about the rest, let the individual column tests handle that.
 
 
-@pytest.mark.unit
 class TestStatementEndUserLabels:
     """Tests for Statement.end_user_labels property."""
 
@@ -1035,7 +1026,6 @@ class TestStatementEndUserLabels:
             _ = statement.end_user_labels
 
 
-@pytest.mark.unit
 class TestStatementCanFetchResults:
     """Comprehensive tests for Statement.can_fetch_results() method.
 
@@ -1477,7 +1467,6 @@ class TestStatementCanFetchResults:
         assert not statement.can_fetch_results(execution_mode)
 
 
-@pytest.mark.unit
 class TestStatementDryRun:
     """A dry-run statement is validated and answered in the POST response, never stored."""
 

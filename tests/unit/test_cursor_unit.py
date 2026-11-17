@@ -31,7 +31,6 @@ def mock_connection_cursor(mock_connection_factory: MockConnectionFactory):
         yield mock_cursor
 
 
-@pytest.mark.unit
 class TestExecute:
     """Unit tests over cusor.execute*()."""
 
@@ -771,7 +770,6 @@ class TestExecute:
         assert call_count[0] == 1
 
 
-@pytest.mark.unit
 class TestCursorInterpolatingParameters:
     @pytest.mark.parametrize(
         "parameters_iterable_type",
@@ -835,7 +833,6 @@ class TestCursorInterpolatingParameters:
             mock_connection_cursor.execute(statement_template, parameters)  # type: ignore
 
 
-@pytest.mark.unit
 class TestFetchMany:
     """Unit tests over cursor.fetchmany()."""
 
@@ -906,7 +903,6 @@ class TestFetchMany:
         assert len(result) == 3, f"Expected exactly 3 rows (what was cached), got {len(result)}"
 
 
-@pytest.mark.unit
 class TestCursorFetching:
     """Unit tests over cursor fetching methods."""
 
@@ -1269,7 +1265,6 @@ class TestCursorFetching:
         assert rest[1].op == Op.INSERT
 
 
-@pytest.mark.unit
 class TestClose:
     """Unit tests over cursor.close()."""
 
@@ -1313,7 +1308,6 @@ class TestClose:
         assert mock_connection_cursor._result_reader is None
 
 
-@pytest.mark.unit
 class TestIteration:
     def test_iteration_on_ddl_mode_raises(self, mock_connection_cursor: Cursor):
         """Test that iterating over the cursor when in DDL mode raises."""
@@ -1374,7 +1368,6 @@ class TestIteration:
         assert results == [(1,), (2,), (3,)]
 
 
-@pytest.mark.unit
 class TestCursorStatementProperty:
     """Unit tests over the cursor.statement property."""
 
@@ -1407,7 +1400,6 @@ class TestCursorStatementProperty:
             _ = mock_connection_cursor.statement
 
 
-@pytest.mark.unit
 class TestCursorWarningsProperty:
     """Unit tests over the cursor.warnings property."""
 
@@ -1470,7 +1462,6 @@ class TestCursorWarningsProperty:
         assert warnings[0].reason == "SOME_REASON"
 
 
-@pytest.mark.unit
 class TestCursorResultTypeProperties:
     """Test the cursor properties for determining result types."""
 
@@ -1627,7 +1618,6 @@ class TestCursorResultTypeProperties:
         cursor4.close()
 
 
-@pytest.mark.unit
 class TestArraysizeProperty:
     """Test the cursor arraysize property getter and setter with validation."""
 
@@ -1682,7 +1672,6 @@ class TestArraysizeProperty:
             mock_connection_cursor.arraysize = invalid_value  # type: ignore
 
 
-@pytest.mark.unit
 class TestRaiseIfStatementIsBroken:
     """Unit tests for Cursor._raise_if_statement_is_broken()."""
 
@@ -1820,7 +1809,6 @@ class TestRaiseIfStatementIsBroken:
         assert "Test message - not deleted" in str(exc2)
 
 
-@pytest.mark.unit
 class TestMayHaveResults:
     """Tests for Cursor.may_have_results property covering all subconditions."""
 
@@ -1948,7 +1936,6 @@ class TestMayHaveResults:
         assert mock_connection_cursor.may_have_results is True
 
 
-@pytest.mark.unit
 class TestComputePoolIdParameter:
     """Test the compute_pool_id parameter for Cursor.execute() and related methods."""
 
@@ -2019,7 +2006,6 @@ class TestComputePoolIdParameter:
             )
 
 
-@pytest.mark.unit
 class TestStopStatement:
     """Tests for Cursor.stop_statement."""
 

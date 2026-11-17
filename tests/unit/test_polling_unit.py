@@ -32,7 +32,6 @@ def fake_clock(mocker) -> _FakeClock:
     return clock
 
 
-@pytest.mark.unit
 class TestSleepWithBackoff:
     """Tests for the shared backoff pacing generator."""
 
@@ -126,7 +125,6 @@ class TestSleepWithBackoff:
         uniform.assert_called_with(0.75, 1.25)
 
 
-@pytest.mark.unit
 class TestPollUntil:
     """poll_until owns the whole wait loop: pacing, deadline, slow-poll tolerance (#236)."""
 
@@ -209,7 +207,6 @@ class TestPollUntil:
         assert calls == 1
 
 
-@pytest.mark.unit
 class TestPollUntilContext:
     """`poll_until` hands each attempt a `Context` whose deadline is the wait's, so the requests an
     attempt makes can keep to the wait's wall-clock budget (see `ServiceClient.request`)."""

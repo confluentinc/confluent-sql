@@ -28,8 +28,6 @@ from confluent_sql.tableflow import (
     storage_from_spec,
 )
 
-pytestmark = pytest.mark.unit
-
 
 class TestTableFormatStringSemantics:
     def test_members_stringify_to_their_wire_value(self) -> None:

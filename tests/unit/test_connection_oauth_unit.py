@@ -36,7 +36,7 @@ from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.provider import OAuthMetrics
 from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
 
-pytestmark = [pytest.mark.unit, pytest.mark.oauth]
+pytestmark = pytest.mark.oauth
 
 CONFIG = CCloudOAuthConfig(
     auth_service_domain="login.confluent.io",

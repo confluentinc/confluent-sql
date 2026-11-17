@@ -32,8 +32,6 @@ from confluent_sql.artifacts import (
 )
 from confluent_sql.service_client import StatusExceptions, apply_status_policy
 
-pytestmark = pytest.mark.unit
-
 ENV_ID = "env-1"
 CLOUD = "AWS"
 REGION = "us-east-2"

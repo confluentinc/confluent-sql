@@ -31,7 +31,6 @@ def invalid_credential_connection() -> Connection:
     )
 
 
-@pytest.mark.unit
 class TestExecuteStatementProperties:
     """Tests for properties parameter in _execute_statement method."""
 
@@ -293,7 +292,6 @@ class TestExecuteStatementProperties:
             )
 
 
-@pytest.mark.unit
 class TestDriverOwnedPropertiesInvariant:
     """`DRIVER_OWNED_PROPERTIES` and the overlay it gates must stay in lockstep (#166): every key
     the overlay stamps is rejected from caller input, and vice versa."""
@@ -318,7 +316,6 @@ class TestDriverOwnedPropertiesInvariant:
         assert set(merged.keys()) == DRIVER_OWNED_PROPERTIES
 
 
-@pytest.mark.unit
 class TestConnectionLocalTimeZoneDefault:
     """Connection-level `local_time_zone` default (#168): fills in `sql.local-time-zone` when a
     call's own properties are silent, never overrides an explicit per-call value, and emits

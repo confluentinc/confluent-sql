@@ -43,7 +43,6 @@ EXPECTED_PROPERTY_KEYS = {
 }
 
 
-@pytest.mark.unit
 class TestProperty:
     """The Property key enum: exact wire strings and complete, drift-proof membership."""
 
@@ -79,7 +78,6 @@ class TestProperty:
         assert f"{Property.SNAPSHOT_MODE}" == "sql.snapshot.mode"
 
 
-@pytest.mark.unit
 class TestPropertyValues:
     """The value enums: exact wire values, a shared PropertyValue base, and bare-member JSON."""
 
@@ -109,7 +107,6 @@ class TestPropertyValues:
         assert json.loads(json.dumps(payload)) == {"sql.snapshot.write-mode": "fast-write"}
 
 
-@pytest.mark.unit
 class TestScanStartupMode:
     """The scan.startup.mode value enum -- Confluent's set, which is not Apache Flink's."""
 
@@ -136,7 +133,6 @@ class TestScanStartupMode:
         assert "group-offsets" not in {member.value for member in ScanStartupMode}
 
 
-@pytest.mark.unit
 class TestToFlinkDuration:
     """timedelta -> Flink Duration string: whole seconds as `s`, else `ms`, else raise."""
 
@@ -165,7 +161,6 @@ class TestToFlinkDuration:
             _to_flink_duration(timedelta(seconds=-1))
 
 
-@pytest.mark.unit
 class TestStatementProperties:
     """The frozen typed view: rendering, forward-compat strings, and construction-time coherence."""
 
@@ -314,7 +309,6 @@ class TestStatementProperties:
         assert sp.to_properties_dict() == {"sql.some.future-option": "x"}
 
 
-@pytest.mark.unit
 class TestDriverOwnedProperties:
     """The frozenset of keys `validate_properties_dict` rejects from caller input (#166)."""
 
@@ -323,7 +317,6 @@ class TestDriverOwnedProperties:
         assert expected == DRIVER_OWNED_PROPERTIES
 
 
-@pytest.mark.unit
 class TestValidatePropertiesDict:
     """Normalization + validation of a caller-supplied `properties` argument (#166): downgrades a
     `StatementProperties`, treats `None` as empty, and otherwise enforces the same dict/key/value
@@ -385,7 +378,6 @@ class TestValidatePropertiesDict:
             validate_properties_dict(StatementProperties(extra={"sql.snapshot.mode": "off"}))
 
 
-@pytest.mark.unit
 def test_enums_are_reexported_from_package_root():
     """Property, PropertyValue, and the value enums are importable straight off confluent_sql."""
     assert confluent_sql.Property is Property
