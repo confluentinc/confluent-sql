@@ -374,6 +374,10 @@ def connect(  # noqa: PLR0913
             If your Kafka clusters / Flink tables require private networking, supply the base
             endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for example,
             but cases and private networking technologies vary).
+
+            When using Artifacts alongside `endpoint`, also pass `cloud_provider` and
+            `cloud_region`: artifact calls are scoped by them, and they cannot be derived from a
+            custom endpoint. They do not alter the endpoint used for Flink requests.
         controlplane_endpoint: Base URL for the Confluent Cloud control plane (Tableflow, Connect,
             Artifact, and CMK routes), distinct from the Flink gateway `endpoint`. Defaults to
             "https://api.confluent.cloud". A trailing slash is stripped if provided.
@@ -719,6 +723,10 @@ class Connection:
                 If your Kafka clusters / Flink tables require private networking, supply the base
                 endpoint URL here (`"https://flink.us-east-2.aws.private.confluent.cloud"` for
                 example, but cases and private networking technologies vary).
+
+                When using Artifacts alongside `endpoint`, also pass `cloud_provider` and
+                `cloud_region`: artifact calls are scoped by them, and they cannot be derived
+                from a custom endpoint. They do not alter the endpoint used for Flink requests.
             organization_id: Organization ID. Optional under `auth="oauth"` or with a
                 global_api_key/global_api_secret pair, in which case the organizations the
                 credential can reach are listed (`GET /org/v2/organizations`): exactly one is
@@ -847,14 +855,10 @@ class Connection:
             and (oauth_cfg is not None or global_key_provided)
         )
         infer_cloud = False
-        if endpoint:
-            if cloud_provider or cloud_region:
-                logger.warning(
-                    "No need to provide cloud_provider or cloud_region when also providing "
-                    "endpoint; the endpoint is used for requests (cloud_provider/cloud_region "
-                    "are only used to scope artifact calls)."
-                )
-        elif explicit_pair:
+        if endpoint or explicit_pair:
+            # Trusted as given, no lookup. A provider/region supplied beside an endpoint is used
+            # only to scope artifact calls (#319), so providing it there is legitimate, not
+            # redundant.
             pass
         elif can_infer:
             infer_cloud = True
