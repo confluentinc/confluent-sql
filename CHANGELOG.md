@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `Connection.cloud_provider` and `Connection.cloud_region`, read-only properties typed `str | None` exposing the cloud and region the connection resolved: as supplied to `connect()`, or inferred from the database's Kafka cluster (lowercased provider). Both are `None` when the connection was made with only an `endpoint`. (#322)
+
 ## 0.9.0, 2026-11-16
 
 ### Changed - Breaking
