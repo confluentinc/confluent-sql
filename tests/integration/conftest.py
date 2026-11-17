@@ -87,8 +87,8 @@ def assert_cloud_inferred() -> Callable[[Connection, dict[str, str]], None]:
     def _check(conn: Connection, expected: dict[str, str]) -> None:
         provider = expected["expected_provider"].lower()
         region = expected["expected_region"]
-        assert conn._cloud_provider == provider
-        assert conn._cloud_region == region
+        assert conn.cloud_provider == provider
+        assert conn.cloud_region == region
         assert conn._flink_endpoint == f"https://flink.{region}.{provider}.confluent.cloud"
         # The one lookup also seeded the cluster id, so this costs no further CMK request.
         assert conn._resolve_kafka_cluster_id().startswith("lkc-")
