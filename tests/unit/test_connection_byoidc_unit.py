@@ -14,8 +14,6 @@ from confluent_sql.connection import Connection
 from confluent_sql.credentials import ControlPlaneSurface
 from confluent_sql.execution_mode import ExecutionMode
 
-pytestmark = pytest.mark.unit
-
 
 def _byoidc_connect(**overrides) -> Connection:
     """connect() in BYOIDC mode with the network-free params filled in.

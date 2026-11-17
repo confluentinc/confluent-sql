@@ -76,7 +76,6 @@ def oauth_connection(oauth_connect_args: dict[str, str]) -> Generator[Connection
     oauth_discard_login()
 
 
-@pytest.mark.integration
 class TestOauth:
     """Client functionality exercised over an OAuth-authenticated connection."""
 

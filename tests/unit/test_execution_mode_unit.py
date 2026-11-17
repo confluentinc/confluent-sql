@@ -3,7 +3,6 @@ import pytest
 from confluent_sql.execution_mode import ExecutionMode
 
 
-@pytest.mark.unit
 class TestExecutionModeUnit:
     @pytest.mark.parametrize(
         "mode, expected_is_ddl",

@@ -7,8 +7,6 @@ import pytest
 from confluent_sql import InterfaceError
 from confluent_sql.credentials import _resolve_service_credentials
 
-pytestmark = pytest.mark.unit
-
 GLOBAL_PAIR = ("gk", "gs")
 
 

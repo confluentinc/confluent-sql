@@ -2,26 +2,46 @@
 
 import os
 from collections.abc import Callable, Generator
+from pathlib import Path
 from typing import TypeAlias
 
 import pytest
 
 from confluent_sql import DEFAULT_TIMEOUTS, Connection, Timeouts, connect
 
+_PATH_MARKERS = ("unit", "integration")
 
-def pytest_runtest_setup(item):
-    """Ensure that all tests are marked as either unit or integration, but never both."""
-    is_unit = any(item.iter_markers(name="unit"))
-    is_integration = any(item.iter_markers(name="integration"))
-    if not (is_integration or is_unit):
-        pytest.fail(
-            "Tests must be marked with either @pytest.mark.unit or @pytest.mark.integration."
-        )
 
-    if is_unit and is_integration:
-        pytest.fail(
-            "Tests cannot be marked with both @pytest.mark.unit and @pytest.mark.integration."
-        )
+def _marker_for_path(rel_path: Path) -> str | None:
+    """The `unit` / `integration` marker implied by the first such directory in `rel_path`."""
+    return next((part for part in rel_path.parts[:-1] if part in _PATH_MARKERS), None)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Mark every test `unit` or `integration` from the directory it lives in (#283).
+
+    Nobody hand-applies those two markers: a test outside both directories, or one carrying either
+    marker explicitly (even the one its directory implies), is a collection error.
+
+    `tryfirst` matters: pytest applies `-m` selection in its own collection hook, so the markers
+    must already be there for `-m unit` / `-m integration` to select anything.
+    """
+    for item in items:
+        rel_path = item.path.relative_to(config.rootpath)
+        expected = _marker_for_path(rel_path)
+        if expected is None:
+            raise pytest.UsageError(
+                f"{rel_path} is neither under unit/ nor integration/; every test lives in one."
+            )
+        for explicit in _PATH_MARKERS:
+            if item.get_closest_marker(explicit):
+                raise pytest.UsageError(
+                    f"{item.nodeid} is explicitly marked `{explicit}`; remove it. The "
+                    "unit/integration marker is applied automatically from the directory "
+                    f"({expected}/), even when the explicit mark agrees with it."
+                )
+        item.add_marker(expected)
 
 
 # Fixtures common to all tests ...

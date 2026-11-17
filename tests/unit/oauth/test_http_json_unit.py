@@ -9,7 +9,7 @@ from confluent_sql.oauth.http_json import (
     require_field,
 )
 
-pytestmark = [pytest.mark.unit, pytest.mark.oauth]
+pytestmark = pytest.mark.oauth
 
 
 def _client(handler) -> httpx.Client:

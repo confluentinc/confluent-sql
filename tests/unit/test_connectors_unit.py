@@ -16,8 +16,6 @@ from confluent_sql.connectors import (
 )
 from confluent_sql.exceptions import InterfaceError, OperationalError
 
-pytestmark = pytest.mark.unit
-
 
 def _read_body() -> dict:
     """A `GET/POST .../connectors/{name}` body: config/tasks/type, never lifecycle state."""

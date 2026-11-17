@@ -48,7 +48,6 @@ def mock_cursor():
     return cursor
 
 
-@pytest.mark.unit
 class TestUpsertColumnsCompressor:
     """Tests for UpsertColumnsCompressor with both tuple and dict formats."""
 
@@ -235,7 +234,6 @@ class TestUpsertColumnsCompressor:
         assert snapshot[0] == {"id": 1, "value": "b", "count": 20}
 
 
-@pytest.mark.unit
 class TestNoUpsertColumnsCompressor:
     """Tests for NoUpsertColumnsCompressor."""
 
@@ -343,7 +341,6 @@ class TestNoUpsertColumnsCompressor:
         assert snapshot[0] == {"id": 1, "value": "b"}
 
 
-@pytest.mark.unit
 class TestNoUpsertColumnsCompressorIssue184:
     """The three changelog sequences from issue #184.
 
@@ -417,7 +414,6 @@ class TestNoUpsertColumnsCompressorIssue184:
         assert snapshot == []
 
 
-@pytest.mark.unit
 class TestCompressorValidation:
     """Test validation in ChangelogCompressor and its subclasses."""
 
@@ -496,7 +492,6 @@ class TestCompressorValidation:
             NoUpsertColumnsCompressor(mock_cursor, mock_cursor._statement)
 
 
-@pytest.mark.unit
 class TestFactoryFunction:
     """Tests for the create_changelog_compressor factory function."""
 
@@ -535,7 +530,6 @@ class TestFactoryFunction:
             create_changelog_compressor(mock_cursor, mock_cursor._statement)
 
 
-@pytest.mark.unit
 class TestChangelogCompressorCreation:
     """Tests for creating compressors from cursor."""
 
@@ -564,7 +558,6 @@ class TestChangelogCompressorCreation:
             mock_cursor.changelog_compressor()
 
 
-@pytest.mark.unit
 class TestBatchSize:
     """Tests for batch size handling."""
 
@@ -605,7 +598,6 @@ class TestBatchSize:
         assert len(snapshot) == 1
 
 
-@pytest.mark.unit
 class TestCloseMethod:
     """Tests for the close() method."""
 
@@ -710,7 +702,6 @@ class TestCloseMethod:
         assert mock_cursor.close.call_count == 3
 
 
-@pytest.mark.unit
 class TestEdgeCases:
     """Tests for edge cases and error conditions."""
 
@@ -767,7 +758,6 @@ class TestEdgeCases:
         assert snapshot == []
 
 
-@pytest.mark.unit
 class TestUpsertColumnsCompressorErrorCases:
     """Tests for error cases in UpsertColumnsCompressor when keys are not found.
 
@@ -899,7 +889,6 @@ class TestUpsertColumnsCompressorErrorCases:
         assert snapshot[0] == (2, "b", 20)
 
 
-@pytest.mark.unit
 class TestNoUpsertColumnsCompressorErrorCases:
     """Tests for error cases in NoUpsertColumnsCompressor when rows are not found."""
 
@@ -1104,7 +1093,6 @@ class TestNoUpsertColumnsCompressorErrorCases:
         assert snapshot[0] == (1, "a", 15)
 
 
-@pytest.mark.unit
 class TestUpsertColumnsCompressorUpdateSequencing:
     """Tests for UPDATE_BEFORE/UPDATE_AFTER handling in UpsertColumnsCompressor.
 
@@ -1153,7 +1141,6 @@ class TestUpsertColumnsCompressorUpdateSequencing:
         assert snapshot[0] == (1, "a", 20)
 
 
-@pytest.mark.unit
 class TestUpsertColumnsCompressorIssue185:
     """Regression tests for UpsertColumnsCompressor's -U/+U handling (issue #185).
 
@@ -1290,7 +1277,6 @@ class TestUpsertColumnsCompressorIssue185:
             next(compressor.snapshots())
 
 
-@pytest.mark.unit
 class TestNoUpsertColumnsCompressorUpdateSequencing:
     """Tests for UPDATE_BEFORE/UPDATE_AFTER handling in NoUpsertColumnsCompressor.
 
@@ -1319,7 +1305,6 @@ class TestNoUpsertColumnsCompressorUpdateSequencing:
         assert snapshot[0] == (1, "a", 20)
 
 
-@pytest.mark.unit
 class TestSnapshotsGeneratorTermination:
     """Tests for snapshots() generator termination behavior."""
 
@@ -1499,7 +1484,6 @@ class TestSnapshotsGeneratorTermination:
         assert len(snapshots_seen) == 2
 
 
-@pytest.mark.unit
 class TestGetCurrentSnapshot:
     """Tests for the get_current_snapshot() method."""
 
@@ -1845,7 +1829,6 @@ class TestGetCurrentSnapshot:
             compressor.get_current_snapshot(fetch_batchsize=invalid_type_value)
 
 
-@pytest.mark.unit
 class TestNoUpsertColumnsCompressorCrossPartitionSkew:
     """Regression tests for NoUpsertColumnsCompressor under cross-partition delivery skew.
 

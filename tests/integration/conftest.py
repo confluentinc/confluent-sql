@@ -20,25 +20,6 @@ from confluent_sql.cursor import Cursor
 logger = logging.getLogger(__name__)
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(items):
-    """Make `integration_with_mocks` imply `integration`, so such a test needs only the one marker.
-
-    `tryfirst` matters: pytest applies `-m` selection in its own collection hook, so the implied
-    marker must already be there for `-m integration` to select these tests.
-    """
-    for item in items:
-        if item.get_closest_marker("integration_with_mocks"):
-            item.add_marker(pytest.mark.integration)
-
-
-def pytest_runtest_setup(item):
-    """Ensure that all tests within integration/ are marked as integration tests."""
-    is_integration = any(item.iter_markers(name="integration"))
-    if not is_integration:
-        pytest.fail("Tests within 'integration/' must be marked with @pytest.mark.integration.")
-
-
 @pytest.fixture(scope="session")
 def load_env_file():
     """Load environment variables from .env file if it exists in the current working directory.
@@ -106,8 +87,8 @@ def assert_cloud_inferred() -> Callable[[Connection, dict[str, str]], None]:
     def _check(conn: Connection, expected: dict[str, str]) -> None:
         provider = expected["expected_provider"].lower()
         region = expected["expected_region"]
-        assert conn._cloud_provider == provider
-        assert conn._cloud_region == region
+        assert conn.cloud_provider == provider
+        assert conn.cloud_region == region
         assert conn._flink_endpoint == f"https://flink.{region}.{provider}.confluent.cloud"
         # The one lookup also seeded the cluster id, so this costs no further CMK request.
         assert conn._resolve_kafka_cluster_id().startswith("lkc-")

@@ -69,7 +69,6 @@ def _wait_for_row(cursor, timeout_seconds=5):
     raise TimeoutError(f"No row available after polling for {timeout_seconds} seconds")
 
 
-@pytest.mark.integration
 class TestConnection:
     @pytest.mark.skipif(
         os.getenv("CONFLUENT_FLINK_API_KEY") is None
@@ -280,7 +279,6 @@ class TestConnection:
         assert exc_info.value.statement_name == "non-existent-statement-name"
 
 
-@pytest.mark.integration
 class TestDryRunStatement:
     """Integration tests for Connection.dry_run_statement against a real environment."""
 
@@ -433,7 +431,6 @@ class TestPollToleratesRequestTimeouts:
         assert timed_out == n_timeouts
 
 
-@pytest.mark.integration
 class TestStopStatement:
     """Integration tests for stop_statement against a real environment."""
 
