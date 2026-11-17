@@ -23,8 +23,6 @@ from confluent_sql.exceptions import (
 )
 from confluent_sql.service_client import ServiceClient, apply_status_policy
 
-pytestmark = pytest.mark.unit
-
 URL = "/some/route"
 
 TOTAL_ATTEMPTS = 4

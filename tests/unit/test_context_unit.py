@@ -7,8 +7,6 @@ import pytest
 from confluent_sql import context as context_module
 from confluent_sql.context import BACKGROUND, Context
 
-pytestmark = pytest.mark.unit
-
 
 class _Clock:
     def __init__(self) -> None:

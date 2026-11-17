@@ -57,7 +57,6 @@ def cp_token_payload(
         oauth_discard_login()
 
 
-@pytest.mark.integration
 class TestOauthUserIdentity:
     def test_cp_token_claim_names(self, cp_token_payload: dict[str, Any]):
         """Not an assertion about the driver: surfaces the claim names (run with -s / on failure)

@@ -20,25 +20,6 @@ from confluent_sql.cursor import Cursor
 logger = logging.getLogger(__name__)
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(items):
-    """Make `integration_with_mocks` imply `integration`, so such a test needs only the one marker.
-
-    `tryfirst` matters: pytest applies `-m` selection in its own collection hook, so the implied
-    marker must already be there for `-m integration` to select these tests.
-    """
-    for item in items:
-        if item.get_closest_marker("integration_with_mocks"):
-            item.add_marker(pytest.mark.integration)
-
-
-def pytest_runtest_setup(item):
-    """Ensure that all tests within integration/ are marked as integration tests."""
-    is_integration = any(item.iter_markers(name="integration"))
-    if not is_integration:
-        pytest.fail("Tests within 'integration/' must be marked with @pytest.mark.integration.")
-
-
 @pytest.fixture(scope="session")
 def load_env_file():
     """Load environment variables from .env file if it exists in the current working directory.

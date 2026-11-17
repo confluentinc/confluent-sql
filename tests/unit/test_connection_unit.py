@@ -65,7 +65,6 @@ def poolless_connection() -> Connection:
     )
 
 
-@pytest.mark.unit
 class TestHTTPStatusErrorHandling:
     """Tests for enhanced error handling in Connection._request method."""
 
@@ -135,7 +134,6 @@ class TestHTTPStatusErrorHandling:
             invalid_credential_connection._get_statement("test-name")
 
 
-@pytest.mark.unit
 def test_connection_constructor_hates_negative_pause_millis(connection_factory: ConnectionFactory):
     """Test that the Connection constructor raises an error if given a negative
     statement_results_page_fetch_pause_millis."""
@@ -152,7 +150,6 @@ def test_connection_constructor_hates_negative_pause_millis(connection_factory: 
         )
 
 
-@pytest.mark.unit
 class TestTimeoutsReachTheConnection:
     """`timeouts=`: both settings arrive on the connection, defaulting to `DEFAULT_TIMEOUTS`."""
 
@@ -196,7 +193,6 @@ class TestTimeoutsReachTheConnection:
             )
 
 
-@pytest.mark.unit
 class TestConnectionDeleteStatementErrors:
     """Tests for delete_statement error handling."""
 
@@ -280,7 +276,6 @@ def _detailed_error_response(status_code: int, detail: str) -> httpx.Response:
     )
 
 
-@pytest.mark.unit
 class TestConnectionStopStatement:
     """Tests for Connection.stop_statement."""
 
@@ -644,7 +639,6 @@ class TestConnectionStopStatement:
             invalid_credential_connection.stop_statement("stmt-1", wait_for_stopped=False)
 
 
-@pytest.mark.unit
 class TestConnectionClosedThrows:
     """Tests for operations on a closed connection."""
 
@@ -661,7 +655,6 @@ class TestConnectionClosedThrows:
             invalid_credential_connection._get_statement("test-name")
 
 
-@pytest.mark.unit
 class TestGetNextPageToken:
     """Tests for the Connection._get_next_page_token method."""
 
@@ -690,7 +683,6 @@ class TestGetNextPageToken:
         assert invalid_credential_connection._get_next_page_token(url) is None
 
 
-@pytest.mark.unit
 class TestConnectionInit:
     """Tests for Connection.__init__ method."""
 
@@ -780,7 +772,6 @@ class TestConnectionInit:
         mock_lookup.assert_called_once()
 
 
-@pytest.mark.unit
 class TestConnectChecks:
     """Tests for connection checks when creating a connection."""
 
@@ -1211,7 +1202,6 @@ class TestConnectChecks:
         )
 
 
-@pytest.mark.unit
 class TestApiCredentialResolution:
     """Unit tests over _resolve_api_credentials -- the single source of truth for which
     key/secret pair authenticates a connection (#112)."""
@@ -1291,7 +1281,6 @@ class TestApiCredentialResolution:
         )
 
 
-@pytest.mark.unit
 class TestConnectAuthWiring:
     """End-to-end proof that the resolved pair is what gets handed to httpx for auth (#112)."""
 
@@ -1348,7 +1337,6 @@ class TestConnectAuthWiring:
         spy.assert_any_call(username="global-key", password="global-secret")
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestRowTypeRegistry:
     """Unit tests over RowTypeRegistry functionality."""
@@ -1447,7 +1435,6 @@ class TestRowTypeRegistry:
         assert retrieved_class is row_type, "Expected to retrieve the registered class"
 
 
-@pytest.mark.unit
 class TestConnectionDeleteStatement:
     """Tests for connection.delete_statement method."""
 
@@ -1486,7 +1473,6 @@ class TestConnectionDeleteStatement:
             invalid_credential_connection.delete_statement(123)  # type: ignore
 
 
-@pytest.mark.unit
 class TestConnectionListStatements:
     """Tests for connection.list_statements method."""
 
@@ -1858,7 +1844,6 @@ class TestConnectionListStatements:
         assert [s.name for s in statements] == ["report-a"]
 
 
-@pytest.mark.unit
 class TestGetStatement:
     """Tests for connection.get_statement method."""
 
@@ -2015,7 +2000,6 @@ class TestGetStatement:
         logger_info_spy.assert_called_with("Getting statement 'log-test-statement'")
 
 
-@pytest.mark.unit
 class TestConnectionRetriesIdempotentGets:
     """Tests that idempotent GET paths retry transient transport errors (#137), while
     mutating (POST/PATCH/DELETE) paths deliberately do not."""
@@ -2105,7 +2089,6 @@ class TestConnectionRetriesIdempotentGets:
         request_mock.assert_called_once()
 
 
-@pytest.mark.unit
 class TestExecuteStatement:
     """Tests for _execute_statement method."""
 
@@ -2434,7 +2417,6 @@ def http_agent_connection_factory(
     return _create_with_agent
 
 
-@pytest.mark.unit
 class TestClosingCursor:
     """Tests for the closing_cursor context manager."""
 
@@ -2494,7 +2476,6 @@ class TestClosingCursor:
         assert cursor.is_closed is True
 
 
-@pytest.mark.unit
 class TestClosingStreamingCursor:
     """Tests for the closing_streaming_cursor context manager."""
 
@@ -2565,7 +2546,6 @@ class TestClosingStreamingCursor:
             assert cursor1.as_dict == cursor2.as_dict
 
 
-@pytest.mark.unit
 class TestHttpUserAgentProperty:
     """Tests for the http_user_agent property getter/setter."""
 
@@ -2684,7 +2664,6 @@ class TestHttpUserAgentProperty:
             http_agent_connection_factory(http_user_agent=invalid_value)
 
 
-@pytest.mark.unit
 class TestHttpTimeoutSecs:
     """`Timeouts.httpx_request_timeout_secs` as seen through the connection."""
 
@@ -2723,7 +2702,6 @@ class TestHttpTimeoutSecs:
         assert conn._dataplane.httpx_client.timeout == httpx.Timeout(timeout_value)
 
 
-@pytest.mark.unit
 class TestComputePoolIdParameter:
     """Test the compute_pool_id parameter for Connection methods."""
 
@@ -2922,7 +2900,6 @@ class TestComputePoolIdParameter:
         assert call_kwargs["compute_pool_id"] == "lfcp-streaming-pool"
 
 
-@pytest.mark.unit
 class TestDryRunStatement:
     """Tests for Connection.dry_run_statement: one POST, no polling, the Statement is final."""
 

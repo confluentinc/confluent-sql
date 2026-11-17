@@ -1,9 +1,6 @@
 import httpx
-import pytest
 
 from confluent_sql.auth import FlinkBearerAuth
-
-pytestmark = pytest.mark.unit
 
 
 def test_auth_flow_stamps_bearer_and_identity_pool_headers():

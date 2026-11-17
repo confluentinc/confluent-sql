@@ -14,7 +14,6 @@ from confluent_sql import Connection, OperationalError, SqlNone, YearMonthInterv
 from confluent_sql.execution_mode import ExecutionMode
 
 
-@pytest.mark.integration
 class TestCursorFetch:
     """Tests over cursor.fetch* methods returning either tuples or dicts."""
 
@@ -634,7 +633,6 @@ def auto_dropped_table_name(
     return auto_dropped_table_name_factory()
 
 
-@pytest.mark.integration
 @pytest.mark.slow
 class TestExecuteCtasDDL:
     """execute_streaming_ddl() / execute_snapshot_ddl() over CREATE TABLE AS SELECT."""
@@ -791,7 +789,6 @@ class TestExecuteCtasDDL:
         assert statement.is_deleted, "Snapshot DDL statement should be auto-deleted"
 
 
-@pytest.mark.integration
 @pytest.mark.slow
 class TestExecuteMaterializedTableDDL:
     """execute_streaming_ddl() / execute_snapshot_ddl() over MATERIALIZED TABLE statements."""
@@ -937,7 +934,6 @@ class TestExecuteMaterializedTableDDL:
                 )
 
 
-@pytest.mark.integration
 class TestArrayStatements:
     """Tests over ARRAY type encoding/decoding."""
 
@@ -975,7 +971,6 @@ class TestArrayStatements:
             }
 
 
-@pytest.mark.integration
 class TestMapStatements:
     """Tests over MAP type encoding/decoding."""
 
@@ -1031,7 +1026,6 @@ class TestMapStatements:
             }
 
 
-@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.typeconv
 class TestRowConversion:

@@ -48,7 +48,6 @@ def mock_statement_with_schema(schema_fixture):
     return statement
 
 
-@pytest.mark.unit
 class TestRowFormatter:
     """Tests for RowFormatter family (RowFormatter, TupleRowFormatter, DictRowFormatter)."""
 
@@ -112,7 +111,6 @@ class TestRowFormatter:
         assert abs(result["value"] - 1.23) < 1e-9  # Avoid floating point equality issues
 
 
-@pytest.mark.unit
 class TestAppendOnlyResultReader:
     """Tests for AppendOnlyResultReader initialization and lazy formatter creation."""
 
@@ -290,7 +288,6 @@ class TestAppendOnlyResultReader:
         assert collected_rows[1] == (2, "bob", 200)
 
 
-@pytest.mark.unit
 class TestIsExhausted:
     """Tests for the _is_exhausted() helper method."""
 
@@ -359,7 +356,6 @@ class TestIsExhausted:
         assert reader._is_exhausted() is False
 
 
-@pytest.mark.unit
 class TestBlockingIterationToleratesPageTimeouts:
     """One slow results GET (an httpx timeout, surfaced as RequestTimeoutError) is "no news yet" to
     a reader that is blocking by contract -- iteration, fetchall(), snapshot fetches -- not a
