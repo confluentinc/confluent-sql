@@ -9,7 +9,8 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
-from confluent_sql.connection import Connection, ControlPlaneSurface, connect
+from confluent_sql.connection import Connection, connect
+from confluent_sql.credentials import ControlPlaneSurface
 
 
 def _connect(**overrides: Any) -> Connection:
@@ -36,12 +37,12 @@ class TestConnectControlplaneClient:
     def test_no_connect_credentials_raises(self) -> None:
         conn = _connect()  # flink-only creds
         with pytest.raises(ProgrammingError, match="connect_api_key"):
-            conn._auth_for(ControlPlaneSurface.CONNECT)
+            conn._credentials.for_surface(ControlPlaneSurface.CONNECT)
 
     def test_connect_pair_authenticates(self, mocker) -> None:
         spy = mocker.patch("confluent_sql.connection.httpx.BasicAuth", wraps=httpx.BasicAuth)
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
-        assert conn._auth_for(ControlPlaneSurface.CONNECT) is not None
+        assert conn._credentials.for_surface(ControlPlaneSurface.CONNECT) is not None
         spy.assert_called_with(username="ck", password="cs")
 
     def test_connect_credential_differs_from_tableflow_with_different_creds(self) -> None:
@@ -51,15 +52,15 @@ class TestConnectControlplaneClient:
             connect_api_key="ck",
             connect_api_secret="cs",
         )
-        assert conn._auth_for(ControlPlaneSurface.CONNECT) is not conn._auth_for(
-            ControlPlaneSurface.TABLEFLOW
-        )
+        assert conn._credentials.for_surface(
+            ControlPlaneSurface.CONNECT
+        ) is not conn._credentials.for_surface(ControlPlaneSurface.TABLEFLOW)
 
     def test_closed_connection_raises(self) -> None:
         conn = _connect(connect_api_key="ck", connect_api_secret="cs")
         conn.close()
         with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn._auth_for(ControlPlaneSurface.CONNECT)
+            conn._controlplane_request(ControlPlaneSurface.CONNECT, "/x")
 
 
 class TestConnectorApiComposition:
@@ -79,7 +80,10 @@ class TestConnectorApiComposition:
             "/x", method="POST", json={"a": 1}, raise_for_status=False
         )
         client.request.assert_called_once_with(
-            "POST", "/x", json={"a": 1}, auth=conn._auth_for(ControlPlaneSurface.CONNECT)
+            "POST",
+            "/x",
+            json={"a": 1},
+            auth=conn._credentials.for_surface(ControlPlaneSurface.CONNECT),
         )
 
 

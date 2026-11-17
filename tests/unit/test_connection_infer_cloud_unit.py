@@ -18,7 +18,8 @@ from confluent_sql import (
     connect,
 )
 from confluent_sql.artifacts import ArtifactScope
-from confluent_sql.connection import Connection, ControlPlaneSurface
+from confluent_sql.connection import Connection
+from confluent_sql.credentials import ControlPlaneSurface
 from confluent_sql.service_client import apply_status_policy
 
 ENV = "env-abc123"

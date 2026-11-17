@@ -18,7 +18,8 @@ from confluent_sql import (
     TableflowTopicNotFoundError,
     TableFormat,
 )
-from confluent_sql.connection import Connection, ControlPlaneSurface, connect
+from confluent_sql.connection import Connection, connect
+from confluent_sql.credentials import ControlPlaneSurface
 from confluent_sql.exceptions import RequestTimeoutError
 from confluent_sql.service_client import apply_status_policy
 from confluent_sql.tableflow import TableflowApi, TableflowTopic
@@ -120,7 +121,10 @@ class TestTableflowApiComposition:
             "/x", method="POST", json={"a": 1}, raise_for_status=False
         )
         client.request.assert_called_once_with(
-            "POST", "/x", json={"a": 1}, auth=conn._auth_for(ControlPlaneSurface.TABLEFLOW)
+            "POST",
+            "/x",
+            json={"a": 1},
+            auth=conn._credentials.for_surface(ControlPlaneSurface.TABLEFLOW),
         )
 
     def test_connection_no_longer_carries_the_lifecycle_methods(self) -> None:

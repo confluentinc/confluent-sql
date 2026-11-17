@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from confluent_sql import InterfaceError
-from confluent_sql.connection import _resolve_service_credentials
+from confluent_sql.credentials import _resolve_service_credentials
 
 GLOBAL_PAIR = ("gk", "gs")
 

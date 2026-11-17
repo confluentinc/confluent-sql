@@ -22,10 +22,10 @@ from confluent_sql.__version__ import __version__
 from confluent_sql.connection import (
     Connection,
     RowTypeRegistry,
-    _resolve_api_credentials,
     connect,
 )
 from confluent_sql.connection import logger as connection_module_logger
+from confluent_sql.credentials import _resolve_api_credentials
 from confluent_sql.exceptions import RequestTimeoutError
 from confluent_sql.execution_mode import ExecutionMode
 from confluent_sql.service_client import ServiceClient
