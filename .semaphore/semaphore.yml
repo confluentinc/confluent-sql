@@ -28,6 +28,17 @@ blocks:
   - name: "Test"
     dependencies: []
     task:
+      prologue:
+        commands:
+          # The ServiceBot-managed global prologue pins an older uv (0.10.11) whose interpreter
+          # manifest only knows 3.15.0a7, a pre-release that breaks anyio's pytest plugin. Install
+          # our own exact uv over it, then rebuild the venv it just made (the stale alpha venv
+          # would otherwise satisfy `UV_PYTHON=3.15` and be reused). Drop this once the managed
+          # pin is new enough to resolve 3.15 to a final release.
+          - curl -LsSf https://astral.sh/uv/0.13.7/install.sh | sh
+          - uv --version
+          - rm -rf .venv
+          - uv sync --frozen
       jobs:
         # Lint and type checking don't vary by interpreter (ruff and pyright take their target
         # version from pyproject.toml), so run them once, on the minimum supported Python. Semaphore
@@ -43,7 +54,7 @@ blocks:
         - name: "Unit Tests"
           matrix:
             - env_var: UV_PYTHON
-              values: ["3.11", "3.12", "3.13", "3.14"]
+              values: ["3.11", "3.12", "3.13", "3.14", "3.15"]
           commands:
             - uv run --frozen pytest -m unit --junitxml=test-results.xml
       epilogue:
