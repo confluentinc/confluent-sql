@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.oauth]
 
 
 def _now() -> datetime:
-    return datetime(2026, 8, 10, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 
 
 def _token_set(

@@ -29,9 +29,23 @@ blocks:
     dependencies: []
     task:
       jobs:
-        - name: "Lint, Type Check, and Test"
+        # Lint and type checking don't vary by interpreter (ruff and pyright take their target
+        # version from pyproject.toml), so run them once, on the minimum supported Python. Semaphore
+        # has no job-level env_vars, so a single-value matrix sets UV_PYTHON for the job.
+        - name: "Lint and Type Check"
+          matrix:
+            - env_var: UV_PYTHON
+              values: ["3.11"]
           commands:
-            - uv run --frozen ruff format --check && uv run --frozen ruff check && uv run --frozen pyright && uv run --frozen pytest -m unit --junitxml=test-results.xml
+            - uv run --frozen ruff format --check && uv run --frozen ruff check && uv run --frozen pyright
+        # The unit tests run on every supported Python. UV_PYTHON is what uv reads, so it is the
+        # matrix variable itself; the ServiceBot-managed global prologue's `uv sync` honors it.
+        - name: "Unit Tests"
+          matrix:
+            - env_var: UV_PYTHON
+              values: ["3.11", "3.12", "3.13", "3.14"]
+          commands:
+            - uv run --frozen pytest -m unit --junitxml=test-results.xml
       epilogue:
         always:
           commands:
