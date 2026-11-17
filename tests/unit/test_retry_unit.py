@@ -50,7 +50,6 @@ def clock(mocker, no_jitter) -> _FakeClock:
     return fake
 
 
-@pytest.mark.unit
 class TestRetriesStopAtTheCtxDeadline:
     """Given a `ctx`, a retry happens only if the deadline outlasts the backoff sleep, so no sleep
     runs past it and no attempt is begun that has no time left; the last attempt's own exception is
@@ -109,7 +108,6 @@ class TestRetriesStopAtTheCtxDeadline:
         assert any("deadline" in record.getMessage() for record in caplog.records)
 
 
-@pytest.mark.unit
 class TestCallWithRetries:
     def test_succeeds_without_retrying(self, no_sleep):
         func = Mock(return_value="ok")

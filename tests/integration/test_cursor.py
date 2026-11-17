@@ -25,7 +25,6 @@ SINGLE_COLUMN_QUERY = "SELECT 42 as answer FROM `INFORMATION_SCHEMA`.`TABLES`"
 # (Queries against INFORMATION_SCHEMA execute very quickly)
 
 
-@pytest.mark.integration
 class TestCursor:
     def test_cursor_metadata(self, cursor: Cursor):
         # 'Cursor.execute' defaults to snapshot queries
@@ -579,7 +578,6 @@ class TestCursor:
                 drop_cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
 
-@pytest.mark.integration
 class TestCursorParameterInterpolation:
     def test_interpolate_with_parameters(
         self, populated_table_connection: Connection, test_table_name: str, database: str
@@ -641,7 +639,6 @@ class _SinkAggregationTestBase:
         )
 
 
-@pytest.mark.integration
 class TestChangelogCompressorUpsertColumns:
     """Changelog compressor tests over a keyed (upsert_columns known) and keyless source."""
 
@@ -940,7 +937,6 @@ class TestChangelogCompressorUpsertColumns:
             cursor.close()
 
 
-@pytest.mark.integration
 class TestChangelogCompressorKeylessSinkGlobalAggregation(_SinkAggregationTestBase):
     """Global (ungrouped) aggregation sunk into a keyless retract table, read via the compressor."""
 
@@ -1044,7 +1040,6 @@ class TestChangelogCompressorKeylessSinkGlobalAggregation(_SinkAggregationTestBa
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
 
 
-@pytest.mark.integration
 class TestChangelogCompressorKeylessSinkGroupedAggregation(_SinkAggregationTestBase):
     """Grouped aggregation sunk into a keyless retract table, read via the compressor."""
 
@@ -1152,7 +1147,6 @@ class TestChangelogCompressorKeylessSinkGroupedAggregation(_SinkAggregationTestB
             connection.execute_snapshot_ddl(f"DROP TABLE IF EXISTS {people_table}")
 
 
-@pytest.mark.integration
 class TestChangelogCompressorKeyedSinkAggregation(_SinkAggregationTestBase):
     """Grouped aggregation sunk into a keyed upsert table, read via the changelog compressor."""
 
@@ -1276,7 +1270,6 @@ DELETION_VISIBLE_TIMEOUT_SECS = 30
 """Budget for a deleted statement (phase DELETING) to start answering /results with a 404."""
 
 
-@pytest.mark.integration
 class TestStreamingQueries:
     """Streaming cursor behavior: bounded/append-only queries, iteration, and external deletion."""
 

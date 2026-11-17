@@ -23,8 +23,6 @@ from confluent_sql.exceptions import RequestTimeoutError
 from confluent_sql.service_client import apply_status_policy
 from confluent_sql.tableflow import TableflowApi, TableflowTopic
 
-pytestmark = pytest.mark.unit
-
 
 def _connect(**overrides: Any) -> Connection:
     """Build a Connection with an explicit endpoint and deterministic (non-env) credentials."""

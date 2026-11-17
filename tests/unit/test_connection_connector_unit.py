@@ -11,8 +11,6 @@ import pytest
 from confluent_sql import InterfaceError, ProgrammingError
 from confluent_sql.connection import Connection, ControlPlaneSurface, connect
 
-pytestmark = pytest.mark.unit
-
 
 def _connect(**overrides: Any) -> Connection:
     """Build a Connection with an explicit endpoint and deterministic (non-env) credentials."""

@@ -27,7 +27,6 @@ pytestmark = pytest.mark.oauth
 BOGUS_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000000"
 
 
-@pytest.mark.integration
 def test_bogus_organization_id_is_explained(
     fresh_oauth_process,
     oauth_base_connect_args: dict[str, str],
