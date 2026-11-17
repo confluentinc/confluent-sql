@@ -10,7 +10,7 @@ name = "confluent-sql"
 dynamic = ["version"]
 description = "DB-API v2 compliant driver for Confluent Cloud Flink SQL"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["httpx>=0.23.0,<0.29.0"]
 platforms = ["any"]
 maintainers = [{ name = "Confluent", email = "support@confluent.io" }]
@@ -21,7 +21,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -64,7 +63,7 @@ max-args = 10
 
 [tool.pyright]
 verboseOutput = true
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 pythonPlatform = "All"
 include = ["src", "tests", "examples"]
 # Default to requiring fully parameter type annotation (src/, examples/)

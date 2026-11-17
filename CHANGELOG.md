@@ -4,6 +4,11 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed - Breaking
+
+- The minimum supported Python is now 3.11 (`requires-python = ">=3.11"`); Python 3.10 reached end of life on 2026-10-31. (#316)
+- `TableFormat` and the enums built on `ExtensibleEnum` (`ConnectorState`, `TableflowPhase`, `WarningSeverity`, `ArtifactContentFormat`, `ArtifactRuntimeLanguage`) are now `enum.StrEnum`s: `str(member)` and f-string interpolation yield the wire value (`"ICEBERG"`) instead of `"TableFormat.ICEBERG"`. Equality, hashing and `.value` are unchanged. (#316)
+
 ## 0.9.0, 2026-11-16
 
 ### Changed - Breaking
