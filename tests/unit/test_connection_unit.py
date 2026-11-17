@@ -1164,52 +1164,6 @@ class TestConnectChecks:
             == "https://custom.example.com/sql/v1/organizations/org-456/environments/env-123/"
         )
 
-    def test_endpoint_warns_when_cloud_provider_also_provided(
-        self, connection_factory: ConnectionFactory, caplog
-    ):
-        """Providing endpoint with cloud_provider is not an error (#210) -- endpoint wins and
-        we just warn, since a provided endpoint makes cloud_provider/cloud_region moot rather
-        than actually breaking anything."""
-        with caplog.at_level("WARNING", logger=connection_module_logger.name):
-            conn = connection_factory(
-                environment_id="env-123",
-                organization_id="org-456",
-                compute_pool_id="cp-789",
-                flink_api_key="test-key",
-                flink_api_secret="test-secret",
-                endpoint="https://custom.example.com",
-                cloud_provider="aws",
-            )
-        assert "custom.example.com" in str(conn._dataplane.httpx_client.base_url)
-        assert any(
-            "No need to provide cloud_provider or cloud_region" in record.getMessage()
-            and record.levelname == "WARNING"
-            for record in caplog.records
-        )
-
-    def test_endpoint_warns_when_cloud_region_also_provided(
-        self, connection_factory: ConnectionFactory, caplog
-    ):
-        """Providing endpoint with cloud_region is not an error (#210) -- endpoint wins and
-        we just warn, since a provided endpoint makes cloud_provider/cloud_region moot rather
-        than actually breaking anything."""
-        with caplog.at_level("WARNING", logger=connection_module_logger.name):
-            conn = connection_factory(
-                environment_id="env-123",
-                organization_id="org-456",
-                compute_pool_id="cp-789",
-                flink_api_key="test-key",
-                flink_api_secret="test-secret",
-                endpoint="https://custom.example.com",
-                cloud_region="us-east-1",
-            )
-        assert "custom.example.com" in str(conn._dataplane.httpx_client.base_url)
-        assert any(
-            "No need to provide cloud_provider or cloud_region" in record.getMessage()
-            and record.levelname == "WARNING"
-            for record in caplog.records
-        )
-
 
 @pytest.mark.unit
 class TestApiCredentialResolution:

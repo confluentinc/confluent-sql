@@ -4,6 +4,10 @@ All notable changes to this dbapi driver will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- `connect()` / `Connection.__init__()` no longer log a warning when `cloud_provider` and/or `cloud_region` are passed alongside `endpoint`. The pair is not redundant: Artifacts scope their calls by it, and it cannot be inferred from a custom (e.g. private link) endpoint. The `endpoint` is still what Flink requests use. (#319)
+
 ## 0.9.0, 2026-11-16
 
 ### Changed - Breaking
