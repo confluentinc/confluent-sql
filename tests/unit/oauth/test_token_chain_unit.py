@@ -18,7 +18,7 @@ from confluent_sql.oauth.token_chain import (
     exchange_refresh_token,
 )
 
-pytestmark = [pytest.mark.unit, pytest.mark.oauth]
+pytestmark = pytest.mark.oauth
 
 CONFIG = CCloudOAuthConfig(
     auth_service_domain="login.confluent.io",

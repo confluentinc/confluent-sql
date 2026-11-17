@@ -21,8 +21,6 @@ from confluent_sql.artifacts import ArtifactScope
 from confluent_sql.connection import Connection, ControlPlaneSurface
 from confluent_sql.service_client import apply_status_policy
 
-pytestmark = pytest.mark.unit
-
 ENV = "env-abc123"
 DB = "my_cluster"
 CLUSTERS_URL = "/cmk/v2/clusters"

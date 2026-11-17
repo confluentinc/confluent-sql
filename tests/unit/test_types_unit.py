@@ -56,7 +56,6 @@ def ensure_raises_typemismatch(
         yield
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestYearMonthInterval:
     """Unit tests over YearMonthInterval type, new python type to represent
@@ -210,7 +209,6 @@ class TestYearMonthInterval:
         assert interval_dict[interval3] == "interval three"
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestNullConverter:
     """Unit tests over NullConverter."""
@@ -236,7 +234,6 @@ class TestNullConverter:
             NullResultConverter.to_statement_string("anything")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestSqlNoneConverter:
     """Unit tests over SqlNoneConverter."""
@@ -257,7 +254,6 @@ class TestSqlNoneConverter:
         assert result == "cast (null as INTEGER)"
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestStringConverter:
     """Unit tests over StringConverter."""
@@ -324,7 +320,6 @@ class TestStringConverter:
         assert result == "'malicious_code()''; DROP TABLE users;--'"
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestVarBinaryConverter:
     """Unit tests over VarBinaryConverter."""
@@ -376,7 +371,6 @@ class TestVarBinaryConverter:
             VarBinaryConverter.to_statement_string("hello")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestIntegerConverter:
     """Unit tests over IntegerConverter."""
@@ -417,7 +411,6 @@ class TestIntegerConverter:
             IntegerConverter.to_statement_string("123")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestDecimalConverter:
     """Unit tests over DecimalConverter."""
@@ -477,7 +470,6 @@ class TestDecimalConverter:
         assert result == "cast('42' as decimal(2,0))"
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestFloatConverter:
     """Unit tests over FloatConverter."""
@@ -543,7 +535,6 @@ class TestFloatConverter:
             FloatConverter.to_statement_string("sdf")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestBooleanConverter:
     """Unit tests over BooleanConverter."""
@@ -582,7 +573,6 @@ class TestBooleanConverter:
             BooleanConverter.to_statement_string("TRUE")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestDateConverter:
     """Unit tests over DateConverter."""
@@ -626,7 +616,6 @@ class TestDateConverter:
             DateConverter.to_statement_string("2024-06-15")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestTimeConverter:
     """Unit tests over TimeConverter."""
@@ -671,7 +660,6 @@ class TestTimeConverter:
             TimeConverter.to_statement_string("12:34:56.789")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestTimestampConverter:
     """Unit tests over TimestampConverter."""
@@ -815,7 +803,6 @@ class TestTimestampConverter:
             ts_converter.to_statement_string("2024-06-15 12:34:56")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestYearMonthIntervalConverter:
     """Unit tests over YearMonthIntervalConverter."""
@@ -874,7 +861,6 @@ class TestYearMonthIntervalConverter:
             YearMonthIntervalConverter.to_statement_string("2-06")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestDaysIntervalConverter:
     """Unit tests over DaysIntervalConverter."""
@@ -989,7 +975,6 @@ class TestDaysIntervalConverter:
             DaysIntervalConverter.to_statement_string("10 12:30:45.123")  # type: ignore
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestGetDataTypeConverter:
     """Unit tests over get_data_type_converter function."""
@@ -1063,7 +1048,6 @@ class TestGetDataTypeConverter:
             get_api_type_converter(mock_connection, column_type_definition)
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestConvertStatementParameters:
     """Unit tests over convert_statement_parameters(), proving that the
@@ -1125,7 +1109,6 @@ class TestConvertStatementParameters:
         assert result == expected
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestArrayConverter:
     """Unit tests over ArrayConverter."""
@@ -1288,7 +1271,6 @@ class TestArrayConverter:
         assert result == expected
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestMapConverter:
     """Unit tests over MapConverter."""
@@ -1545,7 +1527,6 @@ class TestMapConverter:
         assert MapConverter.to_statement_string(python_value) == expected_string
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestMultisetConverter:
     """Unit tests over MultisetConverter."""
@@ -1691,7 +1672,6 @@ class TestMultisetConverter:
             integer_multiset_converter.to_statement_string(Counter({10: 2, 20: 3}))
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestVariantConverter:
     """Unit tests over VariantConverter's decoding of the VARIANT payload tree."""
@@ -1873,7 +1853,6 @@ class TestVariantConverter:
             VariantConverter.to_statement_string({"a": 1})
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestRowConverter:
     """Unit tests over RowConverter."""
@@ -2087,7 +2066,6 @@ class TestRowConverter:
         assert result == expected
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 @pytest.mark.parametrize(
     "converter_cls", list(dict.fromkeys(_flink_type_name_to_converter_map.values()))
@@ -2104,7 +2082,6 @@ def test_converter_wiring(converter_cls):
     )
 
 
-@pytest.mark.unit
 @pytest.mark.typeconv
 class TestSqlNone:
     """Unit tests over SqlNone functionality."""

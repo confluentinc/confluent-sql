@@ -28,8 +28,6 @@ from confluent_sql.tableflow import (
     storage_from_spec,
 )
 
-pytestmark = pytest.mark.unit
-
 
 class TestNormalizeTableFormats:
     """The `table_formats` argument accepts a single TableFormat or a collection of them."""

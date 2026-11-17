@@ -53,7 +53,6 @@ def _probe(conn: Connection) -> None:
     assert isinstance(conn.get_artifacts_api().list(), list)
 
 
-@pytest.mark.integration
 def test_reauth_as_a_different_user_is_refused_then_recovers(
     fresh_oauth_process,
     oauth_base_connect_args: dict[str, str],

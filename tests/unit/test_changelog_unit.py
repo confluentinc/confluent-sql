@@ -32,7 +32,6 @@ def append_only_reader(
 """
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "next_page_called, remaining, next_page, expected",
     [
@@ -66,7 +65,6 @@ def test_may_have_results(
     )
 
 
-@pytest.mark.unit
 class TestFetchMethods:
     def test_fetchmany_with_size(self, append_only_reader: AppendOnlyResultReader):
         # Mock some results in the reader
@@ -439,7 +437,6 @@ class TestFetchMethods:
             append_only_reader.fetchall()
 
 
-@pytest.mark.unit
 class TestIteration:
     def test_iteration_over_onhand_results(self, append_only_reader: AppendOnlyResultReader):
         # Mock some results in the reader
@@ -527,7 +524,6 @@ class TestIteration:
         )
 
 
-@pytest.mark.unit
 class TestFetchNextPage:
     def test_raises_if_statement_not_ready(self, append_only_reader: AppendOnlyResultReader):
         # Append-only statements in streaming mode are ready when RUNNING.
@@ -636,7 +632,6 @@ def changelog_event_reader(
     return ChangelogEventReader(mock_connection, statement, ExecutionMode.STREAMING_QUERY)
 
 
-@pytest.mark.unit
 class TestChangelogEventReader:
     """
     Tests over ChangelogEventReader. Only material difference
@@ -716,7 +711,6 @@ class TestChangelogEventReader:
         assert all(isinstance(r, ChangeloggedRow) for r in result)
 
 
-@pytest.mark.unit
 class TestFetchMetrics:
     """Tests for FetchMetrics collection and the metrics property."""
 

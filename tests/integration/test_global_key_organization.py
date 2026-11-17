@@ -38,7 +38,6 @@ def recorded_lookups(monkeypatch) -> list[list[tuple[str, str | None]]]:
     return lookups
 
 
-@pytest.mark.integration
 def test_omitted_organization_is_listed_during_connect(
     global_key_base_connect_args: dict[str, str],
     recorded_lookups: list[list[tuple[str, str | None]]],

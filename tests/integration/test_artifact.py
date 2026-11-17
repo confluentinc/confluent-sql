@@ -142,7 +142,6 @@ def zip_on_disk(tmp_path: Path) -> Path:
     return path
 
 
-@pytest.mark.integration
 class TestArtifactLifecycle:
     def test_create_read_list_delete_arc(
         self,
@@ -215,7 +214,6 @@ class TestArtifactLifecycle:
             artifacts.get("cfa-doesnotexist")
 
 
-@pytest.mark.integration
 class TestArtifactFileInputs:
     """Inferring `content_format` from the archive's extension."""
 

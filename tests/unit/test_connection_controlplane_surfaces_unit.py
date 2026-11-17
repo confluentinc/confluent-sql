@@ -17,8 +17,6 @@ import pytest
 from confluent_sql import InterfaceError, OperationalError, ProgrammingError, connect
 from confluent_sql.connection import Connection, ControlPlaneSurface
 
-pytestmark = pytest.mark.unit
-
 KEYS = {
     ControlPlaneSurface.TABLEFLOW: ("tk", "ts"),
     ControlPlaneSurface.CONNECT: ("ck", "cs"),
