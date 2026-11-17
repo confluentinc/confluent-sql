@@ -31,7 +31,8 @@ from confluent_sql import (
     Timeouts,
     connect,
 )
-from confluent_sql.connection import Connection, ControlPlaneSurface
+from confluent_sql.connection import Connection
+from confluent_sql.credentials import ControlPlaneSurface
 from confluent_sql.oauth.config import CCloudOAuthConfig
 from confluent_sql.oauth.provider import OAuthMetrics
 from confluent_sql.utils import DEFAULT_HTTP_TIMEOUT_SECS
@@ -140,9 +141,9 @@ def _oauth_connect(**overrides) -> Connection:
 def _provider(conn: Connection) -> FakeOAuthProvider:
     """Type-narrowing helper: every oauth-mode Connection in this file is built with
     oauth_provider_factory=FakeOAuthProvider (directly, or via the holder's reuse/join path for
-    a second Connection), so conn._oauth_provider is always a FakeOAuthProvider here -- this just
-    gives assertions a concrete type instead of the `OAuthProvider | None` Connection declares."""
-    provider = conn._oauth_provider
+    a second Connection), so the adopted provider is always a FakeOAuthProvider here -- this just
+    gives assertions a concrete type instead of the `OAuthProvider | None` it is declared as."""
+    provider = conn._credentials._oauth_provider  # noqa: SLF001
     assert isinstance(provider, FakeOAuthProvider)
     return provider
 
@@ -290,8 +291,8 @@ class TestOauthValidation:
             cloud_provider="aws",
             cloud_region="us-east-1",
         )
-        assert conn._oauth is False
-        assert conn._oauth_provider is None
+        assert not conn._credentials.is_oauth
+        assert conn._credentials.oauth_metrics is None
 
 
 class TestOauthAuthWiring:
@@ -299,22 +300,14 @@ class TestOauthAuthWiring:
 
     def test_oauth_flink_auth_is_providers_data_plane_auth(self):
         conn = _oauth_connect()
-        assert conn._flink_auth is _provider(conn).data_plane_auth
+        assert conn._credentials.flink_auth is _provider(conn).data_plane_auth
 
     @pytest.mark.parametrize("surface", list(ControlPlaneSurface))
     def test_oauth_surface_auth_is_providers_control_plane_auth(self, surface):
         """One control-plane token reaches Tableflow, Connect, Artifacts, and CMK alike -- every
         surface shares the very same object."""
         conn = _oauth_connect()
-        assert conn._auth_for(surface) is _provider(conn).control_plane_auth
-
-    def test_oauth_global_credentials_is_none(self):
-        conn = _oauth_connect()
-        assert conn._global_credentials is None
-
-    def test_oauth_byoidc_flag_is_false(self):
-        conn = _oauth_connect()
-        assert conn._byoidc is False
+        assert conn._credentials.for_surface(surface) is _provider(conn).control_plane_auth
 
     def test_api_key_mode_controlplane_auth_is_now_a_basicauth_instance(self):
         """Regression pin for the tuple->httpx.Auth widening oauth mode needed: a global-key
@@ -329,12 +322,12 @@ class TestOauthAuthWiring:
             cloud_region="us-east-1",
         )
         for surface in ControlPlaneSurface:
-            assert isinstance(conn._auth_for(surface), httpx.BasicAuth)
+            assert isinstance(conn._credentials.for_surface(surface), httpx.BasicAuth)
 
 
 class TestOauthMetrics:
     """`Connection.oauth_metrics` -- the supported replacement for peeking at
-    `_oauth_provider.metrics` directly."""
+    the provider's `metrics` directly."""
 
     def test_none_outside_oauth_mode(self):
         conn = connect(
@@ -388,7 +381,7 @@ class TestOauthCmkCapabilityGain:
         conn = _oauth_connect()
         try:
             _ = conn._controlplane.httpx_client
-            auths = [conn._auth_for(surface) for surface in ControlPlaneSurface]
+            auths = [conn._credentials.for_surface(surface) for surface in ControlPlaneSurface]
         finally:
             conn.close()
         assert all(auth is _provider(conn).control_plane_auth for auth in auths)
@@ -491,7 +484,7 @@ class TestOauthOrganizationResolution:
         def fake_request(self, surface, url, **kwargs):
             # What the real _controlplane_request attaches, which the login's validation needs
             # wired before the connection has finished constructing.
-            sent.append((surface, self._auth_for(surface)))
+            sent.append((surface, self._credentials.for_surface(surface)))
             response = Mock()
             response.json.return_value = {"data": [{"id": "org-1"}], "metadata": {}}
             return response
@@ -568,14 +561,14 @@ class TestOauthLoginValidationNeverReauthenticates:
         def refused() -> httpx.Response:
             raise ReauthenticationRequired("session dead", ReauthenticationReason.ABSOLUTE_EXPIRY)
 
-        connection._send_with_reauth_policy(refused)
+        connection._credentials.send_with_policy(refused)
         raise AssertionError("unreachable: the refused request always raises")
 
     def test_reauthentication_required_propagates_under_auto_and_the_policy_is_restored(
         self, monkeypatch
     ):
         reauth_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr("confluent_sql.credentials.oauth_reauthenticate", reauth_mock)
         monkeypatch.setattr(Connection, "_lookup_organizations", self._lookup_that_is_refused)
         built: list[Connection] = []
         real_close = Connection.close
@@ -596,12 +589,12 @@ class TestOauthLoginValidationNeverReauthenticates:
 
         reauth_mock.assert_not_called()
         assert providers[0].closed
-        assert [conn._reauth_policy for conn in built] == ["auto"]
+        assert [conn._credentials.reauth_policy for conn in built] == ["auto"]
 
     @pytest.mark.parametrize("policy", ["auto", "raise"])
     def test_the_configured_policy_survives_a_successful_validation(self, policy):
         conn = _oauth_connect(organization_id="", reauth=policy)
-        assert conn._reauth_policy == policy
+        assert conn._credentials.reauth_policy == policy
 
 
 class TestOauthClose:
@@ -643,10 +636,10 @@ def _connection_with_flaky_flink_auth(
     reauth: Literal["auto", "raise"],
 ) -> tuple[Connection, _FlakyReauthAuth]:
     """A plain api_key-mode Connection whose Flink client is swapped for one backed by
-    `_FlakyReauthAuth`, so `_send_with_reauth_policy` can be exercised directly without a
-    real oauth-mode login. `reauth` is poked onto the private attribute rather than threaded
-    through connect()'s validation, since that validation (tested separately below) only allows
-    a non-default `reauth` together with `auth="oauth"`.
+    `_FlakyReauthAuth`, so `ConnectionCredentials.send_with_policy` can be exercised directly
+    without a real oauth-mode login. `reauth` is poked onto the private attribute rather than
+    threaded through connect()'s validation, since that validation (tested separately below) only
+    allows a non-default `reauth` together with `auth="oauth"`.
     """
     conn = connect(
         global_api_key="gk",
@@ -656,7 +649,7 @@ def _connection_with_flaky_flink_auth(
         cloud_provider="aws",
         cloud_region="us-east-1",
     )
-    conn._reauth_policy = reauth  # noqa: SLF001
+    conn._credentials.reauth_policy = reauth
     auth = _FlakyReauthAuth()
     conn._dataplane._client = httpx.Client(  # noqa: SLF001
         auth=auth,
@@ -667,7 +660,7 @@ def _connection_with_flaky_flink_auth(
 
 
 class TestReauthPolicy:
-    """The `reauth=` policy knob and `_send_with_reauth_policy`, the chokepoint that
+    """The `reauth=` policy knob and `ConnectionCredentials.send_with_policy`, the chokepoint that
     applies it whenever a request raises `ReauthenticationRequired`."""
 
     def test_validation_rejects_an_invalid_value(self):
@@ -694,16 +687,16 @@ class TestReauthPolicy:
 
     def test_oauth_connection_defaults_reauth_to_auto(self):
         conn = _oauth_connect()
-        assert conn._reauth_policy == "auto"  # noqa: SLF001
+        assert conn._credentials.reauth_policy == "auto"
 
     def test_oauth_connection_honors_an_explicit_reauth(self):
         conn = _oauth_connect(reauth="raise")
-        assert conn._reauth_policy == "raise"  # noqa: SLF001
+        assert conn._credentials.reauth_policy == "raise"
 
     def test_auto_policy_reauthenticates_and_retries_transparently(self, monkeypatch):
         conn, auth = _connection_with_flaky_flink_auth("auto")
         reauth_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr("confluent_sql.credentials.oauth_reauthenticate", reauth_mock)
         try:
             response = conn._dataplane.request("/some/path")
         finally:
@@ -716,7 +709,7 @@ class TestReauthPolicy:
     def test_raise_policy_leaves_the_exception_unhandled_and_unretried(self, monkeypatch):
         conn, auth = _connection_with_flaky_flink_auth("raise")
         reauth_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr("confluent_sql.credentials.oauth_reauthenticate", reauth_mock)
         try:
             with pytest.raises(ReauthenticationRequired):
                 conn._dataplane.request("/some/path")
@@ -728,15 +721,15 @@ class TestReauthPolicy:
 
     def test_artifact_get_honors_the_auto_policy(self, monkeypatch):
         """Artifact GETs take the retrying path (via `_send_untranslated`), which must go through
-        `_send_with_reauth_policy` like every other request path."""
+        `ConnectionCredentials.send_with_policy` like every other request path."""
         conn, auth = _connection_with_flaky_flink_auth("auto")
         conn._controlplane._client = httpx.Client(  # noqa: SLF001
             base_url="https://api.example.confluent.cloud",
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
         )
-        conn._surface_auth[ControlPlaneSurface.ARTIFACTS] = auth  # noqa: SLF001
+        conn._credentials._surface_auth[ControlPlaneSurface.ARTIFACTS] = auth  # noqa: SLF001
         reauth_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr("confluent_sql.credentials.oauth_reauthenticate", reauth_mock)
         try:
             response = conn.get_artifacts_api()._request("/artifact/v1/flink-artifacts")
         finally:
@@ -758,9 +751,9 @@ class TestReauthPolicy:
             base_url="https://api.example.confluent.cloud",
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
         )
-        conn._surface_auth[ControlPlaneSurface.CONNECT] = auth  # noqa: SLF001
+        conn._credentials._surface_auth[ControlPlaneSurface.CONNECT] = auth  # noqa: SLF001
         reauth_mock = Mock()
-        monkeypatch.setattr("confluent_sql.connection.oauth_reauthenticate", reauth_mock)
+        monkeypatch.setattr("confluent_sql.credentials.oauth_reauthenticate", reauth_mock)
         try:
             if policy == "raise":
                 with pytest.raises(ReauthenticationRequired):

@@ -11,10 +11,9 @@ import json
 import logging
 import uuid
 from collections import namedtuple
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass
-from enum import Enum
 from functools import partial
 from typing import Any, Literal
 from urllib.parse import quote
@@ -22,10 +21,16 @@ from urllib.parse import quote
 import httpx
 
 from .artifacts import ArtifactsApi
-from .auth import FlinkBearerAuth
 from .connect_options import DEFAULT_TIMEOUTS, Timeouts
 from .connectors import ConnectorApi
 from .context import BACKGROUND, Context
+from .credentials import (
+    ApiKeyParams,
+    ByoidcParams,
+    ConnectionCredentials,
+    ControlPlaneSurface,
+    resolve_oauth_config,
+)
 from .cursor import Cursor
 from .exceptions import (
     AmbiguousClusterError,
@@ -35,14 +40,12 @@ from .exceptions import (
     InternalError,
     OperationalError,
     ProgrammingError,
-    ReauthenticationRequired,
     StatementDeletedError,
     StatementNotFoundError,
 )
 from .execution_mode import ExecutionMode
-from .oauth.config import PROD, CCloudOAuthConfig
+from .oauth.config import CCloudOAuthConfig
 from .oauth.holder import ProviderFactory, acquire
-from .oauth.holder import reauthenticate as oauth_reauthenticate
 from .oauth.provider import CCloudOAuth, OAuthMetrics, OAuthProvider
 from .polling import poll_until
 from .service_client import (
@@ -64,153 +67,6 @@ from .utils import DEFAULT_USER_AGENT
 from .utils import next_page_token as parse_next_page_token
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_api_credentials(
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    flink_api_key: str | None,
-    flink_api_secret: str | None,
-) -> tuple[str, str]:
-    """Pick the (key, secret) pair a connection authenticates with.
-
-    A 'global' Confluent Cloud API key works against every route this driver touches (Flink
-    today, Tableflow and friends later), whereas a Flink-region key only works against Flink.
-    The global pair therefore wins when both are supplied. Either pair may be omitted, but a
-    half-supplied pair (key without secret, or vice versa) is a configuration mistake worth
-    surfacing rather than silently treating as absent.
-
-    Empty strings count as absent (matching how the rest of connect() treats blank parameters).
-
-    Raises:
-        InterfaceError: If either pair is half-supplied, or if neither pair is fully supplied.
-    """
-    global_key, global_secret = global_api_key or "", global_api_secret or ""
-    flink_key, flink_secret = flink_api_key or "", flink_api_secret or ""
-
-    if bool(global_key) != bool(global_secret):
-        raise InterfaceError("global_api_key and global_api_secret must be provided together")
-    if bool(flink_key) != bool(flink_secret):
-        raise InterfaceError("flink_api_key and flink_api_secret must be provided together")
-
-    if global_key:
-        if flink_key:
-            logger.warning(
-                "Both global and Flink API credentials provided; using the global credentials "
-                "and ignoring flink_api_key/flink_api_secret."
-            )
-        return (global_key, global_secret)
-
-    if flink_key:
-        return (flink_key, flink_secret)
-
-    raise InterfaceError(
-        "Either global_api_key/global_api_secret or flink_api_key/flink_api_secret must be provided"
-    )
-
-
-def _resolve_service_credentials(
-    config_prefix: str,
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    service_api_key: str | None,
-    service_api_secret: str | None,
-) -> tuple[str, str] | None:
-    """Pick the (key, secret) pair a control-plane service's routes authenticate with.
-
-    `service` names the dedicated pair ("tableflow", "connect", "cloud") in error messages. A
-    complete global pair covers every route, so it wins. Otherwise the service's dedicated pair is
-    used. Returns None when neither is available, so the error can be deferred to the first actual
-    use of the service rather than raised at connect() time.
-
-    A global key without its secret doesn't count as a global pair: it falls through to the
-    dedicated pair (the half-supplied global pair itself is rejected by _resolve_api_credentials,
-    which always runs for API-key connections).
-
-    Raises:
-        InterfaceError: If no complete global pair is supplied and the dedicated pair is
-            half-supplied (key without secret, or vice versa).
-    """
-    global_key, global_secret = global_api_key or "", global_api_secret or ""
-    key, secret = service_api_key or "", service_api_secret or ""
-
-    # A complete global pair wins and covers everything, so short-circuit before validating the
-    # dedicated pair: a caller who supplied a usable global pair shouldn't be tripped up by an
-    # incidental half-supplied dedicated pair (e.g. one leaked in from the environment).
-    if global_key and global_secret:
-        return (global_key, global_secret)
-
-    if bool(key) != bool(secret):
-        raise InterfaceError(
-            f"{config_prefix}_api_key and {config_prefix}_api_secret must be provided together"
-        )
-    if key:
-        return (key, secret)
-    return None
-
-
-def _resolve_flink_auth(  # noqa: PLR0913, PLR0917
-    external_access_token: str | None,
-    identity_pool_id: str | None,
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    flink_api_key: str | None,
-    flink_api_secret: str | None,
-    tableflow_api_key: str | None,
-    tableflow_api_secret: str | None,
-    connect_api_key: str | None,
-    connect_api_secret: str | None,
-    cloud_api_key: str | None,
-    cloud_api_secret: str | None,
-) -> tuple[httpx.Auth, bool]:
-    """Select the Flink data-plane auth, and report whether the connection is in BYOIDC mode.
-
-    An external_access_token/identity_pool_id pair selects BYOIDC mode -- the driver stamps a
-    customer-minted external token on Flink requests instead of using HTTP Basic auth. BYOIDC and
-    API-key auth are mutually exclusive, and (like the key/secret pairs) the two BYOIDC parameters
-    must be supplied together. In API-key mode the (key, secret) selection is delegated to
-    _resolve_api_credentials.
-
-    Empty strings count as absent, matching the rest of connect()'s parameter handling.
-
-    Returns:
-        (auth, byoidc): the httpx.Auth for the Flink client, and True iff BYOIDC mode.
-
-    Raises:
-        InterfaceError: If only one of the BYOIDC pair is supplied, or if an external_access_token
-            is combined with any API-key parameter.
-    """
-    token, pool = external_access_token or "", identity_pool_id or ""
-
-    if bool(token) != bool(pool):
-        raise InterfaceError("external_access_token and identity_pool_id must be provided together")
-
-    if token:
-        if any(
-            (
-                global_api_key,
-                global_api_secret,
-                flink_api_key,
-                flink_api_secret,
-                tableflow_api_key,
-                tableflow_api_secret,
-                connect_api_key,
-                connect_api_secret,
-                cloud_api_key,
-                cloud_api_secret,
-            )
-        ):
-            raise InterfaceError(
-                "external_access_token cannot be combined with API key credentials "
-                "(global/flink/tableflow/connect/cloud); BYOIDC bearer-token auth and API-key auth "
-                "are mutually exclusive."
-            )
-        return FlinkBearerAuth(bearer_token=token, identity_pool_id=pool), True
-
-    auth_key, auth_secret = _resolve_api_credentials(
-        global_api_key, global_api_secret, flink_api_key, flink_api_secret
-    )
-    return httpx.BasicAuth(username=auth_key, password=auth_secret), False
 
 
 def connect(  # noqa: PLR0913
@@ -410,7 +266,7 @@ def connect(  # noqa: PLR0913
     # All parameter validation now lives in Connection.__init__() (#213), the single source of
     # truth: connect() just forwards. Connection is directly constructible without going through
     # connect(), so centralizing there keeps both entry points validating identically -- including
-    # _resolve_oauth_config's oauth-vs-api-key mutual-exclusion checks, which run there before any
+    # resolve_oauth_config's oauth-vs-api-key mutual-exclusion checks, which run there before any
     # interactive login can pop a browser.
     return Connection(
         environment_id,
@@ -442,43 +298,6 @@ def connect(  # noqa: PLR0913
         statement_results_page_fetch_pause_millis=result_page_fetch_pause_millis,
         http_user_agent=http_user_agent,
         timeouts=timeouts,
-    )
-
-
-def _basic_auth(pair: tuple[str, str] | None) -> httpx.BasicAuth | None:
-    return httpx.BasicAuth(username=pair[0], password=pair[1]) if pair else None
-
-
-@dataclass(frozen=True)
-class _SurfaceSpec:
-    """What distinguishes one control-plane API surface from another: how a missing credential is
-    reported, and whether its responses may be DEBUG-logged."""
-
-    subject: str
-    """Names the surface in error messages."""
-    plural: bool
-    """Whether `subject` takes plural verb agreement ("Connectors are", "Tableflow is")."""
-    key_pair: str
-    """The dedicated key/secret parameter names that authenticate it when no global key is given."""
-    log_body: bool = True
-    """False for responses carrying secrets."""
-    global_only: bool = False
-    """True for routes that take only the global key (or an oauth login), never a dedicated one."""
-
-
-class ControlPlaneSurface(Enum):
-    """The control-plane API surfaces, which share one host and one `ServiceClient` and differ only
-    in the credential each request carries (see `Connection._auth_for`)."""
-
-    TABLEFLOW = _SurfaceSpec("Tableflow", False, "tableflow_api_key/tableflow_api_secret")
-    CONNECT = _SurfaceSpec("Connectors", True, "connect_api_key/connect_api_secret")
-    ARTIFACTS = _SurfaceSpec("Artifacts", True, "cloud_api_key/cloud_api_secret", log_body=False)
-    """Never logs response bodies: the presign response carries a live upload URL."""
-    CMK = _SurfaceSpec(
-        "Kafka cluster lookups", True, "global_api_key/global_api_secret", global_only=True
-    )
-    ORGANIZATION = _SurfaceSpec(
-        "Organization lookups", True, "global_api_key/global_api_secret", global_only=True
     )
 
 
@@ -579,23 +398,9 @@ class Connection:
     """Registry for user-defined row types, see register_row_type()."""
 
     # --- Authentication mode
-    _byoidc: bool
-    """True when authenticating with a customer-supplied BYOIDC bearer token (Flink data plane
-    only); drives the honest fail-closed messages on the control-plane guards."""
-    _oauth: bool
-    """True when authenticating via interactive human-login OAuth (auth="oauth", #150).
-    Lifts the control-plane guards' global-key requirement -- see _resolve_kafka_cluster_id and
-    _auth_for."""
-    _oauth_provider: OAuthProvider | None
-    """The process-wide shared provider acquired via the login holder when _oauth is True; None
-    otherwise. Never closed directly by this Connection -- see close()."""
-    _reauth_policy: Literal["auto", "raise"]
-    """How to respond when a request raises ReauthenticationRequired -- see connect()'s
-    `reauth` docstring. Consulted by _send_with_reauth_policy regardless of _oauth, though it is
-    only ever meaningful under auth="oauth", the only mode that can raise that exception."""
-    _global_credentials: tuple[str, str] | None
-    """(key, secret) of the global API key if one was supplied -- the only credential the CMK and
-    organization lookups take."""
+    _credentials: ConnectionCredentials
+    """The resolved credential mode (API key, BYOIDC or oauth): what each plane and control-plane
+    surface authenticates with, and the reauthentication policy. See `ConnectionCredentials`."""
 
     # --- HTTP configuration
     _flink_endpoint: str
@@ -606,21 +411,13 @@ class Connection:
     timeouts: Timeouts
     """The timeout settings this connection was built with."""
 
-    # --- Credentials and transport
-    _flink_auth: httpx.Auth
-    """The Flink data-plane authentication: httpx.BasicAuth in API-key mode, FlinkBearerAuth in
-    BYOIDC mode, or the shared OAuth provider's data-plane view under auth="oauth". Widened to the
-    httpx.Auth base so all three fit the one polymorphic auth= slot."""
-    _surface_auth: dict[ControlPlaneSurface, httpx.Auth | None]
-    """Each control-plane surface's credential: httpx.BasicAuth over a global or dedicated key pair
-    in API-key mode, or the one shared control-plane token view under oauth mode (one token reaches
-    every surface) -- or None if no usable credential exists for that surface."""
+    # --- Transport
     _dataplane: ServiceClient
     """The Flink gateway (data plane) client. Its httpx client is built on first request, so that
     construction never blocks on the network call organization_id inference may need."""
     _controlplane: ServiceClient
     """The one control-plane client (Tableflow, CMK, organization lookup, Connect, Artifacts). Built
-    without credentials: `_controlplane_request` attaches the calling surface's from `_surface_auth`
+    without credentials: `_controlplane_request` attaches the calling surface's from `_credentials`
     to each request."""
 
     # --- Lazily composed service APIs
@@ -759,12 +556,9 @@ class Connection:
 
         # Validate api key vs oauth first, so that we can raise errors about auth misconfiguration
         # as simply and early as possible before we might complain about lesser issues.
-        oauth_cfg = _resolve_oauth_config(
-            auth,
-            oauth_config=oauth_config,
-            reauth=reauth,
-            external_access_token=external_access_token,
-            identity_pool_id=identity_pool_id,
+        # The credential-bearing parameters travel as two values from here on, not twelve keywords.
+        byoidc = ByoidcParams(external_access_token, identity_pool_id)
+        keys = ApiKeyParams(
             global_api_key=global_api_key,
             global_api_secret=global_api_secret,
             flink_api_key=flink_api_key,
@@ -776,7 +570,10 @@ class Connection:
             cloud_api_key=cloud_api_key,
             cloud_api_secret=cloud_api_secret,
         )
-        self._reauth_policy = reauth
+        oauth_cfg = resolve_oauth_config(
+            auth, oauth_config=oauth_config, reauth=reauth, byoidc=byoidc, keys=keys
+        )
+        self._credentials = ConnectionCredentials(reauth)
 
         # Validated here (not only in connect()) so direct Connection() construction fails fast
         # too (#213): an empty environment_id interpolates into request paths and would otherwise
@@ -791,12 +588,12 @@ class Connection:
         # key to infer from -- and only surface later as a malformed request path / confusing 404
         # (organization_id is interpolated into the Flink base URL). Any global key material (even
         # a half-supplied pair) defers this gate to the more specific "must be provided together"
-        # credential error _resolve_*_credentials raises below, otherwise a half-supplied pair plus
-        # an omitted organization_id would be misdiagnosed as a missing org id instead of the actual
-        # credential mistake (#144 review). auth="oauth" is exempt for a different reason: it has
-        # its own reach to discover organization_id (the interactive login's session), so the
-        # omission is never an error for that mode.
-        global_key_provided = bool(global_api_key) or bool(global_api_secret)
+        # credential error ConnectionCredentials.configure_api_key_mode raises below, otherwise a
+        # half-supplied pair plus an omitted organization_id would be misdiagnosed as a missing org
+        # id instead of the actual credential mistake (#144 review). auth="oauth" is exempt for a
+        # different reason: it has its own reach to discover organization_id (the interactive
+        # login's session), so the omission is never an error for that mode.
+        global_key_provided = keys.has_global_material
         if not organization_id and not global_key_provided and auth != "oauth":
             raise InterfaceError("Organization ID is required")
         # Fold a falsy pool ("" or None) into None so the attribute honestly reports the
@@ -821,10 +618,10 @@ class Connection:
         self.local_time_zone = local_time_zone
         # Must exist before the http_user_agent setter runs below, since its guards check these.
         self._dataplane = ServiceClient(
-            self._build_dataplane_client, send_policy=self._send_with_reauth_policy
+            self._build_dataplane_client, send_policy=self._credentials.send_with_policy
         )
         self._controlplane = ServiceClient(
-            self._build_controlplane_client, send_policy=self._send_with_reauth_policy
+            self._build_controlplane_client, send_policy=self._credentials.send_with_policy
         )
 
         # Set user agent (validation happens in setter, default if None)
@@ -879,74 +676,20 @@ class Connection:
             # Strip trailing slash if user provided one, to ensure clean URL construction
             endpoint = endpoint.rstrip("/")
 
-        self._oauth = oauth_cfg is not None
         self._flink_endpoint = endpoint
 
         # Control-plane (Tableflow, Connect, Artifact, CMK) plumbing. The httpx client is built
         # lazily on first use so a connection that never touches the control plane pays nothing,
         # and a surface with no usable credential still constructs fine -- the error surfaces only
-        # when that surface is invoked (`_auth_for`).
+        # when that surface is invoked (`ConnectionCredentials.for_surface`).
         self._controlplane_endpoint = (
             controlplane_endpoint or self._DEFAULT_CONTROLPLANE_ENDPOINT
         ).rstrip("/")
 
-        self._oauth_provider = None  # unless _init_oauth() wires one in.
         if oauth_cfg is not None:
             self._init_oauth(oauth_cfg, organization_id, timeouts, oauth_provider_factory)
         else:
-            # _resolve_flink_auth validates the BYOIDC pair and its mutual exclusion with every
-            # API-key parameter *before* _resolve_service_credentials runs, so BYOIDC mode never
-            # reaches (and never trips) the "either global or flink" API-key check. In BYOIDC mode
-            # every key param is empty by construction, so the three control-plane resolvers below
-            # return None and the control plane fails closed -- see the guards' self._byoidc
-            # branches.
-            self._flink_auth, self._byoidc = _resolve_flink_auth(
-                external_access_token,
-                identity_pool_id,
-                global_api_key,
-                global_api_secret,
-                flink_api_key,
-                flink_api_secret,
-                tableflow_api_key,
-                tableflow_api_secret,
-                connect_api_key,
-                connect_api_secret,
-                cloud_api_key,
-                cloud_api_secret,
-            )
-            global_pair = (
-                (global_api_key, global_api_secret)
-                if global_api_key and global_api_secret
-                else None
-            )
-            self._surface_auth = {
-                ControlPlaneSurface.TABLEFLOW: _basic_auth(
-                    _resolve_service_credentials(
-                        "tableflow",
-                        global_api_key,
-                        global_api_secret,
-                        tableflow_api_key,
-                        tableflow_api_secret,
-                    )
-                ),
-                ControlPlaneSurface.CONNECT: _basic_auth(
-                    _resolve_service_credentials(
-                        "connect",
-                        global_api_key,
-                        global_api_secret,
-                        connect_api_key,
-                        connect_api_secret,
-                    )
-                ),
-                ControlPlaneSurface.ARTIFACTS: _basic_auth(
-                    _resolve_service_credentials(
-                        "cloud", global_api_key, global_api_secret, cloud_api_key, cloud_api_secret
-                    )
-                ),
-                ControlPlaneSurface.CMK: _basic_auth(global_pair),
-                ControlPlaneSurface.ORGANIZATION: _basic_auth(global_pair),
-            }
-            self._global_credentials = global_pair
+            self._credentials.configure_api_key_mode(byoidc=byoidc, keys=keys)
         self._connector_api = None
         self._tableflow_api = None
         self._artifacts_api = None
@@ -1755,9 +1498,9 @@ class Connection:
 
         Covers only refreshes triggered *during* the shared provider's life, never the interactive
         login `connect()` performed to establish it -- see `OAuthMetrics`. The supported
-        replacement for reading `_oauth_provider` directly.
+        replacement for reading the provider directly.
         """
-        return self._oauth_provider.metrics if self._oauth_provider is not None else None
+        return self._credentials.oauth_metrics
 
     @property
     def local_time_zone(self) -> str | None:
@@ -2138,28 +1881,6 @@ class Connection:
 
         return (results, next_url)
 
-    def _send_with_reauth_policy(self, do_request: Callable[[], httpx.Response]) -> httpx.Response:
-        """Run one HTTP call, applying `self._reauth_policy` if it raises `ReauthenticationRequired`
-        -- the only exception an `auth="oauth"` client's `httpx.Auth` view can raise instead
-        of stamping a request, once its session's refresh token can no longer be used.
-
-        `"raise"` lets it propagate untouched. `"auto"` (the default) instead blocks on
-        the holder's `reauthenticate()` -- itself single-flighted process-wide, so concurrent
-        callers hitting the wall together still cost one browser bounce -- and retries
-        `do_request` exactly once; a `reauthenticate()` failure (a denied/timed-out login, a
-        failed token exchange) propagates as-is, and is not retried further.
-
-        The sole chokepoint for this: every HTTP call this `Connection` makes, Flink or
-        control-plane, funnels through here as every `ServiceClient`'s `send_policy`.
-        """
-        try:
-            return do_request()
-        except ReauthenticationRequired:
-            if self._reauth_policy == "raise":
-                raise
-            oauth_reauthenticate()
-            return do_request()
-
     def _build_controlplane_client(self) -> httpx.Client:
         """Build the control-plane httpx client; run by `_controlplane` on first use.
 
@@ -2187,49 +1908,13 @@ class Connection:
             f"/environments/{self.environment_id}"
         )
         return httpx.Client(
-            auth=self._flink_auth,
+            auth=self._credentials.flink_auth,
             base_url=base_url,
             headers={
                 "Content-Type": "application/json",
                 "User-Agent": self._http_user_agent,
             },
             timeout=self.timeouts.httpx_request_timeout_secs,
-        )
-
-    def _auth_for(self, surface: ControlPlaneSurface) -> httpx.Auth:
-        """The credential for one control-plane surface.
-
-        A global key covers every surface; without one each takes only its own dedicated key pair
-        (a Tableflow-scoped key isn't valid for artifact routes, and so on). Under oauth mode they
-        all share one control-plane token view.
-
-        Raises:
-            InterfaceError: If the connection is closed.
-            ProgrammingError: If no usable credential exists for the surface; worded for BYOIDC
-                (which the control plane never accepts) or for the missing key pair.
-        """
-        if self._closed:
-            raise InterfaceError("Connection is closed")
-        auth = self._surface_auth[surface]
-        if auth is not None:
-            return auth
-        spec = surface.value
-        accepted = spec.key_pair if spec.global_only else f"global or {spec.key_pair}"
-        if self._byoidc:
-            raise ProgrammingError(
-                f"{spec.subject} {'are' if spec.plural else 'is'} not reachable with a BYOIDC "
-                "bearer token: Confluent's authorization model accepts only API keys on the "
-                f"control plane. Use an API-key connection ({accepted}) for {spec.subject}."
-            )
-        verb = "require" if spec.plural else "requires"
-        if spec.global_only:
-            raise ProgrammingError(
-                f"{spec.subject} {verb} a global API key ({spec.key_pair}) or auth='oauth'; "
-                "neither was supplied to connect()."
-            )
-        raise ProgrammingError(
-            f"{spec.subject} {verb} a global API key or a {spec.key_pair} pair; neither was "
-            "supplied to connect()."
         )
 
     def _controlplane_request(
@@ -2246,14 +1931,23 @@ class Connection:
     ) -> httpx.Response:
         """Send a request to one control-plane surface, carrying that surface's credential, under
         `ctx` (the `Context` of the wait it is part of, or `BACKGROUND`). `status_exceptions` and
-        `error_prefix` are as for `ServiceClient.request`."""
+        `error_prefix` are as for `ServiceClient.request`.
+
+        Raises:
+            InterfaceError: If the connection is closed (checked before the surface's credential,
+                so a closed connection reports that rather than a missing key).
+            ProgrammingError: If no usable credential exists for the surface; see
+                `ConnectionCredentials.for_surface`.
+        """
+        if self._closed:
+            raise InterfaceError("Connection is closed")
         return self._controlplane.request(
             url,
             method,
             raise_for_status,
             status_exceptions=status_exceptions,
             error_prefix=error_prefix,
-            auth=self._auth_for(surface),
+            auth=self._credentials.for_surface(surface),
             log_body=surface.value.log_body,
             ctx=ctx,
             **kwargs,
@@ -2319,18 +2013,15 @@ class Connection:
         if self._resolved_kafka_cluster_id is not None:
             return self._resolved_kafka_cluster_id
 
-        if self._byoidc:
+        # Probe the CMK surface rather than re-deriving which modes reach it: the credentials
+        # already know (and word) why it is unreachable under BYOIDC or without a global key.
+        try:
+            self._credentials.for_surface(ControlPlaneSurface.CMK)
+        except ProgrammingError as exc:
             raise ProgrammingError(
-                "Resolving the Kafka cluster id from the database name is not reachable with a "
-                "BYOIDC bearer token: the CMK route doesn't accept one. Pass "
-                "database_kafka_cluster_id to connect() to skip the lookup."
-            )
-        if not self._oauth and self._global_credentials is None:
-            raise ProgrammingError(
-                "Resolving the Kafka cluster id from the database name requires a global API "
-                "key or an interactive OAuth connection (auth='oauth'); alternatively pass "
-                "database_kafka_cluster_id to connect()."
-            )
+                f"Cannot resolve the Kafka cluster id from the database name. {exc} Alternatively "
+                "pass database_kafka_cluster_id to connect() to skip the lookup."
+            ) from exc
         if not self._database:
             raise ProgrammingError(
                 "Cannot resolve a Kafka cluster id without a database name; pass database or "
@@ -2494,8 +2185,10 @@ class Connection:
             self.close()  # release a control-plane client the validation may have built
             raise
 
-        if self._oauth_provider is None:  # not already wired by _validate_oauth_login() callback.
-            self._wire_oauth_provider(provider)
+        if (
+            not self._credentials.is_oauth
+        ):  # not already adopted by the _validate_oauth_login() callback.
+            self._credentials.adopt_oauth_provider(provider)
 
         if self._organization_id_value is None:
             # The login's tokens are scoped to this organization, so it is the one to use -- never
@@ -2516,32 +2209,13 @@ class Connection:
         Runs inside `acquire()`, so it wires the provider in first: the listing is a control-plane
         request, which needs the provider's credential.
 
-        It also runs before the holder has published the provider, so there is no established login
-        to re-authenticate: under `reauth="auto"`, `ReauthenticationRequired` from the listing would
-        otherwise be "recovered" into a ProgrammingError about a missing login, masking the real
-        authentication failure. So the policy is `"raise"` for the duration, letting it propagate
-        (the holder then discards the failed login), and the configured one is restored after.
-        Nothing else can observe this connection yet, so the temporary swap is safe.
+        It also runs before the holder has published the provider, so the listing runs under
+        `ConnectionCredentials.reauth_raises()`: an authentication failure propagates (the holder
+        then discards the failed login) rather than being "recovered" into a misleading error.
         """
-        self._wire_oauth_provider(provider)
-        configured_policy, self._reauth_policy = self._reauth_policy, "raise"
-        try:
+        self._credentials.adopt_oauth_provider(provider)
+        with self._credentials.reauth_raises():
             self._resolve_organization_id()
-        finally:
-            self._reauth_policy = configured_policy
-
-    def _wire_oauth_provider(self, provider: OAuthProvider) -> None:
-        """Adopt the shared OAuth provider's two `httpx.Auth` views as this connection's
-        credentials: the data-plane view for Flink, the control-plane view for every surface."""
-        self._oauth_provider = provider
-        self._flink_auth = provider.data_plane_auth
-        self._byoidc = False
-        # One control-plane token reaches Tableflow, Connect, Artifact, and CMK alike -- the
-        # capability gain over API-key mode, which needs a separate credential per surface.
-        # Safe to share the same httpx.Auth object across every client: it holds no per-client
-        # state, only a reference back to the shared, lock-guarded provider.
-        self._surface_auth = dict.fromkeys(ControlPlaneSurface, provider.control_plane_auth)
-        self._global_credentials = None
 
     def _resolve_organization_id(self) -> str:
         """Infer organization_id via /org/v2/organizations when the caller omitted it.
@@ -2590,82 +2264,6 @@ class Connection:
     def _get_next_page_token(self, next_url: str | None) -> str | None:
         """Extract the next page token from the next_url, if present; see `utils`."""
         return parse_next_page_token(next_url)
-
-
-def _resolve_oauth_config(  # noqa: PLR0913
-    auth: str,
-    *,
-    oauth_config: CCloudOAuthConfig | None,
-    reauth: str,
-    external_access_token: str | None,
-    identity_pool_id: str | None,
-    global_api_key: str | None,
-    global_api_secret: str | None,
-    flink_api_key: str | None,
-    flink_api_secret: str | None,
-    tableflow_api_key: str | None,
-    tableflow_api_secret: str | None,
-    connect_api_key: str | None,
-    connect_api_secret: str | None,
-    cloud_api_key: str | None,
-    cloud_api_secret: str | None,
-) -> CCloudOAuthConfig | None:
-    """Validate the `auth=`/`reauth=` mode selection and return the environment to log in against.
-
-    Pure and network-free, mirroring `_resolve_flink_auth`'s role for the older two modes --
-    called before any network or browser activity so a bad parameter combination fails fast,
-    never after a browser has already been popped for the login.
-
-    Returns:
-        The `CCloudOAuthConfig` to log in against (`oauth_config` if supplied, else `PROD`) when
-        `auth == "oauth"`; `None` for `auth == "api_key"` (BYOIDC/API-key mode, resolved
-        separately by `_resolve_flink_auth`).
-
-    Raises:
-        InterfaceError: If `auth` names neither mode; if `oauth_config` is supplied while
-            `auth != "oauth"`; if `auth == "oauth"` is combined with the BYOIDC pair or any
-            API-key parameter -- interactive OAuth supplies its own credentials for every surface;
-            if `reauth` names neither `"auto"` nor `"raise"`; or if a non-default `reauth` is
-            supplied while `auth != "oauth"` (there is no wall to hit outside interactive OAuth).
-    """
-    if reauth not in ("auto", "raise"):
-        raise InterfaceError(f"reauth must be 'auto' or 'raise', got {reauth!r}")
-
-    if auth not in ("api_key", "oauth"):
-        raise InterfaceError(f"auth must be 'api_key' or 'oauth', got {auth!r}")
-
-    if auth != "oauth":
-        if oauth_config is not None:
-            raise InterfaceError("oauth_config may only be supplied when auth='oauth'")
-        if reauth != "auto":
-            raise InterfaceError("reauth may only be supplied when auth='oauth'")
-        return None
-
-    if external_access_token or identity_pool_id:
-        raise InterfaceError(
-            "auth='oauth' cannot be combined with external_access_token/identity_pool_id; "
-            "interactive OAuth and BYOIDC bearer-token auth are mutually exclusive."
-        )
-    if any(
-        (
-            global_api_key,
-            global_api_secret,
-            flink_api_key,
-            flink_api_secret,
-            tableflow_api_key,
-            tableflow_api_secret,
-            connect_api_key,
-            connect_api_secret,
-            cloud_api_key,
-            cloud_api_secret,
-        )
-    ):
-        raise InterfaceError(
-            "auth='oauth' cannot be combined with API key credentials "
-            "(global/flink/tableflow/connect/cloud); interactive OAuth and API-key auth are "
-            "mutually exclusive."
-        )
-    return oauth_config if oauth_config is not None else PROD
 
 
 class RowTypeRegistry:
