@@ -64,7 +64,7 @@ from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
@@ -540,7 +540,7 @@ class CCloudOAuth:
         # Anchored before the exchanges rather than after: the absolute wall is a policy on
         # the *session*, and dating it from after a slow chain would overstate its remaining
         # life by however long the chain took.
-        minted_at = datetime.now(timezone.utc)
+        minted_at = datetime.now(UTC)
         exchanged = exchange_code_for_tokens(
             self._client, self._config, code=code, verifier=verifier
         )
@@ -718,7 +718,7 @@ class CCloudOAuth:
             # duration.
             assert current is not None
 
-            if not current.refresh_token_valid(datetime.now(timezone.utc)):
+            if not current.refresh_token_valid(datetime.now(UTC)):
                 # Known dead locally. Spending a round trip to be told so is pure latency on an
                 # error path, and the answer cannot come back any other way.
                 raise self._latch_failure(
@@ -855,7 +855,7 @@ class _PlaneAuth(httpx.Auth):
 
     def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
         snapshot = self._provider._current_snapshot()
-        if not self._plane.token_valid(snapshot, datetime.now(timezone.utc)):
+        if not self._plane.token_valid(snapshot, datetime.now(UTC)):
             snapshot = self._provider._refresh(snapshot)
 
         self._stamp(request, snapshot)

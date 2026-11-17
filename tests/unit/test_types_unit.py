@@ -4,7 +4,7 @@ from collections import Counter, namedtuple
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from math import isnan
 from typing import Any, NamedTuple
@@ -1721,9 +1721,9 @@ class TestVariantConverter:
     def test_ltz_timestamp_is_utc_aware_and_drops_offset(self, converter: VariantConverter):
         # [14, utcTimestamp, sessionOffset] -- instant is already UTC, offset dropped.
         result = converter.to_python_value([14, "2026-07-28 09:14:02.117000", "-05:00"])
-        assert result == datetime(2026, 7, 28, 9, 14, 2, 117000, tzinfo=timezone.utc)
+        assert result == datetime(2026, 7, 28, 9, 14, 2, 117000, tzinfo=UTC)
         assert isinstance(result, datetime)
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
     def test_scalar_python_types_are_exact(self, converter: VariantConverter):
         # `True == 1` and `1 == 1.0`, so `==` alone wouldn't catch a type regression.
@@ -1741,7 +1741,7 @@ class TestVariantConverter:
 
     def test_nanosecond_ltz_timestamp_truncated_and_utc(self, converter: VariantConverter):
         result = converter.to_python_value([18, "2026-07-28 09:14:02.123456789", "+00:00"])
-        assert result == datetime(2026, 7, 28, 9, 14, 2, 123456, tzinfo=timezone.utc)
+        assert result == datetime(2026, 7, 28, 9, 14, 2, 123456, tzinfo=UTC)
 
     def test_object_becomes_dict(self, converter: VariantConverter):
         node = [1, [["n", [4, "7"]], ["ok", [3, "TRUE"]]]]
