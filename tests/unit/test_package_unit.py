@@ -1,5 +1,3 @@
-import pytest
-
 import confluent_sql
 import confluent_sql.oauth
 from confluent_sql import oauth_discard_login
@@ -7,7 +5,6 @@ from confluent_sql.__version__ import __version__ as version_module_version
 from confluent_sql.oauth import discard_login
 
 
-@pytest.mark.unit
 class TestPackageUnit:
     def test_top_level_version_matches_version_module(self):
         assert confluent_sql.__version__ == version_module_version

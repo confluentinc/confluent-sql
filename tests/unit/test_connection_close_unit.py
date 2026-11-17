@@ -11,8 +11,6 @@ import pytest
 from confluent_sql import InterfaceError
 from confluent_sql.connection import Connection, connect
 
-pytestmark = pytest.mark.unit
-
 
 def _connect() -> Connection:
     return connect(

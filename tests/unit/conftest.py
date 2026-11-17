@@ -13,13 +13,6 @@ from confluent_sql.connection import RowTypeRegistry
 from confluent_sql.statement import ChangelogRow, Op, Statement
 
 
-def pytest_runtest_setup(item):
-    # Ensure that all tests within unit/ are marked as unit tests
-    is_unit = any(item.iter_markers(name="unit"))
-    if not is_unit:
-        pytest.fail("Tests within 'unit/' must be marked with @pytest.mark.unit.")
-
-
 @pytest.fixture(autouse=True)
 def _reset_oauth_holder():
     """Every unit test starts and ends with a pristine process-wide OAuth holder.

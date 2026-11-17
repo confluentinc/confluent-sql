@@ -6,8 +6,6 @@ import pytest
 
 from confluent_sql import DEFAULT_TIMEOUTS, InterfaceError, Timeouts
 
-pytestmark = pytest.mark.unit
-
 
 class TestTimeouts:
     def test_defaults(self):
