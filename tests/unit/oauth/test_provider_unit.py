@@ -36,7 +36,7 @@ import urllib.parse
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import closing, contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -126,7 +126,7 @@ def _jwt(
     the one before it.
     """
     claims = {
-        "exp": int((datetime.now(timezone.utc) + lifetime).timestamp()),
+        "exp": int((datetime.now(UTC) + lifetime).timestamp()),
         "kind": kind,
         "serial": serial,
         **(extra_claims or {}),
@@ -352,7 +352,7 @@ def _doctor_token_set(provider: CCloudOAuth, **changes: datetime) -> None:
 
 
 def _past() -> datetime:
-    return datetime.now(timezone.utc) - timedelta(minutes=1)
+    return datetime.now(UTC) - timedelta(minutes=1)
 
 
 SLOW_HOP_SECS = 0.05
@@ -603,10 +603,10 @@ class TestRefresh:
             assert _tokens(provider).refresh_token_expires_at == wall_at_login
 
     def test_login_sets_the_absolute_wall_one_lifetime_out(self):
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         fake = FakeCCloud()
         with _logged_in(fake) as provider:
-            after = datetime.now(timezone.utc)
+            after = datetime.now(UTC)
             wall = _tokens(provider).refresh_token_expires_at
             assert before + ABSOLUTE_LIFETIME <= wall <= after + ABSOLUTE_LIFETIME
 
@@ -1204,7 +1204,7 @@ class TestReauthenticate:
             assert fresh.dp_token != dead.dp_token
             assert fresh.cp_token != dead.cp_token
             # A fresh login, not a refresh -- the wall is reset from *now*, not carried forward.
-            assert fresh.refresh_token_expires_at > datetime.now(timezone.utc)
+            assert fresh.refresh_token_expires_at > datetime.now(UTC)
             # code_grants: the original login's, plus this reauthentication's.
             assert len(fake.code_grants) == 2
 

@@ -14,7 +14,7 @@ own, and `fresh_oauth_process` discards it before and after.
 """
 
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -32,7 +32,7 @@ DOCTORED_USER_RESOURCE_ID = "u-not-you"
 def _expire_session(provider: CCloudOAuth) -> None:
     """Push the refresh, CP and DP tokens all into the past, so the next request hits the
     absolute-expiry wall without an 8h wait."""
-    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    past = datetime.now(UTC) - timedelta(minutes=1)
     with provider._token_lock:
         assert provider._token_set is not None
         provider._token_set = dataclasses.replace(

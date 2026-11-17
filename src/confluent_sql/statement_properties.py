@@ -6,13 +6,11 @@ discovering: the property *keys* as `Property`, and the fixed value sets as `Pro
 subclasses. See the "Available SET options" reference:
 https://docs.confluent.io/cloud/current/flink/reference/statements/set.html
 
-Both `Property` and `PropertyValue` subclass `_PropertyEnum` -- a `(str, Enum)` with `StrEnum`
-string semantics -- rather than `enum.StrEnum`, because the repo floor is Python 3.10 and `StrEnum`
-is 3.11+ (`(str, Enum)` is also the house style: `TableFormat`, `ConnectorState`, `TableflowPhase`).
-Members are genuine `str` instances: they compare and hash as their wire string, so they drop
-straight into `PropertiesDict`, satisfy the `isinstance(v, (str, int, bool))` validation in
-`validate_properties_dict`, JSON-serialize to the bare wire string, and (via `_PropertyEnum`)
-stringify to it in logs and error messages too -- all with no `.value` unwrapping at the call site.
+Both `Property` and `PropertyValue` subclass `enum.StrEnum`. Members are genuine `str` instances:
+they compare and hash as their wire string, so they drop straight into `PropertiesDict`, satisfy
+the `isinstance(v, (str, int, bool))` validation in `validate_properties_dict`, JSON-serialize to
+the bare wire string, and stringify to it in logs and error messages too -- all with no `.value`
+unwrapping at the call site.
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
-from enum import Enum
+from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar
 
@@ -32,20 +30,7 @@ if TYPE_CHECKING:
     from .types import PropertiesDict, PropertiesMapping
 
 
-class _PropertyEnum(str, Enum):
-    """`(str, Enum)` with `enum.StrEnum` string semantics, for the 3.10 floor (StrEnum is 3.11+).
-
-    Plain `(str, Enum)` renders `str(member)`/`f"{member}"` as `"Class.MEMBER"`, so a member
-    interpolated into a log line or error message would leak the Python name instead of the wire
-    string. Delegating `__str__`/`__format__` to `str` -- exactly what CPython's `StrEnum` does --
-    makes a member stringify to its wire value everywhere, not just under `json.dumps`.
-    """
-
-    __str__ = str.__str__
-    __format__ = str.__format__
-
-
-class Property(_PropertyEnum):
+class Property(StrEnum):
     """A Flink SQL statement property key -- the `sql.*` options from the SET-options reference.
 
     Only statement-scoped `sql.*` keys are modeled; the `client.*` options from the same reference
@@ -84,7 +69,7 @@ these keys (`Connection._build_statement_properties`) -- see the invariant test 
 sets are equal."""
 
 
-class PropertyValue(_PropertyEnum):
+class PropertyValue(StrEnum):
     """Common base for enums of a property's fixed, enumerated value set.
 
     Gives every such value enum one shared identity to test against and lets `StatementProperties`
@@ -208,7 +193,7 @@ class StatementProperties:
     def _reject_wrong_enum(field_name: str, value: object, expected: type[PropertyValue]) -> None:
         """Reject any Enum that isn't the field's own value enum; a raw str always passes.
 
-        Checks `Enum`, not just `PropertyValue`: every `_PropertyEnum` member (including a
+        Checks `Enum`, not just `PropertyValue`: every `StrEnum` member (including a
         `Property` *key*) is also a `str`, so narrowing to `PropertyValue` would let a stray
         `Property` slip past both this and the str type check and serialize as a bogus wire value.
         """
@@ -260,7 +245,7 @@ class StatementProperties:
         """Render to the wire properties dict: `extra` first, then each set typed field on top.
 
         Typed values are assigned directly, not via `.value`, so an enum member and a raw
-        forward-compat string both serialize correctly (`_PropertyEnum` members are wire strings).
+        forward-compat string both serialize correctly (`StrEnum` members are wire strings).
         """
         props: PropertiesDict = dict(self.extra)
         if self.snapshot_write_mode is not None:

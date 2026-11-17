@@ -39,7 +39,7 @@ import base64
 import binascii
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -235,7 +235,7 @@ def exchange_id_token_for_cp_token(
         token=token,
         expires_at=_jwt_exp(
             token,
-            now=now if now is not None else datetime.now(timezone.utc),
+            now=now if now is not None else datetime.now(UTC),
             fallback_lifetime=FALLBACK_CP_LIFETIME,
         ),
         organization_resource_id=organization_resource_id,
@@ -262,7 +262,7 @@ def exchange_cp_for_dp_token(
         token=token,
         expires_at=_jwt_exp(
             token,
-            now=now if now is not None else datetime.now(timezone.utc),
+            now=now if now is not None else datetime.now(UTC),
             fallback_lifetime=FALLBACK_DP_LIFETIME,
         ),
     )
@@ -279,13 +279,9 @@ def _jwt_exp(token: str, *, now: datetime, fallback_lifetime: timedelta) -> date
     UTC, same as the JWT-decode path, regardless of whether the caller's `now` was naive."""
     try:
         exp = (_jwt_payload(token) or {})["exp"]
-        return datetime.fromtimestamp(exp, tz=timezone.utc)  # type: ignore[arg-type]
+        return datetime.fromtimestamp(exp, tz=UTC)  # type: ignore[arg-type]
     except (ValueError, KeyError, TypeError, OverflowError, OSError, binascii.Error):
-        anchor = (
-            now.astimezone(timezone.utc)
-            if now.tzinfo is not None
-            else now.replace(tzinfo=timezone.utc)
-        )
+        anchor = now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC)
         return anchor + fallback_lifetime
 
 
