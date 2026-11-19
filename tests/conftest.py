@@ -17,31 +17,55 @@ def _marker_for_path(rel_path: Path) -> str | None:
     return next((part for part in rel_path.parts[:-1] if part in _PATH_MARKERS), None)
 
 
+def _placement_problem(collector: pytest.Collector, children: list) -> str | None:
+    """What is wrong with how `collector` (or the tests it just collected) is marked or placed, or
+    None if nothing: a test module outside both `unit/` and `integration/`, or any module, class
+    or test function carrying either marker explicitly (even the one its directory implies)."""
+    if isinstance(collector, pytest.Module):
+        rel_path = collector.path.relative_to(collector.config.rootpath)
+        if _marker_for_path(rel_path) is None:
+            return f"{rel_path} is neither under unit/ nor integration/; every test lives in one."
+    for node in (collector, *(child for child in children if isinstance(child, pytest.Item))):
+        for explicit in _PATH_MARKERS:
+            if any(mark.name == explicit for mark in node.own_markers):
+                return (
+                    f"{node.nodeid} is explicitly marked `{explicit}`; remove it. The "
+                    "unit/integration marker is applied automatically from the directory, "
+                    "even when the explicit mark agrees with it."
+                )
+    return None
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):
+    """Turn a misplaced or hand-marked test into an ordinary collection error (#283).
+
+    Nobody hand-applies the `unit` / `integration` markers. This is reported as a failed
+    collection report rather than raised from `pytest_collection_modifyitems`, because under
+    xdist (on by default here) an exception in a worker's `modifyitems` kills the worker: the
+    controller never sees the message and trips over its own "crashed worker" assertion, blaming
+    whichever unrelated test the worker happened to be on. A failed collection report is
+    forwarded to the controller and shown as `ERROR collecting <file>` with this text.
+    """
+    report = yield
+    if report.passed and (problem := _placement_problem(collector, report.result)):
+        report.outcome = "failed"
+        report.longrepr = problem
+    return report
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     """Mark every test `unit` or `integration` from the directory it lives in (#283).
 
-    Nobody hand-applies those two markers: a test outside both directories, or one carrying either
-    marker explicitly (even the one its directory implies), is a collection error.
+    Misplaced or hand-marked tests never get here: `pytest_make_collect_report` fails their
+    collection first.
 
     `tryfirst` matters: pytest applies `-m` selection in its own collection hook, so the markers
     must already be there for `-m unit` / `-m integration` to select anything.
     """
     for item in items:
-        rel_path = item.path.relative_to(config.rootpath)
-        expected = _marker_for_path(rel_path)
-        if expected is None:
-            raise pytest.UsageError(
-                f"{rel_path} is neither under unit/ nor integration/; every test lives in one."
-            )
-        for explicit in _PATH_MARKERS:
-            if item.get_closest_marker(explicit):
-                raise pytest.UsageError(
-                    f"{item.nodeid} is explicitly marked `{explicit}`; remove it. The "
-                    "unit/integration marker is applied automatically from the directory "
-                    f"({expected}/), even when the explicit mark agrees with it."
-                )
-        item.add_marker(expected)
+        item.add_marker(_marker_for_path(item.path.relative_to(config.rootpath)))
 
 
 # Fixtures common to all tests ...
