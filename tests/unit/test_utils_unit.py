@@ -29,6 +29,11 @@ class TestExtensibleEnum:
         assert isinstance(_Color.RED, str)
         assert _Color.RED == "RED"
 
+    def test_members_stringify_to_their_wire_value(self) -> None:
+        # StrEnum semantics: not "_Color.RED", so log lines and messages show the wire string.
+        assert str(_Color.RED) == "RED"
+        assert f"{_Color.RED}" == "RED"
+
     def test_subclass_without_unknown_member_raises_value_error(self) -> None:
         with pytest.raises(ValueError):
             _NoFallback("SOMETHING_NEW")

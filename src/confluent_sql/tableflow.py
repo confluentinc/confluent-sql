@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import ClassVar
 
 from .context import BACKGROUND, Context
@@ -38,12 +38,9 @@ logger = logging.getLogger(__name__)
 class Fields:
     """Wire field names for the Tableflow Topic API
 
-    Plain string class attributes, not an Enum: `StrEnum` needs Python 3.11+ (newer than this
-    package's floor, 3.10), and the older `class X(str, Enum)` mixin (used above for `TableFormat`/
-    `TableflowPhase`) returns the qualified member name from `str()`/default formatting rather
-    than the plain value unless a caller remembers `.value` -- a real risk given how pervasively
-    these get used directly as dict keys, in f-strings, and in JSON payloads. Plain strings have
-    no such gotcha.
+    Plain string class attributes, not an Enum: these are bare wire keys, used directly as dict
+    keys, in f-strings, and in JSON payloads, with nothing to enumerate or parse, so a `StrEnum`
+    would add a type and `Fields.X.value`-vs-member ambiguity for no gain.
     """
 
     ID = "id"
@@ -75,7 +72,7 @@ class Fields:
     TARGET = "target"
 
 
-class TableFormat(str, Enum):
+class TableFormat(StrEnum):
     """A concrete table format a Tableflow topic materializes to.
 
     API-faithful: this is what responses name (`spec.table_formats`,

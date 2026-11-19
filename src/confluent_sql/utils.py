@@ -12,7 +12,7 @@ elsewhere.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -33,12 +33,12 @@ DEFAULT_USER_AGENT: str = (
 reason as `DEFAULT_HTTP_TIMEOUT_SECS`; `Connection.DEFAULT_USER_AGENT` aliases it."""
 
 
-class ExtensibleEnum(str, Enum):
+class ExtensibleEnum(StrEnum):
     """Base for API enums the server may extend: an unrecognized value parses to `UNKNOWN`.
 
     A future server-side value then doesn't break response parsing. Subclasses must declare an
     `UNKNOWN` member; without one, an unrecognized value raises the usual `ValueError`.
-    `(str, Enum)` rather than `StrEnum`, which needs Python 3.11+ (the package floor is 3.10).
+    Being a `StrEnum`, a member stringifies (`str()`, f-strings) to its wire value.
     """
 
     @classmethod

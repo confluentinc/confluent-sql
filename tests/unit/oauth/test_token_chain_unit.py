@@ -1,7 +1,7 @@
 import base64
 import json
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -35,7 +35,7 @@ message embeds its dict repr."""
 
 
 def _now() -> datetime:
-    return datetime(2026, 8, 11, 9, 0, tzinfo=timezone.utc)
+    return datetime(2026, 8, 11, 9, 0, tzinfo=UTC)
 
 
 def _jwt_segment(value: object) -> str:
@@ -228,7 +228,7 @@ class TestExchangeIdTokenForCpToken:
     def test_sends_id_token_and_parses_response(self):
         id_token = "id-tok-xyz"
         returned_org_resource_id = "org-resource-abc"
-        exp = int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp())
+        exp = int(datetime(2026, 8, 10, 13, 0, tzinfo=UTC).timestamp())
         cp_jwt = _make_jwt(exp)
         captured = {}
 
@@ -249,13 +249,13 @@ class TestExchangeIdTokenForCpToken:
         sent_body = json.loads(request.content.decode())
         assert sent_body == {"id_token": id_token}
         assert result.token == cp_jwt
-        assert result.expires_at == datetime.fromtimestamp(exp, tz=timezone.utc)
+        assert result.expires_at == datetime.fromtimestamp(exp, tz=UTC)
         assert result.organization_resource_id == returned_org_resource_id
 
     def test_supplied_org_resource_id_is_sent_in_body(self):
         id_token = "id-tok-xyz"
         org_resource_id = "org-1"
-        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=UTC).timestamp()))
         captured = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -391,7 +391,7 @@ class TestExchangeIdTokenForCpToken:
             exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
 
     def test_non_object_organization_field_raises_operational_error_not_attribute_error(self):
-        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=UTC).timestamp()))
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"token": cp_jwt, "organization": "not-an-object"})
@@ -400,7 +400,7 @@ class TestExchangeIdTokenForCpToken:
             exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
 
     def test_absent_organization_yields_none_resource_id(self):
-        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=UTC).timestamp()))
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"token": cp_jwt})
@@ -415,7 +415,7 @@ class TestExchangeIdTokenForCpToken:
         """organization_resource_id is documented as None only when the organization block is
         entirely absent -- a present-but-incomplete block is a server-contract violation, not
         another way to spell "no org"."""
-        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=UTC).timestamp()))
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"token": cp_jwt, "organization": {"id": 542039}})
@@ -424,7 +424,7 @@ class TestExchangeIdTokenForCpToken:
             exchange_id_token_for_cp_token(client, CONFIG, id_token="id-tok", org_resource_id=None)
 
     def test_organization_resource_id_wrong_type_raises_operational_error(self):
-        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc).timestamp()))
+        cp_jwt = _make_jwt(int(datetime(2026, 8, 10, 13, 0, tzinfo=UTC).timestamp()))
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -562,14 +562,14 @@ class TestJwtExpHardening:
         with _client(handler) as client:
             result = exchange_cp_for_dp_token(client, CONFIG, cp_token="cp-tok", now=naive_now)
 
-        assert result.expires_at == naive_now.replace(tzinfo=timezone.utc) + FALLBACK_DP_LIFETIME
+        assert result.expires_at == naive_now.replace(tzinfo=UTC) + FALLBACK_DP_LIFETIME
         assert result.expires_at.tzinfo is not None
 
 
 class TestExchangeCpForDpToken:
     def test_sends_bearer_cp_token_and_parses_response(self):
         cp_token = "cp-tok-xyz"
-        exp = int(datetime(2026, 8, 10, 12, 10, tzinfo=timezone.utc).timestamp())
+        exp = int(datetime(2026, 8, 10, 12, 10, tzinfo=UTC).timestamp())
         dp_jwt = _make_jwt(exp)
         captured = {}
 
@@ -584,7 +584,7 @@ class TestExchangeCpForDpToken:
         assert str(request.url) == f"{CONFIG.api_host}/api/access_tokens"
         assert request.headers["Authorization"] == f"Bearer {cp_token}"
         assert result.token == dp_jwt
-        assert result.expires_at == datetime.fromtimestamp(exp, tz=timezone.utc)
+        assert result.expires_at == datetime.fromtimestamp(exp, tz=UTC)
 
     def test_confluent_api_error_raises_operational_error(self):
         error_message = "cp token expired"
