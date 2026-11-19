@@ -9,7 +9,8 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError
-from confluent_sql.connection import Connection, ControlPlaneSurface, connect
+from confluent_sql.connection import Connection, connect
+from confluent_sql.credentials import ControlPlaneSurface
 
 
 def _connect(**overrides: Any) -> Connection:
@@ -33,7 +34,7 @@ def _basic_authorization(key: str, secret: str) -> str:
 
 def _artifact_authorization(conn: Connection) -> str:
     """The Authorization header artifact requests would carry."""
-    auth = conn._auth_for(ControlPlaneSurface.ARTIFACTS)
+    auth = conn._credentials.for_surface(ControlPlaneSurface.ARTIFACTS)
     request = httpx.Request("GET", "https://example.invalid")
     return next(auth.auth_flow(request)).headers["Authorization"]
 

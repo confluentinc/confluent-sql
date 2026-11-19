@@ -10,7 +10,8 @@ import pytest
 
 from confluent_sql import InterfaceError, ProgrammingError, connect
 from confluent_sql.auth import FlinkBearerAuth
-from confluent_sql.connection import Connection, ControlPlaneSurface
+from confluent_sql.connection import Connection
+from confluent_sql.credentials import ControlPlaneSurface
 from confluent_sql.execution_mode import ExecutionMode
 
 
@@ -100,9 +101,9 @@ class TestByoidcAuthWiring:
     """The auth objects each mode installs on the httpx clients."""
 
     def test_byoidc_installs_flink_bearer_auth(self):
-        """BYOIDC mode makes _flink_auth a FlinkBearerAuth, not an httpx.BasicAuth."""
+        """BYOIDC mode makes the flink auth a FlinkBearerAuth, not an httpx.BasicAuth."""
         conn = _byoidc_connect()
-        assert isinstance(conn._flink_auth, FlinkBearerAuth)
+        assert isinstance(conn._credentials.flink_auth, FlinkBearerAuth)
 
     def test_api_key_mode_still_uses_basic_auth(self):
         """Regression guard: an API-key connection still authenticates Flink with httpx.BasicAuth,
@@ -115,7 +116,7 @@ class TestByoidcAuthWiring:
             cloud_provider="aws",
             cloud_region="us-east-1",
         )
-        assert isinstance(conn._flink_auth, httpx.BasicAuth)
+        assert isinstance(conn._credentials.flink_auth, httpx.BasicAuth)
 
     def test_global_key_mode_control_plane_uses_basic_auth(self):
         """Regression guard: a global-key connection builds its control-plane client with
@@ -128,7 +129,9 @@ class TestByoidcAuthWiring:
             cloud_provider="aws",
             cloud_region="us-east-1",
         )
-        assert isinstance(conn._auth_for(ControlPlaneSurface.TABLEFLOW), httpx.BasicAuth)
+        assert isinstance(
+            conn._credentials.for_surface(ControlPlaneSurface.TABLEFLOW), httpx.BasicAuth
+        )
 
 
 class TestByoidcFlinkRequest:
@@ -151,7 +154,7 @@ class TestByoidcFlinkRequest:
             f"/environments/{conn.environment_id}"
         )
         conn._dataplane._client = httpx.Client(
-            auth=conn._flink_auth,
+            auth=conn._credentials.flink_auth,
             base_url=base_url,
             transport=httpx.MockTransport(handler),
         )
@@ -175,12 +178,13 @@ class TestByoidcControlPlaneFailsClosed:
     def test_every_surface_raises_byoidc_programming_error(self, surface):
         conn = _byoidc_connect()
         with pytest.raises(ProgrammingError, match="BYOIDC bearer token"):
-            conn._auth_for(surface)
+            conn._credentials.for_surface(surface)
 
     def test_cmk_cluster_id_resolution_raises_byoidc_programming_error(self):
         conn = _byoidc_connect(database="mydb")
-        with pytest.raises(ProgrammingError, match="BYOIDC bearer token"):
+        with pytest.raises(ProgrammingError, match="BYOIDC bearer token") as exc:
             conn._resolve_kafka_cluster_id()
+        assert "database_kafka_cluster_id" in str(exc.value)
 
 
 class TestByoidcDatabaseOptional:

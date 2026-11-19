@@ -1,5 +1,6 @@
 """Unit tests for `Connection`'s control-plane surfaces: one shared `ServiceClient`, with each
-request carrying its own surface's credential (`ControlPlaneSurface`, `Connection._auth_for`).
+request carrying its own surface's credential (`ControlPlaneSurface`,
+`ConnectionCredentials.for_surface`).
 
 These drive a real `httpx.Client` over a recording transport rather than mocking the request
 methods, since the wiring from surface to credential, retry and logging is what's under test.
@@ -15,7 +16,8 @@ import httpx
 import pytest
 
 from confluent_sql import InterfaceError, OperationalError, ProgrammingError, connect
-from confluent_sql.connection import Connection, ControlPlaneSurface
+from confluent_sql.connection import Connection
+from confluent_sql.credentials import ControlPlaneSurface
 
 KEYS = {
     ControlPlaneSurface.TABLEFLOW: ("tk", "ts"),
@@ -207,9 +209,9 @@ class TestGlobalOnlySurfaces:
     def test_dedicated_keys_alone_do_not_authenticate(self, surface) -> None:
         conn = _connect()  # tableflow/connect/cloud pairs, but no global key
 
-        assert conn._auth_for(ControlPlaneSurface.TABLEFLOW) is not None
+        assert conn._credentials.for_surface(ControlPlaneSurface.TABLEFLOW) is not None
         with pytest.raises(ProgrammingError, match="global API key"):
-            conn._auth_for(surface)
+            conn._credentials.for_surface(surface)
 
 
 class TestMissingCredentials:
@@ -225,7 +227,7 @@ class TestMissingCredentials:
         )
 
         with pytest.raises(ProgrammingError) as exc_info:
-            conn._auth_for(surface)
+            conn._credentials.for_surface(surface)
 
         message = str(exc_info.value)
         assert surface.value.subject in message
@@ -236,8 +238,8 @@ class TestMissingCredentials:
         conn = _connect(connect_api_key="", connect_api_secret="")
 
         with pytest.raises(ProgrammingError, match="Connectors require"):
-            conn._auth_for(ControlPlaneSurface.CONNECT)
-        assert conn._auth_for(ControlPlaneSurface.ARTIFACTS) is not None
+            conn._credentials.for_surface(ControlPlaneSurface.CONNECT)
+        assert conn._credentials.for_surface(ControlPlaneSurface.ARTIFACTS) is not None
 
     @pytest.mark.parametrize("surface", list(ControlPlaneSurface))
     def test_closed_connection_wins_over_a_missing_credential(self, surface) -> None:
@@ -252,4 +254,4 @@ class TestMissingCredentials:
         conn.close()
 
         with pytest.raises(InterfaceError, match="Connection is closed"):
-            conn._auth_for(surface)
+            conn._controlplane_request(surface, "/x")
