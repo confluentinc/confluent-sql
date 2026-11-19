@@ -3,11 +3,20 @@
 These run a nested pytest session whose conftest borrows the real hook from `tests/conftest.py`.
 """
 
+from pathlib import Path
+
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 pytest_plugins = ["pytester"]
 
-CONFTEST = "from tests.conftest import pytest_collection_modifyitems  # noqa: F401\n"
+CONFTEST = (
+    "from tests.conftest import (  # noqa: F401\n"
+    "    pytest_collection_modifyitems,\n"
+    "    pytest_make_collect_report,\n"
+    ")\n"
+)
 
 BARE_TEST = "def test_it():\n    pass\n"
 
@@ -45,8 +54,8 @@ def test_integration_with_mocks_implies_integration(marked_session: pytest.Pytes
 def test_test_outside_both_directories_is_an_error(marked_session: pytest.Pytester):
     marked_session.makepyfile(**{"elsewhere/test_a": BARE_TEST})
     result = marked_session.runpytest()
-    assert result.ret != 0
-    result.stderr.fnmatch_lines(["*neither under unit/ nor integration/*"])
+    assert result.ret == pytest.ExitCode.INTERRUPTED
+    result.stdout.fnmatch_lines(["*ERROR collecting*", "*neither under unit/ nor integration/*"])
 
 
 @pytest.mark.parametrize("directory", ["unit", "integration"])
@@ -63,5 +72,22 @@ def test_any_explicit_marker_is_an_error(
     }[scope]
     marked_session.makepyfile(**{f"{directory}/test_a": f"import pytest\n\n{source}"})
     result = marked_session.runpytest()
-    assert result.ret != 0
-    result.stderr.fnmatch_lines([f"*explicitly marked `{explicit}`*"])
+    assert result.ret == pytest.ExitCode.INTERRUPTED
+    result.stdout.fnmatch_lines(["*ERROR collecting*", f"*explicitly marked `{explicit}`*"])
+
+
+def test_error_is_legible_under_xdist(
+    marked_session: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression: raised from `pytest_collection_modifyitems`, this killed the xdist worker and
+    surfaced as an INTERNALERROR blaming an unrelated test, hiding the actual message. It must come
+    out as an ordinary collection error naming the file and the fix. Needs a real subprocess for
+    the workers, which must be able to import `tests.conftest` too."""
+    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
+    marked_session.makepyfile(
+        **{"unit/test_a": "import pytest\n\npytestmark = pytest.mark.unit\n\n" + BARE_TEST}
+    )
+    result = marked_session.runpytest_subprocess("-n2", "-p", "xdist")
+    assert result.ret != pytest.ExitCode.OK  # xdist exits 1 here, plain pytest 2
+    result.stdout.fnmatch_lines(["*ERROR collecting*", "*explicitly marked `unit`*remove it*"])
+    assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
