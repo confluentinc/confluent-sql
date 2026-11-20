@@ -31,7 +31,7 @@ def _reset_oauth_holder():
 
 
 @pytest.fixture(autouse=True)
-def _scrub_confluent_env(monkeypatch: pytest.MonkeyPatch):
+def _scrub_confluent_env():
     """Unit tests never see the developer's `CONFLUENT_*` integration-test environment.
 
     `connection_factory` fills every argument a test leaves unset from these variables, so a
@@ -39,9 +39,15 @@ def _scrub_confluent_env(monkeypatch: pytest.MonkeyPatch):
     changed what a unit test did: a database name plus a global key made `connect()` infer the
     cloud via a live CMK lookup instead of raising the `InterfaceError` the test expected. A test
     that wants one of these supplies it itself (or via `monkeypatch.setenv`).
+
+    Uses its own `MonkeyPatch` context, not the test's `monkeypatch` fixture: a test calling
+    `monkeypatch.undo()` must not restore the developer's variables mid-test. Being set up before
+    the test's own fixtures, it is also torn down after them.
     """
-    for name in [name for name in os.environ if name.startswith("CONFLUENT_")]:
-        monkeypatch.delenv(name)
+    with pytest.MonkeyPatch.context() as mp:
+        for name in [name for name in os.environ if name.startswith("CONFLUENT_")]:
+            mp.delenv(name)
+        yield
 
 
 class NetworkAttemptedInUnitTestError(AssertionError):
@@ -52,7 +58,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 @pytest.fixture(autouse=True)
-def _forbid_outbound_http(monkeypatch: pytest.MonkeyPatch):
+def _forbid_outbound_http():
     """Fail any unit test that would put a real HTTP request on the wire.
 
     Patched at the transport every `httpx.Client` ends up on (including the bare clients for
@@ -77,8 +83,12 @@ def _forbid_outbound_http(monkeypatch: pytest.MonkeyPatch):
         _check(request)
         return await real_async(self, request, *args, **kwargs)
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", sync_guard)
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", async_guard)
+    # Own `MonkeyPatch` context (not the test's `monkeypatch`), so a test's `monkeypatch.undo()`
+    # can't remove the guard mid-test.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(httpx.HTTPTransport, "handle_request", sync_guard)
+        mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", async_guard)
+        yield
 
 
 ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], ChangelogRow]
