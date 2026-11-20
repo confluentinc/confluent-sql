@@ -16,7 +16,8 @@ from confluent_sql import (
     ProgrammingError,
     Timeouts,
 )
-from confluent_sql.connection import Connection, ControlPlaneSurface, connect
+from confluent_sql.connection import Connection, connect
+from confluent_sql.credentials import ControlPlaneSurface
 
 
 def _connect(**overrides: Any) -> Connection:
@@ -52,7 +53,7 @@ class TestControlplaneClient:
     def test_no_controlplane_credentials_raises(self) -> None:
         conn = _connect()  # flink-only creds
         with pytest.raises(ProgrammingError, match="global API key or a tableflow_api_key"):
-            conn._auth_for(ControlPlaneSurface.TABLEFLOW)
+            conn._credentials.for_surface(ControlPlaneSurface.TABLEFLOW)
 
     def test_tableflow_pair_authenticates_controlplane(self, mocker) -> None:
         spy = mocker.patch("confluent_sql.connection.httpx.BasicAuth", wraps=httpx.BasicAuth)
@@ -137,8 +138,9 @@ class TestResolveKafkaClusterId:
 
     def test_no_global_key_and_no_seed_raises(self) -> None:
         conn = _connect(tableflow_api_key="tk", tableflow_api_secret="ts", database="ProdCluster")
-        with pytest.raises(ProgrammingError, match="requires a global API key"):
+        with pytest.raises(ProgrammingError, match="global API key") as exc:
             conn._resolve_kafka_cluster_id()
+        assert "database_kafka_cluster_id" in str(exc.value)
 
     def test_global_key_but_no_database_raises(self) -> None:
         conn = _connect(global_api_key="gk", global_api_secret="gs", database="")

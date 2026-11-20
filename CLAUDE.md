@@ -13,7 +13,8 @@ Every HTTP request this driver makes goes through a `ServiceClient`
   lookup, Connect, Artifacts. One client and pool, built without credentials. Each request names
   the API it calls as a `ControlPlaneSurface` (`TABLEFLOW`, `CONNECT`, `ARTIFACTS`, `CMK`,
   `ORGANIZATION`) through `Connection._controlplane_request(surface, url, ...)`, which attaches
-  that surface's credential (`_auth_for`, from `_surface_auth`) and applies its logging rule
+  that surface's credential (`ConnectionCredentials.for_surface`, in `credentials.py`, which owns the
+  credential mode) and applies its logging rule
   (Artifacts never logs response bodies: the presign response carries a live upload URL). CMK and
   organization lookups are global-key-only. A new surface is a new enum member, not a new client.
 

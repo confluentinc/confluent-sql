@@ -19,8 +19,8 @@ class FlinkBearerAuth(httpx.Auth):
     Flink data-plane request.
 
     The identity-pool id lives inside the auth object rather than the client's static headers so
-    that `_flink_auth` is one cohesive "this is the BYOIDC identity" unit -- the same shape the
-    interactive-OAuth adapters will take.
+    that the Flink auth (`ConnectionCredentials.flink_auth`) is one cohesive "this is the BYOIDC
+    identity" unit -- the same shape the interactive-OAuth adapters will take.
     """
 
     def __init__(self, bearer_token: str, identity_pool_id: str) -> None:
