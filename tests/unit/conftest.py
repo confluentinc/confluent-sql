@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import types
 from collections.abc import Callable
 from typing import Any, TypeAlias
 
+import httpx
 import pytest
 
 from confluent_sql import DEFAULT_TIMEOUTS, Connection, Cursor, oauth
@@ -26,6 +28,57 @@ def _reset_oauth_holder():
     oauth.discard_login()
     yield
     oauth.discard_login()
+
+
+@pytest.fixture(autouse=True)
+def _scrub_confluent_env(monkeypatch: pytest.MonkeyPatch):
+    """Unit tests never see the developer's `CONFLUENT_*` integration-test environment.
+
+    `connection_factory` fills every argument a test leaves unset from these variables, so a
+    populated shell (the README tells you to export them for the integration suite) silently
+    changed what a unit test did: a database name plus a global key made `connect()` infer the
+    cloud via a live CMK lookup instead of raising the `InterfaceError` the test expected. A test
+    that wants one of these supplies it itself (or via `monkeypatch.setenv`).
+    """
+    for name in [name for name in os.environ if name.startswith("CONFLUENT_")]:
+        monkeypatch.delenv(name)
+
+
+class NetworkAttemptedInUnitTestError(AssertionError):
+    """A unit test tried to send a real HTTP request to a non-loopback host."""
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+@pytest.fixture(autouse=True)
+def _forbid_outbound_http(monkeypatch: pytest.MonkeyPatch):
+    """Fail any unit test that would put a real HTTP request on the wire.
+
+    Patched at the transport every `httpx.Client` ends up on (including the bare clients for
+    artifact uploads and the OAuth provider), so no caller can route around it. Loopback is
+    allowed: the OAuth callback-server tests drive a real in-process listener on 127.0.0.1. Tests
+    that inject an `httpx.MockTransport` or patch `request` never reach this transport.
+    """
+    real_sync = httpx.HTTPTransport.handle_request
+    real_async = httpx.AsyncHTTPTransport.handle_async_request
+
+    def _check(request: httpx.Request) -> None:
+        if request.url.host not in _LOOPBACK_HOSTS:
+            raise NetworkAttemptedInUnitTestError(
+                f"unit test attempted a real HTTP request: {request.method} {request.url}"
+            )
+
+    def sync_guard(self, request, *args, **kwargs):
+        _check(request)
+        return real_sync(self, request, *args, **kwargs)
+
+    async def async_guard(self, request, *args, **kwargs):
+        _check(request)
+        return await real_async(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", sync_guard)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", async_guard)
 
 
 ResultRowFactory: TypeAlias = Callable[[list[Any], Op | None], ChangelogRow]
