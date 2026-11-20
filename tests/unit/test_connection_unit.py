@@ -1023,6 +1023,7 @@ class TestConnectChecks:
                 compute_pool_id="1234",
                 organization_id="4567",
                 cloud_provider="",
+                database="",
             )
 
     def test_requires_cloud_region(self, connection_factory: ConnectionFactory):
@@ -1036,6 +1037,7 @@ class TestConnectChecks:
                 organization_id="4567",
                 cloud_provider="aws",
                 cloud_region="",
+                database="",
             )
 
     def test_builds_endpoint_from_cloud_info(self, connection_factory: ConnectionFactory):
